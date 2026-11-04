@@ -1949,7 +1949,8 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
                         ((IDXGISwapChain4*)This)->GetCurrentBackBufferIndex();
                         const uint32_t frameId=static_cast<uint32_t>(genshinReflex.frame);
                         tokenResult=getToken(localToken,&frameId);
-                        if(tokenResult==sl::Result::eOk && localToken){
+                        if(tokenResult==sl::Result::eOk && localToken &&
+                            genshinReflex.frame<=UINT32_MAX && static_cast<uint64_t>(*localToken)==genshinReflex.frame){
                             genshinReflex.startToken=static_cast<uint64_t>(*localToken);
                             genshinReflex.startCalled=true;
                             genshinReflex.startResult=static_cast<int>(marker(sl::PCLMarker::ePresentStart,*localToken));
@@ -2124,11 +2125,12 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         starRailSdkContext.attribution.sync=SyncInterval;starRailSdkContext.attribution.flags=Flags;
     }
     if(willPresent && genshinDlssg) {
-        const auto* current=GenshinBridgeFg::PresentScope::Current();
-        // No pre-Present HWND reveal. This exact SDK call is the only supported
-        // source association for its nested actual physical outputs.
+        auto* current=GenshinBridgeFg::PresentScope::Current();
+        // Dispatch has already sealed this exact input's FrameToken/source.
+        // Bind its saved receipt at the real SDK boundary regardless of whether
+        // we or the game send Reflex markers. Marker IDs are not source joins.
         GenshinVisibleChild::PresentPermit::BeforePresent(This,
-            current && current->LastResult()==GenshinBridgeFg::Result::Submitted);
+            current ? current->EnterSdkPresent(This) : nullptr);
     }
     // Consume the exact successful Dispatch at the actual SDK boundary. Marker
     // policy and an SDK-internal frame counter cannot select/replay its source.
@@ -2161,7 +2163,10 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         GenshinHookCpuTiming::RecordStarRailCall(GenshinHookCpuTiming::StarRailCall::SdkPresent,starRailSdkContext.attribution,starRailSdkWall);
     }
 
-    if (willPresent && genshinDlssg) GenshinVisibleChild::PresentPermit::AfterPresent(This, result);
+    if (willPresent && genshinDlssg) {
+        if(auto* current=GenshinBridgeFg::PresentScope::Current())current->ReturnSdkPresent(This,result);
+        GenshinVisibleChild::PresentPermit::AfterPresent(This, result);
+    }
     if(genshinSdkTransaction){
         genshinReflex.afterOwner=fg && state.currentFG==fg;
         genshinReflex.afterActive=fgPacingActive();

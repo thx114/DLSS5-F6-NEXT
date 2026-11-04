@@ -2546,6 +2546,13 @@ bool DLSSG_Dx12::Dispatch()
         return false;
     }
 
+    const uint64_t genshinToken = genshinFrame ? static_cast<uint64_t>(*frameToken) : 0;
+    if (genshinFrame && (genshinToken != willDispatchFrame ||
+        frameId != willDispatchFrame || willDispatchFrame > UINT32_MAX))
+    {
+        Deactivate();
+        return false; // retain tagged roots; an SDK token alias is not this source
+    }
     if (starRailFrame && !sourceStillCurrent()) return false;
     if (depthContractFrame)
     {
@@ -2659,6 +2666,24 @@ bool DLSSG_Dx12::Dispatch()
         _starRailDispatchFrame = willDispatchFrame;
         _starRailDispatchGeneration = sourceGeneration;
         _starRailDispatchOwner = _runningInputOwner;
+    }
+    if (genshinFrame)
+    {
+        auto& lease = _genshinInputs[fIndex];
+        if (!lease || lease->frame != willDispatchFrame || lease->source ||
+            static_cast<uint64_t>(*frameToken) != genshinToken ||
+            lease->epoch != _inputOwnerEpoch || lease->owner != _genshinOwnerGeneration ||
+            !GenshinGuidesCurrent(lease->guides)) return false;
+        const auto outputOwner=framegen::final_output::ProviderIdentity(_finalOutputProvider);
+        if(!outputOwner)return false;
+        try {
+            // Copy the value, never retain an SDK ring-entry pointer. Only the
+            // real successful SetConstants above can seal this input identity.
+            lease->source = std::shared_ptr<const GenshinBridgeFg::SdkInputSource>(
+                new GenshinBridgeFg::SdkInputSource(lease->guides->key, willDispatchFrame,
+                    genshinToken, lease->owner, lease->epoch,
+                    outputOwner,lease->guides->preparedPacket));
+        } catch (const std::bad_alloc&) { return false; } // tags retain their original retirement owner
     }
     if (!genshinFrame || DetailedGenshinFrameLog(willDispatchFrame)) LOG_DEBUG("Result: Ok");
 
@@ -3516,6 +3541,18 @@ bool DLSSG_Dx12::GenshinGuidesCurrent(const std::shared_ptr<const GenshinNormali
         !SameGenshinComOwner(guides->device.Get(), _device) || !guides->producerQueue ||
         guides->producerQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT ||
         !SameDeviceOwner(_device, guides->depth.Get()) || !SameDeviceOwner(_device, guides->motion.Get())) return false;
+    if (!guides->preparedPacket || !guides->preparedPacket->Source() ||
+        !guides->preparedPacket->Transfer()) return false;
+    const auto& source = *guides->preparedPacket->Source();
+    const auto& owner = source.OwnerCanonical();
+    const auto& key = guides->key;
+    if (owner.device != key.device || owner.context != key.context || owner.deviceEpoch != key.deviceEpoch ||
+        owner.producerEpoch != key.ownerEpoch || owner.configEpoch != key.configEpoch ||
+        owner.instance != key.instance || owner.generation != key.generation ||
+        owner.historyEpoch != key.historyEpoch || owner.sourceFrame != key.sourceFrame || owner.thread != key.thread ||
+        source.Grid().outputWidth != key.width || source.Grid().outputHeight != key.height ||
+        !guides->privateOutput || source.Textures()[3].identity != guides->privateOutput ||
+        !GenshinGuides::SameOwner(guides->preparedPacket->Transfer()->Get().owner, source.OwnerInterfaces())) return false;
     Microsoft::WRL::ComPtr<IUnknown> swapchain;
     Microsoft::WRL::ComPtr<ID3D12Device> producerDevice;
     if (!_swapChain || FAILED(_swapChain->QueryInterface(IID_PPV_ARGS(&swapchain))) ||
@@ -3696,7 +3733,7 @@ DLSSG_Dx12::SetGenshinConstants(const std::shared_ptr<const GenshinNormalizedGui
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (!GenshinGuidesCurrent(guides) || guides->key != key || !CanSubmitInputs() ||
-        frame != _frameCount || !frame) return {};
+        frame != _frameCount || !frame || frame > UINT32_MAX) return {};
     const auto index = GetIndex();
     if (_genshinInputs[index] || !_device || !_gameCommandQueue) return {};
     for (const auto& retained : _genshinInputs)
@@ -3734,6 +3771,24 @@ DLSSG_Dx12::SetGenshinConstants(const std::shared_ptr<const GenshinNormalizedGui
     _genshinInputs[index] = lease;
     _managedRetained = true; // armed before any potentially partially accepted tag
     return lease;
+}
+
+bool DLSSG_Dx12::GenshinSourceCurrent(const std::shared_ptr<const GenshinInputRetirement>& receipt,
+    const GenshinBridgeFg::Key& key, UINT64 frame)
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    if (!receipt || !receipt->source || !receipt->source->Matches(key, frame) || receipt->Retired() ||
+        receipt->source->StreamOwner().outputOwner != framegen::final_output::ProviderIdentity(_finalOutputProvider) ||
+        receipt->owner != _genshinOwnerGeneration || receipt->epoch != _inputOwnerEpoch ||
+        receipt->frame != frame || frame != _frameCount || !frame || frame > UINT32_MAX ||
+        receipt->thread != GetCurrentThreadId() || receipt->presentReturned || _ownerChanging || _hookRetiring ||
+        _teardownPending || _teardownQuarantined || !GenshinGuidesCurrent(receipt->guides) ||
+        _genshinInputs[frame % BUFFER_COUNT].get() != receipt.get() ||
+        !SameGenshinComOwner(receipt->device.Get(), _device) ||
+        !SameGenshinComOwner(receipt->queue.Get(), _gameCommandQueue) ||
+        !SameGenshinComOwner(receipt->swapchain.Get(), _swapChain) ||
+        FAILED(receipt->device->GetDeviceRemovedReason())) return false;
+    return receipt->source->Packet() == receipt->guides->preparedPacket;
 }
 
 void DLSSG_Dx12::EndGenshinPresent(const std::shared_ptr<const GenshinInputRetirement>& receipt, bool presented)

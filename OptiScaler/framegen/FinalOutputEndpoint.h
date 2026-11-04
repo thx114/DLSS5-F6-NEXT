@@ -12,6 +12,9 @@ namespace framegen::final_output
 class Provider;
 std::shared_ptr<Provider> CreateProvider() noexcept;
 void BindInput(const std::shared_ptr<Provider>&, IDXGISwapChain*) noexcept;
+// Identity of the actual SDK factory creation owner, independent of source
+// token/input epoch and physical buffer generation. No GPU completion authority.
+uint64_t ProviderIdentity(const std::shared_ptr<Provider>&) noexcept;
 void RetireProvider(std::shared_ptr<Provider>&) noexcept;
 // Closing admission persists on pending/failure. No wait and no implicit rollback to live.
 // Commit rechecks all endpoint tails after the provider's public host teardown.
@@ -91,8 +94,9 @@ public:
     // writes, quarantine refuses consumers; it never fabricates device removal.
     HRESULT Present(UINT flags, const DXGI_PRESENT_PARAMETERS*,
                     const std::function<HRESULT()>& rawAndOverlay) noexcept;
-    // Only the real retained Genshin child calls this seam. Source provenance
-    // and actual physical completion apply even when FinalOutput is disabled.
+    // Only the real retained Genshin child calls this seam. The captured SDK
+    // stream/creation queue and its physical tail apply even with FinalOutput
+    // disabled. An input source/token is never an asynchronous output identity.
     // The override flags are used only on the raw physical flip chain to prime
     // hidden content; SDK input and native parent flags remain unchanged.
     HRESULT PresentGenshin(UINT flags,const DXGI_PRESENT_PARAMETERS*,

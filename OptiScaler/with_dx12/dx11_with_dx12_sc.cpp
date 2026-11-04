@@ -3172,6 +3172,13 @@ HRESULT Dx11wDx12SC::_PresentNativeVisible(UINT sync, UINT flags, const DXGI_PRE
         _visibleReceipt.width,_visibleReceipt.height,_visibleReceipt.dpi))) {
         _visibleReceipt.reason="OwnerSnapshotNotCurrent";return nativeFallback();
     }
+    if(_visibleChild->YieldForOutputReveal()) {
+        // Bounded output drain between SDK transactions. Keep normal native
+        // filtering/pacing; no input dispatch, fake SDK success or GPU wait.
+        nativeFrame.menuFallback_=true;
+        _visibleReceipt.reason="SdkOutputRevealDrain";
+        return nativePresent();
+    }
     GenshinLegacy::OnPresent(_dx11Device); capturePolled = true;
     _fg = State::Instance().currentFG;
     GenshinBridgeFg::PresentScope scope(_real, _dx11Context, _fgSwapChain, _fg, _dx12Device, _dx12CommandQueue);
@@ -3379,85 +3386,47 @@ HRESULT Dx11wDx12SC::_PresentNativeVisible(UINT sync, UINT flags, const DXGI_PRE
     const auto nonterminalChildResult=[](HRESULT hr) noexcept {
         return hr==S_OK || hr==DXGI_ERROR_WAS_STILL_DRAWING || hr==DXGI_STATUS_OCCLUDED;
     };
-    // A deferred/nonblocking SDK result can originate on a worker without TLS.
-    // It grants only retry, never a content receipt or successful output count.
-    const bool sdkRetry=permit.Called() && (childCallResult==DXGI_ERROR_WAS_STILL_DRAWING ||
-        _visibleReceipt.childResult==DXGI_ERROR_WAS_STILL_DRAWING || childCallResult==DXGI_STATUS_OCCLUDED ||
-        _visibleReceipt.childResult==DXGI_STATUS_OCCLUDED);
-    const bool hiddenOrAdmission=permit.HiddenRawCount() || permit.OutputAdmissionPending() || sdkRetry;
-    if(scope.LastResult()!=GenshinBridgeFg::Result::ProviderRefused && !permit.HasPhysicalOutput() &&
-       !permit.PhysicalFailure() && nonterminalChildResult(childCallResult) &&
-       nonterminalChildResult(_visibleReceipt.childResult) && (hiddenOrAdmission || submitted)) {
-        // Preserve the actual SDK result and provider retirement. Startup raw /
-        // an owner hide ACK / filter warmup is not terminal child revocation.
-        // Only a later authenticated physical output can authorize visibility.
-        _visibleReceipt.reason=permit.HiddenRawCount() ? "HiddenSdkBootstrap" : "PhysicalAdmissionPending";
-        _visibleChild->Hide();
-        static std::atomic<uint64_t> reports{0};const auto n=++reports;
-        if(n<=16 || n%600==0)
-            LOG_INFO("R1069 hidden-progress: pid={} thread={} provider_frame={} submitted={} hidden_raw_count={} admission_pending={} sdk_retry={} child_call_hr={:X} child_actual_hr={:X} final_filtered={} child_revoked={} shown=false display_authorized=false visual=UNKNOWN",
-                GetCurrentProcessId(),GetCurrentThreadId(),_fg?_fg->FrameCount():0,submitted,
-                permit.HiddenRawCount(),permit.OutputAdmissionPending(),sdkRetry,static_cast<unsigned>(childCallResult),
-                static_cast<unsigned>(_visibleReceipt.childResult),finalCopy.Filtered(),_childRevoked);
-        scope.Presented(permit.Called() ? permit.ActualResult() : E_FAIL,false,permit.Called());
-        return parentResult;
-    }
-    if(permit.PhysicalFailure()) {
-        // A known raw/device/tail failure remains terminal even when the SDK
-        // reports a deferred retry or a selected filter has no successful output.
-        _visibleReceipt.reason="PhysicalRawOrTailFailed";
-        _RevokeNativeChild();scope.Presented(_visibleReceipt.childResult,false);
-        return parentResult;
-    }
-    if (!finalCopy.Filtered()) {
-        // A child which warmed up/refused/failed never becomes the visible
-        // replacement. The real parent already presented its natural effects.
-        // Do not terminally revoke healthy FG merely for filter warmup/Busy.
-        _visibleReceipt.reason = "FinalOutputFallbackToNaturalParent";
-        _visibleChild->Hide();
-        scope.Presented(permit.Called() ? permit.ActualResult() : E_FAIL,false,permit.Called());
-        LOG_WARN("HoYoShade cross_api fallback=natural_parent parent_hr=0x{:08x} child_hr=0x{:08x} copy_serial={} parent_suppressed=false final_output_success=false",
-            static_cast<unsigned>(parentResult),static_cast<unsigned>(childCallResult),_visibleReceipt.serial);
-        return parentResult; // Exact parent result, explicitly NOT child success.
-    }
-    const bool childOccluded=childCallResult==DXGI_STATUS_OCCLUDED ||
-        _visibleReceipt.childResult==DXGI_STATUS_OCCLUDED;
-    if(childOccluded) _visibleChild->Hide(); // Presented below performs the history reset
-    else if (childCallResult != S_OK || _visibleReceipt.childResult != S_OK) _RevokeNativeChild();
-    else if (scope.LastResult() == GenshinBridgeFg::Result::ProviderRefused)
-    {
-        uint64_t resumeRequest = 0;
-        auto* provider = State::Instance().currentFG == _visibleProvider
-            ? dynamic_cast<DLSSG_Dx12*>(_visibleProvider) : nullptr;
-        const bool budgetSuspension = permit.Called() && !_childRevoked &&
-            _childDisplaySerial < UINT64_MAX && provider &&
-            provider->GenshinBudgetRefusedAt(scope.ObservedPresentEpoch(), resumeRequest);
-        _RevokeNativeChild();
-        _childBudgetSuspended = budgetSuspension;
-        _childBudgetResumeRequest = resumeRequest;
-    }
-    const char* postStage="child-call";
+    const char* postStage="sdk-input";
     uint64_t postEpoch=0;
     bool continuityValid=false;
-    if (childCallResult == S_OK && (postStage="child-result",_visibleReceipt.childResult == S_OK) &&
-        (postStage="dispatch",submitted) && (postStage="physical-content",permit.HasPhysicalOutput()) &&
+    if(permit.PhysicalFailure()) {
+        _visibleReceipt.reason="PhysicalRawOrTailFailed";
+        _RevokeNativeChild();
+    } else if(childCallResult==S_OK && _visibleReceipt.childResult==S_OK && submitted &&
         (postStage="configuration",Config::Instance()->FGEnabled.value_or_default()) &&
         (postStage="postvalidation",_ValidateNativeVisible()) &&
-        (postStage="epoch",postEpoch=_visibleChild->Epoch(),postEpoch == _visibleReceipt.epoch)) {
-        postStage="permit-commit";_visibleReceipt.shown = permit.Commit();
-        continuityValid=permit.ContinuityAccepted();
-        if(_visibleReceipt.shown)postStage="committed";
-        else if(!continuityValid)postStage=permit.CommitStage();
+        (postStage="epoch",postEpoch=_visibleChild->Epoch(),postEpoch==_visibleReceipt.epoch) &&
+        (postStage="stream-accept",permit.AcceptStream())) {
+        // This activates only the exact SDK creation stream. An earlier raw may
+        // now be evaluated, or a worker can publish one later. Every output still
+        // needs its own physical queue tail; no copied parent ticket grants it.
+        continuityValid=true;
+        _visibleReceipt.shown=_visibleChild->Visible(_visibleReceipt.epoch);
+        _visibleReceipt.reason=_visibleReceipt.shown ? "SdkStreamVisible" : "SdkInputAcceptedAwaitingStreamOutput";
+        postStage="sdk-stream-accepted";
+    } else {
+        const bool sdkRetry=permit.Called() &&
+            (_visibleReceipt.childResult==DXGI_ERROR_WAS_STILL_DRAWING || _visibleReceipt.childResult==DXGI_STATUS_OCCLUDED);
+        const bool savedSdkOk=permit.Called() && _visibleReceipt.childResult==S_OK;
+        if(scope.LastResult()==GenshinBridgeFg::Result::ProviderRefused) {
+            uint64_t resumeRequest=0;
+            auto* provider=State::Instance().currentFG==_visibleProvider
+                ? dynamic_cast<DLSSG_Dx12*>(_visibleProvider) : nullptr;
+            const bool budgetSuspension=permit.Called() && !_childRevoked &&
+                _childDisplaySerial<UINT64_MAX && provider &&
+                provider->GenshinBudgetRefusedAt(scope.ObservedPresentEpoch(),resumeRequest);
+            _RevokeNativeChild();_childBudgetSuspended=budgetSuspension;_childBudgetResumeRequest=resumeRequest;
+            _visibleReceipt.reason="NoAuthenticatedDispatch";
+        } else if(savedSdkOk || sdkRetry || permit.HiddenRawCount() || permit.OutputAdmissionPending() ||
+            nonterminalChildResult(childCallResult)) {
+            // A filter/runtime refusal or retry leaves the naturally filtered
+            // parent visible. It cannot certify output and is not host teardown.
+            _visibleChild->Hide();
+            _visibleReceipt.reason=savedSdkOk ? "SdkStreamPostvalidationRefused" : "PhysicalAdmissionPending";
+        } else {
+            _RevokeNativeChild();_visibleReceipt.reason="SdkPresentFailed";
+        }
     }
-    if(submitted){static unsigned reports=0;if(reports++<32)
-        LOG_INFO("R827 FG child post: pid={} serial={} stage={} permit_stage={} expected_epoch={} observed_epoch={} child_hr={:X} actual_hr={:X} called={} shown={} no_authority=true",
-            GetCurrentProcessId(),_visibleReceipt.serial,postStage,permit.CommitStage(),_visibleReceipt.epoch,postEpoch,
-            static_cast<unsigned>(childCallResult),static_cast<unsigned>(_visibleReceipt.childResult),permit.Called(),_visibleReceipt.shown);
-    }
-    _visibleReceipt.reason = _visibleReceipt.shown ? "AuthenticatedChildPresented" :
-        (!submitted ? "NoAuthenticatedDispatch" :
-         (continuityValid ? "AuthenticatedChildPresentedPendingVisibility" : "ChildPresentOrContinuityFailed"));
-    if (!submitted) _visibleChild->Hide(); // pending owner acknowledgement is not terminal
     // R846 visibility observation begin
     // Read the exact attempt BEFORE Presented can replace its result with
     // PresentFailed. Child S_OK alone does not authenticate a dispatch or Show.
