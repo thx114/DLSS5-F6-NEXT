@@ -22,6 +22,7 @@
 #include <imgui/ImGuiNotify.hpp>
 
 #include <hooks/D3D12_Hooks.h>
+#include <hooks/ngx/SelectedFeatureRelease.h>
 
 #include <dxgi1_4.h>
 #include <shared_mutex>
@@ -895,7 +896,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
     return tryResult;
 }
 
-NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* InHandle)
+static NVSDK_NGX_Result ReleaseDx12Feature(NVSDK_NGX_Handle* InHandle)
 {
     if (State::Instance().isShuttingDown)
         return NVSDK_NGX_Result_Success;
@@ -968,7 +969,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     {
         auto& entry = it->second;
 
-        if (auto* deviceContext = entry.feature.get())
+        if (auto* deviceContext = entry.feature.get(); deviceContext || NgxInput::Installed())
         {
             // Clear global reference if it matches
             if (deviceContext == State::Instance().currentFeature)
@@ -989,6 +990,21 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     if (contextReleased)
         HandleToFeature.Forget(handleId);
     return NVSDK_NGX_Result_Success;
+}
+
+NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* InHandle)
+{
+    if (!NgxInput::Installed() || !InHandle)
+        return ReleaseDx12Feature(InHandle);
+    if (State::Instance().isShuttingDown)
+        return NVSDK_NGX_Result_Fail;
+    const auto context = Dx12Contexts.find(InHandle->Id);
+    if (context == Dx12Contexts.end())
+        return NVSDK_NGX_Result_FAIL_FeatureNotFound;
+    // The router has already established pointer ownership. Keep the complete
+    // selected context and its create parameters if native backend release fails.
+    return NgxInput::CommitAfterFeatureRelease(true, context->second.feature.get(),
+                                              [&] { return ReleaseDx12Feature(InHandle); });
 }
 
 /**
@@ -1115,16 +1131,22 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
             state.changeBackend[handleId] = true;
     }
 
-    // To avoid capturing potential upscaler change (creation) and then upscaling itself
-    D3D12Hooks::SetRootSignatureTracking(false);
-
     // Backend change or recreation requested
     if (state.changeBackend[handleId])
     {
-        UpscalerInputsDx12::Reset();
-
-        auto successfulPhase = FeatureProvider_Dx12::ChangeFeature(state.newBackend, D3D12Device, InCmdList, handleId,
-                                                                   InParameters, &ctxData);
+        bool successfulPhase = false;
+        const auto releaseResult = NgxInput::AdvanceAfterFeatureRelease(
+            NgxInput::Installed(), ctxData.changeBackendCounter, feature, [&] {
+                // Phase-one preflight precedes Reset, parameter/currentFeature
+                // changes, and moving the complete old feature to DelayedDestroy.
+                D3D12Hooks::SetRootSignatureTracking(false);
+                UpscalerInputsDx12::Reset();
+                successfulPhase = FeatureProvider_Dx12::ChangeFeature(state.newBackend, D3D12Device, InCmdList,
+                                                                      handleId, InParameters, &ctxData);
+                return NVSDK_NGX_Result_Success;
+            });
+        if (releaseResult != NVSDK_NGX_Result_Success)
+            return releaseResult;
         feature = ctxData.feature.get();
 
         evalCounter = 0;
@@ -1135,6 +1157,10 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
             return NVSDK_NGX_Result_Success;
         }
     }
+
+    // Phase one returned above after successful preflight; it must never
+    // Evaluate the old native handle whose ownership has just been released.
+    D3D12Hooks::SetRootSignatureTracking(false);
 
     // Fallback to FSR 2.1.2 if feature failed to initialize and user didn't explicitly request it
     if (!feature->IsInited() && cfg.Dx12Upscaler.value_or_default() != Upscaler::FSR21)

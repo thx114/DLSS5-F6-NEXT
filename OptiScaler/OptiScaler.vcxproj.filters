@@ -728,6 +728,9 @@
     <ClInclude Include="hooks\ngx\NativeDx12Router.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="hooks\ngx\SelectedFeatureRelease.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="shaders\depth_invert\DI_Common.h">
       <Filter>Header Files</Filter>
     </ClInclude>

@@ -8,6 +8,7 @@ namespace NgxInput
 bool Enabled();
 bool Install(NvngxModule& provider);
 bool Installed();
+bool SelectedInputCall();
 bool OwnsModule(void* module);
 bool AllowProviderInit();
 }

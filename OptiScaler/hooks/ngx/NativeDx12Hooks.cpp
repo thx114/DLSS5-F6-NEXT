@@ -451,6 +451,7 @@ bool Enabled()
     return zzz && Config::Instance()->EnableDlssInputs.value_or_default();
 }
 bool Installed() { return installed.load(std::memory_order_acquire); }
+bool SelectedInputCall() { return Installed() && selectedDepth != 0 && nativeDepth == 0; }
 bool OwnsModule(void* module) { return Installed() && (module == native.dll || module == dllModule); }
 bool AllowProviderInit() { return !Installed(); }
 
