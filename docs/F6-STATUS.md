@@ -1,6 +1,6 @@
-# F6 功能推进状态与重启交接
+# F6 功能推进状态
 
-**已按用户请求暂停，等待以管理员权限重启 DSH。** 当前长期目标处于 paused；收到用户“继续”后再恢复编码、构建和运行。不要因打开本页自动启动智能体或游戏。
+**用户已完成管理员重启并明确继续。** Lead 已实测管理员身份为 True，长期目标 active；四路核心编码已从下列保存点恢复。
 
 ## 当前目标与轮次
 
@@ -10,9 +10,9 @@
 - 次优先：GIMI 完整 MOD 消费与 BeforeSR 效果进入实际 selected SR。
 - 普通搜查/文档/独立复核使用 DS；核心设计与实现使用 `gpt-6.1-sol`。
 
-## 已停止的任务与保留代码
+## 恢复中的任务与保留代码
 
-编排任务 `workflow-5ce62c01deb54c24` 已请求取消，回执为 **killed**；原编排不能当作已完成交件，独立 DS 复核也未收齐。四个私有 worktree 都从主树 `7572f42` 建立，保留在 `D:/CODE/DLSS5_NEXT-workers/`。没有合并回主树。
+旧编排 `workflow-5ce62c01deb54c24` 已取消（killed）；当前编排 **`workflow-f4108f5d3405419f`** 从磁盘保存点恢复四路 Sol 编码，交件后各由 DS 独立复核。四个私有 worktree 从主树 `7572f42` 建立，位于 `D:/CODE/DLSS5_NEXT-workers/`；尚未合并回主树。
 
 | 任务 | 分支 / 子目录 | 暂停时保存点 | 准确状态 |
 |---|---|---|---|
@@ -29,7 +29,7 @@ ZZZ 与原神候选都涉及 `DLSSG_Dx12.cpp/.h` 和 `FG_Hooks.cpp`。恢复后�
 - task-14（DS）只读核对星铁 FG 热路径与 C4744 布局警告。Present 记账路径未发现固定每帧额外 GPU Wait/Flush/全量重建；UI allocator 忙时的背压等待与间隙 Off/On 频率仍需实际测量。C4744 根因未确认，未据猜测改同步代码。
 - task-15（DS）迁入 [精确入场 helper](../tools/runtime/README.md)：Biz 参数化、当前安装根 launcher、60 秒有界等待与超时 UNKNOWN。保留 PID/creation/image/HWND 和单次输入语义。
 - helper 的 PowerShell Parser/参数核对通过；Lead 用 Add-Type 实际编译其 C# 依赖成功，只加载类型，没有调用窗口/输入方法。
-- 当前会话管理员身份实测 **False**。用户因此要求暂停并重启 DSH；本轮未尝试绕过权限或触发 UAC。
+- 重启前管理员身份 False；本次用户继续后实测 **True**。当前可沿既有启动器权限和精确 helper 通道验证，不需要再次重启。
 
 ## 构建与运行基线
 
@@ -46,4 +46,4 @@ ZZZ 与原神候选都涉及 `DLSSG_Dx12.cpp/.h` 和 `FG_Hooks.cpp`。恢复后�
 4. 运行采用现有 launch-only `run --biz <biz> --file <json>`，步骤 `{"steps":[{"action":"launch_game"}]}`。从真实 stdout 取得 PID，再从该精确进程取创建 FILETIME；不要按名字盲绑。
 5. 收尾用 `stopgame --biz <biz> --expected-pid <pid> --expected-creation-filetime <filetime>`；不使用 testgame 的 legacy stop 冒精确证据。精确 helper 与 launcher 既有权限通道复用，不新造输入路径或改配置预设。
 
-现有 capture_game CLI 仅支持 hk4e_cn 单步骤调用；缺少 session 退出记录只说明收尾未知，不能推断自然退出/强杀或功能成功。只维护本页当前事实与必要交件，不恢复逐轮堆积大型证据树。
+现有 launcher 源码的 activate_game、click_game 和 capture_game CLI 都仅接受 hk4e_cn 单步骤调用。helper 参数化 Biz 不等于 launcher 已支持星铁/ZZZ 自动入场；后两游戏输入能力尚未证明，不能改biz绕过。缺少 session 退出记录只说明收尾未知，不能推断自然退出/强杀或功能成功。只维护本页当前事实与必要交件，不恢复逐轮堆积大型证据树。

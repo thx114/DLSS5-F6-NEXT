@@ -9,6 +9,8 @@
 
 启动器本体、`F5GameTest` 旧大模块、配置与 profile 均未改动或搬运。
 
+**当前已知能力限制**：launcher 源码的 `ExactGameActivationRequest.ValidateCliBatch` 和 `ExactGameClickRequest.ValidateCliBatch` 均只接受 `hk4e_cn`。脚本接受三个 Biz 只是参数化转发，不证明启动器已支持星铁/ZZZ入场；后两者当前会在 CLI preflight 被拒。未部署修改过的 launcher，不把这个 helper 称作三游戏已可用入口。
+
 ## 相对原件的改动（仅 4 处）
 
 1. `-Biz` 改为**必填** `ValidateSet('hk4e_cn','hkrpg_bilibili','nap_cn')`，替换 CLI 调用里硬编码的 `--biz hk4e_cn`。
