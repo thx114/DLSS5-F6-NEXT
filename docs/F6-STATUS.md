@@ -8,6 +8,10 @@
 
 两名 Sol 首次因 `429 Too Many Requests` 终止；Lead 已核工作树并向原会话发送继续指令，未增加重复写者。原神已有合并提交 `b904cae`（`2384a45` + 主树 `726430b`），NR 独立树位于 `726430b`；均未有本次功能交件。按 `efficient-waiting` 技能接收完成通知，观察超时不授权重启。
 
+Lead 在独立 detached 工作树 `D:/CODE/DLSS5_NEXT-workers/genshin-compile` 对保存点 `b904cae` 完成真实全量编译/链接：`build.ps1 -Jobs 8`，exit 0，335 warnings、0 errors，194 秒；产物 `0.1.29-final (b904cae)` / 34,836,992 B / mtime UTC `2026-11-04T14:21:02.5380537Z`。该结果仅证明原 WIP 编译闭合；原神写者还在修生命周期缺口，未集成或部署此产物。
+
+ZZZ PID61120 日志已保护到 `build/zzz-61120-OptiScaler.log`。已核本项目 selected-source/constants/producer 收据为零；游戏 Streamline 初始化有 NR 签名加载告警，但本项目实际模型经 `shaders/dlssnr/DlssNr_Dx12.cpp` 的独立 forwarder 到达，不能由该告警直接推断项目 NR 加载失败。正在区分游戏 Streamline 与 selected SR/NGX 接入链路。
+
 以下保留暂停前的阶段记录。当前执行状态以上文为准；历史提交与测试的最终边界以 [HANDOFF.md](../HANDOFF.md) 为准。
 
 当前优先级：**F6 开发 → 部署 → 测试**。SSE 解析错误调查按用户指示暂停；诊断副本在 `build/dsh-diagnostics/`，没有修改运行中的 DSH 安装包。
