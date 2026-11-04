@@ -65,7 +65,18 @@ Worktree 根：`D:/CODE/DLSS5_NEXT-workers/`。
 
 原神核心设计进度：SDK worker 不在 PresentPermit TLS；SDK S_OK 无同步 raw 时 wrapper立即Hide，owner要求每输出同parentContent。正在拆 input receipt 与真实 output stream 身份、用 actual FinalOutput provider/physical stream generation 与 raw queue/tail 完成授权，不能借最新token/FIFO/相等数值猜生成帧源，也不能用 input fence/CPU返回/窗口ACK冒 output 完成。普通 Deactivate 会递增 inputOwnerEpoch，因此不能把它当 immutable output stream epoch。FinalOutput async 没有真实 child ReShade runtime/selection 时仍需拒绝过滤，不能冒父copy已适用异步生成帧。
 
-**子智能体收口**：原神临时子会话 `6f6f6c81-bbd3-4085-8f60-325273bb53e4` 没有最终交件。停止消息及 interrupt 均返回 `active teammate not found`；随后运行时明确通知该子会话 **failed before it finished、无closing message**。Lead 因此将其遗留六文件保存为 `2384a45` WIP。最后 list_agents 中持久队员全部 inactive，job_list 全部 completed/killed，无运行中的编排、构建或CLI；三游戏进程数0。接手恢复时仍应先核四工作区 log/status，再派唯一写者。
+**子智能体收口**：原神临时子会话 `6f6f6c81-bbd3-4085-8f60-325273bb53e4` 起初没有最终交件，停止消息及 interrupt 返回 `active teammate not found`，运行时随后报 failed。**交接提交后又收到其最终停止回执：已立即停止功能编辑，确认 HEAD=2384a45、工作树干净、无后台 jobs；没有再提交产品修改。** 最后 list_agents 中持久队员全部 inactive，job_list 全部 completed/killed，无运行中的编排、构建或CLI；三游戏进程数0。接手恢复时先核四工作区 log/status，再派唯一写者。
+
+### 原神最终回执补充（只记录，暂停后未修）
+
+恢复后优先复核三项：
+1. `BuffersRetired` 要求 gate.stream==actual stream；若成功输入已开启 scope，但尚无任何 raw 绑定（gate.stream==0），provider 退休可能未清旧 streamOwner，重建后会拒绝新 provider。应在真实退休 seam 撤销同 outputOwner 的未绑定 scope，不能靠任意超时清空。
+2. 同步 authenticated 分支仍用旧同线程 source 契约；新增 outputOwner 精确相等只在 streamAuthorized 分支，应核同步分支是否也必须比较 `sdkSource.StreamOwner().outputOwner == captured outputOwner`。
+3. 编辑工具可能移除了 `FinalOutputEndpoint.h/.cpp`、`DLSSG_Dx12.cpp` 三个 UTF-8 BOM；恢复后核真实 diff，保原编码并清理无关格式差异。
+
+编码者确认：未改 FG_Hooks/Bridge、ZZZ source clock 或 NR；验证仅静态调用链/本地 SDK headers/签名与 diff 检查，未构建或运行。`sl_dlss_g.h:170–177` 的 GetState present-thread input fence 仅管 tagged input 生命周期；`nvapi.h:18391–18423` 的异步 marker 字段本身没有 source token 到 raw bracket 的映射保证，候选没有据此猜源。
+
+最低运行取证仍是：输入 seal 与实际 SDK S_OK；实际 creation outputOwner/chain/queue/stream/generation/sequence；raw HRESULT 与所属 physical fence target/completed；owner `association=sdk_output_stream` 的真实 tail 后 reveal；FinalOutput ON 时真实 raw chain 的物理 runtime/selection 与 EffectsExecuted。**构建、API、GPU 完成、像素和净性能仍全部 UNKNOWN。**
 
 ## 6. 任务与工具边界、恢复顺序
 
