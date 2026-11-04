@@ -4901,6 +4901,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         std::isfinite(sourceScaleX) && std::isfinite(sourceScaleY) && sourceScaleX != 0 && sourceScaleY != 0 &&
         frame.OutputWidth == width && frame.OutputHeight == height;
     bool sceneModelGuides = false, sceneModelMotionCanonical = false, sceneGeometry = false;
+    unsigned scenePreparationFlags = 0;
+    float scenePreparationPhaseX = 0.0f, scenePreparationPhaseY = 0.0f;
     const char* sceneGuideGate = !sourceSceneRoute ? "outside-scene-route" :
         !sourceSceneIdentity ? "source-identity" : !frame.NativeFeatureFlagsKnown ? "unknown-create-flags" :
         !frame.NativeGuideMetadataKnown ? "unknown-source-guide-metadata" :
@@ -4959,6 +4961,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 Barrier(cmdList, guide, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             sceneGuidesReadable = sceneModelGuides = true;
+            scenePreparationFlags = prep.SceneGuideFlags;
+            scenePreparationPhaseX = prep.NativeDepthPhaseUvX;
+            scenePreparationPhaseY = prep.NativeDepthPhaseUvY;
             sceneGuideGate = "canonical-recorded";
             modelDepth = g_nr.sceneGuideDepth;
             sceneModelMotionCanonical = !frame.MotionIsPictureFlow;
@@ -5598,16 +5603,20 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // Record exact current inputs before Evaluate or reuse history/capture can change their contents.
     // Reused frames explicitly preview the inputs that WOULD be evaluated; no extra model Evaluate.
     bool guidePreviewRecorded = false;
+    ID3D12Resource* guidePreviewSource = nullptr;
+    DlssNrGuidePreviewConstants guidePreviewSample {};
+    const bool previewRawRequested = cfg.DlssNrGuidePreviewRaw.value_or_default();
+    const bool previewFlipRequested = cfg.DlssNrGuidePreviewFlipY.value_or_default();
     unsigned captureDebugView = 0;
     if (previewMode && previewCapacity && GuidePreviewReady())
     {
-        const bool raw = cfg.DlssNrGuidePreviewRaw.value_or_default();
+        const bool raw = previewRawRequested;
         ID3D12Resource* previewSource = previewMode == 1 ? target : previewMode == 2 ? modelInput :
             previewMode == 3 ? (raw ? rawDepthIn : modelDepth) :
                               (raw ? rawMotionIn : actualModelMotion);
         DlssNrGuidePreviewConstants pc {};
         pc.width = width; pc.height = height; pc.mode = previewMode;
-        pc.flipY = cfg.DlssNrGuidePreviewFlipY.value_or_default() ? 1u : 0u;
+        pc.flipY = previewFlipRequested ? 1u : 0u;
         pc.rawResource = raw ? 1u : 0u;
         pc.depthInverted = g_nr.guideDepthInverted ? 1u : 0u;
         pc.colourHdr = previewMode == 1 && isHdrBuffer ? 1u : 0u;
@@ -5703,6 +5712,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         const auto savedState = targetState;
         if (previewMode == 1 && previewSource) TransitionTarget(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         guidePreviewRecorded = DispatchGuidePreview(cmdList, pc, previewSource, g_nr.guidePreview);
+        guidePreviewSource = previewSource;
+        guidePreviewSample = pc;
         if (previewMode == 1 && previewSource) TransitionTarget(savedState);
         if (!guidePreviewRecorded) PublishGuidePreview("\xe9\xa2\x84\xe8\xa7\x88\xe4\xb8\x8d\xe5\x8f\xaf\xe7\x94\xa8\xef\xbc\x9a\xe8\xb5\x84\xe6\xba\x90\xe6\x88\x96\xe6\x8f\x8f\xe8\xbf\xb0\xe7\xac\xa6\xe4\xb8\x8d\xe5\x8f\xaf\xe7\x94\xa8\xef\xbc\x9bNR \xe7\x85\xa7\xe5\xb8\xb8\xe8\xbf\x90\xe8\xa1\x8c");
         else if (!pc.available || !pc.regionWidth || !pc.regionHeight)
@@ -5812,6 +5823,61 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         modelInputSample.failures += result != NVSDK_NGX_Result_Success;
         modelInputSample.lastPass = static_cast<int>(pass);
         modelInputSample.lastResult = result;
+        // Join the recorded preview to this actual call, including when preview is off.
+        // Captured copies and declared mappings cannot establish the native texture's pixel orientation.
+        if (zzzSceneGuideGame && sourceSceneRoute && pass == 0)
+        {
+            static unsigned orientationLines = 0;
+            static double lastOrientationMs = -1000.0;
+            const double now = Util::MillisecondsNow();
+            if (orientationLines < 64 && now - lastOrientationMs >= 1000.0)
+            {
+                ++orientationLines;
+                lastOrientationMs = now;
+                const auto captured = std::format(
+                    "depth=0x{:X} rect={},{}+{}x{} motion=0x{:X} rect={},{}+{}x{} mvScale={},{} "
+                    "owner={:X},{:X},{} flagsKnown={} flags={} metadataKnown={} jitterKnown={} jitter={},{} mvJitterKnown={} mvJittered={}",
+                    reinterpret_cast<uintptr_t>(rawDepthIn), frame.DepthSubrectBaseX, frame.DepthSubrectBaseY,
+                    guideWidth, guideHeight, reinterpret_cast<uintptr_t>(sourceSceneMotion),
+                    sourceMotionX, sourceMotionY, sourceMotionW, sourceMotionH, sourceScaleX, sourceScaleY,
+                    frame.SceneGuideOwner[0], frame.SceneGuideOwner[1], frame.SceneGuideOwner[2],
+                    frame.NativeFeatureFlagsKnown, frame.NativeFeatureFlags, frame.NativeGuideMetadataKnown,
+                    frame.NativeCurrentJitterKnown, frame.NativeJitterX, frame.NativeJitterY,
+                    frame.NativeMotionJitterKnown, frame.NativeMotionVectorsJittered);
+                const auto mapping = std::format(
+                    "coordinateKey={} coordinateRecorded={} sceneKey={} sceneRecorded={} sceneFlags={} "
+                    "sceneDepthRowsFlip={} sceneMotionRowsFlip={} sceneVectorYNegated={} phaseUv={},{} "
+                    "gate={} depthSetting={} motionSetting={} signSetting={}",
+                    coordinateKey, coordinateGuidesReadable, sceneCoordinates.key, sceneModelGuides,
+                    scenePreparationFlags, sceneCoordinates.depthRowsFlip, sceneCoordinates.motionRowsFlip,
+                    sceneCoordinates.vectorYNegated, scenePreparationPhaseX, scenePreparationPhaseY, sceneGuideGate,
+                    cfg.DlssNrDepthTextureFlipY.value_or_default(), cfg.DlssNrMotionTextureFlipY.value_or_default(),
+                    cfg.DlssNrMotionYInverted.value_or_default());
+                const auto model = std::format(
+                    "depth=0x{:X} rect={},{}+{}x{} motion=0x{:X} rect={},{}+{}x{} size={}x{} mvScale={},{} "
+                    "reversedZ={} sceneDepth={} sceneMotion={} pictureFlow={} depthPictureAligned={}",
+                    reinterpret_cast<uintptr_t>(modelDepth), evalDepthX, evalDepthY, evalGuideW, evalGuideH,
+                    reinterpret_cast<uintptr_t>(actualModelMotion), actualModelMotionBaseX, actualModelMotionBaseY,
+                    evalMotionW, evalMotionH, modelWidth, modelHeight, evalMvScaleX, evalMvScaleY,
+                    g_nr.guideDepthInverted, sceneModelGuides, sceneModelMotionCanonical,
+                    frame.MotionIsPictureFlow, frame.DepthIsPictureAligned);
+                const auto preview = std::format(
+                    "mode={} raw={} flipY={} recorded={} available={} source=0x{:X} rect={},{}+{}x{} readsModelDepth={}",
+                    previewMode, previewRawRequested, previewFlipRequested, guidePreviewRecorded,
+                    guidePreviewSample.available, reinterpret_cast<uintptr_t>(guidePreviewSource),
+                    guidePreviewSample.baseX, guidePreviewSample.baseY,
+                    guidePreviewSample.regionWidth, guidePreviewSample.regionHeight,
+                    guidePreviewRecorded && guidePreviewSample.available && previewMode == 3 &&
+                        !previewRawRequested && modelDepth && guidePreviewSource == modelDepth);
+                LOG_INFO("F6 NR depth orientation: pid={} epoch={} captureSerial={} captureEpoch={} dispatch={} pass={} result={} "
+                         "input_scope=dlssnr_call_evaluate_v2 captured_copy=[{}] mapping=[{}] model=[{}] preview=[{}] "
+                         "nativeRows=UNKNOWN cameraMatrices=not-model-arguments fgFlipAuthority=none "
+                         "line={}/64 gpu_complete=UNKNOWN pixels=UNKNOWN",
+                         GetCurrentProcessId(), frame.SubmissionEpoch, frame.SourceCaptureSerial,
+                         frame.SourceCaptureEpoch, g_frames, pass, result, captured, mapping, model, preview,
+                         orientationLines);
+            }
+        }
         // ApplyNativeInput's depth flag is upstream of guide preparation. Report
         // the exact arguments of the actual forwarder call, including null depth.
         // No Evaluate on reused/skipped frames and no extra GPU work for tracing.
