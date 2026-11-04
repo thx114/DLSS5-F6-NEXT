@@ -88,6 +88,15 @@ ShowWindow/SetWindowPos is therefore non-waiting. Both actual waits have
 recursive depth **exactly1**, not an assumption that condition_variable_any
 unlocks every recursive level.
 
+The follow-up also excludes an owner message dependency when that HWND owner
+is inside the real SDK call waiting for a worker. `SdkOwnerActivity` is entered
+only on the actual owner thread and leaves on SDK return or permit unwind;
+stream revocation cannot clear it. Workers cancel the CPU reveal yield in this
+case and still recheck all physical authority. Unauthorized output requests a
+hide but does not wait for an owner blocked inside SDK; absent an actual hidden
+ACK it remains refused. Entry notification also releases a worker that began
+waiting before the owner entered SDK. This marker grants no output authority.
+
 Known lock order is endpoint → display → snapshot. Input Arm/Accept, owner
 Publish/Hide/ApplyShow use display → snapshot; ReadSnapshot/RequestReveal
 release snapshot before any later display operation. Owner reveal checks
@@ -121,26 +130,33 @@ proof is manufactured by Begin, Accept, End or a condition-variable wake.
 ## Validation and remaining work
 
 MSVC14.44.35207, standalone C++20 fixtures: contract127 checks, threaded
-handoff15 checks. Thread tests exercise the actual OutputRevealWindow wait:
+handoff27 checks, recompiled and run by Lead after the owner-activity follow-up.
+Thread tests exercise the actual OutputRevealWindow wait:
 spurious publication, actual owner notification, expiry without hidden ACK,
 retirement wake, and endpoint-held wait with returned recursive hide scopes.
-The last case proves the depth-one display release permits owner publication.
+The endpoint-held case proves the depth-one display release permits owner publication.
+The added SDK-owner/worker case verifies completion without serving an owner
+message, revocation preserving active-call state, exact marker cleanup, and a
+worker already waiting when the owner enters SDK. No hidden ACK or raw result
+is manufactured by waking it.
 This fixture models endpoint/snapshot locks; it does not execute HWND or SDK.
 Failure and revoked-call lease transitions use the actual SdkStreamLease;
 PresentPermit exception cleanup is established by RAII/source wiring audit,
 not an injected real-SDK exception.
 
-`python OptiScaler/genshin/tests/async-output/check-wiring.py`:64 PASS.
+`python OptiScaler/genshin/tests/async-output/check-wiring.py`:68 PASS.
 The same command with `--revision 5a61e97` fails at the expected normal-reveal
 synthetic-error regression. Existing native/drain production and exact
 queue/fence retirement checks remain in that suite. Compile fixtures from a
 VS2022 x64 developer prompt with `/std:c++20 /EHsc /W4
 /D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR`, placing obj/exe under ignored build.
 
-Five production translation units PASS MSVC `/Zs /Y-` semantic syntax checks:
+Before the owner-activity follow-up, five production translation units passed
+MSVC `/Zs /Y-` semantic syntax checks:
 dx11_with_dx12_sc.cpp, DLSSG_Dx12.cpp, FinalOutputEndpoint.cpp, FG_Hooks.cpp,
 wrapped_swapchain.cpp, with the project's Release include paths. No product compilation/link,
-prebuild version generation or deployment is performed. Existing C4858 at
+prebuild version generation or deployment was performed by the writer. The
+follow-up still requires Lead's full product compilation. Existing C4858 at
 GenshinReturnedRaster.h222 is unrelated. Final results are in ignored
 `build/baseline-checks/*-syntax.log` and the delivery message.
 

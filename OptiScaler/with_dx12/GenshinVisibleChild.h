@@ -99,6 +99,7 @@ private:
         GenshinBridgeFg::SdkOutputBinding binding;
         uint64_t scopeEpoch=0;
         GenshinBridgeFg::SdkStreamLease inputLease;
+        GenshinBridgeFg::SdkOwnerActivity sdkOwnerActivity;
         std::shared_ptr<std::atomic<bool>> streamLive;
         GenshinBridgeFg::OutputRevealWindow revealWindow;
         void RevokeStream() noexcept {
@@ -670,10 +671,18 @@ public:
         std::shared_ptr<std::atomic<bool>> streamScope_;
         uint64_t epoch_;
         bool eligible_,armed_=false,called_=false,accepted_=false,sdkEntered_=false;
+        bool sdkOwnerMarked_=false;
         bool physicalRawFailed_=false,physicalTailFailed_=false,physicalAdmissionPending_=false;
         unsigned hiddenRawCount_=0;
         HRESULT actualResult_=E_PENDING;
         const char* commitStage_="not-called";
+        void ReleaseSdkOwnerActivity() noexcept {
+            if(!sdkOwnerMarked_)return;
+            std::lock_guard display(owner_.display_->mutex);
+            owner_.display_->sdkOwnerActivity.Leave(this);
+            sdkOwnerMarked_=false;
+            owner_.display_->revealWindow.OwnerChanged();
+        }
         static uintptr_t Key(IUnknown* object) noexcept {
             Microsoft::WRL::ComPtr<IUnknown> identity;
             return object && SUCCEEDED(object->QueryInterface(IID_PPV_ARGS(&identity)))
@@ -716,10 +725,16 @@ public:
             // Provisional scope precedes the call: a worker may finish before
             // S_OK. Such a receipt is retained, but cannot reveal the child yet.
             if(!p->armed_)p->owner_.Hide();
+            if(p->owner_.OnOwnerThread()) {
+                std::lock_guard display(p->owner_.display_->mutex);
+                p->sdkOwnerMarked_=p->owner_.display_->sdkOwnerActivity.Enter(p);
+                p->owner_.display_->revealWindow.OwnerChanged();
+            }
         }
         static void AfterPresent(IDXGISwapChain* sc,HRESULT result) noexcept {
             auto* p=current_;
             if(!p || !p->sdkEntered_ || !Key(sc) || Key(sc)!=Key(p->swapchain_))return;
+            p->ReleaseSdkOwnerActivity();
             p->sdkEntered_=false;p->called_=true;p->actualResult_=result;
             if(!p->armed_ || result!=S_OK)p->owner_.Hide();
         }
@@ -846,13 +861,17 @@ public:
                 // finish the bounded reveal instead, outside the display lock.
                 // Never wait for the HWND owner from that owner's own stack.
                 if(gate->revealWindow.BlocksRaw(GetTickCount64())) {
-                    if(gate->owner->OnOwnerThread())gate->revealWindow.Release();
+                    if(!gate->sdkOwnerActivity.MayWaitForOwner(gate->owner->OnOwnerThread()))
+                        gate->revealWindow.Release();
                     else {
                         const auto budget=(std::min)(HandoffBudget(),gate->revealWindow.Remaining(GetTickCount64()));
                         gate->revealWindow.AwaitOwner(display,budget,[&] {
                             return !gate->live || !gate->owner ||
+                                !gate->sdkOwnerActivity.MayWaitForOwner(false) ||
                                 !gate->revealWindow.BlocksRaw(GetTickCount64());
                         });
+                        if(!gate->sdkOwnerActivity.MayWaitForOwner(false))
+                            gate->revealWindow.Release();
                         if(gate->revealWindow.BlocksRaw(GetTickCount64()))
                             return refuse("OwnerRevealHandoffIncomplete");
                     }
@@ -886,9 +905,10 @@ public:
                     gate->owner->RequestHide();
                     // RequestHide/ArmHideLocked have returned: only Bind's
                     // original depth-one lock remains at this second wait.
-                    if(!gate->owner->OnOwnerThread())
+                    if(gate->sdkOwnerActivity.MayWaitForOwner(gate->owner->OnOwnerThread()))
                         gate->revealWindow.AwaitOwner(display,HandoffBudget(),[&] {
-                            return !gate->live || !gate->owner || gate->hiddenAcknowledged;
+                            return !gate->live || !gate->owner || gate->hiddenAcknowledged ||
+                                !gate->sdkOwnerActivity.MayWaitForOwner(false);
                         });
                     if(!gate->live || !gate->owner || gate->child!=d.OutputWindow || !IsRetainedChild(d.OutputWindow))
                         return refuse("PhysicalWindowLifetimeChangedAfterHide");
@@ -1017,6 +1037,7 @@ public:
         const char* CommitStage() const noexcept {return commitStage_;}
         HRESULT ActualResult() const noexcept {return actualResult_;}
         ~PresentPermit() {
+            ReleaseSdkOwnerActivity(); // also closes a call unwound before AfterPresent
             {
                 std::lock_guard display(owner_.display_->mutex);
                 const bool accepted=StreamAccepted();

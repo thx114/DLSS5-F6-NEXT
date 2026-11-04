@@ -119,8 +119,8 @@ check('return refuse("OwnerRevealDrainPending")' not in bind,
 check("revealWindow.AwaitOwner(display,budget" in bind and
       "revealWindow.Remaining(GetTickCount64())" in bind,
       "queued worker waits outside the display lock only until the original reveal deadline")
-check("gate->owner->OnOwnerThread())gate->revealWindow.Release()" in bind,
-      "synchronous raw cannot wait on its own HWND owner stack")
+check("!gate->sdkOwnerActivity.MayWaitForOwner(gate->owner->OnOwnerThread())" in bind,
+      "raw cannot await a window owner on its own stack or inside SDK Present")
 check("revealWindow.AwaitOwner(display,HandoffBudget()" in bind and
       "gate->hiddenAcknowledged" in bind,
       "source-less raw waits for actual bounded hidden publication")
@@ -163,4 +163,16 @@ check(expiry.index("PhysicalContent discard") < expiry.index("std::lock_guard di
       "output-only expiry releases discarded COM observations after display unlock")
 check("display_->revealWindow.OwnerChanged()" in child,
       "real owner snapshot publication wakes asynchronous hide waiters")
+before = child[child.index("static void BeforePresent("):child.index("bool AcceptStream()")]
+check("p->owner_.OnOwnerThread()" in before and "sdkOwnerActivity.Enter(p)" in before and
+      "p->ReleaseSdkOwnerActivity()" in before,
+      "actual SDK entry and return bracket the HWND-owner activity")
+check("ReleaseSdkOwnerActivity();" in cleanup,
+      "exception cleanup also ends the owner SDK activity")
+revoke = child[child.index("void RevokeStream()"):child.index("struct RawTail")]
+check("sdkOwnerActivity" not in revoke,
+      "revoking a stream cannot erase a still-active SDK owner call")
+check(bind.count("!gate->sdkOwnerActivity.MayWaitForOwner(false)") == 3 and
+      "gate->sdkOwnerActivity.MayWaitForOwner(gate->owner->OnOwnerThread())" in bind,
+      "both waits observe SDK entry and cancel only the reveal yield when owner cannot serve messages")
 print(f"PASS {checks} production wiring checks (no compile/GPU/display claim)")

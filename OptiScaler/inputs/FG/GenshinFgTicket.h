@@ -115,6 +115,20 @@ public:
     bool Accepted() const noexcept {return accepted_;}
     uint64_t Until() const noexcept {return until_;}
 };
+// The HWND owner can itself be inside SDK Present waiting for a worker. That
+// worker cannot depend on an owner message in this interval. This marker is
+// independent of stream authorization: revocation must not erase an active
+// call, and its presence grants no hidden acknowledgement or GPU completion.
+class SdkOwnerActivity final {
+    const void* call_=nullptr; // identity only; never dereferenced
+public:
+    bool Enter(const void* call) noexcept {
+        if(!call || call_)return false;
+        call_=call;return true;
+    }
+    void Leave(const void* call) noexcept {if(call_==call)call_=nullptr;}
+    bool MayWaitForOwner(bool onOwnerThread) const noexcept {return !onOwnerThread && !call_;}
+};
 // The wrapper pauses NEW INPUTS between SDK calls to let an output tail drain.
 // Already scheduled worker raws must wait for that owner handoff, not return a
 // synthetic DXGI error: Streamline defers that error to the next host Present,

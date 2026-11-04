@@ -114,8 +114,57 @@ void EndpointHeldHandoff() {
     Check(owner.wait_for(1s)==std::future_status::ready && owner.get(),"owner acquires display after recursive hide helper returned while endpoint remains held");
     Check(worker.wait_for(1s)==std::future_status::ready && worker.get(),"depth-one unlock lets endpoint-held waiter complete without lock cycle");
 }
+void SdkOwnerWaitsForWorker() {
+    std::recursive_timed_mutex display;
+    OutputRevealWindow window;
+    SdkOwnerActivity activity;
+    SdkStreamLease lease;
+    const int call=1,foreignCall=2;
+    Check(activity.MayWaitForOwner(false) && !activity.MayWaitForOwner(true),
+          "idle owner may receive worker messages but cannot wait on itself");
+    Check(!activity.Enter(nullptr) && activity.Enter(&call),"only a real call identity marks SDK owner activity");
+    Check(!activity.Enter(&foreignCall),"nested activity cannot replace the active owner call");
+    lease.Begin(Now(),250);lease.Revoke();
+    Check(!activity.MayWaitForOwner(false),"stream revocation cannot erase a host still waiting in SDK Present");
+    const auto now=Now();
+    Check(window.Hold(10,now,now+1000,now+1000),"pending reveal has a real scheduling deadline");
+    bool hidden=false,authorized=false,rawCalled=false;
+    auto worker=std::async(std::launch::async,[&] {
+        std::unique_lock lock(display);
+        if(!activity.MayWaitForOwner(false))window.Release();
+        // The revoked stream cannot take a raw shortcut merely because its
+        // owner is waiting for this worker. Hidden acknowledgement is real.
+        return !window.BlocksRaw(Now()) && !activity.MayWaitForOwner(false) &&
+            !hidden && !authorized && !rawCalled;
+    });
+    Check(worker.wait_for(500ms)==std::future_status::ready && worker.get(),
+          "SDK owner can await worker completion without worker awaiting an owner message");
+    Check(!hidden && !authorized && !rawCalled,"cancelled CPU yield grants no hidden state, authorization or raw result");
+    activity.Leave(&foreignCall);
+    Check(!activity.MayWaitForOwner(false),"foreign cleanup cannot end another owner call");
+    activity.Leave(&call);
+    Check(activity.MayWaitForOwner(false),"exact SDK return restores message-based handoff");
+
+    std::promise<void> waiting;
+    auto alreadyWaiting=std::async(std::launch::async,[&] {
+        std::unique_lock lock(display);waiting.set_value();
+        return window.AwaitOwner(lock,1000,[&] {
+            return hidden || !activity.MayWaitForOwner(false);
+        });
+    });
+    waiting.get_future().wait();
+    {
+        std::lock_guard lock(display);
+        Check(activity.Enter(&call),"owner may enter SDK after a worker started waiting");
+        window.OwnerChanged();
+    }
+    Check(alreadyWaiting.wait_for(500ms)==std::future_status::ready && alreadyWaiting.get(),
+          "entry notification also breaks a previously started owner-message wait");
+    Check(!hidden,"wake on SDK entry does not acknowledge a hidden window");
+    activity.Leave(&call);
+}
 }
 int main() {
-    RevealHandoff();HideAcknowledgement();OwnerDeadline();EndpointHeldHandoff();
+    RevealHandoff();HideAcknowledgement();OwnerDeadline();EndpointHeldHandoff();SdkOwnerWaitsForWorker();
     std::printf("async-output threaded handoff: %u checks passed (no GPU/display claim)\n",checks);
 }
