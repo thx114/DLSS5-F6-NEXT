@@ -14,12 +14,13 @@ Sol 是核心源码唯一写者，另一名 Sol 独立复核；DS 处理只读�
 
 正式位：`D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/OptiScaler/official/F6/OptiScaler.dll`。
 
-- 当前部署 `0.1.29-final (74f5ef8)`，34,873,856 B，mtime UTC `2026-11-04T16:31:29.8958880Z`。
-- SHA256 `6E7AD1870CC64CEEF70463D50FA731B9E3B92C3BC791B7F31E58EEB60B025EC9`；Lead 已核正式位和三游戏 runtime 的四个 hardlink，三个 profiles 哈希未变。
-- 独立 `genshin-compile` 真实 Release x64 构建：exit0，207 warnings、0 errors，124秒；部署前游戏数0，流写原对象。回执 `build/74f5ef8-product.json`。
-- 本次回退件 `build/rollback/OptiScaler-20261104T163201507-009d454a68254e66b77da5efe5765f26.dll`，对应此前 `bac4b64`。
+- 当前部署 `0.1.29-final (accf7e8)`，34,893,824 B，mtime UTC `2026-11-04T18:20:52.3847597Z`。
+- SHA256 `EB6BDE011F002BFD0446B5C7664AE9606CAE91B7631F8E9695E2CA367C443041`；流写前后文件 ID 和四个 hardlink 一致，三个 profiles 哈希未变。
+- 独立 `genshin-compile` 真实 Release x64 构建：exit0，124 warnings、0 errors，76秒；部署前游戏数0。回执 `build/accf7e8-product.json`。
+- 本次回退件 `build/rollback/OptiScaler-20261104T182116235-f8a52a468ba540cc9deb0d212bd6211a.dll`，对应已知失败的 `74f5ef8`，不是可用基线。
 - 已集成并经独立 Sol 复核：ZZZ `199597d+ca05507` 输入接入/后端释放，原神 `808dc81` drain 连续性。Lead CPU：Router9组、Release7组、原神109项及wiring39项通过；均不证明游戏功能恢复。
-- ZZZ 最新测试 PID46372，creation FILETIME `134382835556637549`，CLI27888 exit0；日志确认74f5ef8、selected NGX Create/Evaluate、NR模型调用及FG SDK调用。用户实测：**FG没了，深度有，运动还是光流**。本版不作为可用基线；进程已退出，尾日志记录访问冲突及成功写出的转储，具体根因待查。
+- 最新 ZZZ PID56784，creation FILETIME `134382900953908147`，CLI28260 exit0；版本日志确认 accf7e8。游戏 SL scope 成立，但发布时持续拒绝 `native-frame-scope-not-selected-entry`，有效 source/tag/SDK Present 与 Dispatch Ok 均为0，仍未恢复 FG。进程已退出，Lead 未 stop；退出原因 UNKNOWN。
+- 已集成 `a100461+accf7e8`（原 `a3fd030+e014eb3`），独立复核PASS、最终两TU语法exit0、集成树CPU14组/static94项exit0。新局证明这些检查漏掉实际选择入口到发布的身份接线，不能当运行验收。唯一 Sol 正在修复此接线；不继续叠加 NR/MV 或 FinalOutput 扩展。
 
 ## 正在集成的候选
 
@@ -36,7 +37,9 @@ Sol 是核心源码唯一写者，另一名 Sol 独立复核；DS 处理只读�
 
 ### ZZZ：仍未修复验收
 
-最新 PID46372 用户明确反馈：**FG没了，深度有，运动还是光流**。日志确认 `74f5ef8`，selected NGX Create/Evaluate各2条、项目DX12 Evaluate6256条、NR cadence8条、FG Dispatch Ok2811条；这些是日志匹配数，不能替代显示验收。7条限频SDK Present返回0，但限频MFG状态始终 `presented=1`；生成帧未得到证明，不能据此推翻用户反馈。
+最新 PID56784 的日志保存在 `build/zzz-56784-OptiScaler.log`（6,790,706 B、85,311行，SHA256 `0B81B6CAF86B1474161272EC8EB83E367385D318699A3639538EEDDE7135625C`），提取 `build/zzz-56784-evidence.json`。8条限频 SL scope 样本明确同线程真实 frame4554–4561、viewport2、规范化 list；NGX selected Create/Evaluate各2条，但没有 selected frame source/tag/SDK Present，FG Dispatch Ok=0，64条限频depth refusal。入口选择未报缺scope，发布却拒绝：优先检查同次 selected feature 在不同基类指针表示及 provider viewport 生命周期中的接线；不能删除身份条件来掩盖。NR仍有深度和历史融合、motionIsPictureFlow=true、reuseAccepted=0。本局不证明任何 FG 恢复或动态画质收益。
+
+前局 PID46372 用户明确反馈：**FG没了，深度有，运动还是光流**。日志确认 `74f5ef8`，selected NGX Create/Evaluate各2条、项目DX12 Evaluate6256条、NR cadence8条、FG Dispatch Ok2811条；这些是日志匹配数，不能替代显示验收。7条限频SDK Present返回0，但限频MFG状态始终 `presented=1`；生成帧未得到证明，不能据此推翻用户反馈。
 
 NR末次采样 modelCalls=2226、modelFailures=0，depth rect2080×1296、MV rect2560×1600；`motionIsPictureFlow=true`、`producerNativeGuideContract=false`、`sceneModelGuides=true`、`sceneModelMotion=false`。独立源码复核确认该光流选择在迁移基点已存在，Late.inl到74f5ef8未改；原生场景depth经规范化供模型使用，原生MV未成为模型最终MV。恢复FG不以前置改造NR运动为条件。FG有1280×800 depth/MV tags，64条限频拒绝主要是slot-in-flight/no-fresh-source。intervalUsed=1、reuseAccepted=0；历史发布者fence target/completed=2998/2997，仍pending。深度存在不等于原生运动已接入，也不证明全屏动态细节正确。
 
