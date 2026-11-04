@@ -1073,11 +1073,42 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
                                   Config::Instance()->DisableReactiveMask.value_or(false));
 
         LOG_DEBUG("Dispatch!!");
-        ID3D12Resource* beforeSrColor = nullptr;
+        HoYoShade::StageResult beforeSrFilter;
+        HoYoShade::ColorEndpoint beforeSrInput;
+        IFeature_Dx12* beforeSrProvider = nullptr;
+        bool beforeSrFlagsKnown = false;
+        decltype(dx12Feature->GetFeatureFlags()) beforeSrFlags{};
+        // Read the selected provider's rectangle without mutating this bridge's
+        // resolution/jitter history. Match IFeature::GetRenderResolution's
+        // fallback, including the provider's own current render dimensions.
+        const auto readBeforeSrRegion = [&](HoYoShade::ColorEndpoint& e) {
+            auto* provider = dx12Feature.get();
+            e.width = provider->RenderWidth(); e.height = provider->RenderHeight();
+            unsigned width = 0, height = 0, outWidth = 0, outHeight = 0;
+            if (InParameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &width) == NVSDK_NGX_Result_Success &&
+                InParameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, &height) == NVSDK_NGX_Result_Success) {
+                e.width = width; e.height = height;
+            } else if (InParameters->Get(NVSDK_NGX_Parameter_Width, &width) == NVSDK_NGX_Result_Success &&
+                       InParameters->Get(NVSDK_NGX_Parameter_Height, &height) == NVSDK_NGX_Result_Success) {
+                const bool outputKnown =
+                    InParameters->Get(NVSDK_NGX_Parameter_OutWidth, &outWidth) == NVSDK_NGX_Result_Success &&
+                    InParameters->Get(NVSDK_NGX_Parameter_OutHeight, &outHeight) == NVSDK_NGX_Result_Success;
+                if (width < (outputKnown ? outWidth : e.width)) { e.width = width; e.height = height; }
+            }
+            e.colorX = e.colorY = 0;
+            const auto selected = provider->GetUpscalerType();
+            if (selected == Upscaler::DLSS || selected == Upscaler::DLSSD || selected == Upscaler::XeSS) {
+                InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, &e.colorX);
+                InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, &e.colorY);
+            }
+        };
         ID3D12Resource* hoyoColor = genshinTransport ? genshinTransport->Resource(genshinScope->owner, 0) : dx11Color.Dx12Resource;
         if (HoYoShade::Selected(HoYoShade::Stage::BeforeSr) && hoyoColor && Dx12Fence &&
             Dx12FenceValue < UINT64_MAX - 1)
         {
+            beforeSrProvider = dx12Feature.get();
+            beforeSrFlagsKnown = beforeSrProvider->GetFeatureFlagsKnown();
+            beforeSrFlags = beforeSrProvider->GetFeatureFlags();
             // Preallocate the existing failure owner before the filter can
             // record. Legacy bridge routes need the same no-release handling
             // as Genshin when a source barrier/submission becomes uncertain.
@@ -1098,20 +1129,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             endpoint.stream = reinterpret_cast<uint64_t>(this);
             endpoint.generation = genshinScope ? genshinScope->owner.generation : 1;
             endpoint.frame = genshinScope ? genshinScope->owner.sourceFrame : _frameCount;
-            endpoint.width = RenderWidth();
-            endpoint.height = RenderHeight();
-            if (!genshinTransport) {
-                // Same render-size resolver as the selected DX12 providers;
-                // querying before Evaluate avoids using last frame's extent.
-                GetRenderResolution(InParameters, &endpoint.width, &endpoint.height);
-                const auto selected = dx12Feature->GetUpscalerType();
-                // DLSS forwards these keys; XeSS reads them into inputColorBase.
-                // Current FSR/FFX adapters consume the origin-zero rectangle.
-                if (selected == Upscaler::DLSS || selected == Upscaler::DLSSD || selected == Upscaler::XeSS) {
-                    InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, &endpoint.colorX);
-                    InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, &endpoint.colorY);
-                }
-            }
+            readBeforeSrRegion(endpoint);
             endpoint.state = D3D12_RESOURCE_STATE_COMMON; endpoint.stateKnown = true;
             if (genshinTransport && genshinScope) {
                 // API20 external RTV processing preserves native typed values.
@@ -1144,7 +1162,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
                     NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
                 endpoint.depth = HoYoShade::Depth::FromBeforeSr(genshinTransport, genshinScope->owner,
                     Dx12CommandQueue, Dx12Fence, producerValue, endpoint.stream,
-                    endpoint.generation, endpoint.frame, RenderWidth(), RenderHeight(), directionKnown, reversed);
+                    endpoint.generation, endpoint.frame, endpoint.width, endpoint.height, directionKnown, reversed);
             }
             const auto filtered = HoYoShade::RenderStage(endpoint);
             if (filtered.Uncertain()) {
@@ -1169,7 +1187,8 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
                     // Failed handoff keeps the actual owners until restart.
                     genshinSubmissionUnfenced = true; genshinStop="hoyoshade-before-SR-handoff"; break;
                 }
-                beforeSrColor = hoyoColor; // certify consumption only at the provider boundary below
+                beforeSrFilter = filtered;
+                beforeSrInput = endpoint;
             }
         }
         const bool bridgeFinishedNr = Config::Instance()->DlssNrFinishedPicture.value_or_default() &&
@@ -1195,18 +1214,37 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             !Config::Instance()->DlssNrDeferredDlss.value_or_default())
             genshinNrCaller = GenshinCaller::BridgeAfterUpscale::Observe(
                 InDeviceContext, InParameters, Dx12CommandQueue, cmdList);
-        const auto evaluateProvider = [&] {
-            // Recheck after optional consumers/callbacks, immediately before
-            // selected SR records. Set(Color) never snapshots texture pixels.
-            if (beforeSrColor) {
-                ID3D12Resource* providerColor = nullptr;
-                if (InParameters->Get(NVSDK_NGX_Parameter_Color, &providerColor) != NVSDK_NGX_Result_Success)
-                    InParameters->Get(NVSDK_NGX_Parameter_Color, reinterpret_cast<void**>(&providerColor));
-                if (providerColor != beforeSrColor || (genshinTransport &&
-                    genshinTransport->Resource(genshinScope->owner, 0) != beforeSrColor)) {
-                    genshinStop="hoyoshade-before-SR-consumer-color"; return false;
-                }
+        const auto beforeSrConsumerMatches = [&] {
+            // Scratch warmup has a real retirement tail but no copyback to SR.
+            if (!beforeSrFilter.EffectsExecuted()) return true;
+            if (dx12Feature.get() != beforeSrProvider || Dx12CommandQueue != beforeSrInput.queue ||
+                dx12Feature->GetFeatureFlagsKnown() != beforeSrFlagsKnown ||
+                dx12Feature->GetFeatureFlags() != beforeSrFlags) return false;
+            if (genshinTransport && (GenshinTransport::Scope::Current() != genshinScope ||
+                genshinScope->lease != genshinTransport || genshinScope->parameters != InParameters)) return false;
+            auto actual = beforeSrInput;
+            actual.queue = Dx12CommandQueue;
+            actual.stream = reinterpret_cast<uint64_t>(this);
+            actual.generation = genshinScope ? genshinScope->owner.generation : 1;
+            actual.frame = genshinScope ? genshinScope->owner.sourceFrame : _frameCount;
+            actual.color = nullptr;
+            if (InParameters->Get(NVSDK_NGX_Parameter_Color, &actual.color) != NVSDK_NGX_Result_Success)
+                InParameters->Get(NVSDK_NGX_Parameter_Color, reinterpret_cast<void**>(&actual.color));
+            readBeforeSrRegion(actual);
+            if (!beforeSrFilter.BeforeSrInputMatches(actual)) return false;
+            if (genshinTransport) {
+                const auto observed = genshinTransport->Snapshot();
+                if (observed.revoked || observed.stage != GenshinTransport::Stage::InputsOrdered ||
+                    !GenshinGuides::SameOwner(observed.owner, genshinScope->owner) ||
+                    observed.queue != reinterpret_cast<uint64_t>(Dx12CommandQueue) ||
+                    observed.parameters != reinterpret_cast<uint64_t>(InParameters) ||
+                    genshinTransport->Resource(genshinScope->owner, 0) != actual.color) return false;
+                for (size_t i = 0; i < genshinScope->resources.size(); ++i)
+                    if (observed.source[i] != reinterpret_cast<uint64_t>(genshinScope->resources[i])) return false;
             }
+            return true;
+        };
+        const auto evaluateProvider = [&] {
             // Only the authenticated Genshin transport has acquired its
             // selected recording dependencies. Other routes retain their legacy entry.
             if (genshinTransport)
@@ -1222,12 +1260,14 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
                 }
                 auto& observation=genshinRecordings[commandFrame];observation.phase="provider-record";
                 observation.isolated=isolatedPassResources;
+                if (!beforeSrConsumerMatches()) { genshinStop="hoyoshade-before-SR-consumer"; return false; }
                 const bool evaluated = dx12Feature->EvaluateForRecordingSlot(cmdList, InParameters, commandFrame,
                                                                              isolatedPassResources);
                 observation.providerReturned=true;observation.providerOk=evaluated;
                 recordingCpu.Finish(evaluated ? S_OK : E_FAIL);
                 return evaluated;
             }
+            if (!beforeSrConsumerMatches()) { genshinStop="hoyoshade-before-SR-consumer"; return false; }
             return GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::ProviderEvaluate,[&]{return dx12Feature->Evaluate(cmdList, InParameters);},GenshinHookCpuTiming::ResultKind::Boolean);
         };
         if (genshinNrCaller)

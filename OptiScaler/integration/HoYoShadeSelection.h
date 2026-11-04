@@ -996,16 +996,18 @@ private:
     inline static thread_local RenderScope* current_ = nullptr;
     RenderScope* previous_ = nullptr;
     api::effect_runtime* runtime_ = nullptr;
+    api::effect_runtime* sourceRuntime_ = nullptr;
     api::command_list* list_ = nullptr;
     api::resource_view linear_{}, srgb_{};
     CallBoundary boundary_;
     std::vector<api::effect_technique> expected_;
+    std::vector<api::effect_uniform_variable> staticUniforms_, sourceStaticUniforms_;
     size_t next_ = 0;
     bool valid_ = false, began_ = false, finished_ = false;
 public:
     RenderScope(const Source& source, api::effect_runtime* runtime, uint64_t generation,
                 api::command_list* list, api::resource_view linear, api::resource_view srgb)
-        : runtime_(runtime), list_(list), linear_(linear), srgb_(srgb)
+        : runtime_(runtime), sourceRuntime_(source.naturalRuntime), list_(list), linear_(linear), srgb_(srgb)
     {
         if (runtime && list && linear.handle && srgb.handle && generation &&
             HasEnabledTechniques(source) && source.graphKnown && source.graphValid && !source.mappingDirty &&
@@ -1018,6 +1020,13 @@ public:
                 expected_.push_back(item.owned);
             }
             valid_ = !expected_.empty();
+            // Dynamic source uniforms belong to this same core's frame update.
+            // A selected static value changed during render revokes the image,
+            // even when all technique-after callbacks still arrive in order.
+            for (const auto& item : source.uniforms) if (item.annotationSource.empty()) {
+                staticUniforms_.push_back(item.owned);
+                if (item.natural.handle) sourceStaticUniforms_.push_back(item.natural);
+            }
         }
         previous_ = current_;
         if (previous_) { previous_->valid_ = false; valid_ = false; }
@@ -1031,6 +1040,19 @@ public:
     {
         return valid_ && began_ && finished_ && next_ == expected_.size() && boundary_.Current()
             ? static_cast<uint64_t>(expected_.size()) : 0;
+    }
+    static void SelectionRequested(api::effect_runtime* runtime) noexcept
+    {
+        if (current_ && (current_->runtime_ == runtime || current_->sourceRuntime_ == runtime)) current_->valid_ = false;
+    }
+    static void UniformRequested(api::effect_runtime* runtime, api::effect_uniform_variable variable) noexcept
+    {
+        auto* scope = current_;
+        if (!scope) return;
+        const auto* uniforms = scope->runtime_ == runtime ? &scope->staticUniforms_ :
+            scope->sourceRuntime_ == runtime ? &scope->sourceStaticUniforms_ : nullptr;
+        if (uniforms && std::find(uniforms->begin(), uniforms->end(), variable) != uniforms->end())
+            scope->valid_ = false;
     }
     static void Observe(Event event, api::effect_runtime* runtime, api::command_list* list,
                         api::resource_view linear, api::resource_view srgb, api::effect_technique technique = {}) noexcept

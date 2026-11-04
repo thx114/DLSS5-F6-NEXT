@@ -1935,8 +1935,6 @@ Dx11ExecutionResult Dx11Executor::Execute(const Dx11ExecutionRequest& r) noexcep
         const auto& prepared = work.tape[action]; const auto& a = prepared.action;
         if (!r.owner->Current(r.device, r.context, work.pipeline.epochs) || !r.owner->InternalActive(r.context))
         { successful = false; executionError = Dx11ExecutionError::OwnerChanged; break; }
-        if (work.parameters && !parametersBound)
-            bindParameters(work.initialParameters);
         // PrepareTape already validated every scalar transition and retained
         // every page. Bind the frozen complete image only when a GPU reader
         // reaches it; PRE/POST writes and restores still commit in full.
