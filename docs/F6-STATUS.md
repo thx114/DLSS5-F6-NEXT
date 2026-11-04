@@ -1,10 +1,16 @@
-# F6 开发、部署与测试状态（已暂停）
+# F6 开发、部署与测试状态（已恢复）
 
-**用户要求暂停当前功能并结束子智能体，完整转交见根 [HANDOFF.md](../HANDOFF.md)。长期 goal 已 paused；不自动继续编码、构建、部署或游戏。** 当前正式版本为 `ed7e598` / 34,816,000 B / mtime UTC `2026-11-04T13:35:24.0676033Z`，构建 exit0、120 warnings、0 errors，已流写原对象部署。ZZZ PID61120已退出、原因UNKNOWN，未取得本局NR/FG主链验收；原神遗留六文件已保存私有WIP `2384a45`（未复核/未构建/未运行）。子会话失败终止通知已收到，持久队员全 inactive、后台 jobs 全 completed/killed、三游戏进程数0。
+**2026-11-04 用户已恢复持续开发、分派编码、统一构建部署与三游戏验证；长期 goal 为 active。** 暂停时的完整快照见根 [HANDOFF.md](../HANDOFF.md)。本次恢复轮次 1，每完成 10 轮依据实际提交与运行效果重新评估实现方案；服务错误和重复等待不计作已完成开发轮次。
 
-以下是本轮运行中的阶段记录，若与最终转交冲突，以 [HANDOFF.md](../HANDOFF.md) 的保存点和测试界限为准。
+接手实测：主树保存点 `726430b`、产品及正式 DLL `ed7e598` / 34,816,000 B，二者 SHA256 相同，正式位与三游戏 cache 的四个硬链接完整，接手时三游戏与编译进程数均为 0。当前 Lead 执行会话实测**未提权**，交接时 DSH 已提权的结论不适用于当前会话。恢复后尚未重新构建、部署或运行游戏。
 
-当前优先级：**F6 开发 → 部署 → 测试**。用户已恢复管理员 DSH，Lead 实测权限 True。SSE 解析错误调查按用户指示暂停；诊断副本在 `build/dsh-diagnostics/`，没有修改运行中的 DSH 安装包。
+当前三个互不冲突任务：Sol 在 `D:/CODE/DLSS5_NEXT-workers/genshin-output` 完成原神实际 SDK output stream/queue-tail/owner reveal 生命周期；Sol 在 `D:/CODE/DLSS5_NEXT-workers/nr-detail` 核查并修复三游戏 NR 深度、相邻历史与细节保留的确证缺陷；DeepSeek 只读定位 ZZZ PID61120 日志断点。星铁现有 adamfg/F5-DS 式 FG 保持独立，GIMI/BeforeSR 次优先。Lead 是唯一集成、构建与游戏操作 owner。
+
+两名 Sol 首次因 `429 Too Many Requests` 终止；Lead 已核工作树并向原会话发送继续指令，未增加重复写者。原神已有合并提交 `b904cae`（`2384a45` + 主树 `726430b`），NR 独立树位于 `726430b`；均未有本次功能交件。按 `efficient-waiting` 技能接收完成通知，观察超时不授权重启。
+
+以下保留暂停前的阶段记录。当前执行状态以上文为准；历史提交与测试的最终边界以 [HANDOFF.md](../HANDOFF.md) 为准。
+
+当前优先级：**F6 开发 → 部署 → 测试**。SSE 解析错误调查按用户指示暂停；诊断副本在 `build/dsh-diagnostics/`，没有修改运行中的 DSH 安装包。
 
 ## 当前轮次与目标
 
