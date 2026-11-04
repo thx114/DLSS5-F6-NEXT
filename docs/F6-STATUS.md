@@ -2,6 +2,8 @@
 
 更新：2026-11-05。用户已恢复持续开发、统一构建部署与三游戏验证；长期 goal 为 active。本次恢复仍为开发轮次 1，等待、服务错误和回归修订不单独算完成轮次。每完成 10 轮重新评估实际实现与运行效果。
 
+用户最新指出先前原神、星铁、ZZZ 的 SR/NR/FG 均可用，仅缺 NR 深度。以该功能基线为恢复目标：最近 ZZZ 无 F6 输入、原神显示不连续是回归，不能用深度/所有权的局部进展宣称整体进步。先追最后可用 DLL、源码与配置并恢复三游戏既有功能，再验证新增 NR 深度；不预先断言回归由 NR 深度代码引起。
+
 ## 工作区与职责
 
 F6 集成根是 `D:/CODE/DLSS5_NEXT-workers/f6-integration`，分支 `codex/f6-integration`。原根 `D:/CODE/DLSS5_NEXT` 已由并发 F7 任务使用；不得 checkout、reset、clean 或覆盖其在途文件。旧根保留作历史与回退来源。
@@ -25,7 +27,7 @@ Sol 是核心源码唯一写者，另一名 Sol 独立复核；DS 处理只读�
 | NR 完整链历史 | 私有 `1247a68`，已集成 `0613134`，独立审阅通过；CPU 74 项通过，已构建部署 | 三游戏动态细节、跳模型复用和净性能 |
 | 原神 SDK 输入与真实输出 | `genshin-output` 固定 `6f806fe`，已集成 `bac4b64`；保存 SDK 调用结果独立于 Reflex marker，精确 provider/physical stream 绑定，真实最后 raw tail 与有界 reveal admission；Lead MSVC C++20/O2 独立 CPU 85 项通过 | 独立 Sol 最终静态审阅 PASS，已构建部署 `bac4b64`；实机 PID6748 有真实 owner tail 后 reveal；输入/显示周期失效、动态画面与净性能待验 |
 | ZZZ F6 NGX 输入接入 | `zzz-input-route` 基础提交 `199597d`；预载和未来加载原生入口统一 ledger，ptr+recorded ID 归属与生命周期；Lead 独立运行 9 组生产 Router CPU 回归通过，尚未集成 | Confucius 审出真实 backend Release 失败被析构吞掉的 P1；原 Sol 会话 CLI65676 正补失败传播、完整 context 保留和内部重建预检。旧待审 merge 已撤销，待最终提交复核后整体合入构建部署 |
-| 原神 FinalOutput child runtime | `finaloutput-runtime` 从 `bac4b64` 分离，Rawls 唯一写者，仅 HoYoShade 集成文件；与 Galileo 的 endpoint/wrapper 连续性修复分开 | 补实际 child 创建/配置/selection/合法 raw 前更新和 GPU 退休；跨 endpoint 接口须待唯一写权交接，ON 实机仍待验 |
+| 原神 FinalOutput child runtime | `finaloutput-runtime` 从 `bac4b64` 分离，仅 HoYoShade 集成文件；已要求 Rawls 停止新增编码、保留现状，优先基线恢复 | child 创建/配置/selection/合法 raw 前更新和 GPU 退休尚未闭合，ON 实机待验；不得把扩展此链当作恢复原有 SR/NR/FG 的替代 |
 
 原神实际 FinalOutput child runtime/selection 未成立时继续拒绝过滤；不能用父窗口已过滤作为异步 child 的证明。CPU 测试仅证明标量契约，不证明 GPU 或显示。
 
@@ -66,7 +68,7 @@ Sol 是核心源码唯一写者，另一名 Sol 独立复核；DS 处理只读�
 
 DS 限定检查了游戏根、hk4e_cn cache 和安装根 HoYoShade，未找到完整 GIMI Mods/d3dx.ini；此结论仅限检查范围。当前 ReShade preset 是 Mod OFF.ini，启用 MartysMods Launchpad/MXAO，实际 shaders 存在；BeforeSR 有材料可做单独验证，但尚无生效或像素证明。未扫描私密缓存。
 
-下一步：闭合 ZZZ 真实 backend Release 失败传播并重新独立复核，合入统一产品后构建部署；原神按 PID6748 实测定位 input/output 连续性，并核真实 NR guide 来源与 child runtime/selection。部署前确认三游戏均未运行，保留日志和 profiles、hardlink；分别启动一次绑定新 PID/creation/version/session，先核 selected SR，再核 NR depth/MV、FG source/constants/Present 与物理输出，最后验证动态细节和同条件净性能。
+下一步：DS 追最后三游戏 SR/NR/FG 可用基线的 DLL、源码与配置身份，Lead 对照回归边界；原有 ZZZ Release 安全和原神连续性修复继续收口，暂不扩大新增 runtime。仅在明确基线关系且最终独立复核通过后统一构建部署。部署前确认三游戏均未运行，保留日志和 profiles、hardlink；分别绑定新 PID/creation/version/session，先核原有 SR/NR/FG 可用性，再核新增 NR depth/MV、历史、动态细节和同条件净性能。
 
 `tools/runtime/Get-F6RunEvidence.ps1` 对保存/关闭日志用同一排写句柄解析和 hash，拒绝 PID/commit 不符，保留原行号。已实际提取上述两局；计数只是日志行，RecordedFenceTargetReached 只是记录值，不独立证明对象归属、selected SR、像素或性能。
 
