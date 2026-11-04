@@ -2126,16 +2126,11 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     }
     if(willPresent && genshinDlssg) {
         auto* current=GenshinBridgeFg::PresentScope::Current();
-        // The accepted PresentStart marker selects this SDK input token.
-        // NV_ASYNC_FRAME_MARKER_PARAMS has queue/frameID/presentFrameID, but
-        // the public header does not bind either ID to this source receipt or
-        // guarantee a same-thread raw bracket. Never export this TLS as an
-        // asynchronous source association or use GetState's input fence for it.
-        const uint64_t markerFrame=genshinReflex.startCalled &&
-            genshinReflex.startResult==static_cast<int>(sl::Result::eOk) && localToken &&
-            static_cast<uint64_t>(*localToken)==genshinReflex.startToken ? genshinReflex.startToken : 0;
+        // Dispatch has already sealed this exact input's FrameToken/source.
+        // Bind its saved receipt at the real SDK boundary regardless of whether
+        // we or the game send Reflex markers. Marker IDs are not source joins.
         GenshinVisibleChild::PresentPermit::BeforePresent(This,
-            current ? current->EnterSdkPresent(This,markerFrame) : nullptr);
+            current ? current->EnterSdkPresent(This) : nullptr);
     }
     // Consume the exact successful Dispatch at the actual SDK boundary. Marker
     // policy and an SDK-internal frame counter cannot select/replay its source.

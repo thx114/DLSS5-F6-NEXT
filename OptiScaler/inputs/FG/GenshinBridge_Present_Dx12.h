@@ -812,9 +812,7 @@ class PresentScope final {
     bool waited_=false,attempted_=false,dispatched_=false,nativeObserved_=false;
     bool prepared_=false,presented_=false,closed_=false,nativeProcessed_=false;
     uint64_t providerFrame_=0;
-    std::shared_ptr<const SdkInputSource> sdkSource_;
-    bool sdkEntered_=false,sdkReturned_=false;
-    HRESULT sdkResult_=E_PENDING;
+    SdkInputCall sdkCall_;
     Key repeatedPicture_{}; // no resources and no permission to dispatch
     bool MatchesPresentedPicture(const Key& key) const noexcept {
         const auto provider=reinterpret_cast<uintptr_t>(static_cast<IFGFeature_Dx12*>(provider_));
@@ -882,7 +880,7 @@ public:
             pending=0;lastReport=count;
         }
         }catch(...){} // Cleanup and current-scope restoration stay outside.
-        if(!presented_)CloseProvider(sdkReturned_ && sdkResult_==S_OK && bool(sdkSource_));
+        if(!presented_)CloseProvider(sdkCall_.Succeeded());
         Retire(std::move(frame_));if(current_==this)current_=previous_;
     }
     PresentScope(const PresentScope&)=delete;PresentScope& operator=(const PresentScope&)=delete;
@@ -1288,15 +1286,20 @@ public:
         const auto& source=frame_->providerRetirement->Source();
         return source && source->Packet()==frame_->ticket.depth.preparedPacket ? source : nullptr;
     }
-    std::shared_ptr<const SdkInputSource> EnterSdkPresent(IDXGISwapChain* sc,uint64_t markerFrame) noexcept {
-        if(current_!=this || GetCurrentThreadId()!=thread_ || sdkEntered_ || sdkReturned_ ||
-           Identity(sc)!=Identity(swapchain_.Get()) || markerFrame!=providerFrame_)return {};
-        sdkSource_=InputSource();sdkEntered_=bool(sdkSource_);return sdkSource_;
+    std::shared_ptr<const SdkInputSource> EnterSdkPresent(IDXGISwapChain* sc) noexcept {
+        // The exact successful Dispatch receipt authenticates this transaction.
+        // Games may send their own Reflex markers; missing local markers cannot
+        // discard a genuine SDK call or turn its saved S_OK into CloseProvider(false).
+        if(current_!=this || GetCurrentThreadId()!=thread_ || sdkCall_.Entered() || sdkCall_.Returned() ||
+           Identity(sc)!=Identity(swapchain_.Get()))return {};
+        auto source=InputSource();
+        if(!source || !sdkCall_.Enter(std::move(source),MakeKey(frame_->ticket),providerFrame_))return {};
+        return sdkCall_.Source();
     }
     void ReturnSdkPresent(IDXGISwapChain* sc,HRESULT result) noexcept {
-        if(current_!=this || GetCurrentThreadId()!=thread_ || !sdkEntered_ || sdkReturned_ ||
+        if(current_!=this || GetCurrentThreadId()!=thread_ || !sdkCall_.Entered() || sdkCall_.Returned() ||
            Identity(sc)!=Identity(swapchain_.Get()))return;
-        sdkEntered_=false;sdkReturned_=true;sdkResult_=result; // saved original SDK HRESULT only
+        sdkCall_.Return(result); // saved original SDK HRESULT only
     }
     void Presented(HRESULT /*wrapperResult*/,bool continuityValid=true,bool /*wrapperObservedSdkReturn*/=false) noexcept {
         if(presented_)return;
@@ -1304,10 +1307,11 @@ public:
         // wrapper/filter HRESULT and a physical-output callback describe other
         // work. In particular, asynchronous output must not reset the input
         // predecessor merely because no raw arrived on this render stack.
-        const bool sdkSucceeded=sdkReturned_ && !sdkEntered_ && sdkResult_==S_OK && sdkSource_ &&
+        const auto& sdkSource=sdkCall_.Source();
+        const bool sdkSucceeded=sdkCall_.Succeeded() &&
             current_==this && GetCurrentThreadId()==thread_ && frame_ && dispatched_ &&
-            frame_->providerRetirement && sdkSource_==frame_->providerRetirement->Source() &&
-            sdkSource_->Matches(MakeKey(frame_->ticket),providerFrame_) &&
+            frame_->providerRetirement && sdkSource==frame_->providerRetirement->Source() &&
+            sdkSource->Matches(MakeKey(frame_->ticket),providerFrame_) &&
             frame_->lifecycle.State()==Phase::Dispatched;
         const bool commit=sdkSucceeded && State::Instance().currentFG==provider_ &&
             provider_->GenshinSourceCurrent(frame_->providerRetirement,MakeKey(frame_->ticket),providerFrame_);
@@ -1325,7 +1329,7 @@ public:
             else if(dispatched_) {pool.presented.known=false;pool.presented.resetRequested=false;}
             // No current dispatch cannot invalidate an earlier real submission.
             // Terminal device/epoch/queue paths explicitly Revoke beforehand.
-            ObserveCommit(before,pool.presented,frame_.get(),sdkResult_,continuityValid,dispatched_,commit,"InputAccepted");}
+            ObserveCommit(before,pool.presented,frame_.get(),sdkCall_.Result(),continuityValid,dispatched_,commit,"InputAccepted");}
         if(commit)
             frame_->lifecycle.Advance(MakeKey(frame_->ticket),Phase::Dispatched,Phase::InputAccepted);
         else if(frame_){
@@ -1336,7 +1340,7 @@ public:
         // deferred physical output. The provider's own fences retain all GPU
         // custody; neither this query nor input acceptance certifies display.
         const bool retirementQuery=sdkSucceeded;
-        if(sdkReturned_ && dispatched_){
+        if(sdkCall_.Returned() && dispatched_){
             static thread_local uint64_t lastTick=0,calls=0;
             static thread_local unsigned transitions=0;
             static thread_local bool lastCommit=false,lastQuery=false;
@@ -1349,7 +1353,7 @@ public:
                 const auto& t=frame_->ticket;
                 LOG_INFO("R1069 sdk-closure: pid={} thread={} provider_frame={} present_epoch={} source_generation={} source_frame={} picture={} sdk_returned={} sdk_hr={:X} retirement_requested={} physical_continuity={} predecessor_commit={} completion_authority=false visual=UNKNOWN",
                     GetCurrentProcessId(),GetCurrentThreadId(),providerFrame_,stateFrame_,t.source.generation,
-                    t.source.sourceFrame,t.pictureSerial,sdkReturned_,static_cast<unsigned>(sdkResult_),retirementQuery,
+                    t.source.sourceFrame,t.pictureSerial,sdkCall_.Returned(),static_cast<unsigned>(sdkCall_.Result()),retirementQuery,
                     continuityValid,commit);
             }
         }

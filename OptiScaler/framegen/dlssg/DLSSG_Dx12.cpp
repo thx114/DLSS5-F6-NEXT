@@ -2674,13 +2674,15 @@ bool DLSSG_Dx12::Dispatch()
             static_cast<uint64_t>(*frameToken) != genshinToken ||
             lease->epoch != _inputOwnerEpoch || lease->owner != _genshinOwnerGeneration ||
             !GenshinGuidesCurrent(lease->guides)) return false;
+        const auto outputOwner=framegen::final_output::ProviderIdentity(_finalOutputProvider);
+        if(!outputOwner)return false;
         try {
             // Copy the value, never retain an SDK ring-entry pointer. Only the
             // real successful SetConstants above can seal this input identity.
             lease->source = std::shared_ptr<const GenshinBridgeFg::SdkInputSource>(
                 new GenshinBridgeFg::SdkInputSource(lease->guides->key, willDispatchFrame,
                     genshinToken, lease->owner, lease->epoch,
-                    framegen::final_output::ProviderIdentity(_finalOutputProvider),lease->guides->preparedPacket));
+                    outputOwner,lease->guides->preparedPacket));
         } catch (const std::bad_alloc&) { return false; } // tags retain their original retirement owner
     }
     if (!genshinFrame || DetailedGenshinFrameLog(willDispatchFrame)) LOG_DEBUG("Result: Ok");
@@ -3776,6 +3778,7 @@ bool DLSSG_Dx12::GenshinSourceCurrent(const std::shared_ptr<const GenshinInputRe
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (!receipt || !receipt->source || !receipt->source->Matches(key, frame) || receipt->Retired() ||
+        receipt->source->StreamOwner().outputOwner != framegen::final_output::ProviderIdentity(_finalOutputProvider) ||
         receipt->owner != _genshinOwnerGeneration || receipt->epoch != _inputOwnerEpoch ||
         receipt->frame != frame || frame != _frameCount || !frame || frame > UINT32_MAX ||
         receipt->thread != GetCurrentThreadId() || receipt->presentReturned || _ownerChanging || _hookRetiring ||

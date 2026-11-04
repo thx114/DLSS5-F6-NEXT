@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <Windows.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -94,8 +94,9 @@ public:
     // writes, quarantine refuses consumers; it never fabricates device removal.
     HRESULT Present(UINT flags, const DXGI_PRESENT_PARAMETERS*,
                     const std::function<HRESULT()>& rawAndOverlay) noexcept;
-    // Only the real retained Genshin child calls this seam. Source provenance
-    // and actual physical completion apply even when FinalOutput is disabled.
+    // Only the real retained Genshin child calls this seam. The captured SDK
+    // stream/creation queue and its physical tail apply even with FinalOutput
+    // disabled. An input source/token is never an asynchronous output identity.
     // The override flags are used only on the raw physical flip chain to prime
     // hidden content; SDK input and native parent flags remain unchanged.
     HRESULT PresentGenshin(UINT flags,const DXGI_PRESENT_PARAMETERS*,

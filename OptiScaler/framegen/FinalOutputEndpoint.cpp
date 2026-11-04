@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "FinalOutputEndpoint.h"
 #include <integration/HoYoShade.h>
 #include <with_dx12/GenshinVisibleChild.h>
@@ -171,6 +171,9 @@ HRESULT ProviderRetirement::Commit() noexcept
         provider->copyQueue.Reset(); provider->copyFence.Reset(); provider->copyValue = 0;
     }
     HoYoShade::ReleasePhysicalSource(source);
+    // Host/SDK teardown and every captured endpoint have positively drained.
+    // This also retires an input scope that never bound any physical raw.
+    GenshinVisibleChild::PresentPermit::PhysicalOutput::ProviderRetired(owner);
     status = E_UNEXPECTED; // One commit; this token cannot certify a later owner.
     return S_OK;
 }
@@ -431,7 +434,10 @@ std::unique_ptr<Endpoint> Endpoint::Capture(IDXGISwapChain* raw, IUnknown* creat
         for (auto& old : State::Pool().entries) if (old) {
             auto retained = old;
             std::unique_lock guard(retained->mutex, std::try_to_lock);
-            if (guard.owns_lock() && retained->retired && retained->Collect()) old.reset();
+            if (guard.owns_lock() && retained->retired && retained->Collect()) {
+                GenshinVisibleChild::PresentPermit::PhysicalOutput::BuffersRetired(retained->provider->owner,retained->stream,retained->generation);
+                old.reset();
+            }
         }
         for (auto& entry : State::Pool().entries) if (!entry) {
             auto endpoint = std::unique_ptr<Endpoint>(new Endpoint);
@@ -453,7 +459,9 @@ Endpoint::~Endpoint()
         }
     }
     HoYoShade::RetirePhysicalOutput(state->stream);
-    state->Collect(); // Pool retains pending/unknown references after wrapper release.
+    if(state->Collect())
+        GenshinVisibleChild::PresentPermit::PhysicalOutput::BuffersRetired(state->provider->owner,state->stream,state->generation);
+    // Pool retains pending/unknown references after wrapper release.
 }
 HRESULT Endpoint::Present(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
                           const std::function<HRESULT()>& present) noexcept
@@ -569,7 +577,7 @@ HRESULT Endpoint::PresentImpl(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
     if (s.quarantined) return E_FAIL;
     // No cross-API refusal may quietly present an unfiltered child. The caller
     // keeps the independent, normally filtered parent as visible fallback.
-    const auto untouched = [&]() -> HRESULT { return crossApi ? E_FAIL : finishPhysical(actualPresent(),true); };
+    const auto untouched = [&]() -> HRESULT { return crossApi || genshin ? E_FAIL : finishPhysical(actualPresent(),true); };
     if (s.resizing || s.retired || s.retryAmbiguous || !FullPresent(flags, params)) return untouched();
     HoYoShade::PhysicalSource source;
     bool bound = false;
@@ -650,7 +658,7 @@ HRESULT Endpoint::PresentImpl(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
     // orders effects -> existing overlay -> raw Present -> F5-only tail fence.
     // Parent remains naturally filtered. Busy/warmup/zero-technique child
     // cannot replace it: no raw physical Present until real effects submitted.
-    const auto hr = crossApi && !result.EffectsExecuted() ? E_FAIL : actualPresent();
+    const auto hr = (crossApi || genshin) && !result.EffectsExecuted() ? E_FAIL : actualPresent();
     // WAS_STILL_DRAWING means the operation was neither executed nor scheduled
     // (DXGI_ERROR documentation). Only that HRESULT, unchanged physical index
     // and a healthy exact device authorize restoring the pre-filter snapshot.
@@ -660,7 +668,7 @@ HRESULT Endpoint::PresentImpl(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
         ID3D12CommandList* restoreLists[] = {pending.restore.Get()};
         queue->ExecuteCommandLists(1, restoreLists);
         ++s.restores;
-    } else if (hr != S_OK && !(crossApi && !result.EffectsExecuted())) {
+    } else if (hr != S_OK && !((crossApi || genshin) && !result.EffectsExecuted())) {
         s.retryAmbiguous = true; // content only; the tail below decides GPU certainty
     }
     // The same exact queue orders snapshot -> owned/natural -> raw -> optional
@@ -766,7 +774,9 @@ void Endpoint::Resize::Complete(HRESULT hr, UINT count, const UINT* nodes,
     std::lock_guard lock(s.mutex);
     if (s.content.Active() && !s.content.CommitDiscard(s.chain.Get(), s.stream, s.generation,
             s.generation + 1, hr)) return; // keep denial if exact proof changed during DXGI call
-    ++s.generation; s.retryAmbiguous = false; s.thread = 0;
+    const auto retiredGeneration=s.generation++;
+    s.retryAmbiguous = false; s.thread = 0;
+    GenshinVisibleChild::PresentPermit::PhysicalOutput::BuffersRetired(s.provider->owner,s.stream,retiredGeneration);
     if (s.retired) return; // optional adapter stays disabled; DXGI remains usable
     DXGI_SWAP_CHAIN_DESC desc{};
     if (FAILED(s.chain->GetDesc(&desc)) || !desc.BufferCount || desc.BufferCount > s.queues.size()) {
@@ -797,7 +807,6 @@ void Endpoint::Resize::Complete(HRESULT hr, UINT count, const UINT* nodes,
         for (UINT i = 0; i < desc.BufferCount; ++i) updated[i] = s.queues[0];
     }
     s.queues = std::move(updated); s.count = desc.BufferCount;
-    GenshinVisibleChild::PresentPermit::PhysicalOutput::BuffersRetired(s.provider->owner,s.stream,s.generation-1);
 }
 HRESULT Endpoint::TryRetire(const std::shared_ptr<Provider>& provider, bool commit) noexcept
 {
@@ -854,7 +863,10 @@ void Endpoint::CollectRetired() noexcept
     for (auto& entry : State::Pool().entries) if (entry) {
         auto retained = entry;
         std::unique_lock guard(retained->mutex, std::try_to_lock);
-        if (guard.owns_lock() && retained->retired && retained->Collect()) entry.reset();
+        if (guard.owns_lock() && retained->retired && retained->Collect()) {
+            GenshinVisibleChild::PresentPermit::PhysicalOutput::BuffersRetired(retained->provider->owner,retained->stream,retained->generation);
+            entry.reset();
+        }
     }
 }
 }
