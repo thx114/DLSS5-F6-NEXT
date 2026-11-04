@@ -40,6 +40,8 @@ Sol 是核心源码唯一写者，另一名 Sol 独立复核；DS 处理只读�
 
 用户明确确认5a61e97插帧恢复。最终日志 `build/zzz-31592-OptiScaler-final.log`，11,989,796 B，SHA256 `89CD0FDC15CC8B37F070D53D86AD0C08FBA87AA048ED59CA39C95537F0C6B581`；提取 `build/zzz-31592-final-evidence.json`。日志匹配：selected Create/Evaluate各2、NR cadence8、FG Dispatch Ok3014、source SDK Present8、depth refusal51。限频source/tags/constants/Present帧一致，SDK有presented6；NR仍motionIsPictureFlow=true、reuseAccepted=0。以上计数不是成功帧数或动态画质证明。用户要求先测另两游戏，方向修复与卡顿调查不得覆盖此恢复点。
 
+DS对运行中固定快照独立核对了4组完整source/tag/constants/producer/Present同帧同list样本（4398、4399、4400、5054），不扩为全局逐帧证明。卡顿证据：5处waitCPUFence 500ms超时（行35348/35703/36049/37641/44119）、4处Pacer flush超时，后段65904/65906还有worker超时；NR自身GPU区间不能解释这些CPU等待。一次SR/FG feature切换后仍有间歇高延迟，不能只归启动。6X硬件flip metering警告与每帧SetOptions/GetState是待测风险，不是已证因果；不因此盲改配置、删fence或扩大池。原神优先，ZZZ性能后续沿实际SDK调用/队列等待边界定位。
+
 最新 PID56784 的日志保存在 `build/zzz-56784-OptiScaler.log`（6,790,706 B、85,311行，SHA256 `0B81B6CAF86B1474161272EC8EB83E367385D318699A3639538EEDDE7135625C`），提取 `build/zzz-56784-evidence.json`。8条限频 SL scope 样本明确同线程真实 frame4554–4561、viewport2、规范化 list；NGX selected Create/Evaluate各2条，但没有 selected frame source/tag/SDK Present，FG Dispatch Ok=0，64条限频depth refusal。入口选择未报缺scope，发布却拒绝：优先检查同次 selected feature 在不同基类指针表示及 provider viewport 生命周期中的接线；不能删除身份条件来掩盖。NR仍有深度和历史融合、motionIsPictureFlow=true、reuseAccepted=0。本局不证明任何 FG 恢复或动态画质收益。
 
 前局 PID46372 用户明确反馈：**FG没了，深度有，运动还是光流**。日志确认 `74f5ef8`，selected NGX Create/Evaluate各2条、项目DX12 Evaluate6256条、NR cadence8条、FG Dispatch Ok2811条；这些是日志匹配数，不能替代显示验收。7条限频SDK Present返回0，但限频MFG状态始终 `presented=1`；生成帧未得到证明，不能据此推翻用户反馈。
