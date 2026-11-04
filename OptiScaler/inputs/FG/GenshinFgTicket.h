@@ -185,6 +185,14 @@ public:
         if(!edge || phase_!=from || key!=key_)return false;
         phase_=to;return true;
     }
+    // A native-only drain may discard exactly its Returned recording. This
+    // revokes CPU admission only; the Frame must retain its producer queue/fence
+    // and leases until the ordinary real GPU retirement path observes completion.
+    bool DiscardReturned(const Key& key,uint64_t present,uint32_t thread,uint64_t swapchain,uint64_t context) noexcept {
+        if(phase_!=Phase::Returned || !key.Known() || key!=key_ || key.present!=present ||
+            key.thread!=thread || key.swapchain!=swapchain || key.context!=context)return false;
+        phase_=Phase::Revoked;return true;
+    }
     void Revoke() noexcept {phase_=Phase::Revoked;}
     Phase State() const noexcept {return phase_;}
     const Key& Identity() const noexcept {return key_;}

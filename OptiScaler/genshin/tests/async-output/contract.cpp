@@ -129,6 +129,44 @@ void BoundedRevealAdmission() {
     window.Release();
     Check(!window.BlocksRaw(601),"no blocked worker survives explicit lifetime revocation");
 }
+void NativeOnlyReturnedDrain() {
+    auto key=Source();
+    const auto discard=[&](Lifecycle& life,const Key& candidate) {
+        return life.DiscardReturned(candidate,key.present,key.thread,key.swapchain,key.context);
+    };
+    Lifecycle life;
+    Check(!discard(life,key),"empty scope cannot claim a drain receipt");
+    Check(life.Record(key),"native capture records its exact source");
+    Check(!discard(life,key),"recorded without native Return cannot be discarded as returned");
+    Check(life.Advance(key,Phase::Recorded,Phase::Returned),"real native Return precedes output drain");
+    auto different=key;++different.picture;
+    Check(!discard(life,different),"foreign immutable picture cannot be stolen from ready slot");
+    different=key;++different.sourceFrame;
+    Check(!discard(life,different),"different source cannot alias an unused returned receipt");
+    Check(!life.DiscardReturned(key,key.present+1,key.thread,key.swapchain,key.context),"later Present cannot consume old ready receipt");
+    Check(!life.DiscardReturned(key,key.present,key.thread+1,key.swapchain,key.context),"foreign thread cannot finish native drain");
+    Check(!life.DiscardReturned(key,key.present,key.thread,key.swapchain+1,key.context),"foreign chain cannot finish native drain");
+    Check(!life.DiscardReturned(key,key.present,key.thread,key.swapchain,key.context+1),"foreign context cannot finish native drain");
+    Check(life.State()==Phase::Returned,"refusals preserve the original unconsumed recording");
+    Check(discard(life,key) && life.State()==Phase::Revoked,"drain revokes just the current unused SDK recording");
+    Check(!discard(life,key),"same native receipt cannot be consumed a second time");
+    Check(!life.Advance(key,Phase::Returned,Phase::Copied),"drained receipt cannot become a later SDK input");
+    // Native camera/guide production continues for multiple drain frames. Only
+    // the fresh next recording can reach Copied; no SDK result is fabricated.
+    for(unsigned i=0;i<3;++i) {
+        ++key.present;++key.picture;++key.generation;++key.sourceFrame;
+        Lifecycle native;
+        Check(native.Record(key) && native.Advance(key,Phase::Recorded,Phase::Returned),"each drain frame runs a new exact native transaction");
+        Check(discard(native,key),"every unused native-only frame vacates its own ready slot");
+    }
+    ++key.present;++key.picture;++key.generation;++key.sourceFrame;
+    Lifecycle resumed;
+    Check(resumed.Record(key) && resumed.Advance(key,Phase::Recorded,Phase::Returned),"next fresh input is independently produced after drain");
+    Check(resumed.Advance(key,Phase::Returned,Phase::Copied),"only the resumed current receipt reaches private copy");
+    Check(!discard(resumed,key),"a copied provider transaction cannot be stolen by output drain");
+    SdkInputCall noSdk;
+    Check(!noSdk.Succeeded() && !noSdk.Return(0),"native-only drain cannot sign SDK acceptance or predecessor history");
+}
 void UnboundScopeRetirement() {
     const SdkStreamOwner owner{11,22,1,1920,1080};
     SdkOutputBinding binding;
@@ -142,6 +180,6 @@ void UnboundScopeRetirement() {
 }
 }
 int main() {
-    SavedSdkInput();ExactPhysicalBinding();BoundedRevealAdmission();UnboundScopeRetirement();
+    SavedSdkInput();ExactPhysicalBinding();BoundedRevealAdmission();NativeOnlyReturnedDrain();UnboundScopeRetirement();
     std::printf("async-output CPU contracts: %u checks passed (no GPU/display claim)\n",checks);
 }
