@@ -1,8 +1,8 @@
 # F6 当前状态
 
-更新：2026-11-05。长期 goal 为 active，但用户再次指出逐个失败点修补、损坏原功能后回退的循环。现暂停新增功能编码和架构扩展，先找回 F5 完成后的可用实物与配置、比较回归边界。历史轮次数不代表功能进度；可用基线未恢复前，不把局部契约、构建或日志成功算作一轮功能完成。
+更新：2026-11-05。长期 goal 为 active，用户要求直接使用旧根已有源码恢复原有功能，不把寻找旧DLL作为前提。暂停新增功能与架构扩展；当前只收口已证实的ZZZ SDK帧身份错误，同时对照F5 Main源码查回归。历史轮次数不代表功能进度；不把局部契约、构建或日志成功算作一轮功能完成。
 
-用户最新指出先前原神、星铁、ZZZ 的 SR/NR/FG 均可用，仅缺 NR 深度。以该功能基线为恢复目标：最近 ZZZ 无 F6 输入、原神显示不连续是回归，不能用深度/所有权的局部进展宣称整体进步。先追最后可用 DLL、源码与配置并恢复三游戏既有功能，再验证新增 NR 深度；不预先断言回归由 NR 深度代码引起。
+用户最新指出先前原神、星铁、ZZZ 的 SR/NR/FG 均可用，仅缺 NR 深度。以该功能基线为恢复目标：最近 ZZZ 无 F6 输入、原神显示不连续是回归，不能用深度/所有权的局部进展宣称整体进步。以旧根 `work/r294-r266-build/OptiScaler` 的F5 Main源码作行为参考；旧根顶层OptiScaler是后期F6，不能混淆。保留旧树原样，在F6隔离树修复并构建，先恢复三游戏既有功能，再验证新增NR深度；不预先断言回归由NR深度代码引起。
 
 ## 工作区与职责
 
@@ -38,9 +38,11 @@ Sol 是核心源码唯一写者，另一名 Sol 独立复核；DS 处理只读�
 
 最新 PID46372 用户明确反馈：**FG没了，深度有，运动还是光流**。日志确认 `74f5ef8`，selected NGX Create/Evaluate各2条、项目DX12 Evaluate6256条、NR cadence8条、FG Dispatch Ok2811条；这些是日志匹配数，不能替代显示验收。7条限频SDK Present返回0，但限频MFG状态始终 `presented=1`；生成帧未得到证明，不能据此推翻用户反馈。
 
-NR末次采样 modelCalls=2226、modelFailures=0，depth rect2080×1296、MV rect2560×1600；`motionIsPictureFlow=true`、`producerNativeGuideContract=false`、`sceneModelGuides=true`、`sceneModelMotion=false`。FG有1280×800 depth/MV tags，64条限频拒绝主要是slot-in-flight/no-fresh-source。intervalUsed=1、reuseAccepted=0；历史发布者fence target/completed=2998/2997，仍pending。深度存在不等于原生运动已接入，也不证明全屏动态细节正确。
+NR末次采样 modelCalls=2226、modelFailures=0，depth rect2080×1296、MV rect2560×1600；`motionIsPictureFlow=true`、`producerNativeGuideContract=false`、`sceneModelGuides=true`、`sceneModelMotion=false`。独立源码复核确认该光流选择在迁移基点已存在，Late.inl到74f5ef8未改；原生场景depth经规范化供模型使用，原生MV未成为模型最终MV。恢复FG不以前置改造NR运动为条件。FG有1280×800 depth/MV tags，64条限频拒绝主要是slot-in-flight/no-fresh-source。intervalUsed=1、reuseAccepted=0；历史发布者fence target/completed=2998/2997，仍pending。深度存在不等于原生运动已接入，也不证明全屏动态细节正确。
 
 全日志 `build/zzz-46372-OptiScaler.log`，9,157,217 B、112,699行，SHA256 `517DC3B09C74089DECEE4082570373A27D142776290A0320EFA54490EFCD97A6`；提取 `build/zzz-46372-evidence.json`。末尾记录 `Unhandled exception C0000005 at 0`，成功写出 `OptiScaler_crash_46372_55540_01DD6C7A19435B6D_62980968_1.dmp`，260,939,502 B。Lead未停止游戏；有崩溃记录，具体故障模块与因果尚未确定。
+
+只读定位：日志35448发布SDK/token帧1，35451 SDK却请求frame4646并退用frame1，确证一次constants身份断链；不据此独断整局FG或崩溃原因。66e6683/ed7e598独立SDK计数与原样转发的Reflex ID是优先比较范围，仅授权收口这一错误，不扩大NR/显示架构。presented=1是距上次GetState的呈现数，非累计生成数。转储展开的故障栈为0→AkSoundEngine.dll+0xD47E0等；匹配映像+0xD47DE是call rax、RAX=0，不能将音频模块空调用直接归因FG。失败DLL另存 `build/rollback/OptiScaler-74f5ef8.dll`，SHA与本局一致，仅作失败参照。
 
 前一失败局 PID33548/`ed7e598` 是“无F6输入、无NR/FG”：1616条通用Streamline Evaluate，而项目NGX、NR cadence、FG depth及source收据为0。其日志 `build/zzz-33548-OptiScaler.log`，SHA256 `BD8E7629F62D7C6005FD5E6CE61792388F8756F1F5D200651207DD339C4E8DCB`。输入接入已有变化，但最新局仍未恢复FG可用性。
 
@@ -73,7 +75,9 @@ NR末次采样 modelCalls=2226、modelFailures=0，depth rect2080×1296、MV rec
 
 DS 限定检查了游戏根、hk4e_cn cache 和安装根 HoYoShade，未找到完整 GIMI Mods/d3dx.ini；此结论仅限检查范围。当前 ReShade preset 是 Mod OFF.ini，启用 MartysMods Launchpad/MXAO，实际 shaders 存在；BeforeSR 有材料可做单独验证，但尚无生效或像素证明。未扫描私密缓存。
 
-下一步以恢复可用基线为先：寻找 F5_三游戏覆盖包_Final_20261103.zip 或其DLL（33,359,360 B，声明SHA256 `5986BC7377A34A5451ED14DC0CE481A20F30F8808B966ADC47583CF845986BB3`），核实实物及配置后再安排恢复验证。此声明来自历史包记录，尚未找到并复核实物，不能盲目部署。已保护的预迁移a4d7a345并非已知可用版本，不充当回退答案。并行只读查最新崩溃及FG回归边界，暂停新增NR原生MV/FinalOutput扩展。每次修改保留可用回退件；先确认原有SR/NR/FG仍正常，再单独验新深度，发生退化便停止叠加后续改动。部署前确认游戏均未运行，保留现有profiles及hardlinks。
+可用基线搜寻：DS已限定检查旧项目根、workers、安装根（含OptiScaler、cache/games及具名备份）及已知recovered-temp/cleanup/_evidence/work/artifacts/references，未找到 F5_三游戏覆盖包_Final_20261103.zip 或33,359,360 B的DLL。声明SHA256 `5986BC7377A34A5451ED14DC0CE481A20F30F8808B966ADC47583CF845986BB3`只有清单证据。r301输出有33,361,408 B、SHA `8AD975292E08EE5B735B035C0B8F05AABF05F8E1EBA10697806AF29F2B6DC8CE`、UTC2026-11-03T14:31:31Z的实际候选，版本同为a4d7a345，但与F5 Final不同，尚未绑定用户可用反馈；预迁移34,796,544 B的a4d7a345也不是已知可用版本。版本号和目录标签不能充当基线，不盲目部署。
+
+下一步只针对已证ZZZ SDK帧身份断链收口修复并独立复核，沿实际slEvaluateFeature token与命令列表绑定源，不猜Reflex偏移或借旧帧；完整源码/构建/部署可回退。暂停新增NR原生MV/FinalOutput扩展。先确认原有SR/NR/FG仍正常，再单独验新深度，发生退化便停止叠加后续改动。部署前确认游戏均未运行，保留现有profiles及hardlinks。
 
 `tools/runtime/Get-F6RunEvidence.ps1` 对保存/关闭日志用同一排写句柄解析和 hash，拒绝 PID/commit 不符，保留原行号。已实际提取上述两局；计数只是日志行，RecordedFenceTargetReached 只是记录值，不独立证明对象归属、selected SR、像素或性能。
 
