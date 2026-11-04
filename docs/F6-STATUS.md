@@ -1,6 +1,6 @@
 # F6 当前状态
 
-更新：2026-11-05。长期 goal 为 active，用户要求直接使用旧根已有源码恢复原有功能，不把寻找旧DLL作为前提。ZZZ 用户已确认插帧恢复；当前优先原神、星铁实测。原神失败已确证，核心写者对照 F5 查 SR/FSR 重建和显示生命周期；ZZZ NR 方向与卡顿在隔离树调查，不先改已工作的部署。历史轮次数不代表功能进度；不把局部契约、构建或日志成功算作一轮功能完成。
+更新：2026-11-05。长期 goal 为 active，用户要求直接使用旧根已有源码恢复原有功能，不把寻找旧DLL作为前提。用户已确认 5a61e97 下星铁 SR/NR/FG 基本正常，ZZZ 插帧恢复；当前优先原神回归。原神仍失败，核心写者对照 F5 查 SR/FSR 重建和显示生命周期；ZZZ NR 方向与卡顿继续在隔离树诊断。历史轮次数不代表功能进度；不把局部契约、构建或日志成功算作一轮功能完成。
 
 用户最新指出先前原神、星铁、ZZZ 的 SR/NR/FG 均可用，仅缺 NR 深度。以该功能基线为恢复目标：最近 ZZZ 无 F6 输入、原神显示不连续是回归，不能用深度/所有权的局部进展宣称整体进步。以旧根 `work/r294-r266-build/OptiScaler` 的F5 Main源码作行为参考；旧根顶层OptiScaler是后期F6，不能混淆。保留旧树原样，在F6隔离树修复并构建，先恢复三游戏既有功能，再验证新增NR深度；不预先断言回归由NR深度代码引起。
 
@@ -19,16 +19,18 @@ Sol 是核心源码唯一写者，另一名 Sol 独立复核；DS 处理只读�
 - 独立 `genshin-compile` 真实 Release x64 构建：exit0，118 warnings、0 errors，84秒；部署前游戏数0。回执 `build/5a61e97-product.json`。独立源码复核PASS，三个TU语法exit0、集成CPU15组/static100项exit0。
 - ZZZ 插帧恢复点另存 `build/rollback/OptiScaler-5a61e97-fg-restored.dll`，SHA同部署。仅用户确认ZZZ插帧恢复，不是三游戏全部可用基线。本次部署回退件 `build/rollback/OptiScaler-20261104T183930959-66dc649a02564857bf6959ca442c8034.dll` 是失败版 accf7e8。
 - 已集成并经独立 Sol 复核：ZZZ `199597d+ca05507` 输入接入/后端释放，原神 `808dc81` drain 连续性。Lead CPU：Router9组、Release7组、原神109项及wiring39项通过；均不证明游戏功能恢复。
-- 最新 ZZZ PID31592，creation FILETIME `134382911960461160`，CLI73828 exit0，日志确认5a61e97。用户确认插帧恢复，但间歇卡顿、较高延迟和小卡顿仍在；NR深度上下颠倒（实际模型方向未定），运动仍光流。进程已退出，Lead未stop；退出方式UNKNOWN。
+- 已收尾 ZZZ PID31592，creation FILETIME `134382911960461160`，CLI73828 exit0，日志确认5a61e97。用户确认插帧恢复，但间歇卡顿、较高延迟和小卡顿仍在；NR深度上下颠倒（实际模型方向未定），运动仍光流。进程已退出，Lead未stop；退出方式UNKNOWN。
 - `a100461+accf7e8` 修正同步 SDK 帧与安全基础呈现，`5a61e97` 统一虚继承的 IFeature 基类身份并显式传同次 selected feature，修复入口成功却发布全拒的问题。真实 source/tags/constants/SDK Present 采样4398/4399/4400及5054一致；SDK另有presented6/status0采样，用户实测才是插帧恢复依据。
-- 原神 PID64796 实测失败：用户反馈无深度、无FG/DLSS，有NR，很卡，FSR疑似反复重启。Sol隔离树 `genshin-baseline-recovery` 负责完整回归根因；先不扩展FinalOutput。星铁正按当前固定部署独立测试，保持adamfg/F5-DS。
+- 原神 PID64796 实测失败：用户反馈无深度、无FG/DLSS，有NR，很卡，FSR疑似反复重启；原神仍失败，Halley 候选待交件。Sol隔离树 `genshin-baseline-recovery` 继续查完整回归根因，先不扩展FinalOutput。星铁 5a61e97 已由用户确认 SR/NR/FG 基本正常，保持adamfg/F5-DS。
+- 现场 ZZZ PID50760 正在运行；正式位和 profiles 未动，不自动操作 UI、强退或部署。
 
 ## 正在集成的候选
 
 | 项目 | 代码与验证 | 未完成 |
 |---|---|---|
 | NR 完整链历史 | 私有 `1247a68`，已集成 `0613134`，独立审阅通过；CPU 74 项通过，已构建部署 | 三游戏动态细节、跳模型复用和净性能 |
-| 原神 SDK 输入与真实输出 | `6f806fe` 输出生命周期、`808dc81` drain前先生产原生guides并精确撤销未交SDK收据；独立复核PASS，已集成部署74f5ef8 | 待新局检查显示连续性；既有PID6748仅bac4b64，不能作为新修复验收 |
+| NR 方向诊断候选 | `ee6f8c8` 已独立 Confucius PASS，Lead 集成为 `9546c2e`；Lead CPU 63 项 exit0 | 仅诊断，不改翻转/算法/GPU 行为；未产品构建、未部署 |
+| 原神 SDK 输入与真实输出 | `6f806fe` 输出生命周期、`808dc81` drain前先生产原生guides并精确撤销未交SDK收据；独立复核PASS，已集成部署74f5ef8 | 原神仍失败；Halley 候选待交件；既有PID6748仅bac4b64，不能作为新修复验收 |
 | ZZZ F6 NGX 输入接入 | `199597d+ca05507`，独立复核PASS，已集成部署74f5ef8；Release失败保完整context并阻native Shutdown，内部替换先预检 | 未知/注入前已创建handle仍native-forward；必须实测owner=selected的Create/Evaluate及SR/NR/FG，hook安装不等于恢复 |
 | 原神 FinalOutput child runtime | `finaloutput-runtime` 从 `bac4b64` 分离，仅 HoYoShade 集成文件；已要求 Rawls 停止新增编码、保留现状，优先基线恢复 | child 创建/配置/selection/合法 raw 前更新和 GPU 退休尚未闭合，ON 实机待验；不得把扩展此链当作恢复原有 SR/NR/FG 的替代 |
 
