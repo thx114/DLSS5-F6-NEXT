@@ -526,7 +526,7 @@ HRESULT Endpoint::PresentImpl(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
             GenshinVisibleChild::PresentPermit::PhysicalOutput::Refused("SourceRevokedBeforeRawPresent",s.chain.Get(),physicalQueue);
             return DXGI_ERROR_WAS_STILL_DRAWING; // admission result, no raw HRESULT exists
         }
-        if(genshin)physical.RawEntered();
+        if(genshin && !physical.RawEntered())return DXGI_ERROR_WAS_STILL_DRAWING;
         rawCalled=true;rawResult=present();return rawResult;
     };
     const auto finishPhysical=[&](HRESULT hr,bool accepted,bool tailKnown=false) -> HRESULT {

@@ -21,8 +21,9 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     std::shared_ptr<framegen::final_output::Provider> _finalOutputProvider;
   public:
     // R727: only authenticated Capture may mint this immutable guide contract.
-    // Raster rows match the final picture; XY values are current->previous
-    // picture pixels, normalized by the sealed constants, not generic Unity inputs.
+    // FG donor rows include the SDK-specific Y reflection. XY values are
+    // current->previous picture pixels, normalized by the sealed constants.
+    // This is not NR's Picture DeviceZ/validity mapping or reader completion.
     class GenshinNormalizedGuides final
     {
         friend class GenshinBridgeFg::Recording;

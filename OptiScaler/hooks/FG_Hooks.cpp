@@ -1944,7 +1944,8 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
                         ((IDXGISwapChain4*)This)->GetCurrentBackBufferIndex();
                         const uint32_t frameId=static_cast<uint32_t>(genshinReflex.frame);
                         tokenResult=getToken(localToken,&frameId);
-                        if(tokenResult==sl::Result::eOk && localToken){
+                        if(tokenResult==sl::Result::eOk && localToken &&
+                            genshinReflex.frame<=UINT32_MAX && static_cast<uint64_t>(*localToken)==genshinReflex.frame){
                             genshinReflex.startToken=static_cast<uint64_t>(*localToken);
                             genshinReflex.startCalled=true;
                             genshinReflex.startResult=static_cast<int>(marker(sl::PCLMarker::ePresentStart,*localToken));
@@ -2100,10 +2101,16 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     }
     if(willPresent && genshinDlssg) {
         auto* current=GenshinBridgeFg::PresentScope::Current();
-        // Seal this exact source at the real SDK call. A worker without a
-        // documented source callback still cannot inherit this stack scope.
+        // The accepted PresentStart marker selects this SDK input token.
+        // NV_ASYNC_FRAME_MARKER_PARAMS has queue/frameID/presentFrameID, but
+        // the public header does not bind either ID to this source receipt or
+        // guarantee a same-thread raw bracket. Never export this TLS as an
+        // asynchronous source association or use GetState's input fence for it.
+        const uint64_t markerFrame=genshinReflex.startCalled &&
+            genshinReflex.startResult==static_cast<int>(sl::Result::eOk) && localToken &&
+            static_cast<uint64_t>(*localToken)==genshinReflex.startToken ? genshinReflex.startToken : 0;
         GenshinVisibleChild::PresentPermit::BeforePresent(This,
-            current ? current->EnterSdkPresent(This) : nullptr);
+            current ? current->EnterSdkPresent(This,markerFrame) : nullptr);
     }
     GenshinHookCpuTiming::Scope sdkPresentTiming(GenshinHookCpuTiming::Stage::FgSdkPresent,
                                                collectStarRailPacing && !starRailSourceFailed);

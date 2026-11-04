@@ -2436,6 +2436,13 @@ bool DLSSG_Dx12::Dispatch()
         return false;
     }
 
+    const uint64_t genshinToken = genshinFrame ? static_cast<uint64_t>(*frameToken) : 0;
+    if (genshinFrame && (genshinToken != willDispatchFrame ||
+        frameId != willDispatchFrame || willDispatchFrame > UINT32_MAX))
+    {
+        Deactivate();
+        return false; // retain tagged roots; an SDK token alias is not this source
+    }
     if (starRailFrame && !sourceStillCurrent()) return false;
     if (depthContractFrame)
     {
@@ -2537,6 +2544,21 @@ bool DLSSG_Dx12::Dispatch()
         _starRailDispatchFrame = willDispatchFrame;
         _starRailDispatchGeneration = sourceGeneration;
         _starRailDispatchOwner = _runningInputOwner;
+    }
+    if (genshinFrame)
+    {
+        auto& lease = _genshinInputs[fIndex];
+        if (!lease || lease->frame != willDispatchFrame || lease->source ||
+            static_cast<uint64_t>(*frameToken) != genshinToken ||
+            lease->epoch != _inputOwnerEpoch || lease->owner != _genshinOwnerGeneration ||
+            !GenshinGuidesCurrent(lease->guides)) return false;
+        try {
+            // Copy the value, never retain an SDK ring-entry pointer. Only the
+            // real successful SetConstants above can seal this input identity.
+            lease->source = std::shared_ptr<const GenshinBridgeFg::SdkInputSource>(
+                new GenshinBridgeFg::SdkInputSource(lease->guides->key, willDispatchFrame,
+                    genshinToken, lease->owner, lease->epoch, lease->guides->preparedPacket));
+        } catch (const std::bad_alloc&) { return false; } // tags retain their original retirement owner
     }
     if (!genshinFrame || DetailedGenshinFrameLog(willDispatchFrame)) LOG_DEBUG("Result: Ok");
 
@@ -3595,10 +3617,6 @@ DLSSG_Dx12::SetGenshinConstants(const std::shared_ptr<const GenshinNormalizedGui
     lease->hostCompletion = ReserveGenshinFence(_genshinHostFence);
     if (!lease->hostCompletion) return {};
     lease->guides = guides;
-    try {
-        lease->source = std::shared_ptr<const GenshinBridgeFg::SdkInputSource>(
-            new GenshinBridgeFg::SdkInputSource(key, frame, lease->owner, lease->epoch, guides->preparedPacket));
-    } catch (const std::bad_alloc&) { return {}; } // no tag/submission has consumed this lease
     _genshinConstants[index] = guides->constants;
     // Continuity may assert reset; it cannot replace the authenticated camera.
     if (reset) _genshinConstants[index].reset = sl::Boolean::eTrue;
@@ -3614,7 +3632,8 @@ bool DLSSG_Dx12::GenshinSourceCurrent(const std::shared_ptr<const GenshinInputRe
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (!receipt || !receipt->source || !receipt->source->Matches(key, frame) || receipt->Retired() ||
         receipt->owner != _genshinOwnerGeneration || receipt->epoch != _inputOwnerEpoch ||
-        receipt->frame != frame || frame != _frameCount || _ownerChanging || _hookRetiring ||
+        receipt->frame != frame || frame != _frameCount || !frame || frame > UINT32_MAX ||
+        receipt->thread != GetCurrentThreadId() || receipt->presentReturned || _ownerChanging || _hookRetiring ||
         _teardownPending || _teardownQuarantined || !GenshinGuidesCurrent(receipt->guides) ||
         _genshinInputs[frame % BUFFER_COUNT].get() != receipt.get() ||
         !SameGenshinComOwner(receipt->device.Get(), _device) ||

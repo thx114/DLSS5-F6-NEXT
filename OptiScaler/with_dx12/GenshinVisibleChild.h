@@ -63,9 +63,14 @@ private:
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
         Microsoft::WRL::ComPtr<ID3D12Fence> fence;
         Microsoft::WRL::ComPtr<ID3D12Device> device;
+        bool SourceKnown() const noexcept {
+            return inputSource && source.Matches(inputSource->Identity()) &&
+                inputSource->Matches(inputSource->Identity(),inputSource->SdkFrame());
+        }
         bool OutputLive() const noexcept {return outputLive && outputLive->load(std::memory_order_acquire);}
         bool Ready(uint64_t& completed) const noexcept {
-            if(!OutputLive() || !chain || !color || !queue || !fence || !device || !value || value==UINT64_MAX)return false;
+            if(!SourceKnown() || !OutputLive() || !chain || !color || !queue || !fence || !device ||
+                !value || value==UINT64_MAX)return false;
             completed=fence->GetCompletedValue();
             return completed!=UINT64_MAX && completed>=value && SUCCEEDED(device->GetDeviceRemovedReason());
         }
@@ -543,7 +548,7 @@ private:
             std::lock_guard display(display_->mutex);
             std::lock_guard lock(snapshotMutex_);
             if(!Current(snapshot_) || content.epoch!=epoch_.load() || !content.OutputLive() ||
-                !(content.source==parentContent_) || !content.source.Known())return false;
+                !(content.source==parentContent_) || !content.SourceKnown())return false;
             std::swap(pendingContent_,content); // old COM refs leave the lock in content
         }
         // Show merely schedules owner evaluation; a hidden HWND is revealed only
@@ -646,7 +651,7 @@ public:
             PhysicalContent content_;
             std::shared_ptr<DisplayGate> hiddenDisplay_;
             size_t hiddenSlot_=0;
-            bool submitted_=false,hiddenFinished_=false,hiddenRawEntered_=false;
+            bool submitted_=false,finished_=false,hiddenFinished_=false,hiddenRawEntered_=false;
             void FinishHidden(bool rawCalled,bool tailKnown,ID3D12Fence* fence,uint64_t value) noexcept {
                 if(!hiddenDisplay_ || hiddenFinished_)return;
                 std::lock_guard display(hiddenDisplay_->mutex);
@@ -708,7 +713,7 @@ public:
                         p->source_==p->owner_.parentContent_;
                 }
                 content_.stream=stream;content_.outputGeneration=generation;content_.sequence=sequence;content_.index=index;
-                content_.chain=chain;content_.queue=queue;content_.color=Key(color);content_.device=device;
+                content_.chain=chain;content_.queue=queue;content_.color=Key(color);content_.device=device;content_.fence=fence;
                 if(!authenticated || gate->RawInFlight()) {
                     // Never borrow a current/latest source for startup or a vendor
                     // worker. Only the owner's acknowledged hidden child may advance.
@@ -735,7 +740,8 @@ public:
                     return true;
                 }
                 if(p->physicalCount_ && (Key(p->physical_.chain.Get())!=Key(chain) ||
-                    Key(p->physical_.queue.Get())!=Key(queue))) {
+                    Key(p->physical_.queue.Get())!=Key(queue) || p->physical_.fence.Get()!=fence ||
+                    p->physical_.inputSource!=p->sdkSource_)) {
                     p->physicalFailed_=true;return refuse("AmbiguousPhysicalOutputOrder");
                 }
                 if(!outputLive || !outputLive->load(std::memory_order_acquire)) {
@@ -744,11 +750,15 @@ public:
                 }
                 if(auto old=gate->outputLive.lock();old && old!=outputLive)old->store(false,std::memory_order_release);
                 gate->outputLive=outputLive;
-                content_.source=p->source_;content_.epoch=p->epoch_;content_.outputLive=outputLive;
+                content_.source=p->source_;content_.inputSource=p->sdkSource_;
+                content_.epoch=p->epoch_;content_.outputLive=outputLive;
                 content_.primed=gate->hiddenAcknowledged;return true;
             }
             bool HiddenOnly() const noexcept {return hiddenDisplay_!=nullptr;}
-            void RawEntered() noexcept {hiddenRawEntered_=true;}
+            bool RawEntered() noexcept {
+                if(finished_ || hiddenRawEntered_)return false;
+                hiddenRawEntered_=true;return true; // one actual raw call per bound output
+            }
             bool Prime() const noexcept {return content_.primed;}
             bool MayPresent() const noexcept {
                 if(hiddenDisplay_) {
@@ -767,8 +777,11 @@ public:
             }
             void Submitted(bool rawCalled,UINT rawFlags,HRESULT rawResult,bool accepted,bool tailValid,
                            ID3D12Fence* fence,uint64_t value) noexcept {
+                if(finished_)return;
+                finished_=true;
                 const uint64_t completed=fence?fence->GetCompletedValue():UINT64_MAX;
-                tailValid=tailValid && fence && value && value!=UINT64_MAX && completed!=UINT64_MAX;
+                tailValid=tailValid && rawCalled && hiddenRawEntered_ && fence==content_.fence.Get() &&
+                    value && value!=UINT64_MAX && completed!=UINT64_MAX;
                 if(permit_ && rawCalled && !tailValid)permit_->physicalTailFailed_=true;
                 if(hiddenDisplay_) {
                     if(permit_) {
@@ -800,7 +813,8 @@ public:
                 content_.rawFlags=rawFlags;
                 if(rawCalled && FAILED(rawResult) && rawResult!=DXGI_ERROR_WAS_STILL_DRAWING)
                     p->physicalRawFailed_=true; // never disguise a real raw failure as source admission
-                const bool valid=content_.OutputLive() && rawCalled && accepted && tailValid && rawResult==S_OK &&
+                const bool valid=content_.SourceKnown() && content_.inputSource==p->sdkSource_ &&
+                    content_.OutputLive() && rawCalled && accepted && tailValid && rawResult==S_OK &&
                     sourceCurrent && p->sdkEntered_ && p->owner_.Epoch()==p->epoch_;
                 submitted_=valid;
                 if(submitted_) {
@@ -822,7 +836,7 @@ public:
             ~PhysicalOutput(){
                 // An unfinished raw poisons the observation; only a reservation
                 // that never entered raw can cancel without a real tail.
-                if(hiddenDisplay_ && hiddenRawEntered_ && !hiddenFinished_ && permit_)permit_->physicalTailFailed_=true;
+                if(hiddenRawEntered_ && !finished_ && permit_)permit_->physicalTailFailed_=true;
                 FinishHidden(hiddenRawEntered_,false,nullptr,0);
                 if(permit_ && !submitted_)permit_->physicalFailed_=true;
             }

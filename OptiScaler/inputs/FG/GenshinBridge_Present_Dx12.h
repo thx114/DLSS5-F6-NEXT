@@ -325,8 +325,8 @@ struct Frame final {
         return !touchedProvider || (providerRetirement && providerRetirement->Retired());
     }
 };
-// Only an actual dispatched child Present may commit this predecessor. It is
-// used to set the real Streamline reset constant, never to retire a GPU owner.
+// Only an actual dispatched SDK input and its saved S_OK may commit this
+// predecessor. It sets Streamline reset, never GPU retirement or HWND authority.
 struct PresentedGuides {
     Key key{};
     uint64_t epoch=0,cut=0;
@@ -882,7 +882,8 @@ public:
             pending=0;lastReport=count;
         }
         }catch(...){} // Cleanup and current-scope restoration stay outside.
-        if(!presented_)CloseProvider(false);Retire(std::move(frame_));if(current_==this)current_=previous_;
+        if(!presented_)CloseProvider(sdkReturned_ && sdkResult_==S_OK && bool(sdkSource_));
+        Retire(std::move(frame_));if(current_==this)current_=previous_;
     }
     PresentScope(const PresentScope&)=delete;PresentScope& operator=(const PresentScope&)=delete;
     static PresentScope* Current() noexcept {return current_;}
@@ -1287,8 +1288,9 @@ public:
         const auto& source=frame_->providerRetirement->Source();
         return source && source->Packet()==frame_->ticket.depth.preparedPacket ? source : nullptr;
     }
-    std::shared_ptr<const SdkInputSource> EnterSdkPresent(IDXGISwapChain* sc) noexcept {
-        if(sdkEntered_ || sdkReturned_ || Identity(sc)!=Identity(swapchain_.Get()))return {};
+    std::shared_ptr<const SdkInputSource> EnterSdkPresent(IDXGISwapChain* sc,uint64_t markerFrame) noexcept {
+        if(current_!=this || GetCurrentThreadId()!=thread_ || sdkEntered_ || sdkReturned_ ||
+           Identity(sc)!=Identity(swapchain_.Get()) || markerFrame!=providerFrame_)return {};
         sdkSource_=InputSource();sdkEntered_=bool(sdkSource_);return sdkSource_;
     }
     void ReturnSdkPresent(IDXGISwapChain* sc,HRESULT result) noexcept {
@@ -1296,17 +1298,19 @@ public:
            Identity(sc)!=Identity(swapchain_.Get()))return;
         sdkEntered_=false;sdkReturned_=true;sdkResult_=result; // saved original SDK HRESULT only
     }
-    void Presented(HRESULT result,bool continuityValid=true,bool sdkReturned=false) noexcept {
+    void Presented(HRESULT /*wrapperResult*/,bool continuityValid=true,bool /*wrapperObservedSdkReturn*/=false) noexcept {
         if(presented_)return;
-        // sdkReturned belongs to this scope's same-thread saved SDK call, not
-        // an outer wrapper HRESULT, physical tail, or provider submission alone.
-        const bool sdkSucceeded=sdkReturned && current_==this && GetCurrentThreadId()==thread_ &&
-            result==S_OK && frame_ && dispatched_ && frame_->lifecycle.State()==Phase::Dispatched;
-        // HWND Show acknowledgement is overlay state, not provider history.
-        // Only this dispatch, the real child S_OK and post-present continuity
-        // may commit the predecessor consumed by the next engine frame.
-        const bool commit=frame_ && dispatched_ && result==S_OK && continuityValid &&
+        // The original SDK bracket is the authority for input acceptance. A
+        // wrapper/filter HRESULT and a physical-output callback describe other
+        // work. In particular, asynchronous output must not reset the input
+        // predecessor merely because no raw arrived on this render stack.
+        const bool sdkSucceeded=sdkReturned_ && !sdkEntered_ && sdkResult_==S_OK && sdkSource_ &&
+            current_==this && GetCurrentThreadId()==thread_ && frame_ && dispatched_ &&
+            frame_->providerRetirement && sdkSource_==frame_->providerRetirement->Source() &&
+            sdkSource_->Matches(MakeKey(frame_->ticket),providerFrame_) &&
             frame_->lifecycle.State()==Phase::Dispatched;
+        const bool commit=sdkSucceeded && State::Instance().currentFG==provider_ &&
+            provider_->GenshinSourceCurrent(frame_->providerRetirement,MakeKey(frame_->ticket),providerFrame_);
         const auto committedProvider=reinterpret_cast<uintptr_t>(static_cast<IFGFeature_Dx12*>(provider_));
         const auto committedSwapchain=commit?Identity(swapchain_.Get()):0;
         const auto committedQueue=commit?Identity(presentQueue_.Get()):0;
@@ -1321,19 +1325,18 @@ public:
             else if(dispatched_) {pool.presented.known=false;pool.presented.resetRequested=false;}
             // No current dispatch cannot invalidate an earlier real submission.
             // Terminal device/epoch/queue paths explicitly Revoke beforehand.
-            ObserveCommit(before,pool.presented,frame_.get(),result,continuityValid,dispatched_,commit,"Presented");}
+            ObserveCommit(before,pool.presented,frame_.get(),sdkResult_,continuityValid,dispatched_,commit,"InputAccepted");}
         if(commit)
-            frame_->lifecycle.Advance(MakeKey(frame_->ticket),Phase::Dispatched,Phase::Presented);
+            frame_->lifecycle.Advance(MakeKey(frame_->ticket),Phase::Dispatched,Phase::InputAccepted);
         else if(frame_){
-            frame_->lifecycle.Revoke(); // no physical receipt: no displayed predecessor
+            frame_->lifecycle.Revoke(); // this SDK input cannot seed the next transaction
             if(!sdkSucceeded)result_=Result::PresentFailed;
         }
-        // A returned SDK transaction can still have no synchronous physical
-        // output. Query its exact input receipt without committing display or
-        // treating CPU return as completion. The default keeps legacy callers'
-        // commit-only closure; the visible wrapper supplies its observed bracket.
-        const bool retirementQuery=commit || sdkSucceeded;
-        if(sdkReturned && dispatched_){
+        // Query input retirement after the saved original SDK return, including
+        // deferred physical output. The provider's own fences retain all GPU
+        // custody; neither this query nor input acceptance certifies display.
+        const bool retirementQuery=sdkSucceeded;
+        if(sdkReturned_ && dispatched_){
             static thread_local uint64_t lastTick=0,calls=0;
             static thread_local unsigned transitions=0;
             static thread_local bool lastCommit=false,lastQuery=false;
@@ -1346,7 +1349,7 @@ public:
                 const auto& t=frame_->ticket;
                 LOG_INFO("R1069 sdk-closure: pid={} thread={} provider_frame={} present_epoch={} source_generation={} source_frame={} picture={} sdk_returned={} sdk_hr={:X} retirement_requested={} physical_continuity={} predecessor_commit={} completion_authority=false visual=UNKNOWN",
                     GetCurrentProcessId(),GetCurrentThreadId(),providerFrame_,stateFrame_,t.source.generation,
-                    t.source.sourceFrame,t.pictureSerial,sdkReturned,static_cast<unsigned>(result),retirementQuery,
+                    t.source.sourceFrame,t.pictureSerial,sdkReturned_,static_cast<unsigned>(sdkResult_),retirementQuery,
                     continuityValid,commit);
             }
         }
