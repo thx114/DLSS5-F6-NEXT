@@ -2,6 +2,7 @@
 
 #include <framegen/IFGFeature_Dx12.h>
 #include "DlssgInputContinuity.h"
+#include "ZzzFrameScope.h"
 #include <framegen/FinalOutputEndpoint.h>
 #include <inputs/FG/GenshinFgTicket.h>
 #include <mutex>
@@ -184,6 +185,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         Microsoft::WRL::ComPtr<ID3D12Fence> fence;
         Microsoft::WRL::ComPtr<ID3D12Resource> depth, motion, output;
         dlssg::NativeSource source {};
+        std::shared_ptr<dlssg::zzz::Receipt> frameScope;
         dlssg::InputOwner owner {};
         FG_Constants settings {};
         sl::Constants constants {};
@@ -194,7 +196,6 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     std::atomic<bool> _nativeGuideTracking{false};
     bool _nativeGuideFailed=false, _nativeGuideHooksRequested=false;
     UINT64 _nativeGuideSubmissions=0, _nativeGuideSerial=0;
-    uint32_t _nativeGuideSdkFrame=0; // Explicit SDK IDs; never adopted from incoming markers.
     dlssg::NativeSource _nativeGuideDispatch {};
     bool BuildGuideConstants(int slot, sl::Constants& constants, bool includeCamera);
     void EvaluateStateLocked(ID3D12Device* device, FG_Constants& fgConstants);
@@ -431,6 +432,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     // FinishedPicture/Present transaction remains the only guide authority.
     bool OwnsUpscalerDepthContract() const;
     bool OwnsNativeZzzSource() const;
+    uint32_t NativeZzzViewport() const { return static_cast<uint32_t>(viewport); }
     FGExecutionGuard BeginNativeUpscalerInputs(ID3D12Device* device, FG_Constants& fgConstants);
     bool NativeGuidePresentToken(sl::FrameToken*& token, dlssg::NativeSource& source);
     bool BeginNativeGuidePresent(const dlssg::NativeSource& source);

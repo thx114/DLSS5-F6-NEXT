@@ -10,6 +10,7 @@
 #include <misc/IdentifyGpu.h>
 #include <proxies/Streamline_Proxy.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
+#include <framegen/dlssg/FgDepthContract.h>
 #include <framegen/dlssg/StarRailF5DsPolicy.h>
 #include <genshin/GenshinHookCpuTiming.h>
 #include <low_latency/GpuTimeline.h>
@@ -492,8 +493,8 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
                     // Defer only clock adoption to the next guarded source entry:
                     // SDK worker -> source lock -> SDK Present would deadlock.
                     // Token/PCL forwarding below keeps the original marker ID.
-                    // Native ZZZ owns a selected-SR ordinal, independent of all
-                    // incoming game/SDK marker counters. Do not enter its source
+                    // Native ZZZ owns a selected-SR ordinal plus the synchronous
+                    // game's SL frame ID. Markers cannot change either. Do not enter its source
                     // lock from an SDK worker while Present waits for that worker.
                     const bool nativeZzzMarker = dlssg->OwnsNativeZzzSource() || dlssg->TracksNativeGuides();
                     if (sdkStarRailMarker && StarRailF5Ds::Selected())
@@ -522,6 +523,12 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
             if (tokenResult != sl::Result::eOk || frameToken == nullptr)
                 return noMarker ? NVAPI_OK : forwardDriver();
 
+            const bool zzzFrame=dlssg::depth_contract::Game()==GameRouting::Identity::ZenlessZoneZero &&
+                State::Instance().swapchainInteropApi==SwapchainInteropApi::None;
+            if (zzzFrame && (pSetLatencyMarkerParams->frameID>UINT32_MAX ||
+                static_cast<uint32_t>(*frameToken)!=frameCount))
+                return noMarker ? NVAPI_OK : forwardDriver();
+
             LOG_TRACE("{} for frame {}", magic_enum::enum_name(marker), frameCount);
 
             // R897: the process was admitted by the actual StarRail source wrapper.
@@ -543,9 +550,18 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
             }
             skip[index] = true;
             GenshinHookCpuTiming::Scope markerTiming(GenshinHookCpuTiming::Stage::FgPclMarker,collectMarker);
+            const auto actualPclFrame=static_cast<uint32_t>(*frameToken);
             const auto markerResult=StreamlineProxy::PCLSetMarker()(marker, *frameToken);
             const auto markerWall=markerTiming.Finish();
             skip[index] = false;
+            if (zzzFrame)
+            {
+                static std::atomic<unsigned> rows { 0 };
+                if (rows.fetch_add(1,std::memory_order_relaxed)<12 || frameCount%600==0)
+                    LOG_INFO("F6 ZZZ actual PCL forward: marker={} raw_id={} pcl_id={} game_caller={} thread={} result={} source_mutated=false",
+                        static_cast<uint32_t>(marker),pSetLatencyMarkerParams->frameID,
+                        actualPclFrame,gameCall,GetCurrentThreadId(),static_cast<int>(markerResult));
+            }
             if(collectMarker){
                 markerStamp.result=static_cast<uint32_t>(markerResult);markerStamp.resultKnown=true;
                 GenshinHookCpuTiming::RecordStarRailCall(GenshinHookCpuTiming::StarRailCall::PclMarker,markerStamp,markerWall);

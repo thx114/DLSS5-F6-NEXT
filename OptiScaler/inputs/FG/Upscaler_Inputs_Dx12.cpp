@@ -126,6 +126,28 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
 
     auto* own=dynamic_cast<DLSSG_Dx12*>(fg);
     const bool nativeZzz=own && own->OwnsNativeZzzSource();
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> selectedList;
+    Microsoft::WRL::ComPtr<IUnknown> selectedIdentity;
+    if (nativeZzz)
+    {
+        selectedList=dlssg::depth_contract::NativeObject(InCmdList);
+        if (selectedList) selectedList.As(&selectedIdentity);
+    }
+    dlssg::zzz::Selection selectedEntry(
+        dlssg::zzz::gameApi.load(std::memory_order_acquire),static_cast<uint32_t>(sl::kFeatureDLSS),
+        nativeZzz?own->NativeZzzViewport():0,reinterpret_cast<uintptr_t>(selectedIdentity.Get()),
+        reinterpret_cast<uintptr_t>(feature),reinterpret_cast<uintptr_t>(own));
+    if (nativeZzz && !dlssg::zzz::Selection::Current(reinterpret_cast<uintptr_t>(selectedIdentity.Get()),
+        reinterpret_cast<uintptr_t>(feature),own->NativeZzzViewport(),reinterpret_cast<uintptr_t>(own)))
+    {
+        static std::atomic<unsigned> rows { 0 };
+        if (rows.fetch_add(1,std::memory_order_relaxed)<8)
+            LOG_WARN("F6 ZZZ selected frame refused: reason=no-matching-synchronous-game-DLSS-scope list={} feature={} viewport={} thread={} async_cross_thread=unsupported",
+                reinterpret_cast<uintptr_t>(selectedIdentity.Get()),reinterpret_cast<uintptr_t>(feature),
+                own->NativeZzzViewport(),GetCurrentThreadId());
+        own->RejectUpscalerGuideSource("native-frame-scope-missing-or-mismatched");
+        return {};
+    }
     if (!nativeZzz) fg->EvaluateState(_device, fgConstants);
 
     int reset = 0;

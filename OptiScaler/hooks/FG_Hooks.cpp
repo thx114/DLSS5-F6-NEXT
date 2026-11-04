@@ -1973,20 +1973,27 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
             const bool dispatched=fg->Present();
             // Native ZZZ's successful Dispatch has applied this source's Reflex
             // options/constants. Carry that receipt through the real SDK Present.
-            if (nativeZzzDlssg && fgPacingActive())
+            if (nativeZzzDlssg)
             {
                 if (dispatched)
                     tokenResult=nativeZzzDlssg->NativeGuidePresentToken(localToken,nativeZzzMarkerSource) ?
                         sl::Result::eOk : sl::Result::eErrorInvalidState;
-                nativeZzzSourceFailed=dispatched && tokenResult!=sl::Result::eOk;
+                nativeZzzSourceFailed=!dispatched || tokenResult!=sl::Result::eOk;
                 if (!dispatched || nativeZzzSourceFailed)
                     nativeZzzDlssg->RejectUpscalerGuideSource("native-present-no-fresh-source");
                 if (nativeZzzMarkerSource && tokenResult==sl::Result::eOk && localToken &&
                     (!ReflexHooks::gameIsSendingMarkers() || !config->FGDLSSGUseGamesReflexMarkers.value_or_default()) &&
                     StreamlineProxy::PCLSetMarker())
                 {
+                    const auto actualPclFrame=static_cast<uint32_t>(*localToken);
                     nativeZzzStartCalled=StreamlineProxy::PCLSetMarker()(sl::PCLMarker::ePresentStart,*localToken)==
                         sl::Result::eOk;
+                    if (nativeZzzMarkerSource.serial<=3 || nativeZzzMarkerSource.serial%600==0)
+                        LOG_INFO("F6 ZZZ source PCL: marker=PresentStart api={} game_viewport={} provider_viewport={} serial={} upstream_raw={} sdk_frame={} pcl_id={} result_ok={}",
+                            nativeZzzMarkerSource.upstreamApi,nativeZzzMarkerSource.upstreamViewport,
+                            nativeZzzMarkerSource.providerViewport,nativeZzzMarkerSource.serial,
+                            nativeZzzMarkerSource.sdkFrame,nativeZzzMarkerSource.sdkFrame,
+                            actualPclFrame,nativeZzzStartCalled);
                 }
             }
         }
@@ -2134,7 +2141,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     }
     // Consume the exact successful Dispatch at the actual SDK boundary. Marker
     // policy and an SDK-internal frame counter cannot select/replay its source.
-    if (nativeZzzMarkerSource && (state.currentFG!=nativeZzzDlssg ||
+    if (nativeZzzDlssg && willPresent && (!nativeZzzMarkerSource || state.currentFG!=nativeZzzDlssg ||
         !nativeZzzDlssg->BeginNativeGuidePresent(nativeZzzMarkerSource)))
     {
         nativeZzzSourceFailed=true;
@@ -2152,10 +2159,12 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     const auto starRailSdkResult=static_cast<uint32_t>(result); // Freeze the actual SDK return before postwork.
     if (nativeZzzMarkerSource && (nativeZzzMarkerSource.serial<=3 || nativeZzzMarkerSource.serial%600==0 ||
         nativeZzzSourceFailed || FAILED(result)))
-        LOG_INFO("F6 ZZZ source SDK Present: frame={} serial={} generation={} epoch={} sdk_frame={} list={} output={} sc={} admitted={} result={} gpu_complete=UNKNOWN generated=UNKNOWN",
+        LOG_INFO("F6 ZZZ source SDK Present: frame={} serial={} generation={} epoch={} sdk_frame={} list={} output={} sc={} admitted={} result={} upstream_api={} game_viewport={} provider_viewport={} upstream_raw={} gpu_complete=UNKNOWN generated=UNKNOWN",
             nativeZzzMarkerSource.frame,nativeZzzMarkerSource.serial,nativeZzzMarkerSource.generation,
             nativeZzzMarkerSource.epoch,nativeZzzMarkerSource.sdkFrame,nativeZzzMarkerSource.list,
-            nativeZzzMarkerSource.output,(uintptr_t)This,!nativeZzzSourceFailed,static_cast<uint32_t>(result));
+            nativeZzzMarkerSource.output,(uintptr_t)This,!nativeZzzSourceFailed,static_cast<uint32_t>(result),
+            nativeZzzMarkerSource.upstreamApi,nativeZzzMarkerSource.upstreamViewport,
+            nativeZzzMarkerSource.providerViewport,nativeZzzMarkerSource.sdkFrame);
     sdkPresentTiming.Returned(starRailSdkResult,GenshinHookCpuTiming::ResultKind::Hresult);
     const auto starRailSdkWall=sdkPresentTiming.Finish(); // Before logging/overlay postwork/Reflex.
     if(collectStarRailPacing && !starRailSourceFailed){

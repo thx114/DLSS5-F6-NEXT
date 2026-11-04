@@ -12,6 +12,10 @@ struct NativeSource
     uint64_t serial=0, frame=0, generation=0, epoch=0;
     uint32_t sdkFrame=0;
     uintptr_t list=0, output=0;
+    uintptr_t upstreamApi=0;
+    uint32_t upstreamViewport=0, providerViewport=0;
+    bool sdkFrameKnown=false;
+    uintptr_t provider=0;
     explicit operator bool() const noexcept { return serial!=0; }
     bool operator==(const NativeSource&) const = default;
 };

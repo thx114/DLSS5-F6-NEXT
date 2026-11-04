@@ -13,6 +13,8 @@
 #include <menu/menu_overlay_base.h>
 #include <framegen/nvngx/Nvngx_FG.h>
 #include <framegen/dlssg/MfgUnlock.h>
+#include <framegen/dlssg/FgDepthContract.h>
+#include <framegen/dlssg/ZzzFrameScope.h>
 #include <proxies/KernelBase_Proxy.h>
 #include <proxies/Streamline_Proxy.h>
 #include <imgui/ImGuiNotify.hpp>
@@ -677,7 +679,35 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
                                                 sl::CommandBuffer* cmdBuffer)
 {
     static std::atomic_bool nullTokenLogged { false };
-    if (NullFrameToken(frame, __FUNCTION__, nullTokenLogged))
+    const bool tokenValid=!NullFrameToken(frame, __FUNCTION__, nullTokenLogged);
+    const auto api=dlssg::zzz::gameApi.load(std::memory_order_acquire);
+    const auto caller=Util::GetCallerModule(_ReturnAddress());
+    const bool gameDlss=dlssg::depth_contract::Game()==GameRouting::Identity::ZenlessZoneZero &&
+        api && api!=reinterpret_cast<uintptr_t>(State::Instance().optiSlInterposer) &&
+        caller && caller!=dllModule && caller!=State::Instance().optiSlInterposer &&
+        caller!=State::Instance().optiSlCommon && caller!=State::Instance().optiSlDLSSG &&
+        feature==sl::kFeatureDLSS && tokenValid;
+    dlssg::zzz::Origin origin {};
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> nativeCommand;
+    Microsoft::WRL::ComPtr<IUnknown> commandIdentity;
+    if (gameDlss)
+    {
+        origin.api=api; origin.feature=static_cast<uint32_t>(feature);
+        origin.frame=static_cast<uint32_t>(frame); origin.frameKnown=true;
+        const auto gameViewport=dlssg::zzz::ParseGameViewport(inputs,numInputs);
+        origin.viewport=gameViewport.value;
+        origin.viewportKnown=gameViewport.known;
+        if (cmdBuffer && origin.viewportKnown)
+        {
+            nativeCommand=dlssg::depth_contract::NativeObject(reinterpret_cast<ID3D12GraphicsCommandList*>(cmdBuffer));
+            if (nativeCommand) nativeCommand.As(&commandIdentity);
+            origin.list=reinterpret_cast<uintptr_t>(commandIdentity.Get());
+        }
+    }
+    // Always shadow, including non-DLSS/local/invalid nested calls. No token
+    // pointer or lock escapes this synchronous game interposer invocation.
+    dlssg::zzz::Scope frameScope(origin,gameDlss);
+    if (!tokenValid)
         return o_slEvaluateFeature(feature, frame, inputs, numInputs, cmdBuffer);
 
     LOG_DEBUG("frameIndex: {}, feature: {}, inputCount: {}", static_cast<uint32_t>(frame),
@@ -707,6 +737,15 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
     }
 
     auto result = o_slEvaluateFeature(feature, frame, inputs, numInputs, cmdBuffer);
+    frameScope.Finish(result==sl::Result::eOk);
+    if (gameDlss)
+    {
+        static std::atomic<unsigned> rows { 0 };
+        if (rows.fetch_add(1,std::memory_order_relaxed)<8)
+            LOG_INFO("F6 ZZZ SL frame scope: api={} feature={} viewport={} viewport_known={} upstream_raw={} native_list={} thread={} result={} synchronous_only=true",
+                origin.api,origin.feature,origin.viewport,origin.viewportKnown,origin.frame,origin.list,
+                GetCurrentThreadId(),static_cast<int>(result));
+    }
     return result;
 }
 
@@ -2074,6 +2113,7 @@ void StreamlineHooks::unhookInterposer()
     }
     else
     {
+        dlssg::zzz::gameApi.store(0,std::memory_order_release);
         o_slInit = nullptr;
         o_slInit_sl1 = nullptr;
         o_slSetTag = nullptr;
@@ -2099,6 +2139,17 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
     {
         LOG_WARN("Streamline module in NULL");
         return;
+    }
+
+    // The independently loaded SDK must never become the game-origin API.
+    const bool zzz=dlssg::depth_contract::Game()==GameRouting::Identity::ZenlessZoneZero;
+    if (zzz)
+    {
+        wchar_t path[32768] {};
+        const auto length=GetModuleFileNameW(slInterposer,path,static_cast<DWORD>(std::size(path)));
+        const auto local=std::filesystem::path(Config::Instance()->MainDllPath.value())/L"streamline";
+        if (slInterposer==State::Instance().optiSlInterposer || !length || length==std::size(path) ||
+            Util::IsSubpath(std::filesystem::path(path).lexically_normal(),local.lexically_normal())) return;
     }
 
     // Interposer needs this or it might end in an infinite loop calling itself
@@ -2219,6 +2270,8 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
                 //     DetourAttach(&(PVOID&) o_slSetD3DDevice, hkslSetD3DDevice);
 
                 auto detourResult = DetourTransactionCommit();
+                if (zzz && detourResult==NO_ERROR && o_slEvaluateFeature)
+                    dlssg::zzz::gameApi.store(reinterpret_cast<uintptr_t>(slInterposer),std::memory_order_release);
                 if (detourResult != NO_ERROR)
                 {
                     LOG_ERROR("Failed to hook sl.interposer v2: {:X}", detourResult);

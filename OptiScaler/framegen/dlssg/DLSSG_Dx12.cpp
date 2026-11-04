@@ -1599,14 +1599,20 @@ bool DLSSG_Dx12::RefuseDepthContract(const char* stage, bool publicationStarted)
             auto options=_lastRunningOptions;
             options.mode=sl::DLSSGMode::eOff;
             options.flags|=sl::DLSSGFlags::eRetainResourcesWhenOff;
-            uint32_t id=OwnsNativeZzzSource() ? _nativeGuideSdkFrame : static_cast<uint32_t>(_frameCount);
+            const bool nativeZzz=OwnsNativeZzzSource();
+            const auto& source=_nativeGuideUses[GetIndex()].source;
+            const bool frameKnown=!nativeZzz || (source.sdkFrameKnown && source.frame==_frameCount);
+            uint32_t id=nativeZzz ? source.sdkFrame : static_cast<uint32_t>(_frameCount);
             sl::FrameToken* token=nullptr;
             sl::ResourceTag tags[4]{};
             tags[0].type=sl::kBufferTypeDepth; tags[1].type=sl::kBufferTypeMotionVectors;
             tags[2].type=sl::kBufferTypeHUDLessColor; tags[3].type=sl::kBufferTypeUIColorAndAlpha;
+            // No real origin means no invented null-tag frame. Off+retain
+            // revokes consumption without releasing the recorded GPU owners.
             if (StreamlineProxy::DLSSGSetOptions()(viewport,options)!=sl::Result::eOk ||
-                StreamlineProxy::GetNewFrameToken()(token,&id)!=sl::Result::eOk || !token ||
-                StreamlineProxy::SetTagForFrame()(*token,viewport,tags,4,nullptr)!=sl::Result::eOk)
+                (frameKnown && (!(nativeZzz ? dlssg::zzz::TokenFor(id,token,StreamlineProxy::GetNewFrameToken()) :
+                    StreamlineProxy::GetNewFrameToken()(token,&id)==sl::Result::eOk && token) ||
+                    StreamlineProxy::SetTagForFrame()(*token,viewport,tags,4,nullptr)!=sl::Result::eOk)))
             {
                 // Actual SDK failure retains the original safe failure boundary.
                 Deactivate();
@@ -1708,6 +1714,12 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVS
         return RefuseDepthContract("conversion-producer-completion-unavailable",false);
     if (nativeZzz)
     {
+        const auto canonicalList=dlssg::depth_contract::NativeObject(list);
+        Microsoft::WRL::ComPtr<IUnknown> listIdentity;
+        if (canonicalList) canonicalList.As(&listIdentity);
+        const auto frameScope=dlssg::zzz::Selection::Current(reinterpret_cast<uintptr_t>(listIdentity.Get()),
+            reinterpret_cast<uintptr_t>(feature),static_cast<uint32_t>(viewport),reinterpret_cast<uintptr_t>(this));
+        if (!frameScope) return RefuseDepthContract("native-frame-scope-not-selected-entry",false);
         ID3D12Resource* output=nullptr;
         if (parameters->Get(NVSDK_NGX_Parameter_Output,&output)!=NVSDK_NGX_Result_Success)
             parameters->Get(NVSDK_NGX_Parameter_Output,(void**)&output);
@@ -1734,20 +1746,29 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVS
             return RefuseDepthContract("native-guide-fence-unavailable",false);
         if (!use.fence || use.value>=UINT64_MAX-1 || use.fence->GetCompletedValue()==UINT64_MAX)
             return RefuseDepthContract("native-guide-fence-invalid",false);
-        if (_nativeGuideSerial>=UINT64_MAX-1 || _nativeGuideSdkFrame>=UINT32_MAX-1)
+        if (_nativeGuideSerial>=UINT64_MAX-1)
         {
             _nativeGuideFailed=true; _managedRetained=true; Deactivate();
             return false;
         }
         ++use.value;
         use.source={++_nativeGuideSerial,_frameCount,_inputContinuity.SourceGeneration(),_inputOwnerEpoch,
-            ++_nativeGuideSdkFrame,(uintptr_t)list,(uintptr_t)output};
+            frameScope->origin.frame,(uintptr_t)list,(uintptr_t)output,
+            frameScope->origin.api,frameScope->origin.viewport,static_cast<uint32_t>(viewport),true,
+            reinterpret_cast<uintptr_t>(this)};
+        use.frameScope=frameScope;
         use.owner=CurrentInputOwner(); use.settings=_constants;
         use.constants={}; use.dispatched=use.presented=false;
         use.list=list; use.nativeList=dlssg::depth_contract::NativeObject(list);
         use.queue.Reset(); use.depth=depth; use.motion=motion; use.output=output;
         use.closed=use.submitted=use.executing=use.signalled=use.srSucceeded=use.ordered=false;
         _nativeGuideTracking.store(true,std::memory_order_release);
+        if (use.source.serial<=3 || use.source.serial%600==0)
+            LOG_INFO("F6 ZZZ selected frame source: api={} feature={} selected={} game_viewport={} provider={} provider_viewport={} upstream_raw={} sdk_frame={} frame={} serial={} native_list={} list={} thread={} upstream=pending",
+                use.source.upstreamApi,frameScope->origin.feature,reinterpret_cast<uintptr_t>(feature),
+                use.source.upstreamViewport,use.source.provider,use.source.providerViewport,
+                frameScope->origin.frame,use.source.sdkFrame,use.source.frame,use.source.serial,
+                reinterpret_cast<uintptr_t>(listIdentity.Get()),reinterpret_cast<uintptr_t>(list),GetCurrentThreadId());
     }
     if ((scale || flip) && dlssg::depth_contract::Game()==GameRouting::Identity::StarRail &&
         (!_starRailGuideSwapchain || !_starRailGuideQueueCurrent))
@@ -1937,6 +1958,11 @@ bool DLSSG_Dx12::NativeGuideSourceCurrent(const dlssg::NativeSource& source)
 {
     const auto* use=FindNativeGuideSource(source);
     return use && OwnsNativeZzzSource() && CanSubmitInputs() && !_nativeGuideFailed &&
+        source.sdkFrameKnown && source.providerViewport==static_cast<uint32_t>(viewport) &&
+        source.provider==reinterpret_cast<uintptr_t>(this) && use->frameScope &&
+        source.upstreamViewport==use->frameScope->origin.viewport &&
+        source.upstreamApi==use->frameScope->origin.api && source.sdkFrame==use->frameScope->origin.frame &&
+        use->frameScope->Preparing() &&
         source.frame==_frameCount && source.generation==_inputContinuity.SourceGeneration() &&
         source.epoch==_inputOwnerEpoch && use->owner==CurrentInputOwner() &&
         use->settings.flags==_constants.flags &&
@@ -1948,7 +1974,7 @@ bool DLSSG_Dx12::NativeGuideToken(const dlssg::NativeSource& source, sl::FrameTo
     token=nullptr;
     if (!NativeGuideSourceCurrent(source)) return false;
     const auto getToken=StreamlineProxy::GetNewFrameToken();
-    if (!getToken || getToken(token,&source.sdkFrame)!=sl::Result::eOk || !token) return false;
+    if (!dlssg::zzz::TokenFor(source.sdkFrame,token,getToken)) return false;
     // Keep only the immutable ID in the receipt, never an SDK-owned token pointer
     // beyond its API scope. Recursive vendor callbacks cannot relabel this call.
     return static_cast<uint32_t>(*token)==source.sdkFrame && NativeGuideSourceCurrent(source);
@@ -2005,7 +2031,7 @@ bool DLSSG_Dx12::OrderNativeGuides(UINT slot)
         _nativeGuideFailed=true; _managedRetained=true; Deactivate();
         return false;
     }
-    if (!use.srSucceeded || !use.submitted || !use.signalled ||
+    if (!use.frameScope || !use.frameScope->Consumable(use.srSucceeded) || !use.submitted || !use.signalled ||
         !use.queue || !use.fence || !_gameCommandQueue || !use.value || use.value==UINT64_MAX) return false;
     if (use.ordered) return true;
     // Same-queue FIFO already orders the producer and SDK snapshots. A different
@@ -2030,6 +2056,7 @@ bool DLSSG_Dx12::GuideTagsCurrent(int slot, UINT64 frame)
     const auto& native=_nativeGuideUses[slot];
     const bool nativeZzz=OwnsNativeZzzSource();
     if (nativeZzz && (!NativeGuideSourceCurrent(native.source) ||
+        !native.frameScope || !native.frameScope->Consumable(native.srSucceeded) ||
         !native.srSucceeded || !native.submitted || !native.signalled || !native.ordered)) return false;
     std::shared_lock resources(_resourceMutex[slot]);
     for (auto type : {FG_ResourceType::Depth,FG_ResourceType::Velocity})
@@ -4591,7 +4618,14 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
             // owner change must not publish the result into a newer slot.
             const auto maskReceipt=normalizedGenshin && type==FG_ResourceType::HudlessColor?
                 _genshinInputs[fIndex]:std::shared_ptr<GenshinInputRetirement>{};
+            const auto nativeTagToken=nativeSource ? static_cast<uint32_t>(*frameToken) : 0;
             auto result = StreamlineProxy::SetTagForFrame()(*frameToken, viewport, &resourceTag, 1, fResource->cmdList);
+            if (nativeSource && (nativeSource.serial<=3 || nativeSource.serial%600==0))
+                LOG_INFO("F6 ZZZ source tag: api={} game_viewport={} provider_viewport={} serial={} frame={} upstream_raw={} sdk_frame={} token_frame={} type={} list={} thread={} result={}",
+                    nativeSource.upstreamApi,nativeSource.upstreamViewport,nativeSource.providerViewport,
+                    nativeSource.serial,nativeSource.frame,
+                    nativeSource.sdkFrame,nativeSource.sdkFrame,nativeTagToken,static_cast<uint32_t>(resourceTag.type),
+                    reinterpret_cast<uintptr_t>(fResource->cmdList),GetCurrentThreadId(),static_cast<int>(result));
             if (result != sl::Result::eOk || !normalizedGenshin || DetailedGenshinFrameLog(_frameCount))
                 LOG_DEBUG("SetTagForFrame, frameId: {}, type: {} result: {} ({})", frameId, magic_enum::enum_name(type),
                           magic_enum::enum_name(result), (int32_t) result);
