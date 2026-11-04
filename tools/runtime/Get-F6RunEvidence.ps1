@@ -45,8 +45,8 @@ function Save-Sample($Rows, [int]$Number, [string]$Line) {
 }
 
 $lineNumber = 0
-$stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
-$reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false), $true)
+$stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+$reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false), $true, 4096, $true)
 try {
     while ($null -ne ($line = $reader.ReadLine())) {
         ++$lineNumber
@@ -77,8 +77,11 @@ try {
             $null = $observedPids.Add([int]$Matches[1])
         }
     }
-} finally { $reader.Dispose() }
-$hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    # Hash the same handle while writes and replacement are excluded. This
+    # deliberately rejects a live writer instead of mixing two log snapshots.
+    $stream.Position = 0
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream))
+} finally { $reader.Dispose(); $stream.Dispose() }
 $after = Get-Item -LiteralPath $path
 if ($before.Length -ne $after.Length -or $before.LastWriteTimeUtc -ne $after.LastWriteTimeUtc) {
     throw 'Log changed while reading; copy it once and analyze the saved copy.'
@@ -100,15 +103,17 @@ $gpuChecks = @($gpu | ForEach-Object {
         $complete = $fields.queue -ne '0x0' -and $fields.fence -ne '0x0' -and
             $target -gt 0 -and $completed -ne [uint64]::MaxValue -and $completed -ge $target
     }
-    [pscustomobject]@{ Line = $_.Line; OwnFenceFieldsKnown = $known; RecordedOwnFenceCompleted = $complete }
+    [pscustomobject]@{ Line = $_.Line; FenceFieldsKnown = $known; RecordedFenceTargetReached = $complete }
 })
 $result = [ordered]@{
     Log = $path; Sha256 = $hash; Bytes = $after.Length; Lines = $lineNumber
     LoadedCommit = @($versions)[0]; Pid = $ExpectedPid
     IdentityScope = 'loaded-version-and-recorded-pid; loaded-memory-hash-and-process-creation-UNKNOWN'
-    Counters = $counts; RetainedRowsPerKind = $SampleLimit; RetainedRows = 'last rows only'
+    Counters = $counts; RetainedRowsCapPerKind = $SampleLimit; RetainedRows = 'last rows only'
+    RetainedRowCounts = @{ NrCadence = $nr.Count; FgTaggedDepth = $fg.Count; ZzzSourceSdk = $zzz.Count; GpuCompleted = $gpu.Count }
     NrCadence = @($nr); FgTaggedDepth = @($fg); ZzzSourceSdk = @($zzz)
     GpuCompleted = @($gpu); GpuFenceChecks = $gpuChecks
+    IndependentlyVerified = @{ SelectedSr = $false; GpuObjectOwnership = $false; GeneratedPixels = $false; TemporalDetail = $false; NetPerformance = $false }
     Boundary = 'Recording/input evidence only. NR history may be queue-ordered and GPU-pending. GPU intervals are inclusive and cannot be added or treated as whole-game performance. Generated pixels, temporal detail, skipped-model reuse benefit and net performance require separate validation.'
 }
 $json = $result | ConvertTo-Json -Depth 8
