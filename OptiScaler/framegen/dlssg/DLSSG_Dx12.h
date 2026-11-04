@@ -180,13 +180,19 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         Microsoft::WRL::ComPtr<ID3D12Resource> depth, motion, output;
         dlssg::NativeSource source {};
         dlssg::InputOwner owner {};
-        FG_Constants constants {};
+        FG_Constants settings {};
+        sl::Constants constants {};
         UINT64 value=0;
         bool closed=false, submitted=false, executing=false, signalled=false, srSucceeded=false, ordered=false;
+        bool dispatched=false, presented=false;
     } _nativeGuideUses[BUFFER_COUNT];
     std::atomic<bool> _nativeGuideTracking{false};
     bool _nativeGuideFailed=false, _nativeGuideHooksRequested=false;
     UINT64 _nativeGuideSubmissions=0, _nativeGuideSerial=0;
+    uint32_t _nativeGuideSdkFrame=0; // Explicit SDK IDs; never adopted from incoming markers.
+    dlssg::NativeSource _nativeGuideDispatch {};
+    bool BuildGuideConstants(int slot, sl::Constants& constants, bool includeCamera);
+    void EvaluateStateLocked(ID3D12Device* device, FG_Constants& fgConstants);
     bool NativeGuideRetired(const NativeGuideUse& use) const;
     bool NativeGuidesRetired() const;
     bool OrderNativeGuides(UINT slot);
@@ -418,7 +424,9 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     // FinishedPicture/Present transaction remains the only guide authority.
     bool OwnsUpscalerDepthContract() const;
     bool OwnsNativeZzzSource() const;
+    FGExecutionGuard BeginNativeUpscalerInputs(ID3D12Device* device, FG_Constants& fgConstants);
     bool NativeGuidePresentToken(sl::FrameToken*& token, dlssg::NativeSource& source);
+    bool BeginNativeGuidePresent(const dlssg::NativeSource& source);
     bool SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Parameter* parameters,
         ID3D12Resource* depth, ID3D12Resource* motion, UINT width, UINT height, UINT mvWidth, UINT mvHeight,
         D3D12_RESOURCE_STATES depthState, D3D12_RESOURCE_STATES motionState);

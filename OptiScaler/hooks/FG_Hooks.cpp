@@ -1863,14 +1863,16 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         int startResult=-1,endResult=-1,sleepResult=-1; // -1: API not called
     } genshinReflex;
     sl::FrameToken* localToken = nullptr;
-    dlssg::NativeSource nativeZzzMarkerSource {};
+    dlssg::NativeSource nativeZzzMarkerSource {}; // SDK Present receipt even when game markers are selected.
+    bool nativeZzzStartCalled=false, nativeZzzSourceFailed=false;
     auto* nativeZzzDlssg=dynamic_cast<DLSSG_Dx12*>(fg);
     if (nativeZzzDlssg && !nativeZzzDlssg->OwnsNativeZzzSource()) nativeZzzDlssg=nullptr;
     sl::Result tokenResult = sl::Result::eErrorReflexAPI;
     if (willPresent && fg != nullptr && !fgFeatureActive)
         state.dlssgDetectedInterpolationCount = 0;
 
-    if (willPresent && fgFeatureActive && state.activeFgOutput == FGOutput::DLSSG && !genshinSdkTransaction)
+    if (willPresent && fgFeatureActive && state.activeFgOutput == FGOutput::DLSSG &&
+        !genshinSdkTransaction && !nativeZzzDlssg)
     {
         if ((!ReflexHooks::gameIsSendingMarkers() || !config->FGDLSSGUseGamesReflexMarkers.value_or_default()))
         {
@@ -1878,10 +1880,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
             {
                 ((IDXGISwapChain4*) This)->GetCurrentBackBufferIndex();
                 const uint32_t frameId = (uint32_t) fg->FrameCount();
-                tokenResult = nativeZzzDlssg ?
-                    (nativeZzzDlssg->NativeGuidePresentToken(localToken,nativeZzzMarkerSource) ?
-                        sl::Result::eOk : sl::Result::eErrorInvalidState) :
-                    StreamlineProxy::GetNewFrameToken()(localToken, &frameId);
+                tokenResult = StreamlineProxy::GetNewFrameToken()(localToken, &frameId);
 
                 if (tokenResult == sl::Result::eOk && localToken != nullptr) {
                     auto markerStamp=collectStarRailPacing ? GenshinHookCpuTiming::MakeStarRailStamp(
@@ -1969,7 +1968,27 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
             }
         }
         else if (fgPresentAdmitted && !starRailSourceFallback)
-            fg->Present();
+        {
+            const bool dispatched=fg->Present();
+            // Native ZZZ's successful Dispatch has applied this source's Reflex
+            // options/constants. Carry that receipt through the real SDK Present.
+            if (nativeZzzDlssg && fgPacingActive())
+            {
+                if (dispatched)
+                    tokenResult=nativeZzzDlssg->NativeGuidePresentToken(localToken,nativeZzzMarkerSource) ?
+                        sl::Result::eOk : sl::Result::eErrorInvalidState;
+                nativeZzzSourceFailed=dispatched && tokenResult!=sl::Result::eOk;
+                if (!dispatched || nativeZzzSourceFailed)
+                    nativeZzzDlssg->RejectUpscalerGuideSource("native-present-no-fresh-source");
+                if (nativeZzzMarkerSource && tokenResult==sl::Result::eOk && localToken &&
+                    (!ReflexHooks::gameIsSendingMarkers() || !config->FGDLSSGUseGamesReflexMarkers.value_or_default()) &&
+                    StreamlineProxy::PCLSetMarker())
+                {
+                    nativeZzzStartCalled=StreamlineProxy::PCLSetMarker()(sl::PCLMarker::ePresentStart,*localToken)==
+                        sl::Result::eOk;
+                }
+            }
+        }
     }
     else if (willPresent && fg != nullptr)
     {
@@ -2111,15 +2130,30 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         GenshinVisibleChild::PresentPermit::BeforePresent(This,
             current && current->LastResult()==GenshinBridgeFg::Result::Submitted);
     }
+    // Consume the exact successful Dispatch at the actual SDK boundary. Marker
+    // policy and an SDK-internal frame counter cannot select/replay its source.
+    if (nativeZzzMarkerSource && (state.currentFG!=nativeZzzDlssg ||
+        !nativeZzzDlssg->BeginNativeGuidePresent(nativeZzzMarkerSource)))
+    {
+        nativeZzzSourceFailed=true;
+        if (state.currentFG==nativeZzzDlssg)
+            nativeZzzDlssg->RejectUpscalerGuideSource("native-sdk-present-source-changed");
+    }
     GenshinHookCpuTiming::Scope sdkPresentTiming(GenshinHookCpuTiming::Stage::FgSdkPresent,
                                                collectStarRailPacing && !starRailSourceFailed);
-    if (starRailSourceFailed)
-        result = DXGI_ERROR_INVALID_CALL; // Unknown Off/tag outcome cannot consume stale guides.
+    if (starRailSourceFailed || nativeZzzSourceFailed)
+        result = DXGI_ERROR_INVALID_CALL; // Unknown input cannot consume stale guides.
     else if (pPresentParameters == nullptr)
         result = o_FGSCPresent(This, SyncInterval, Flags);
     else
         result = o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, effectivePresentParameters);
     const auto starRailSdkResult=static_cast<uint32_t>(result); // Freeze the actual SDK return before postwork.
+    if (nativeZzzMarkerSource && (nativeZzzMarkerSource.serial<=3 || nativeZzzMarkerSource.serial%600==0 ||
+        nativeZzzSourceFailed || FAILED(result)))
+        LOG_INFO("F6 ZZZ source SDK Present: frame={} serial={} generation={} epoch={} sdk_frame={} list={} output={} sc={} admitted={} result={} gpu_complete=UNKNOWN generated=UNKNOWN",
+            nativeZzzMarkerSource.frame,nativeZzzMarkerSource.serial,nativeZzzMarkerSource.generation,
+            nativeZzzMarkerSource.epoch,nativeZzzMarkerSource.sdkFrame,nativeZzzMarkerSource.list,
+            nativeZzzMarkerSource.output,(uintptr_t)This,!nativeZzzSourceFailed,static_cast<uint32_t>(result));
     sdkPresentTiming.Returned(starRailSdkResult,GenshinHookCpuTiming::ResultKind::Hresult);
     const auto starRailSdkWall=sdkPresentTiming.Finish(); // Before logging/overlay postwork/Reflex.
     if(collectStarRailPacing && !starRailSourceFailed){
@@ -2204,13 +2238,13 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     const bool genshinPacing = willPresent && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
     // SDK callbacks keep their own marker counters. Reacquire the original
     // selected-source token for End/Sleep; never substitute a newer marker/slot.
-    if (nativeZzzMarkerSource)
+    if (nativeZzzStartCalled)
         tokenResult = state.currentFG==nativeZzzDlssg &&
             nativeZzzDlssg->NativeGuidePresentToken(localToken,nativeZzzMarkerSource) ?
             sl::Result::eOk : sl::Result::eErrorInvalidState;
     if (tokenResult == sl::Result::eOk && localToken != nullptr &&
-        (genshinSdkTransaction ? genshinReflex.startCalled : fgFeatureActive) &&
-        (genshinSdkTransaction ? genshinReflex.ownMarkers :
+        (genshinSdkTransaction ? genshinReflex.startCalled : nativeZzzDlssg ? nativeZzzStartCalled : fgFeatureActive) &&
+        (genshinSdkTransaction ? genshinReflex.ownMarkers : nativeZzzDlssg ? nativeZzzStartCalled :
             (!ReflexHooks::gameIsSendingMarkers() || !config->FGDLSSGUseGamesReflexMarkers.value_or_default())) &&
         willPresent && state.activeFgOutput == FGOutput::DLSSG)
     {
@@ -2238,7 +2272,9 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         // Genshin's FG execution and continuity locks must not cover a driver
         // pacing wait. The marker and native->child submission order above stay
         // unchanged; only the blocking Sleep is deferred until both unlock.
-        if (!genshinPacing && fgPacingActive())
+        if (!genshinPacing && fgPacingActive() &&
+            (!nativeZzzDlssg || (nativeZzzStartCalled &&
+                nativeZzzDlssg->NativeGuidePresentToken(localToken,nativeZzzMarkerSource))))
         {
             LOG_DEBUG("Calling ReflexSleep");
             starRailReflexContext=starRailPacingContext("before-reflex-sleep");

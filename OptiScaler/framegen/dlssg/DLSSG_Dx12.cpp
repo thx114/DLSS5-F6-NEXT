@@ -485,8 +485,8 @@ UINT64 DLSSG_Dx12::StartNewFrame()
     // ZZZ native source ordinals belong to selected SR, never Reflex. Refuse
     // nested source publication while this same provider is consuming a Present.
     if (OwnsNativeZzzSource() && (_presentExecutionDepth || _inputRecordingDepth>1)) return _frameCount;
-    // SDK's 32-bit identity exhaustion must not wrap an old token/tag.
-    if (OwnsNativeZzzSource() && _frameCount>=UINT32_MAX-1)
+    // Source ordinals never adopt the SDK/Reflex marker clock or wrap.
+    if (OwnsNativeZzzSource() && _frameCount>=UINT64_MAX-1)
     {
         _nativeGuideFailed=true; _managedRetained=true; Deactivate();
         return _frameCount;
@@ -1599,7 +1599,7 @@ bool DLSSG_Dx12::RefuseDepthContract(const char* stage, bool publicationStarted)
             auto options=_lastRunningOptions;
             options.mode=sl::DLSSGMode::eOff;
             options.flags|=sl::DLSSGFlags::eRetainResourcesWhenOff;
-            uint32_t id=static_cast<uint32_t>(_frameCount);
+            uint32_t id=OwnsNativeZzzSource() ? _nativeGuideSdkFrame : static_cast<uint32_t>(_frameCount);
             sl::FrameToken* token=nullptr;
             sl::ResourceTag tags[4]{};
             tags[0].type=sl::kBufferTypeDepth; tags[1].type=sl::kBufferTypeMotionVectors;
@@ -1734,15 +1734,16 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVS
             return RefuseDepthContract("native-guide-fence-unavailable",false);
         if (!use.fence || use.value>=UINT64_MAX-1 || use.fence->GetCompletedValue()==UINT64_MAX)
             return RefuseDepthContract("native-guide-fence-invalid",false);
-        if (_nativeGuideSerial>=UINT64_MAX-1)
+        if (_nativeGuideSerial>=UINT64_MAX-1 || _nativeGuideSdkFrame>=UINT32_MAX-1)
         {
             _nativeGuideFailed=true; _managedRetained=true; Deactivate();
             return false;
         }
         ++use.value;
         use.source={++_nativeGuideSerial,_frameCount,_inputContinuity.SourceGeneration(),_inputOwnerEpoch,
-            static_cast<uint32_t>(_frameCount),(uintptr_t)list,(uintptr_t)output};
-        use.owner=CurrentInputOwner(); use.constants=_constants;
+            ++_nativeGuideSdkFrame,(uintptr_t)list,(uintptr_t)output};
+        use.owner=CurrentInputOwner(); use.settings=_constants;
+        use.constants={}; use.dispatched=use.presented=false;
         use.list=list; use.nativeList=dlssg::depth_contract::NativeObject(list);
         use.queue.Reset(); use.depth=depth; use.motion=motion; use.output=output;
         use.closed=use.submitted=use.executing=use.signalled=use.srSucceeded=use.ordered=false;
@@ -1822,6 +1823,14 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVS
     {
         if (CanSubmitInputs()) RefuseDepthContract("guide-pair-partial-publication");
         return false;
+    }
+    if (nativeZzz)
+    {
+        auto& use=_nativeGuideUses[slot];
+        // Snapshot the actual source camera/jitter/MV/reset only after both
+        // accepted tags. Dispatch must not rebuild it from a later recording.
+        if (!NativeGuideSourceCurrent(use.source) || !BuildGuideConstants(slot,use.constants,true))
+            return RefuseDepthContract("native-source-constants");
     }
     _depthSourceRejected=false; // Only a complete real pair can recover admission.
     return true;
@@ -1929,10 +1938,9 @@ bool DLSSG_Dx12::NativeGuideSourceCurrent(const dlssg::NativeSource& source)
     const auto* use=FindNativeGuideSource(source);
     return use && OwnsNativeZzzSource() && CanSubmitInputs() && !_nativeGuideFailed &&
         source.frame==_frameCount && source.generation==_inputContinuity.SourceGeneration() &&
-        source.epoch==_inputOwnerEpoch && source.sdkFrame==source.frame &&
-        use->owner==CurrentInputOwner() &&
-        use->constants.flags[FG_Flags::InfiniteDepth]==_constants.flags[FG_Flags::InfiniteDepth] &&
-        use->constants.displayWidth==_constants.displayWidth && use->constants.displayHeight==_constants.displayHeight;
+        source.epoch==_inputOwnerEpoch && use->owner==CurrentInputOwner() &&
+        use->settings.flags==_constants.flags &&
+        use->settings.displayWidth==_constants.displayWidth && use->settings.displayHeight==_constants.displayHeight;
 }
 
 bool DLSSG_Dx12::NativeGuideToken(const dlssg::NativeSource& source, sl::FrameToken*& token)
@@ -1950,10 +1958,24 @@ bool DLSSG_Dx12::NativeGuidePresentToken(sl::FrameToken*& token, dlssg::NativeSo
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
     token=nullptr;
-    const auto key=source ? source : _nativeGuideUses[GetIndex()].source;
+    const auto key=source ? source : _nativeGuideDispatch;
     const auto* use=FindNativeGuideSource(key);
-    if (!use || !use->srSucceeded || !use->submitted || !use->signalled || !NativeGuideToken(key,token)) return false;
+    if (!use || !use->dispatched || !IsActive() || IsPaused() || !NativeGuideToken(key,token) ||
+        !GuideTagsCurrent(static_cast<int>(key.frame%BUFFER_COUNT),key.frame)) return false;
     source=key; // A later End/Sleep must resolve this same source, never the newest one.
+    return true;
+}
+
+bool DLSSG_Dx12::BeginNativeGuidePresent(const dlssg::NativeSource& source)
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    auto* use=FindNativeGuideSource(source);
+    // A successful Dispatch authorizes one actual SDK Present, independently
+    // of who sends Reflex markers. Failed/occluded Presents consume it too.
+    if (!source || source!=_nativeGuideDispatch || !use || !use->dispatched || use->presented ||
+        !IsActive() || IsPaused() || !NativeGuideSourceCurrent(source) ||
+        !GuideTagsCurrent(static_cast<int>(source.frame%BUFFER_COUNT),source.frame)) return false;
+    use->presented=true;
     return true;
 }
 
@@ -2044,6 +2066,131 @@ bool DLSSG_Dx12::GuideTagsCurrent(int slot, UINT64 frame)
     const auto& depth=_guideTags[slot][0].input;
     const auto& motion=_guideTags[slot][1].input;
     return (depth.copy ? depth.copy : depth.resource)!=(motion.copy ? motion.copy : motion.resource);
+}
+
+bool DLSSG_Dx12::BuildGuideConstants(int slot, sl::Constants& constData, bool includeCamera)
+{
+    constData = {};
+
+    if (IsInfiniteDepth() && _cameraFar[slot] > _cameraNear[slot])
+        _cameraFar[slot] = std::numeric_limits<float>::infinity();
+    else if (IsInfiniteDepth() && _cameraNear[slot] > _cameraFar[slot])
+        _cameraNear[slot] = std::numeric_limits<float>::infinity();
+
+    if (includeCamera)
+    {
+        if (_cameraPosition[slot][0] != 0.0f || _cameraPosition[slot][1] != 0.0f || _cameraPosition[slot][2] != 0.0f)
+        {
+            constData.cameraPos.x = _cameraPosition[slot][0];
+            constData.cameraPos.y = _cameraPosition[slot][1];
+            constData.cameraPos.z = _cameraPosition[slot][2];
+
+            constData.cameraUp.x = _cameraUp[slot][0];
+            constData.cameraUp.y = _cameraUp[slot][1];
+            constData.cameraUp.z = _cameraUp[slot][2];
+
+            constData.cameraFwd.x = _cameraForward[slot][0];
+            constData.cameraFwd.y = _cameraForward[slot][1];
+            constData.cameraFwd.z = _cameraForward[slot][2];
+
+            constData.cameraRight.x = _cameraRight[slot][0];
+            constData.cameraRight.y = _cameraRight[slot][1];
+            constData.cameraRight.z = _cameraRight[slot][2];
+        }
+        else
+        {
+            constData.cameraPos = { 0.0f, 0.0f, 0.0f };
+            constData.cameraUp = { 0.0f, 0.0f, 1.0f };
+            constData.cameraRight = { 0.0f, 1.0f, 0.0f };
+            constData.cameraFwd = { 1.0f, 0.0f, 0.0f };
+            constData.cameraPinholeOffset = { 0.0f, 0.0f };
+
+            XMMATRIX cameraViewToClip {};
+
+            // XMMatrixPerspectiveFovRH will fail if input values are incorrect
+            if (_cameraNear[slot] > 0.f && _cameraFar[slot] > 0.f &&
+                !XMScalarNearEqual(_cameraVFov[slot], 0.0f, 0.00001f) &&
+                !XMScalarNearEqual(_cameraAspectRatio[slot], 0.0f, 0.00001f))
+            {
+                if (XMScalarNearEqual(_cameraNear[slot], _cameraFar[slot], 0.00001f))
+                    _cameraFar[slot]++;
+
+                cameraViewToClip = XMMatrixPerspectiveFovRH(_cameraVFov[slot], _cameraAspectRatio[slot],
+                                                            _cameraNear[slot], _cameraFar[slot]);
+            }
+            else
+            {
+                LOG_WARN("Can't calculate projectionMatrix");
+            }
+
+            XMMATRIX clipToCameraView = XMMatrixInverse(nullptr, cameraViewToClip);
+
+            auto prev = XMMatrixIdentity();
+
+            // Convert to sl::float4x4 for Streamline
+            XMFLOAT4X4 temp;
+            XMStoreFloat4x4(&temp, cameraViewToClip);
+            memcpy(&constData.cameraViewToClip, &temp, sizeof(sl::float4x4));
+            XMStoreFloat4x4(&temp, clipToCameraView);
+            memcpy(&constData.clipToCameraView, &temp, sizeof(sl::float4x4));
+
+            XMStoreFloat4x4(&temp, prev);
+            memcpy(&constData.clipToLensClip, &temp, sizeof(sl::float4x4));
+            memcpy(&constData.clipToPrevClip, &temp, sizeof(sl::float4x4));
+            memcpy(&constData.prevClipToClip, &temp, sizeof(sl::float4x4));
+        }
+
+    }
+
+    constData.cameraAspectRatio = _cameraAspectRatio[slot];
+    constData.cameraFOV = _cameraVFov[slot];
+    constData.cameraNear = _cameraNear[slot];
+    constData.cameraFar = _cameraFar[slot];
+
+    constData.jitterOffset.x = _jitterX[slot];
+    constData.jitterOffset.y = _jitterY[slot];
+
+    {
+        auto mv = GetResource(FG_ResourceType::Velocity, slot);
+
+        if (!mv)
+        {
+            LOG_ERROR("Motion vectors missing for: {}", slot);
+
+            return false;
+        }
+
+        constData.mvecScale.x = _mvScaleX[slot] / (float) mv->width;
+        constData.mvecScale.y = _mvScaleY[slot] / (float) mv->height;
+    }
+
+    // LOG_DEBUG("MvRes: {}x{}, Games MvScale : {}x{}, SL MvScale: {}x{}", mv->width, mv->height, _mvScaleX[slot],
+    //           _mvScaleY[slot], constData.mvecScale.x, constData.mvecScale.y);
+
+    // if (State::Instance().currentFeature != nullptr)
+    //{
+    //     auto fResX = State::Instance().currentFeature->RenderWidth();
+    //     auto fResY = State::Instance().currentFeature->RenderHeight();
+
+    //    LOG_DEBUG("Feature LowResMV: {} RenderRes : {}x{}, CMvScale: {}x{}",
+    //              State::Instance().currentFeature->LowResMV(), fResX, fResY, 1.0f / (float) fResX,
+    //              1.0f / (float) fResY);
+    //}
+
+    if (!Config::Instance()->FGSkipReset.value_or_default())
+        constData.reset = _reset[slot] != 0 ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    else
+        constData.reset = sl::Boolean::eFalse;
+
+    constData.depthInverted = IsInvertedDepth() ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    constData.cameraMotionIncluded = sl::Boolean::eTrue;
+    constData.motionVectors3D = sl::Boolean::eFalse;
+    // constData.motionVectorsInvalidValue = 0.0f;
+    constData.orthographicProjection = sl::Boolean::eFalse;
+    constData.motionVectorsDilated = IsLowResMV() ? sl::Boolean::eFalse : sl::Boolean::eTrue;
+    constData.motionVectorsJittered = IsJitteredMVs() ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+
+    return true;
 }
 
 bool DLSSG_Dx12::Dispatch()
@@ -2323,7 +2470,7 @@ bool DLSSG_Dx12::Dispatch()
     if (!resumingInputGap && (dispatchOptionsResult = setAndObserveOptions()) != sl::Result::eOk)
     {
         LOG_ERROR("Couldn't set DLSSG options, error: {}", magic_enum::enum_name(dispatchOptionsResult));
-        if (genshinFrame || CanRetainForInputGap())
+        if (genshinFrame || CanRetainForInputGap() || nativeSource)
         {
             Deactivate();
             UpdateTarget();
@@ -2338,6 +2485,8 @@ bool DLSSG_Dx12::Dispatch()
     }
 
     const auto reflexResult = setReflexOptions();
+    if (nativeSource && reflexResult!=sl::Result::eOk)
+        return RefuseDepthContract("native-reflex-options");
     if (starRailFrame && (reflexResult != sl::Result::eOk || !sourceStillCurrent())) return false;
 
     if (!_haveHudless.has_value())
@@ -2370,133 +2519,17 @@ bool DLSSG_Dx12::Dispatch()
     if (starRailFrame && !sourceStillCurrent()) return false;
     if (resumingInputGap && (!_isActive || !_inputContinuity.Held())) return false;
     sl::Constants constData = {};
-
-    if (IsInfiniteDepth() && _cameraFar[fIndex] > _cameraNear[fIndex])
-        _cameraFar[fIndex] = std::numeric_limits<float>::infinity();
-    else if (IsInfiniteDepth() && _cameraNear[fIndex] > _cameraFar[fIndex])
-        _cameraNear[fIndex] = std::numeric_limits<float>::infinity();
-
-    if (!genshinFrame)
-    {
-        if (_cameraPosition[fIndex][0] != 0.0f || _cameraPosition[fIndex][1] != 0.0f || _cameraPosition[fIndex][2] != 0.0f)
-        {
-            constData.cameraPos.x = _cameraPosition[fIndex][0];
-            constData.cameraPos.y = _cameraPosition[fIndex][1];
-            constData.cameraPos.z = _cameraPosition[fIndex][2];
-
-            constData.cameraUp.x = _cameraUp[fIndex][0];
-            constData.cameraUp.y = _cameraUp[fIndex][1];
-            constData.cameraUp.z = _cameraUp[fIndex][2];
-
-            constData.cameraFwd.x = _cameraForward[fIndex][0];
-            constData.cameraFwd.y = _cameraForward[fIndex][1];
-            constData.cameraFwd.z = _cameraForward[fIndex][2];
-
-            constData.cameraRight.x = _cameraRight[fIndex][0];
-            constData.cameraRight.y = _cameraRight[fIndex][1];
-            constData.cameraRight.z = _cameraRight[fIndex][2];
-        }
-        else
-        {
-            constData.cameraPos = { 0.0f, 0.0f, 0.0f };
-            constData.cameraUp = { 0.0f, 0.0f, 1.0f };
-            constData.cameraRight = { 0.0f, 1.0f, 0.0f };
-            constData.cameraFwd = { 1.0f, 0.0f, 0.0f };
-            constData.cameraPinholeOffset = { 0.0f, 0.0f };
-
-            XMMATRIX cameraViewToClip {};
-
-            // XMMatrixPerspectiveFovRH will fail if input values are incorrect
-            if (_cameraNear[fIndex] > 0.f && _cameraFar[fIndex] > 0.f &&
-                !XMScalarNearEqual(_cameraVFov[fIndex], 0.0f, 0.00001f) &&
-                !XMScalarNearEqual(_cameraAspectRatio[fIndex], 0.0f, 0.00001f))
-            {
-                if (XMScalarNearEqual(_cameraNear[fIndex], _cameraFar[fIndex], 0.00001f))
-                    _cameraFar[fIndex]++;
-
-                cameraViewToClip = XMMatrixPerspectiveFovRH(_cameraVFov[fIndex], _cameraAspectRatio[fIndex],
-                                                            _cameraNear[fIndex], _cameraFar[fIndex]);
-            }
-            else
-            {
-                LOG_WARN("Can't calculate projectionMatrix");
-            }
-
-            XMMATRIX clipToCameraView = XMMatrixInverse(nullptr, cameraViewToClip);
-
-            auto prev = XMMatrixIdentity();
-
-            // Convert to sl::float4x4 for Streamline
-            XMFLOAT4X4 temp;
-            XMStoreFloat4x4(&temp, cameraViewToClip);
-            memcpy(&constData.cameraViewToClip, &temp, sizeof(sl::float4x4));
-            XMStoreFloat4x4(&temp, clipToCameraView);
-            memcpy(&constData.clipToCameraView, &temp, sizeof(sl::float4x4));
-
-            XMStoreFloat4x4(&temp, prev);
-            memcpy(&constData.clipToLensClip, &temp, sizeof(sl::float4x4));
-            memcpy(&constData.clipToPrevClip, &temp, sizeof(sl::float4x4));
-            memcpy(&constData.prevClipToClip, &temp, sizeof(sl::float4x4));
-        }
-
-    }
-
-    constData.cameraAspectRatio = _cameraAspectRatio[fIndex];
-    constData.cameraFOV = _cameraVFov[fIndex];
-    constData.cameraNear = _cameraNear[fIndex];
-    constData.cameraFar = _cameraFar[fIndex];
-
-    constData.jitterOffset.x = _jitterX[fIndex];
-    constData.jitterOffset.y = _jitterY[fIndex];
-
-    {
-        auto mv = GetResource(FG_ResourceType::Velocity, fIndex);
-
-        if (!mv)
-        {
-            LOG_ERROR("Motion vectors missing for: {}", fIndex);
-
-            return false;
-        }
-
-        constData.mvecScale.x = _mvScaleX[fIndex] / (float) mv->width;
-        constData.mvecScale.y = _mvScaleY[fIndex] / (float) mv->height;
-    }
-
-    // LOG_DEBUG("MvRes: {}x{}, Games MvScale : {}x{}, SL MvScale: {}x{}", mv->width, mv->height, _mvScaleX[fIndex],
-    //           _mvScaleY[fIndex], constData.mvecScale.x, constData.mvecScale.y);
-
-    // if (State::Instance().currentFeature != nullptr)
-    //{
-    //     auto fResX = State::Instance().currentFeature->RenderWidth();
-    //     auto fResY = State::Instance().currentFeature->RenderHeight();
-
-    //    LOG_DEBUG("Feature LowResMV: {} RenderRes : {}x{}, CMvScale: {}x{}",
-    //              State::Instance().currentFeature->LowResMV(), fResX, fResY, 1.0f / (float) fResX,
-    //              1.0f / (float) fResY);
-    //}
-
-    if (!Config::Instance()->FGSkipReset.value_or_default())
-        constData.reset = _reset[fIndex] != 0 ? sl::Boolean::eTrue : sl::Boolean::eFalse;
-    else
-        constData.reset = sl::Boolean::eFalse;
+    if (nativeSource) constData=_nativeGuideUses[fIndex].constants;
+    else if (!BuildGuideConstants(fIndex,constData,!genshinFrame)) return false;
 
     if (_depthSourceGap || (resumingInputGap && (!starRailFrame || resetStarRailHistory)))
         constData.reset = sl::Boolean::eTrue; // Real gap/source-generation reset, never each transient omission.
-
-    constData.depthInverted = IsInvertedDepth() ? sl::Boolean::eTrue : sl::Boolean::eFalse;
-    constData.cameraMotionIncluded = sl::Boolean::eTrue;
-    constData.motionVectors3D = sl::Boolean::eFalse;
-    // constData.motionVectorsInvalidValue = 0.0f;
-    constData.orthographicProjection = sl::Boolean::eFalse;
-    constData.motionVectorsDilated = IsLowResMV() ? sl::Boolean::eFalse : sl::Boolean::eTrue;
-    constData.motionVectorsJittered = IsJitteredMVs() ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
     // Never synthesize Genshin projection or previous-frame transforms from
     // requested near/FOV/default axes. Preserve the actual observed matrices.
     if (genshinFrame) constData = _genshinConstants[fIndex];
 
-    auto frameId = static_cast<uint32_t>(willDispatchFrame);
+    auto frameId = nativeSource ? nativeSource.sdkFrame : static_cast<uint32_t>(willDispatchFrame);
 
     sl::FrameToken* frameToken = nullptr;
     auto tokenResult = nativeSource ?
@@ -2540,7 +2573,13 @@ bool DLSSG_Dx12::Dispatch()
                 d.input.validity==FG_ResourceValidity::ValidNow,m.input.validity==FG_ResourceValidity::ValidNow);
         }
     }
+    const auto nativeTokenFrame=nativeSource ? static_cast<uint32_t>(*frameToken) : 0;
     auto result = StreamlineProxy::SetConstants()(constData, *frameToken, viewport);
+    if (nativeSource && (nativeSource.serial<=3 || nativeSource.serial%600==0 || result!=sl::Result::eOk))
+        LOG_INFO("F6 ZZZ source constants: frame={} serial={} generation={} epoch={} sdk_frame={} token_frame={} list={} output={} result={} reset={} mv_scale={},{} jitter={},{} gpu_complete=UNKNOWN generated=UNKNOWN",
+            nativeSource.frame,nativeSource.serial,nativeSource.generation,nativeSource.epoch,nativeSource.sdkFrame,
+            nativeTokenFrame,nativeSource.list,nativeSource.output,static_cast<int>(result),static_cast<int>(constData.reset),
+            constData.mvecScale.x,constData.mvecScale.y,constData.jitterOffset.x,constData.jitterOffset.y);
     if (genshinFrame)
     {
         const auto now=GetTickCount64();
@@ -2593,6 +2632,11 @@ bool DLSSG_Dx12::Dispatch()
     if (depthContractFrame && (!GuideTagsCurrent(fIndex,willDispatchFrame) ||
         (nativeSource && !NativeGuideSourceCurrent(nativeSource))))
         return RefuseDepthContract("guide-pair-changed-after-constants");
+    if (nativeSource && options.mode!=sl::DLSSGMode::eOff)
+    {
+        _nativeGuideUses[fIndex].dispatched=true;
+        _nativeGuideDispatch=nativeSource; // Exact successful Dispatch, not a marker or latest-slot lookup.
+    }
     if (CanRetainForInputGap()) _managedRetained = true;
     if (_managedRetained) _continuityOwner = true;
     _runningInputOwner = CurrentInputOwner();
@@ -2618,7 +2662,9 @@ bool DLSSG_Dx12::Dispatch()
     }
     if (!genshinFrame || DetailedGenshinFrameLog(willDispatchFrame)) LOG_DEBUG("Result: Ok");
 
-    return true;
+    // Menu interlocks may successfully submit Off. That does not authorize a
+    // native source transaction at the next SDK Present.
+    return !nativeSource || options.mode!=sl::DLSSGMode::eOff;
 }
 
 void* DLSSG_Dx12::FrameGenerationContext() { return (void*) 0x13371337; }
@@ -2633,13 +2679,33 @@ DLSSG_Dx12::~DLSSG_Dx12()
 
 bool DLSSG_Dx12::SetInterpolatedFrameCount(UINT interpolatedFrameCount) { return true; }
 
+FGExecutionGuard DLSSG_Dx12::BeginNativeUpscalerInputs(ID3D12Device* device, FG_Constants& fgConstants)
+{
+    // Reentrant source callbacks already own continuity. Return a nested guard
+    // so StartNewFrame refuses them before touching any slot or state. A busy
+    // different thread follows the established FG Mutex -> continuity order.
+    {
+        std::unique_lock execution(_inputContinuityMutex,std::try_to_lock);
+        if (execution.owns_lock() && (_presentExecutionDepth || _inputRecordingDepth))
+            return GuardExecution(FGExecutionScope::Inputs);
+    }
+    OwnedLockGuard lock(Mutex,555);
+    auto guard=GuardExecution(FGExecutionScope::Inputs);
+    if (OwnsNativeZzzSource() && CanSubmitInputs()) EvaluateStateLocked(device,fgConstants);
+    return guard;
+}
+
 void DLSSG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
 {
     LOG_FUNC();
 
     OwnedLockGuard lock(Mutex, 555);
     std::lock_guard continuityLock(_inputContinuityMutex);
+    EvaluateStateLocked(device,fgConstants);
+}
 
+void DLSSG_Dx12::EvaluateStateLocked(ID3D12Device* device, FG_Constants& fgConstants)
+{
     auto& state = State::Instance();
 
     // If needed hooks are missing or XeFG proxy is not inited or FG swapchain is not created
@@ -4175,10 +4241,11 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
         (type == FG_ResourceType::Depth || type == FG_ResourceType::Velocity);
     const auto sourceGeneration = _inputContinuity.SourceGeneration();
     const auto sourceFrame = _frameCount;
-    const auto nativeSource=checkedGuide && OwnsNativeZzzSource() ?
-        _nativeGuideUses[fIndex].source : dlssg::NativeSource{};
-    if (checkedGuide && OwnsNativeZzzSource() && (!nativeSource ||
-        nativeSource.list!=(uintptr_t)inputResource->cmdList || !NativeGuideSourceCurrent(nativeSource)))
+    // Optional HUD/UI tags use this source's SDK ID too. They cannot allocate
+    // an ordinal-derived token in the independent SDK clock.
+    const auto nativeSource=OwnsNativeZzzSource() ? _nativeGuideUses[fIndex].source : dlssg::NativeSource{};
+    if (OwnsNativeZzzSource() && (!nativeSource || !NativeGuideSourceCurrent(nativeSource))) return false;
+    if (checkedGuide && nativeSource && nativeSource.list!=(uintptr_t)inputResource->cmdList)
         return RefuseDepthContract("native-guide-recording-identity");
     if (starRailGuide && (!_inputRecordingDepth ||
         _starRailRecordingGeneration != sourceGeneration || _starRailRecordingFrame != sourceFrame))
@@ -4447,7 +4514,7 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
 
         // We will us UI color later with Render UI
         {
-            auto frameId = static_cast<uint32_t>(_frameCount - indexDiff);
+            auto frameId = nativeSource ? nativeSource.sdkFrame : static_cast<uint32_t>(_frameCount - indexDiff);
 
             sl::FrameToken* frameToken = nullptr;
             auto tokenResult = nativeSource ?

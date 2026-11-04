@@ -124,7 +124,9 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
     if (Config::Instance()->FGAsync.value_or_default())
         fgConstants.flags |= FG_Flags::Async;
 
-    fg->EvaluateState(_device, fgConstants);
+    auto* own=dynamic_cast<DLSSG_Dx12*>(fg);
+    const bool nativeZzz=own && own->OwnsNativeZzzSource();
+    if (!nativeZzz) fg->EvaluateState(_device, fgConstants);
 
     int reset = 0;
     InParameters->Get(NVSDK_NGX_Parameter_Reset, &reset);
@@ -134,17 +136,17 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
     InParameters->Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &jitterX);
     InParameters->Get(NVSDK_NGX_Parameter_Jitter_Offset_Y, &jitterY);
 
-    auto* own=dynamic_cast<DLSSG_Dx12*>(fg);
     const bool checkedSource=own && own->OwnsUpscalerDepthContract();
     const bool checkedZzz=checkedSource &&
         dlssg::depth_contract::Game()==GameRouting::Identity::ZenlessZoneZero;
-    if (checkedZzz && fg->Mutex.getOwner()==2)
+    if (checkedZzz && !nativeZzz && fg->Mutex.getOwner()==2)
     {
         fg->Mutex.lock(4);
         fg->Mutex.unlockThis(4);
     }
-    auto inputExecution=checkedZzz?fg->GuardExecution(FGExecutionScope::Inputs):FGExecutionGuard{};
-    if (checkedZzz && !fg->CanSubmitInputs()) return {};
+    auto inputExecution=nativeZzz ? own->BeginNativeUpscalerInputs(_device,fgConstants) :
+        checkedZzz ? fg->GuardExecution(FGExecutionScope::Inputs) : FGExecutionGuard{};
+    if (checkedZzz && (!fg->CanSubmitInputs() || (nativeZzz && !own->OwnsNativeZzzSource()))) return {};
     const auto previousFrame=fg->FrameCount();
     const auto startedFrame=fg->StartNewFrame();
     if (checkedZzz && (!fg->CanSubmitInputs() || startedFrame==previousFrame)) return {};
