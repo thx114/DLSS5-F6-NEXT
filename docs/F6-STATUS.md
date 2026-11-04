@@ -18,6 +18,12 @@ ZZZ 复测 PID **33548**：launch-only CLI exit 0，经启动器自身 UAC 中�
 
 独立审阅确认原神游戏 Reflex marker 分支会把缺失的本地 marker 编码成 0，导致成功 Dispatch 的 SDK 输入收据被拒；已扩原写者范围到 `FG_Hooks.cpp` / `GenshinBridge_Present_Dx12.h` 修复，未集成。NR 写者已给出完整 pass 链历史候选，Lead 用 MSVC 14.44 / C++20 / O2 独立运行 `dlssnr/tests/nr_model_chain_history.cpp`，**exit 0 / 74 checks PASS**；该结果只覆盖 CPU cadence 与完整链判定，不证明 GPU、画面或性能。NR 候选仍在独立审阅，等待最终提交。
 
+**NR 本次交件及部署完成**：原提交 `1247a68`，独立 Sol 审阅通过，集成为 `0613134`。唯一 Lead 在 `genshin-compile` detached `0613134` 真实编译/链接，**exit 0 / 131 warnings / 0 errors / 87 秒**。DLL `0.1.29-final (0613134)` / **34,817,024 B** / mtime UTC `2026-11-04T14:56:07.4441618Z` / SHA256 `EF7BE632CB3D05E37AC598293CB01B3767048F19851AE08CD6459D7BE8E793A4`。经本树 `Deploy-F6.ps1` 流写原对象，exit 0，四个 hardlink 与 hash 复核，profiles 未变。回退件 `build/rollback/OptiScaler-20261104T145758333-364e7bec85d4497e922f620a32323959.dll`。此版本不含尚在编码的 ZZZ/原神接入修复。
+
+**星铁复测 PID27252**：launch-only CLI exit 0；CIM creation FILETIME `134382779130093750`，日志确认 `0613134`。Computer Use 已观察世界角色画面，未操作登录或改配置。8 组 NR cadence，最新 `modelCalls=3000 / modelFailures=0`，实际模型 depth/MV 非零、rect 1280×800、work 2096×1312，`modelPassesCompleted=1 / planned=1 / historyAnswerComplete=true`；后 6 组 `feedbackHistoryUsable=true / feedbackFusionRecorded=true`。最新同发布者 fence `0x1bea62344e0` target/completed **2999/2997**，`historyReadiness=queue-ordered-gpu-pending`，不能冒称该历史已完成/退休。FG 实际 tagged depth/MV 1280×800、tags accepted，Dispatch Ok **3026**，启动拒绝 **3**；保持 F5-DS scheduling。`intervalUsed=1 / reuseAccepted=0`，跳模型复用未验。
+
+本局 completed GPU total/model_interval 各 3 组，各自原 fence completed≥target；中位 **25.3727 / 19.6106 ms**，max **29.2567 / 21.1251 ms**，inclusive 不可相加，也不是整局净性能。进程已退出，Lead 未 stop；日志有 `F5 FG teardown complete: owned queue fence 1, slFreeResources=eOk`，退出原因仍 UNKNOWN。只观察了静态世界，动态拖影/曝光/遮挡细节与净性能仍 UNKNOWN。完整日志 `build/starrail-27252-OptiScaler.log`（SHA256 `231CE581E9F84796E55B2EB81D8161691DB993BB68EF0929313CC234A64D1A19`），字段采样和 GPU 汇总 `build/starrail-27252-summary.json`。
+
 以下保留暂停前的阶段记录。当前执行状态以上文为准；历史提交与测试的最终边界以 [HANDOFF.md](../HANDOFF.md) 为准。
 
 当前优先级：**F6 开发 → 部署 → 测试**。SSE 解析错误调查按用户指示暂停；诊断副本在 `build/dsh-diagnostics/`，没有修改运行中的 DSH 安装包。
