@@ -1,0 +1,15 @@
+# Local exact Outline contract
+
+Source is the user-provided installed text at `D:/APPS/XXMI/GIMI/Core/GIMI/Libraries/TexFx/hic_sunt_dracones/OutlinePixelShaderRegex.ini`, read on 2026-11-03. `Main.ini` declares version 1.0661. The original INI and accompanying `LICENSE` are retained as actual bytes; they are not loaded as a second core, executed as a DLL, or read at draw time. No claim is made that this installed tree equals a remote revision.
+
+TexFx by SinsOfSeven; the file credits Annplan for custom Outline colors. Original distribution references are in the installed TexFx README. License: Creative Commons Attribution-ShareAlike 4.0 International, reproduced in LICENSE. `GimiOutlineContract.h` is an adapted extraction: it concatenates nonempty/non-comment trimmed Pattern and Replace lines exactly as the current Config parser does, and records exact sorted temp names and declaration order. Contract matching does not use section names, source paths, a digest, or texture filenames.
+
+M5b correction: this exact local Replace includes `${ini69}_abs.x`. The fixed `SpectrumQT/XXMI-Libs-Package@065dc746c21c71ef48bbc93cb6b90b3dcdf766e6` reference `ShaderRegex.cpp:225-251` replaces the temp placeholder only; `_abs` remains. `Assembler.cpp:654-705` sets ABS only for leading `|...|` (`ext |= 0x81`); `:725-749` strips the register file and calls `atoi` on the prefix before the dot. Thus `rN_abs.x` is accepted there and encodes plain `rN.x`, not ABS. `preprocessLine:3044-3066` does not alter this. This is actual fixed implementation behavior, not a claim about author intent or a general accepted suffix language.
+
+Preparation now passes the unmodified generated spelling to that same assembler. The final instruction check permits exactly the pinned template's `ftou r(T+3).x, r(T+1)_abs.x` to disassemble as `ftou r(T+3).x, r(T+1).x`, exactly once, where T is the original bounded temp count; it does not accept `|r(T+1).x|` or a different suffix, register, swizzle, or opcode. Other instructions, literal bits, resource declarations, and original signatures retain their exact checks. No source template or user INI is edited and no author-confirmation gate remains.
+
+Materials are optional for this exact template. Microsoft D3D11.3 Functional Specification section 22.4.14 resinfo, restriction 3, defines zero width/height/depth/array-size/mip-count when nothing is bound. The installed template's default float resinfo (not rcpFloat) therefore skips its guarded t69/t70 samples. Actual t120 reads, threshold/discard logic and ini69.w fallback remain; a particular parameter value/draw may still cause no visible change. Full-null resource state is valid, not proof of material sampling. Nonnull views and potential samples retain the actual immutable/device/owner/filter contracts. This corrects the earlier M5 source-only refusal; it is not observed GPU execution.
+
+Primary specification source read on 2026-11-03 (documentation only, no code executed):
+`https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm`
+

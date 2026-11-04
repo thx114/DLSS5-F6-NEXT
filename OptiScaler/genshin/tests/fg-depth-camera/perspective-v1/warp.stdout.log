@@ -1,0 +1,39 @@
+REFLECTION pictureSize offset=0 size=8
+REFLECTION producerSize offset=8 size=8
+REFLECTION currentCorrection offset=16 size=8
+REFLECTION previousCorrection offset=24 size=8
+REFLECTION clearValue offset=32 size=4
+REFLECTION reversedZ offset=36 size=4
+REFLECTION inversePictureSize offset=48 size=8
+REFLECTION currentClipToWorld offset=64 size=64
+REFLECTION previousWorldToClip offset=128 size=64
+ADAPTER Microsoft Basic Render Driver mode=warp
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+FAIL perspective world-plane donor retains genuine previous surface
+PERSPECTIVE reversed=0 frame=0 interior=3459 old_false_rejections=3459 restored=3459
+PERSPECTIVE reversed=0 frame=1 interior=3347 old_false_rejections=3347 restored=3347
+PERSPECTIVE reversed=0 frame=2 interior=3305 old_false_rejections=3305 restored=3305
+PERSPECTIVE reversed=0 frame=3 interior=3196 old_false_rejections=3196 restored=3196
+PERSPECTIVE reversed=1 frame=0 interior=3459 old_false_rejections=3459 restored=3459
+PERSPECTIVE reversed=1 frame=1 interior=3347 old_false_rejections=3347 restored=3347
+PERSPECTIVE reversed=1 frame=2 interior=3305 old_false_rejections=3305 restored=3305
+PERSPECTIVE reversed=1 frame=3 interior=3196 old_false_rejections=3196 restored=3196
+WITNESSES old_false_rejections=26614 restored=26614 retained=0
+RESULT checks=151584 failures=9000 debug_errors=0 source_fnv=3344643877562361707

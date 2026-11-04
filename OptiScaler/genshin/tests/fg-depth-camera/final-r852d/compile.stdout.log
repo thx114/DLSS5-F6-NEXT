@@ -1,0 +1,6 @@
+fixture.cpp
+D:\DATA\Documents\ChatGPT\DLSS F5 NEXT\work\r294-r266-build\OptiScaler\genshin\tests\fg-depth-camera\fixture.cpp(87): error C2589: “(”:“::”右边的非法标记
+D:\DATA\Documents\ChatGPT\DLSS F5 NEXT\work\r294-r266-build\OptiScaler\genshin\tests\fg-depth-camera\fixture.cpp(87): error C2760: 语法错误: 此处出现意外的“)”；应为“;”
+D:\DATA\Documents\ChatGPT\DLSS F5 NEXT\work\r294-r266-build\OptiScaler\genshin\tests\fg-depth-camera\fixture.cpp(87): error C3878: 语法错误:“expression-statement”后出现意外标记“)”
+D:\DATA\Documents\ChatGPT\DLSS F5 NEXT\work\r294-r266-build\OptiScaler\genshin\tests\fg-depth-camera\fixture.cpp(88): error C2059: 语法错误:“;”
+D:\DATA\Documents\ChatGPT\DLSS F5 NEXT\work\r294-r266-build\OptiScaler\genshin\tests\fg-depth-camera\fixture.cpp(89): error C3536: “close”: 初始化之前无法使用

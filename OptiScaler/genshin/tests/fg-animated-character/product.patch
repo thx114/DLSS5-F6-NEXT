@@ -1,0 +1,46 @@
+--- a/genshin/GenshinFgGameMotion_Hlsl.h
++++ b/genshin/GenshinFgGameMotion_Hlsl.h
+@@ -12,6 +12,8 @@
+     uint2 reserved;
+     float2 inversePictureSize;
+     float2 reserved2;
++    // Retain the 192-byte upload ABI; per-pixel motion validation does not
++    // assume that object/bone positions follow these camera-only matrices.
+     row_major float4x4 currentClipToWorld;
+     row_major float4x4 previousWorldToClip;
+ };
+@@ -55,25 +57,22 @@
+     if(!FiniteBits(pixels.x)||!FiniteBits(pixels.y)||any(abs(pixels)>=4096))return;
+     const float2 previousSource=sourceCenter+vSr;
+     if(any(previousSource<0)||any(previousSource>=1))return;
+-    // Independently reproject the selected current surface into the previous
+-    // camera. Previous depth must contain that same surface; in-bounds
+-    // disocclusion keeps the sentinel instead of borrowing foreground motion.
++    // Preserve the producer's previous-surface lookup, including object/bone
++    // motion. Camera-only previous Z assumes a static world point and cannot
++    // validate this lookup for animated geometry (even along the same ray).
+     const float2 nativeUv=(float2(selected)+0.5)/float2(producerSize);
+-    const float2 rasterUv=nativeUv-currentCorrection;
+-    float4 world=mul(float4(rasterUv.x*2-1,1-rasterUv.y*2,nearest,1),currentClipToWorld);
+-    if(abs(world.w)<1e-12)return;world/=world.w;
+-    const float4 previousClip=mul(world,previousWorldToClip);
+-    if(abs(previousClip.w)<1e-8)return;
+-    const float expectedZ=previousClip.z/previousClip.w;
+     // Depth and motion were selected at the nearest-depth donor, not at
+-    // sourceCenter. Reproject THAT same native texel for the depth test.
++    // sourceCenter. Reproject THAT same native texel for history validity.
+     // Using the output center here compares a different previous surface
+     // on sloped geometry/edges and falsely invalidates correct game motion.
+     const float2 previousNative=nativeUv+nativeMotion;
+     const int2 previousAt=int2(floor(previousNative*float2(producerSize)));
+-    if(any(previousAt<0)||any(previousAt>=int2(producerSize))||!FiniteBits(expectedZ))return;
++    if(any(previousAt<0)||any(previousAt>=int2(producerSize)))return;
+     const float previousZ=PreviousDepth.Load(int3(previousAt,0));
+-    if(!ValidDepth(previousZ)||abs(previousZ-expectedZ)>(0.0005+0.002*abs(expectedZ)))return;
++    if(!ValidDepth(previousZ))return;
++    // Valid previous depth alone does not prove surface identity. A depth
++    // mismatch may be animation OR static disocclusion; leave that distinction
++    // to DLSSG with the unchanged device-Z guide and actual game motion.
+     // Match the generic DLSSG VelocityFlip consumer adaptation: R847 already
+     // reflected rows above; RF.hlsl also negates vector Y. History/depth
+     // validation above stays entirely in producer coordinates.

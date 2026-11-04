@@ -1,0 +1,20 @@
+REFLECTION pictureSize offset=0 size=8
+REFLECTION producerSize offset=8 size=8
+REFLECTION currentCorrection offset=16 size=8
+REFLECTION previousCorrection offset=24 size=8
+REFLECTION clearValue offset=32 size=4
+REFLECTION reversedZ offset=36 size=4
+REFLECTION inversePictureSize offset=48 size=8
+REFLECTION currentClipToWorld offset=64 size=64
+REFLECTION previousWorldToClip offset=128 size=64
+ADAPTER Microsoft Basic Render Driver mode=warp
+PERSPECTIVE reversed=0 frame=0 interior=4815 old_false_rejections=4815 restored=4815
+PERSPECTIVE reversed=0 frame=1 interior=4689 old_false_rejections=4602 restored=4602
+PERSPECTIVE reversed=0 frame=2 interior=4604 old_false_rejections=4543 restored=4543
+PERSPECTIVE reversed=0 frame=3 interior=4481 old_false_rejections=4481 restored=4481
+PERSPECTIVE reversed=1 frame=0 interior=4815 old_false_rejections=4815 restored=4815
+PERSPECTIVE reversed=1 frame=1 interior=4689 old_false_rejections=4689 restored=4689
+PERSPECTIVE reversed=1 frame=2 interior=4604 old_false_rejections=4604 restored=4604
+PERSPECTIVE reversed=1 frame=3 interior=4481 old_false_rejections=4481 restored=4481
+WITNESSES old_false_rejections=37030 restored=37030 retained=148
+RESULT checks=205634 failures=0 debug_errors=0 source_fnv=3344643877562361707

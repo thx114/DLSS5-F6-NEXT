@@ -1,0 +1,40 @@
+[
+  {
+    "name": "compile",
+    "argv": [
+      "D:/VS2022BuildTools/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe",
+      "/nologo",
+      "/std:c++20",
+      "/EHsc",
+      "/W4",
+      "/utf-8",
+      "/MD",
+      "/FoD:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\perspective-v2\\fixture.obj",
+      "/FeD:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\perspective-v2\\dynamic-fixture.exe",
+      "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\fixture.cpp",
+      "/link",
+      "d3d11.lib",
+      "d3dcompiler.lib",
+      "dxgi.lib"
+    ],
+    "exitCode": 0
+  },
+  {
+    "name": "hardware",
+    "argv": [
+      "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\perspective-v2\\dynamic-fixture.exe",
+      "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\perspective-v2\\hardware",
+      "hardware"
+    ],
+    "exitCode": 1
+  },
+  {
+    "name": "warp",
+    "argv": [
+      "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\perspective-v2\\dynamic-fixture.exe",
+      "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\perspective-v2\\warp",
+      "warp"
+    ],
+    "exitCode": 1
+  }
+]

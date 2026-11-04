@@ -1,0 +1,74 @@
+{
+  "scope": "FIXTURE_ONLY: no product TU/full build/deploy/launch",
+  "phase": "r851-source",
+  "results": {
+    "hardware": {
+      "exitCode": 1,
+      "stdoutSHA256": "f8309400ac834254b01f72540087c337d5ec685b6febe10f247d4b062aeef14b",
+      "artifacts": {
+        "r849-embedded.dxbc": "9682ee60d280cca9a37f1043de44e5df754aba184d7566e4c0afbe71f7476494",
+        "reflection.asm": "7b3debf3ec46cbee5cfaf46f02d6d0a349dbd0f9ab87f551be3771bf0eaea68a",
+        "source.dxbc": "0a32844ac8911f97da1cb4caec5457b65a12f2e7cdcba43b4c770258ea68adac"
+      }
+    },
+    "warp": {
+      "exitCode": 1,
+      "stdoutSHA256": "270b6d756f45a69c2c7b29ec3c3054f198b681cafe9d3b644010e2774c7e8978",
+      "artifacts": {
+        "r849-embedded.dxbc": "9682ee60d280cca9a37f1043de44e5df754aba184d7566e4c0afbe71f7476494",
+        "reflection.asm": "7b3debf3ec46cbee5cfaf46f02d6d0a349dbd0f9ab87f551be3771bf0eaea68a",
+        "source.dxbc": "0a32844ac8911f97da1cb4caec5457b65a12f2e7cdcba43b4c770258ea68adac"
+      }
+    }
+  },
+  "stages": [
+    {
+      "name": "compile",
+      "argv": [
+        "D:/VS2022BuildTools/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe",
+        "/nologo",
+        "/std:c++20",
+        "/EHsc",
+        "/W4",
+        "/O2",
+        "/fp:fast",
+        "/utf-8",
+        "/MD",
+        "/FoD:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\r851-source\\fixture.obj",
+        "/FeD:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\r851-source\\dynamic-fixture.exe",
+        "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\fixture.cpp",
+        "/link",
+        "d3d11.lib",
+        "d3dcompiler.lib",
+        "dxgi.lib"
+      ],
+      "exitCode": 0
+    },
+    {
+      "name": "hardware",
+      "argv": [
+        "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\r851-source\\dynamic-fixture.exe",
+        "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\r851-source\\hardware",
+        "hardware"
+      ],
+      "exitCode": 1
+    },
+    {
+      "name": "warp",
+      "argv": [
+        "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\r851-source\\dynamic-fixture.exe",
+        "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\r851-source\\warp",
+        "warp"
+      ],
+      "exitCode": 1
+    }
+  ],
+  "inputs": {
+    "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\GenshinFgGameMotion.h": "6ade62f4cba505895dffde3548cbf2e1620675e210cb423386c8c98c7a27eda3",
+    "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\GenshinFgGameMotion_Hlsl.h": "460a96895d6235608da084a7c380aecd35a6b284452d8e2e626158439b43f658",
+    "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\native\\F5LowShaderBytecode.h": "11e67abcc4a283afb73a68b5c4a50fbfcf5f015c83003e2102d6e10468193267",
+    "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\fixture.cpp": "90aa48405ccef48d0fdb663f6ae03083766fd2ef6208d7a9269943b1920726cd",
+    "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-depth-camera\\run.py": "71d94c144202262a0c4705e02adfba1b4c2472d67b2b14b0286ad971b1ca593b",
+    "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\audit\\r754-native-alias-build-20261022\\capture-msvc-env.cmd": "0fbbf5ae5abc80423e8fa9b6fa35b2681a5cb7544ddab902058ae61ba1ccb9f7"
+  }
+}

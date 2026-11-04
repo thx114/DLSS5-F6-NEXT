@@ -1,0 +1,90 @@
+MODE baseline_negative_control=1
+REFLECTION candidate pictureSize offset=0 size=8 used=1
+REFLECTION candidate producerSize offset=8 size=8 used=1
+REFLECTION candidate currentCorrection offset=16 size=8 used=1
+REFLECTION candidate previousCorrection offset=24 size=8 used=1
+REFLECTION candidate clearValue offset=32 size=4 used=1
+REFLECTION candidate reversedZ offset=36 size=4 used=1
+REFLECTION candidate inversePictureSize offset=48 size=8 used=1
+REFLECTION candidate currentClipToWorld offset=64 size=64 used=1
+REFLECTION candidate previousWorldToClip offset=128 size=64 used=1
+REFLECTION r852 pictureSize offset=0 size=8 used=1
+REFLECTION r852 producerSize offset=8 size=8 used=1
+REFLECTION r852 currentCorrection offset=16 size=8 used=1
+REFLECTION r852 previousCorrection offset=24 size=8 used=1
+REFLECTION r852 clearValue offset=32 size=4 used=1
+REFLECTION r852 reversedZ offset=36 size=4 used=1
+REFLECTION r852 inversePictureSize offset=48 size=8 used=1
+REFLECTION r852 currentClipToWorld offset=64 size=64 used=1
+REFLECTION r852 previousWorldToClip offset=128 size=64 used=1
+ADAPTER Microsoft Basic Render Driver mode=warp vendor=1414 device=008c
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+FAIL actual game motion and DLSSG Y sign retained
+SCENE name=static reversed=0 camera=0 static=5270 animated=0 baseline_false_rejects=0 radial=0
+SCENE name=lateral reversed=0 camera=0 static=5138 animated=136 baseline_false_rejects=0 radial=0
+SCENE name=toward-camera reversed=0 camera=0 static=5138 animated=132 baseline_false_rejects=132 radial=0
+SCENE name=away-from-camera reversed=0 camera=0 static=5038 animated=136 baseline_false_rejects=136 radial=0
+SCENE name=independent-bones reversed=0 camera=0 static=5134 animated=136 baseline_false_rejects=136 radial=0
+SCENE name=same-ray-animation reversed=0 camera=0 static=5134 animated=136 baseline_false_rejects=136 radial=136
+SCENE name=static reversed=0 camera=1 static=5380 animated=0 baseline_false_rejects=0 radial=0
+SCENE name=lateral reversed=0 camera=1 static=5164 animated=192 baseline_false_rejects=0 radial=0
+SCENE name=toward-camera reversed=0 camera=1 static=5192 animated=180 baseline_false_rejects=180 radial=0
+SCENE name=away-from-camera reversed=0 camera=1 static=5152 animated=192 baseline_false_rejects=192 radial=0
+SCENE name=independent-bones reversed=0 camera=1 static=5160 animated=144 baseline_false_rejects=144 radial=0
+SCENE name=same-ray-animation reversed=0 camera=1 static=5188 animated=192 baseline_false_rejects=192 radial=192
+SCENE name=static reversed=0 camera=2 static=5114 animated=0 baseline_false_rejects=0 radial=0
+SCENE name=lateral reversed=0 camera=2 static=4970 animated=140 baseline_false_rejects=0 radial=0
+SCENE name=toward-camera reversed=0 camera=2 static=4974 animated=140 baseline_false_rejects=140 radial=0
+SCENE name=away-from-camera reversed=0 camera=2 static=4886 animated=140 baseline_false_rejects=140 radial=0
+SCENE name=independent-bones reversed=0 camera=2 static=4950 animated=140 baseline_false_rejects=140 radial=0
+SCENE name=same-ray-animation reversed=0 camera=2 static=4974 animated=140 baseline_false_rejects=140 radial=140
+SCENE name=static reversed=0 camera=3 static=5222 animated=0 baseline_false_rejects=0 radial=0
+SCENE name=lateral reversed=0 camera=3 static=4994 animated=192 baseline_false_rejects=0 radial=0
+SCENE name=toward-camera reversed=0 camera=3 static=5030 animated=184 baseline_false_rejects=184 radial=0
+SCENE name=away-from-camera reversed=0 camera=3 static=4994 animated=192 baseline_false_rejects=192 radial=0
+SCENE name=independent-bones reversed=0 camera=3 static=5010 animated=152 baseline_false_rejects=152 radial=0
+SCENE name=same-ray-animation reversed=0 camera=3 static=5030 animated=192 baseline_false_rejects=192 radial=192
+SCENE name=static reversed=1 camera=0 static=5270 animated=0 baseline_false_rejects=0 radial=0
+SCENE name=lateral reversed=1 camera=0 static=5138 animated=136 baseline_false_rejects=0 radial=0
+SCENE name=toward-camera reversed=1 camera=0 static=5138 animated=132 baseline_false_rejects=132 radial=0
+SCENE name=away-from-camera reversed=1 camera=0 static=5038 animated=136 baseline_false_rejects=136 radial=0
+SCENE name=independent-bones reversed=1 camera=0 static=5134 animated=136 baseline_false_rejects=136 radial=0
+SCENE name=same-ray-animation reversed=1 camera=0 static=5134 animated=136 baseline_false_rejects=136 radial=136
+SCENE name=static reversed=1 camera=1 static=5380 animated=0 baseline_false_rejects=0 radial=0
+SCENE name=lateral reversed=1 camera=1 static=5164 animated=192 baseline_false_rejects=0 radial=0
+SCENE name=toward-camera reversed=1 camera=1 static=5192 animated=180 baseline_false_rejects=180 radial=0
+SCENE name=away-from-camera reversed=1 camera=1 static=5152 animated=192 baseline_false_rejects=192 radial=0
+SCENE name=independent-bones reversed=1 camera=1 static=5160 animated=144 baseline_false_rejects=144 radial=0
+SCENE name=same-ray-animation reversed=1 camera=1 static=5188 animated=192 baseline_false_rejects=192 radial=192
+SCENE name=static reversed=1 camera=2 static=5114 animated=0 baseline_false_rejects=0 radial=0
+SCENE name=lateral reversed=1 camera=2 static=4970 animated=140 baseline_false_rejects=0 radial=0
+SCENE name=toward-camera reversed=1 camera=2 static=4974 animated=140 baseline_false_rejects=140 radial=0
+SCENE name=away-from-camera reversed=1 camera=2 static=4886 animated=140 baseline_false_rejects=140 radial=0
+SCENE name=independent-bones reversed=1 camera=2 static=4950 animated=140 baseline_false_rejects=140 radial=0
+SCENE name=same-ray-animation reversed=1 camera=2 static=4974 animated=140 baseline_false_rejects=140 radial=140
+SCENE name=static reversed=1 camera=3 static=5222 animated=0 baseline_false_rejects=0 radial=0
+SCENE name=lateral reversed=1 camera=3 static=4994 animated=192 baseline_false_rejects=0 radial=0
+SCENE name=toward-camera reversed=1 camera=3 static=5030 animated=184 baseline_false_rejects=184 radial=0
+SCENE name=away-from-camera reversed=1 camera=3 static=4994 animated=192 baseline_false_rejects=192 radial=0
+SCENE name=independent-bones reversed=1 camera=3 static=5010 animated=152 baseline_false_rejects=152 radial=0
+SCENE name=same-ray-animation reversed=1 camera=3 static=5030 animated=192 baseline_false_rejects=192 radial=192
+AMBIGUITY reversed=0 animated_and_static_disocclusion=8192 identical_inputs=1 delegated_to_dlssg=1
+AMBIGUITY reversed=1 animated_and_static_disocclusion=8192 identical_inputs=1 delegated_to_dlssg=1
+RESULT checks=1672674 failures=56900 debug_errors=0 debug_warnings=0 static=244472 animated=6376 recovered=5056 same_ray=1320 product_build=NOT_RUN deployment=NOT_RUN

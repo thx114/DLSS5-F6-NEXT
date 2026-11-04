@@ -1,0 +1,39 @@
+REFLECTION pictureSize offset=0 size=8
+REFLECTION producerSize offset=8 size=8
+REFLECTION currentCorrection offset=16 size=8
+REFLECTION previousCorrection offset=24 size=8
+REFLECTION clearValue offset=32 size=4
+REFLECTION reversedZ offset=36 size=4
+REFLECTION inversePictureSize offset=48 size=8
+REFLECTION currentClipToWorld offset=64 size=64
+REFLECTION previousWorldToClip offset=128 size=64
+ADAPTER Microsoft Basic Render Driver mode=warp
+FAIL DLSSG VelocityFlip equivalent negates only final vector Y
+FAIL R849 embedded baseline retained for A/B
+FAIL DLSSG VelocityFlip equivalent negates only final vector Y
+FAIL R849 embedded baseline retained for A/B
+FAIL DLSSG VelocityFlip equivalent negates only final vector Y
+FAIL R849 embedded baseline retained for A/B
+FAIL DLSSG VelocityFlip equivalent negates only final vector Y
+FAIL R849 embedded baseline retained for A/B
+FAIL DLSSG VelocityFlip equivalent negates only final vector Y
+FAIL R849 embedded baseline retained for A/B
+FAIL DLSSG VelocityFlip equivalent negates only final vector Y
+FAIL R849 embedded baseline retained for A/B
+FAIL DLSSG VelocityFlip equivalent negates only final vector Y
+FAIL R849 embedded baseline retained for A/B
+FAIL DLSSG VelocityFlip equivalent negates only final vector Y
+FAIL R849 embedded baseline retained for A/B
+FAIL DLSSG VelocityFlip equivalent negates only final vector Y
+FAIL R849 embedded baseline retained for A/B
+FAIL DLSSG VelocityFlip equivalent negates only final vector Y
+PERSPECTIVE reversed=0 frame=0 interior=4765 r850_false_rejections=4765
+PERSPECTIVE reversed=0 frame=1 interior=4729 r850_false_rejections=4729
+PERSPECTIVE reversed=0 frame=2 interior=4608 r850_false_rejections=4608
+PERSPECTIVE reversed=0 frame=3 interior=4570 r850_false_rejections=4570
+PERSPECTIVE reversed=1 frame=0 interior=4765 r850_false_rejections=4765
+PERSPECTIVE reversed=1 frame=1 interior=4729 r850_false_rejections=4729
+PERSPECTIVE reversed=1 frame=2 interior=4608 r850_false_rejections=4608
+PERSPECTIVE reversed=1 frame=3 interior=4570 r850_false_rejections=4570
+WITNESSES valid=37344 signed_y=37344 r850_false_rejections=37344 ray_mismatch=37344 baseline_depth_rejects=0
+RESULT checks=280487 failures=1112 debug_errors=0 source_fnv=13074518367484351388 embedded=old-R849-AB-only

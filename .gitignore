@@ -1,0 +1,30 @@
+# ---- 构建输出：整个 build/ 由 build.ps1 生成，可随时重建 ----
+/build/
+
+# ---- MSVC / MSBuild 编译中间件 ----
+*.obj
+*.iobj
+*.pch
+*.ipch
+*.pdb
+*.ipdb
+*.ilk
+*.exp
+*.tlog
+*.lastbuildstate
+*.recipe
+obj/
+bin/
+x64/
+
+# ---- IDE / 本地用户状态 ----
+.vs/
+.vscode/
+*.user
+*.suo
+
+# ---- 依赖必须保留 ----
+# external/ 内含预编译 .lib / .dll（例如 D3D12Core.dll、libxess*.lib），
+# 以及名为 bin/ 的样例目录；这里的反向规则优先于上面的中间件规则，
+# 防止将来放宽忽略规则时误伤依赖。
+!/external/**

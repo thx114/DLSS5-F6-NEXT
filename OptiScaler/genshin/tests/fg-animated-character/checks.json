@@ -1,0 +1,44 @@
+{
+  "classification": "IMPLEMENTED / INTEGRATED-BUT-NOT-BUILT",
+  "scope": "genshin source/tests only",
+  "productPatch": "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\work\\r294-r266-build\\OptiScaler\\genshin\\tests\\fg-animated-character\\product.patch",
+  "sourceWhitespaceDiffCheck": {
+    "argv": [
+      "git",
+      "-c",
+      "core.autocrlf=false",
+      "diff",
+      "--no-index",
+      "--check"
+    ],
+    "exitCode": 1,
+    "stdout": "",
+    "stderr": ""
+  },
+  "unchangedPreimagePins": {
+    "native\\F5LowShaderBytecode.h": true,
+    "genshin\\GenshinFgGameMotion.h": true,
+    "genshin\\tests\\fg-depth-camera\\fixture.cpp": true,
+    "genshin\\GenshinLegacyCapture.cpp": true,
+    "D:\\CODE\\genshin_fsr_brigde\\Dx11FsrBridge\\Ffx12Backend.cpp": true,
+    "D:\\CODE\\genshin_fsr_brigde\\Dx11FsrBridge\\Dx11FsrBridge.cpp": true
+  },
+  "sourceEncoding": {
+    "UTF8BOM": false,
+    "CRLF": 0,
+    "LF": 82
+  },
+  "files": {
+    "genshin\\GenshinFgGameMotion_Hlsl.h": "b16fcf1b3acbeb523cd687c42fd4773f7a896b75eca7103b87944ca1386934c5",
+    "genshin\\tests\\fg-animated-character\\R852_GenshinFgGameMotion_Hlsl.h": "460a96895d6235608da084a7c380aecd35a6b284452d8e2e626158439b43f658",
+    "genshin\\tests\\fg-animated-character\\fixture.cpp": "8fbaa4b3ce5e0a9d33854a27a547dbc3d06c5eb161a60f91491061415eb64918",
+    "genshin\\tests\\fg-animated-character\\run.py": "6c4e619722658f01d738ea0ababfef3439642f23f9ae60312780d15ffb15ffc5",
+    "genshin\\tests\\fg-animated-character\\product.patch": "0546f4658b388d9f602654d787f925a0ba720c5879ba0eeafb7cf24e8abf20d1",
+    "genshin\\tests\\fg-animated-character\\README.md": "5c419512049b7856d02adb875c3d80f6e41024e6d4427c053c176909a19a286d"
+  },
+  "fixtureReceiptSHA256": "a564eaf594eff770ddbfc26d04b9c3613a33af842fb82ab22e5a637d7e2dfa82",
+  "productBuild": "NOT_RUN",
+  "embeddedGeneration": "NOT_RUN",
+  "deploy": "NOT_RUN",
+  "gameAcceptance": "UNKNOWN"
+}

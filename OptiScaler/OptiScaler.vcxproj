@@ -1,0 +1,1406 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="ReleaseDebug|Win32">
+      <Configuration>ReleaseDebug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="ReleaseDebug|x64">
+      <Configuration>ReleaseDebug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>16.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{8d2b73fb-eecd-45ce-b8e5-335610462f58}</ProjectGuid>
+    <RootNamespace>OptiScaler</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <MSVCPreviewEnabled>false</MSVCPreviewEnabled>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|Win32'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <IncludePath>$(SolutionDir)external\simpleini;$(SolutionDir)\external\nvngx_dlss_sdk;$(SolutionDir)external\unordered_dense\include;$(SolutionDir)\external\vulkan\include;$(SolutionDir)\external\xess\inc\xess;$(IncludePath)</IncludePath>
+    <LibraryPath>$(SolutionDir)\external\xess\lib;$(LibraryPath)</LibraryPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <IncludePath>$(SolutionDir)external\simpleini;$(SolutionDir)\external\nvngx_dlss_sdk;$(SolutionDir)external\unordered_dense\include;$(SolutionDir)\external\vulkan\include;$(SolutionDir)\external\xess\inc\xess;$(IncludePath)</IncludePath>
+    <LibraryPath>$(SolutionDir)\external\xess\lib;$(LibraryPath)</LibraryPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|Win32'">
+    <IncludePath>$(SolutionDir)external\simpleini;$(SolutionDir)\external\nvngx_dlss_sdk;$(SolutionDir)external\unordered_dense\include;$(SolutionDir)\external\vulkan\include;$(SolutionDir)\external\xess\inc\xess;$(IncludePath)</IncludePath>
+    <LibraryPath>$(SolutionDir)\external\xess\lib;$(LibraryPath)</LibraryPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <IncludePath>$(ProjectDir);$(ProjectDir)include\;$(SolutionDir)external\vulkan\include;$(SolutionDir)external\nvngx_dlss_sdk;$(SolutionDir)external\xess\inc\xess;$(SolutionDir)external\xess\inc\xell;$(SolutionDir)external\xess\inc\xess_fg;$(SolutionDir)external\FidelityFX-SDK\ffx-api\include\ffx_api;$(SolutionDir)external\simpleini;$(SolutionDir)external\unordered_dense\include;$(SolutionDir)external\spdlog\include;$(SolutionDir)external\freetype;$(SolutionDir)external\streamline;$(SolutionDir)external\streamline1;$(SolutionDir)external\nvapi;$(SolutionDir)external\nlohmann;$(SolutionDir)external\fakenvapi;$(SolutionDir)external\magic_enum\include\magic_enum;$(SolutionDir)external\AntiLag2-SDK;$(SolutionDir)external\latencyflex;$(IncludePath)</IncludePath>
+    <LibraryPath>$(ProjectDir)library\fsr2;$(ProjectDir)library\fsr2_212;$(ProjectDir)library\fsr31;$(ProjectDir)library\vulkan;$(ProjectDir)library\d3dx;$(ProjectDir)library\detours;$(SolutionDir)external\xess\lib;$(SolutionDir)external\freetype;$(LibraryPath)</LibraryPath>
+    <IntDir>.\x64\Debug\</IntDir>
+    <TargetExt>.dll</TargetExt>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <IncludePath>$(ProjectDir);$(ProjectDir)include\;$(SolutionDir)external\vulkan\include;$(SolutionDir)external\nvngx_dlss_sdk;$(SolutionDir)external\xess\inc\xess;$(SolutionDir)external\xess\inc\xell;$(SolutionDir)external\xess\inc\xess_fg;$(SolutionDir)external\FidelityFX-SDK\ffx-api\include\ffx_api;$(SolutionDir)external\simpleini;$(SolutionDir)external\unordered_dense\include;$(SolutionDir)external\spdlog\include;$(SolutionDir)external\freetype;$(SolutionDir)external\streamline;$(SolutionDir)external\streamline1;$(SolutionDir)external\nvapi;$(SolutionDir)external\nlohmann;$(SolutionDir)external\fakenvapi;$(SolutionDir)external\magic_enum\include\magic_enum;$(SolutionDir)external\AntiLag2-SDK;$(SolutionDir)external\latencyflex;$(IncludePath)</IncludePath>
+    <LibraryPath>$(ProjectDir)library\fsr2;$(ProjectDir)library\fsr2_212;$(ProjectDir)library\fsr31;$(ProjectDir)library\vulkan;$(ProjectDir)library\d3dx;$(ProjectDir)library\detours;$(SolutionDir)external\xess\lib;$(SolutionDir)external\freetype;$(LibraryPath)</LibraryPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">
+    <IncludePath>$(ProjectDir);$(ProjectDir)include\;$(SolutionDir)external\vulkan\include;$(SolutionDir)external\nvngx_dlss_sdk;$(SolutionDir)external\xess\inc\xess;$(SolutionDir)external\xess\inc\xell;$(SolutionDir)external\xess\inc\xess_fg;$(SolutionDir)external\FidelityFX-SDK\ffx-api\include\ffx_api;$(SolutionDir)external\simpleini;$(SolutionDir)external\unordered_dense\include;$(SolutionDir)external\spdlog\include;$(SolutionDir)external\freetype;$(SolutionDir)external\streamline;$(SolutionDir)external\streamline1;$(SolutionDir)external\nvapi;$(SolutionDir)external\nlohmann;$(SolutionDir)external\fakenvapi;$(SolutionDir)external\magic_enum\include\magic_enum;$(SolutionDir)external\AntiLag2-SDK;$(SolutionDir)external\latencyflex;$(IncludePath)</IncludePath>
+    <LibraryPath>$(ProjectDir)library\fsr2;$(ProjectDir)library\fsr2_212;$(ProjectDir)library\fsr31;$(ProjectDir)library\vulkan;$(ProjectDir)library\d3dx;$(ProjectDir)library\detours;$(SolutionDir)external\xess\lib;$(SolutionDir)external\freetype;$(LibraryPath)</LibraryPath>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <ModuleDefinitionFile>Source.def</ModuleDefinitionFile>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <ModuleDefinitionFile>Source.def</ModuleDefinitionFile>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <ModuleDefinitionFile>Source.def</ModuleDefinitionFile>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderOutputFile>$(IntDir)$(TargetName).pch</PrecompiledHeaderOutputFile>
+      <AdditionalOptions>/w34996 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <AdditionalDependencies>winhttp.lib;WindowsApp.lib;Dbghelp.lib;dxgi.lib;d3d11.lib;d3d12.lib;vulkan-1.lib;dxguid.lib;freetype.lib;ffx_fsr2_api_x64d.lib;ffx_fsr2_api_dx11_x64d.lib;ffx_fsr2_api_dx12_x64d.lib;ffx_fsr2_api_vk_x64d.lib;ffx_fsr2_212_api_dx12_x64d.lib;ffx_fsr2_212_api_vk_x64d.lib;ffx_fsr2_212_api_x64d.lib;d3dcompiler.lib;d3dx11.lib;ffx_backend_dx11_x64d.lib;ffx_fsr3_x64d.lib;ffx_fsr3upscaler_x64d.lib;ffx_opticalflow_x64d.lib;ffx_frameinterpolation_x64d.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <ModuleDefinitionFile>Source.def</ModuleDefinitionFile>
+      <DelayLoadDLLs>vulkan-1.dll;dxgi.dll;d3d12.dll;D3DCOMPILER_47.dll</DelayLoadDLLs>
+      <StackReserveSize>
+      </StackReserveSize>
+      <StackCommitSize>
+      </StackCommitSize>
+      <AdditionalOptions>/ignore:4099</AdditionalOptions>
+    </Link>
+    <PreBuildEvent>
+      <Command>
+      </Command>
+    </PreBuildEvent>
+    <ResourceCompile>
+      <PreprocessorDefinitions>_DEBUG ;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+      <AdditionalOptions>/w34996 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <AdditionalDependencies>winhttp.lib;WindowsApp.lib;Dbghelp.lib;dxgi.lib;d3d11.lib;d3d12.lib;vulkan-1.lib;dxguid.lib;freetype.lib;ffx_fsr2_api_x64.lib;ffx_fsr2_api_dx11_x64.lib;ffx_fsr2_api_dx12_x64.lib;ffx_fsr2_api_vk_x64.lib;ffx_fsr2_212_api_dx12_x64.lib;ffx_fsr2_212_api_vk_x64.lib;ffx_fsr2_212_api_x64.lib;d3dcompiler.lib;ffx_backend_dx11_x64.lib;ffx_fsr3_x64.lib;ffx_frameinterpolation_x64.lib;ffx_fsr3upscaler_x64.lib;ffx_opticalflow_x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <ModuleDefinitionFile>Source.def</ModuleDefinitionFile>
+      <DelayLoadDLLs>vulkan-1.dll;dxgi.dll;d3d12.dll;D3DCOMPILER_47.dll</DelayLoadDLLs>
+      <AdditionalOptions>/ignore:4099</AdditionalOptions>
+    </Link>
+    <PostBuildEvent>
+      <Command>md $(SolutionDir)x64\Release\a\
+move $(SolutionDir)x64\Release\$(TargetFileName) $(SolutionDir)x64\Release\a\
+md $(SolutionDir)x64\Release\a\Licenses
+del /Q $(SolutionDir)x64\Release\a\Licenses\*.*
+copy $(SolutionDir)external\xess\LICENSE.txt $(SolutionDir)x64\Release\a\Licenses\XeSS_LICENSE.txt /Y
+copy "$(SolutionDir)READ ME - DLSS Neural Rendering.txt" $(SolutionDir)x64\Release\a\ /Y
+copy "$(SolutionDir)Licenses\RenoDX_ATTRIBUTION.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
+copy "$(SolutionDir)Licenses\MFGUnlock_LICENSE.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
+copy "$(SolutionDir)Licenses\ReShade_GenericDepth_LICENSE.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
+copy "$(SolutionDir)Licenses\DLSS5Feeder_LICENSE.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
+copy "$(SolutionDir)Licenses\Inter_OFL.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
+copy "$(SolutionDir)Licenses\PeripheralWarp_LICENSE.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
+md $(SolutionDir)x64\Release\a\OptiScaler
+copy $(SolutionDir)external\xess\bin\*.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y
+copy $(SolutionDir)external\FidelityFX-SDK\docs\license.md $(SolutionDir)x64\Release\a\OptiScaler\Licenses\FidelityFX_v1_LICENSE.md /Y
+copy $(SolutionDir)external\FidelityFX-SDK\PrebuiltSignedDLL\amd_fidelityfx_vk.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y
+copy $(SolutionDir)external\FidelityFX-SDK-v2\Kits\FidelityFX\signedbin\amd_fidelityfx_loader_dx12.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y
+copy $(SolutionDir)external\FidelityFX-SDK-v2\Kits\FidelityFX\signedbin\amd_fidelityfx_upscaler_dx12.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y
+copy $(SolutionDir)external\FidelityFX-SDK-v2\Kits\FidelityFX\signedbin\amd_fidelityfx_framegeneration_dx12.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y
+copy $(SolutionDir)external\FidelityFX-SDK-v2\docs\license.md $(SolutionDir)x64\Release\a\Licenses\FidelityFX_v2_LICENSE.md /Y
+md $(SolutionDir)x64\Release\a\OptiScaler\LUTs
+copy "$(SolutionDir)LUTs\*.*" $(SolutionDir)x64\Release\a\OptiScaler\LUTs\ /Y
+copy $(SolutionDir)OptiScaler.ini $(SolutionDir)x64\Release\a\ /Y
+copy $(SolutionDir)setup_windows.bat $(SolutionDir)x64\Release\a\ /Y
+copy $(SolutionDir)setup_linux.sh $(SolutionDir)x64\Release\a\ /Y
+md $(SolutionDir)x64\Release\a\OptiScaler\D3D12_OptiScaler\
+copy "$(SolutionDir)external\directx_agility_sdk\lib\*.dll" $(SolutionDir)x64\Release\a\OptiScaler\D3D12_OptiScaler\ /Y
+copy "$(SolutionDir)external\directx_agility_sdk\LICENSE.txt" $(SolutionDir)x64\Release\a\Licenses\DirectX_LICENSE.txt /Y
+copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y</Command>
+    </PostBuildEvent>
+    <PreBuildEvent>
+      <Command>powershell -NoProfile -Command "Start-Sleep -Milliseconds 1500; $date = Get-Date -Format 'yyyyMMdd_HHmmss'; $commit = (git rev-parse --short HEAD 2&gt;$null); if (-not $commit) { $commit = 'unknown' }; Set-Content -Path '$(ProjectDir)resource_build_date.h' -Value ('#define VER_BUILD_DATE \"' + $date + '\"') -Force; Set-Content -Path '$(ProjectDir)resource_build_commit.h' -Value ('#define VER_BUILD_COMMIT \"' + $commit + '\"') -Force;"</Command>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NODEBUG;_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/w34996 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <AdditionalDependencies>winhttp.lib;WindowsApp.lib;Dbghelp.lib;dxgi.lib;d3d11.lib;d3d12.lib;vulkan-1.lib;dxguid.lib;freetype.lib;ffx_fsr2_api_x64.lib;ffx_fsr2_api_dx11_x64.lib;ffx_fsr2_api_dx12_x64.lib;ffx_fsr2_api_vk_x64.lib;ffx_fsr2_212_api_dx12_x64.lib;ffx_fsr2_212_api_vk_x64.lib;ffx_fsr2_212_api_x64.lib;d3dcompiler.lib;ffx_backend_dx11_x64.lib;ffx_fsr3_x64.lib;ffx_frameinterpolation_x64.lib;ffx_fsr3upscaler_x64.lib;ffx_opticalflow_x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <ModuleDefinitionFile>Source.def</ModuleDefinitionFile>
+      <DelayLoadDLLs>vulkan-1.dll;dxgi.dll;d3d12.dll;D3DCOMPILER_47.dll</DelayLoadDLLs>
+      <AdditionalOptions>/ignore:4099</AdditionalOptions>
+    </Link>
+    <PostBuildEvent>
+      <Command>powershell -Command "$timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'; $fileName = '$(OutDir)OptiScaler_' + $timestamp + '.7z'; $backupFileName = '$(OutDir)OptiScaler_' + $timestamp + '_Backup.7z'; &amp; '7z.exe' a -t7z $fileName '$(TargetPath)'; &amp; '7z.exe' a -t7z $backupFileName '$(OutDir)$(TargetName).*'"</Command>
+    </PostBuildEvent>
+    <PreBuildEvent>
+      <Command>powershell -NoProfile -Command "Start-Sleep -Milliseconds 1500; $date = Get-Date -Format 'yyyyMMdd_HHmmss'; $commit = (git rev-parse --short HEAD 2&gt;$null); if (-not $commit) { $commit = 'unknown' }; Set-Content -Path '$(ProjectDir)resource_build_date.h' -Value ('#define VER_BUILD_DATE \"' + $date + '\"') -Force; Set-Content -Path '$(ProjectDir)resource_build_commit.h' -Value ('#define VER_BUILD_COMMIT \"' + $commit + '\"') -Force;"</Command>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="framegen\nvngx\Nvngx_Combo.h" />
+    <ClInclude Include="fsr4\FSR4Upgrade.h" />
+    <ClInclude Include="gpu_time\GpuTime_Dx11.h" />
+    <ClInclude Include="gpu_time\GpuTime_Dx12.h" />
+    <ClInclude Include="hooks\Amdxc64_Hooks.h" />
+    <ClInclude Include="DllNames.h" />
+    <ClInclude Include="exports\d3d12.h" />
+    <ClInclude Include="exports\dbghelp.h" />
+    <ClInclude Include="exports\dxgi.h" />
+    <ClInclude Include="exports\exports.h" />
+    <ClInclude Include="exports\shared.h" />
+    <ClInclude Include="exports\version.h" />
+    <ClInclude Include="exports\winhttp.h" />
+    <ClInclude Include="exports\wininet.h" />
+    <ClInclude Include="exports\winmm.h" />
+    <ClInclude Include="framegen\FinalOutputEndpoint.h" />
+    <ClInclude Include="framegen\dlssg\DLSSG_Dx12.h" />
+    <ClInclude Include="framegen\dlssg\Kcd2Hdr.h" />
+    <ClInclude Include="framegen\dlssg\MfgUnlock.h" />
+    <ClInclude Include="framegen\dlssg\MfgUnlockProvider.h" />
+    <ClInclude Include="framegen\dlssg\MfgUnlockPlugin.h" />
+    <ClInclude Include="framegen\dlssg\MfgUnlockPtx.h" />
+    <ClInclude Include="framegen\dlssg\MfgUnlockMethod.h" />
+    <ClInclude Include="framegen\dlssg\MfgUnlockFlip.h" />
+    <ClInclude Include="framegen\dlssg\AmpereMfgLoader.h" />
+    <ClInclude Include="dlssnr\PassProfiles.h" />
+    <ClInclude Include="framegen\ffx\FSRFG_Dx12.h" />
+    <ClInclude Include="framegen\IFGFeature.h" />
+    <ClInclude Include="framegen\IFGFeature_Dx12.h" />
+    <ClInclude Include="framegen\nvngx\Nvngx_FG.h" />
+    <ClInclude Include="fsr4\FSR4ModelSelection.h" />
+    <ClInclude Include="hooks\D3D12_Hooks.h" />
+    <ClInclude Include="hooks\DxgiFactory_Hooks.h" />
+    <ClInclude Include="hooks\DxgiSwapchainSizing.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_DeferredSr.inl" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_DetailReuse.inl" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_SceneCut.inl" />
+    <ClInclude Include="dlssnr\DlssNrSceneCut.h" />
+    <ClInclude Include="dlssnr\DlssNrDetailReuseHost.h" />
+    <ClInclude Include="dlssnr\DlssNr_DetailReuse_Vk.inl" />
+    <ClInclude Include="dlssnr\ResidualFg.h" />
+    <ClInclude Include="hooks\DxgiFactory_WrappedCalls.h" />
+    <ClInclude Include="hooks\Dxgi_Hooks.h" />
+    <ClInclude Include="hooks\FG_Hooks.h" />
+    <ClInclude Include="hooks\Hook_Utils.h" />
+    <ClInclude Include="hooks\LibraryLoad_Hooks.h" />
+    <ClInclude Include="hooks\CommandBuffer_StateTracker.h" />
+    <ClInclude Include="framegen\nvngx\IFGNvngx.h" />
+    <ClInclude Include="inputs\FG\Streamline_Inputs_Sl1_Dx12.h" />
+    <ClInclude Include="include\device_info\device_info.hpp" />
+    <ClInclude Include="inputs\FG\Upscaler_Inputs_Dx11wDx12.h" />
+    <ClInclude Include="low_latency\input\input_common.h" />
+    <ClInclude Include="low_latency\input\input_reflex.h" />
+    <ClInclude Include="low_latency\input\input_xell.h" />
+    <ClInclude Include="low_latency\input\input_antilag2.h" />
+    <ClInclude Include="shaders\magnifier\Magnifier_Dx11.h" />
+    <ClInclude Include="menu\input\input_system.h" />
+    <ClInclude Include="menu\input\input_system_internal.h" />
+    <ClInclude Include="framegen\nvngx\Nvngx_FFX.h" />
+    <ClInclude Include="framegen\nvngx\Nvngx_Nukems.h" />
+    <ClInclude Include="framegen\nvngx\Nvngx_DllProxy.h" />
+    <ClInclude Include="framegen\nvngx\Nvngx_Arturs.h" />
+    <ClInclude Include="shaders\hudless_compare_compute\HCC_Common.h" />
+    <ClInclude Include="shaders\hudless_compare_compute\HCC_Dx12.h" />
+    <ClInclude Include="hooks\Xell_Hooks.h" />
+    <ClInclude Include="low_latency\ll_util.h" />
+    <ClInclude Include="nvapi\fakenvapi\log.h" />
+    <ClInclude Include="nvapi\fakenvapi\low_latency.h" />
+    <ClInclude Include="low_latency\low_latency_tech\ll_antilag2.h" />
+    <ClInclude Include="low_latency\low_latency_tech\ll_antilag_vk.h" />
+    <ClInclude Include="low_latency\low_latency_tech\ll_latencyflex.h" />
+    <ClInclude Include="low_latency\low_latency_tech\ll_xell.h" />
+    <ClInclude Include="low_latency\low_latency_tech\low_latency_tech.h" />
+    <ClInclude Include="nvapi\fakenvapi\nvapi_calls.h" />
+    <ClInclude Include="proxies\Streamline_Proxy.h" />
+    <ClInclude Include="shaders\magnifier\Magnifier_Common.h" />
+    <ClInclude Include="shaders\magnifier\Magnifier_Dx12.h" />
+    <ClInclude Include="shaders\magnifier\Magnifier_Vk.h" />
+    <ClInclude Include="shaders\magnifier\precompile\Magnifier_Shader_Vk.h" />
+    <ClInclude Include="shaders\rcas\precompile\da_das_sharpen_Shader.h" />
+    <ClInclude Include="shaders\rcas\precompile\da_das_sharpen_Shader_Dx11.h" />
+    <ClInclude Include="shaders\rcas\precompile\da_das_sharpen_Shader_Vk.h" />
+    <ClInclude Include="shaders\rcas\precompile\da_rcas_sharpen_Shader.h" />
+    <ClInclude Include="shaders\rcas\precompile\da_rcas_sharpen_Shader_Dx11.h" />
+    <ClInclude Include="shaders\rcas\precompile\da_rcas_sharpen_Shader_Vk.h" />
+    <ClInclude Include="shaders\rcas\precompile\RCAS_Shader.h" />
+    <ClInclude Include="shaders\rcas\precompile\RCAS_Shader_Dx11.h" />
+    <ClInclude Include="shaders\rcas\precompile\RCAS_Shader_Vk.h" />
+    <ClInclude Include="shaders\rcas\shaders\DA_DAS_Shader.h" />
+    <ClInclude Include="shaders\rcas\shaders\DA_RCAS_Shader.h" />
+    <ClInclude Include="shaders\rcas\shaders\RCAS_Shader.h" />
+    <ClInclude Include="shaders\Shader_Common.h" />
+    <ClInclude Include="misc\SkipSpoof.h" />
+    <ClInclude Include="shaders\Shader_Dx11.h" />
+    <ClInclude Include="spoofing\User32_Spoofing.h" />
+    <ClInclude Include="hooks\VulkanwDx12_Hooks.h" />
+    <ClInclude Include="misc\IdentifyGpu.h" />
+    <ClInclude Include="misc\REFrameworkCompat.h" />
+    <ClInclude Include="misc\REFrameworkCompatCore.h" />
+    <ClInclude Include="inputs\FSR2_Dx11.h" />
+    <ClInclude Include="inputs\FSR2_Vk.h" />
+    <ClInclude Include="inputs\XeSS_Dx11.h" />
+    <ClInclude Include="MathUtils.h" />
+    <ClInclude Include="OptiTypes.h" />
+    <ClInclude Include="shaders\depth_invert\DI_Common.h" />
+    <ClInclude Include="shaders\depth_invert\DI_Dx12.h" />
+    <ClInclude Include="shaders\depth_invert\precompiled\DI_Shader.h" />
+    <ClInclude Include="shaders\depth_transfer\DT_Vk.h" />
+    <ClInclude Include="shaders\depth_transfer\precompile\dt_int_Shader_Vk.h" />
+    <ClInclude Include="shaders\depth_transfer\precompile\dt_Shader_Vk.h" />
+    <ClInclude Include="shaders\format_transfer\precompile\FT_Shader.h" />
+    <ClInclude Include="shaders\hud_copy\HudCopy_Common.h" />
+    <ClInclude Include="shaders\hud_copy\HudCopy_Dx12.h" />
+    <ClInclude Include="shaders\hud_copy\precompile\HudCopy_Shader.h" />
+    <ClInclude Include="shaders\output_scaling\fsr1\ffx_fsr1.h" />
+    <ClInclude Include="shaders\output_scaling\fsr1\FSR_EASU_Shader_Vk.h" />
+    <ClInclude Include="shaders\output_scaling\OS_Vk.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_bicubic_Shader_Vk.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_catmull_Shader_Vk.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_kaiser2_Shader.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_kaiser2_Shader_Dx11.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_kaiser2_Shader_Vk.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_kaiser3_Shader.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_kaiser3_Shader_Dx11.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_kaiser3_Shader_Vk.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_lanczos2_Shader.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_lanczos2_Shader_Dx11.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_lanczos2_Shader_Vk.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_lanczos3_Shader.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_lanczos3_Shader_Dx11.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_lanczos3_Shader_Vk.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_magc_Shader_Vk.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcus_Shader_Vk.h" />
+    <ClInclude Include="shaders\rcas\RCAS_Vk.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_Vk.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_LutVk.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNrDetailReuse_Vk.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNrSpatial_Vk.h" />
+    <ClInclude Include="shaders\dlssnr\precompile\dlssnr_detail_reuse_Shader_Vk.h" />
+    <ClInclude Include="dlssnr\DlssNrFeature_Vk.h" />
+    <ClInclude Include="dlssnr\DlssNr_ExposureScan.h" />
+    <ClInclude Include="dlssnr\DlssNr_ColourEncodingStatus.h" />
+    <ClInclude Include="dlssnr\DlssNr_NativeMode.h" />
+    <ClInclude Include="dlssnr\DlssNr_LutStatus.h" />
+    <ClInclude Include="dlssnr\DlssNr_LutPack.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_ColourEncoding.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_ProxyCurve.h" />
+    <ClInclude Include="shaders\render_ui\precompile\render_ui_pm_PShader.h" />
+    <ClInclude Include="shaders\render_ui\precompile\render_ui_pm_VShader.h" />
+    <ClInclude Include="shaders\render_ui\precompile\render_ui_PShader.h" />
+    <ClInclude Include="shaders\render_ui\precompile\render_ui_VShader.h" />
+    <ClInclude Include="shaders\render_ui\RUI_Common.h" />
+    <ClInclude Include="shaders\render_ui\RUI_Dx12.h" />
+    <ClInclude Include="shaders\resource_copy\precompile\rc_Shader_Vk.h" />
+    <ClInclude Include="shaders\resource_copy\RC_Vk.h" />
+    <ClInclude Include="shaders\Shader_Dx12.h" />
+    <ClInclude Include="shaders\Shader_Dx12Utils.h" />
+    <ClInclude Include="shaders\Shader_Vk.h" />
+    <ClInclude Include="shaders\Shader_VkUtils.h" />
+    <ClInclude Include="low_latency\input\input_uell.h" />
+    <ClInclude Include="upscalers\fsr2_212\FSR2Feature_VkOnDx12_212.h" />
+    <ClInclude Include="upscalers\ffx\FFXFeature_VkOn12.h" />
+    <ClInclude Include="upscalers\fsr31\FSR31Feature.h" />
+    <ClInclude Include="upscalers\IFeature_VkwDx12.h" />
+    <ClInclude Include="upscaler_time\UpscalerTime_Vk.h" />
+    <ClInclude Include="SysUtils.h" />
+    <ClInclude Include="with_dx12\dx11_with_dx12.h" />
+    <ClInclude Include="with_dx12\with_dx12.h" />
+    <ClInclude Include="with_dx12\dx11_with_dx12_sc.h" />
+    <ClInclude Include="misc\HiddenWindow.h" />
+    <ClInclude Include="wrapped\wrapped_factory.h" />
+    <ClInclude Include="include\spdlog_sink\debug_sink.h" />
+    <ClInclude Include="inputs\FG\FSR3_Dx12_FG.h" />
+    <ClInclude Include="inputs\FG\Streamline_Inputs_Dx12.h" />
+    <ClInclude Include="framegen\xefg\XeFG_Dx12.h" />
+    <ClInclude Include="hooks\Advapi32_Hooks.h" />
+    <ClInclude Include="hooks\Crypt32_Hooks.h" />
+    <ClInclude Include="hooks\Gdi32_Hooks.h" />
+    <ClInclude Include="hooks\Kernel_Hooks.h" />
+    <ClInclude Include="hooks\Ntdll_Hooks.h" />
+    <ClInclude Include="hooks\Streamline_Hooks.h" />
+    <ClInclude Include="hooks\Wintrust_Hooks.h" />
+    <ClInclude Include="hudfix\Hudfix_Dx12.h" />
+    <ClInclude Include="include\imgui\imgui_impl_dx11.h" />
+    <ClInclude Include="include\imgui\imgui_impl_dx12.h" />
+    <ClInclude Include="include\imgui\imgui_impl_uwp.h" />
+    <ClInclude Include="include\imgui\imgui_impl_vulkan.h" />
+    <ClInclude Include="include\imgui\imgui_impl_win32.h" />
+    <ClInclude Include="include\sl.param\parameters.h" />
+    <ClInclude Include="inputs\FfxApiExe_Dx12.h" />
+    <ClInclude Include="inputs\FG\FfxApi_Dx12_FG.h" />
+    <ClInclude Include="inputs\FfxApi_Vk.h" />
+    <ClInclude Include="inputs\FG\Upscaler_Inputs_Dx12.h" />
+    <ClInclude Include="inputs\NVNGX_DLSS.h" />
+    <ClInclude Include="inputs\XeSS_Base.h" />
+    <ClInclude Include="inputs\XeSS_Common.h" />
+    <ClInclude Include="inputs\XeSS_Dbg.h" />
+    <ClInclude Include="inputs\XeSS_Dx12.h" />
+    <ClInclude Include="inputs\XeSS_Vulkan.h" />
+    <ClInclude Include="menu\font\Hack_Compressed.h" />
+    <ClInclude Include="menu\font\Inter_Compressed.h" />
+    <ClInclude Include="misc\FrameLimit.h" />
+    <ClInclude Include="misc\Quirks.h" />
+    <ClInclude Include="OwnedMutex.h" />
+    <ClInclude Include="proxies\D3D12_Proxy.h" />
+    <ClInclude Include="proxies\Dxgi_Proxy.h" />
+    <ClInclude Include="proxies\IGDExt_Proxy.h" />
+    <ClInclude Include="proxies\Kernel32_Proxy.h" />
+    <ClInclude Include="proxies\KernelBase_Proxy.h" />
+    <ClInclude Include="proxies\XeFG_Proxy.h" />
+    <ClInclude Include="proxies\XeLL_Proxy.h" />
+    <ClInclude Include="proxies\Ntdll_Proxy.h" />
+    <ClInclude Include="native\DepthFinderCore.h" />
+    <ClInclude Include="native\FrameContract.h" />
+    <ClInclude Include="native\NativeProducer.h" />
+    <ClInclude Include="native\Dx12FrameSource.h" />
+    <ClInclude Include="native\SharedFrame.h" />
+    <ClInclude Include="native\DepthCopyDx11.h" />
+    <ClInclude Include="native\DepthResolveDx12.h" />
+    <ClInclude Include="native\MsaaPictureDx11.h" />
+    <ClInclude Include="native\Dx11FrameSource.h" />
+    <ClInclude Include="native\SharedFrameVk.h" />
+    <ClInclude Include="native\VkFrameSource.h" />
+    <ClInclude Include="native\VkPresentBridgeCore.h" />
+    <ClInclude Include="native\VkPresentBridge.h" />
+    <ClInclude Include="native\NativeDriverVk.h" />
+    <ClInclude Include="resource_tracking\GenericDepth_Vk.h" />
+    <ClInclude Include="resource_tracking\GenericDepth_VkEvents.h" />
+    <ClInclude Include="native\VirtualUpscalerDriver.h" />
+    <ClInclude Include="native\NativeDriver.h" />
+    <ClInclude Include="native\XefgReflexRule.h" />
+    <ClInclude Include="native\NativeLowLatency.h" />
+    <ClInclude Include="native\NativeLowLatencyRule.h" />
+    <ClInclude Include="native\NativeLowLatencyVkSync.h" />
+    <ClInclude Include="native\PresentStageTiming.h" />
+    <ClInclude Include="native\VkDeviceRules.h" />
+    <ClInclude Include="native\VkOutputFailureRule.h" />
+    <ClInclude Include="native\VkPresentCopyRule.h" />
+    <ClInclude Include="LogAsyncRule.h" />
+    <ClInclude Include="motion\OpticalFlow_Hlsl.h" />
+    <ClInclude Include="motion\SceneCut_Hlsl.h" />
+    <ClInclude Include="motion\Luma_Hlsl.h" />
+    <ClInclude Include="motion\TrustMask_Hlsl.h" />
+    <ClInclude Include="native\DepthCopyDx11_Hlsl.h" />
+    <ClInclude Include="native\DepthResolve_Hlsl.h" />
+    <ClInclude Include="native\MsaaPicture_Hlsl.h" />
+    <ClInclude Include="native\F5LowShaderBytecode.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_WatchedLists.h" />
+    <ClInclude Include="native\VirtualUpscalerHold.h" />
+    <ClInclude Include="motion\OpticalFlow_Dx12.h" />
+    <ClInclude Include="motion\SceneCut_Dx12.h" />
+    <ClInclude Include="motion\TrustMask_Dx12.h" />
+    <ClInclude Include="native\NativeDriverDx12.h" />
+    <ClInclude Include="native\NativeDriverDx11.h" />
+    <ClInclude Include="resource_tracking\GenericDepth_Dx12.h" />
+    <ClInclude Include="resource_tracking\GenericDepth_Dx11.h" />
+    <ClInclude Include="resource_tracking\GenericDepth_Select.h" />
+    <ClInclude Include="resource_tracking\ResTrack_dx12.h" />
+    <ClInclude Include="shaders\hudless_compare\HC_Common.h" />
+    <ClInclude Include="shaders\hudless_compare\HC_Dx12.h" />
+    <ClInclude Include="shaders\hudless_compare\precompile\hudless_compare_PShader.h" />
+    <ClInclude Include="shaders\hudless_compare\precompile\hudless_compare_VShader.h" />
+    <ClInclude Include="shaders\resource_flip\precompiled\RF_Shader.h" />
+    <ClInclude Include="shaders\resource_flip\RF_Common.h" />
+    <ClInclude Include="shaders\resource_flip\RF_Dx12.h" />
+    <ClInclude Include="shaders\depth_scale\DS_Common.h" />
+    <ClInclude Include="shaders\depth_scale\DS_Dx12.h" />
+    <ClInclude Include="shaders\depth_scale\precompiled\DS_Shader.h" />
+    <ClInclude Include="shaders\depth_transfer\DT_Common.h" />
+    <ClInclude Include="shaders\depth_transfer\DT_Dx11.h" />
+    <ClInclude Include="shaders\depth_transfer\precompile\dt_Shader_Dx11.h" />
+    <ClInclude Include="spoofing\Dxgi_Spoofing.h" />
+    <ClInclude Include="spoofing\Vulkan_Spoofing.h" />
+    <ClInclude Include="upscalers\dlssd\DLSSDFeature.h" />
+    <ClInclude Include="upscalers\dlssd\DLSSDFeature_Dx11.h" />
+    <ClInclude Include="upscalers\dlssd\DLSSDFeature_Dx12.h" />
+    <ClInclude Include="upscalers\dlssd\DLSSDFeature_Vk.h" />
+    <ClInclude Include="upscalers\dlss\DLSSFeature.h" />
+    <ClInclude Include="upscalers\dlss\DLSSFeature_Dx11.h" />
+    <ClInclude Include="upscalers\dlss\DLSSFeature_Dx12.h" />
+    <ClInclude Include="upscalers\dlss\DLSSFeature_VkOn12.h" />
+    <ClInclude Include="upscalers\dlss\DLSSFeature_Vk.h" />
+    <ClInclude Include="upscalers\FeatureProvider_Dx11.h" />
+    <ClInclude Include="upscalers\FeatureProvider_Dx12.h" />
+    <ClInclude Include="upscalers\FeatureProvider_Vk.h" />
+    <ClInclude Include="upscalers\ffx\FFXFeature.h" />
+    <ClInclude Include="upscalers\fsr31\FSR31Feature_Dx11.h" />
+    <ClInclude Include="upscalers\ffx\FFXFeature_Dx11On12.h" />
+    <ClInclude Include="upscalers\ffx\FFXFeature_Dx12.h" />
+    <ClInclude Include="upscalers\ffx\FFXFeature_Vk.h" />
+    <ClInclude Include="inputs\FfxApi_Dx12.h" />
+    <ClInclude Include="inputs\FSR2_Dx12.h" />
+    <ClInclude Include="inputs\FSR3_Dx12.h" />
+    <ClInclude Include="include\imgui\imconfig.h" />
+    <ClInclude Include="include\imgui\imgui.h" />
+    <ClInclude Include="include\imgui\imgui_internal.h" />
+    <ClInclude Include="include\imgui\imstb_rectpack.h" />
+    <ClInclude Include="include\imgui\imstb_textedit.h" />
+    <ClInclude Include="include\imgui\imstb_truetype.h" />
+    <ClInclude Include="include\imgui\misc\freetype\imgui_freetype.h" />
+    <ClInclude Include="nvapi\fakenvapi.h" />
+    <ClInclude Include="proxies\FfxApi_Proxy.h" />
+    <ClInclude Include="hooks\D3D11_Hooks.h" />
+    <ClInclude Include="hooks\Vulkan_Hooks.h" />
+    <ClInclude Include="nvapi\NvApiHooks.h" />
+    <ClInclude Include="nvapi\NvApiTypes.h" />
+    <ClInclude Include="..\external\nvapi\nvapi.h" />
+    <ClInclude Include="upscalers\fsr2_212\FSR2Feature_212.h" />
+    <ClInclude Include="upscalers\fsr2_212\FSR2Feature_Dx11On12_212.h" />
+    <ClInclude Include="upscalers\fsr2_212\FSR2Feature_Dx12_212.h" />
+    <ClInclude Include="upscalers\fsr2_212\FSR2Feature_Vk_212.h" />
+    <ClInclude Include="Config.h" />
+    <ClInclude Include="upscalers\fsr2\FSR2Feature.h" />
+    <ClInclude Include="upscalers\fsr2\FSR2Feature_Dx11.h" />
+    <ClInclude Include="upscalers\fsr2\FSR2Feature_Dx11On12.h" />
+    <ClInclude Include="upscalers\fsr2\FSR2Feature_Dx12.h" />
+    <ClInclude Include="upscalers\fsr2\FSR2Feature_Vk.h" />
+    <ClInclude Include="upscalers\IFeature_Dx11.h" />
+    <ClInclude Include="upscalers\IFeature_Dx12.h" />
+    <ClInclude Include="upscalers\IFeature.h" />
+    <ClInclude Include="upscalers\IFeature_Vk.h" />
+    <ClInclude Include="include\detours\detours.h" />
+    <ClInclude Include="dllmain.h" />
+    <ClInclude Include="MaintenanceGate.h" />
+    <ClInclude Include="ExpiredForwarding.h" />
+    <ClInclude Include="menu\menu_dx_base.h" />
+    <ClInclude Include="menu\menu_common.h" />
+    <ClInclude Include="menu\NextgenUi.h" />
+    <ClInclude Include="menu\menu_dx11.h" />
+    <ClInclude Include="menu\menu_dx12.h" />
+    <ClInclude Include="menu\menu_overlay_base.h" />
+    <ClInclude Include="menu\menu_overlay_dx.h" />
+    <ClInclude Include="menu\menu_overlay_vk.h" />
+    <ClInclude Include="wrapped\wrapped_swapchain.h" />
+    <ClInclude Include="Logger.h" />
+    <ClInclude Include="proxies\NVNGX_Proxy.h" />
+    <ClInclude Include="pch.h" />
+    <ClInclude Include="hooks\Reflex_Hooks.h" />
+    <ClInclude Include="resource.h" />
+    <ClInclude Include="scanner\scanner.h" />
+    <ClInclude Include="shaders\bias\Bias_Common.h" />
+    <ClInclude Include="shaders\bias\Bias_Dx11.h" />
+    <ClInclude Include="shaders\bias\Bias_Dx12.h" />
+    <ClInclude Include="shaders\bias\precompile\Bias_Shader.h" />
+    <ClInclude Include="shaders\bias\precompile\Bias_Shader_Dx11.h" />
+    <ClInclude Include="shaders\format_transfer\FT_Common.h" />
+    <ClInclude Include="shaders\format_transfer\FT_Dx12.h" />
+    <ClInclude Include="shaders\output_scaling\fsr1\FSR_EASU_Shader.h" />
+    <ClInclude Include="shaders\output_scaling\fsr1\FSR_EASU_Shader_Dx11.h" />
+    <ClInclude Include="shaders\output_scaling\OS_Common.h" />
+    <ClInclude Include="shaders\output_scaling\OS_Dx11.h" />
+    <ClInclude Include="shaders\output_scaling\OS_Dx12.h" />
+    <ClInclude Include="shaders\sgsr1\SGSR1_Dx12.h" />
+    <ClInclude Include="shaders\sgsr1\SGSR1_Vk.h" />
+    <ClInclude Include="shaders\sgsr1\precompile\sgsr1_Shader.h" />
+    <ClInclude Include="shaders\sgsr1\precompile\sgsr1_Shader_Vk.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_bicubic_Shader.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_bicubic_Shader_Dx11.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_catmull_Shader.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_catmull_Shader_Dx11.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_magc_Shader.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\bcds_magc_Shader_Dx11.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\BCUS_Shader.h" />
+    <ClInclude Include="shaders\output_scaling\precompile\BCUS_Shader_Dx11.h" />
+    <ClInclude Include="shaders\rcas\RCAS_Common.h" />
+    <ClInclude Include="shaders\rcas\RCAS_Dx11.h" />
+    <ClInclude Include="shaders\rcas\RCAS_Dx12.h" />
+    <ClInclude Include="State.h" />
+    <ClInclude Include="upscalers\xess\XeSSFeature_Dx11on12.h" />
+    <ClInclude Include="upscalers\xess\XeSSFeature_Vk.h" />
+    <ClInclude Include="Util.h" />
+    <ClInclude Include="version_check.h" />
+    <ClInclude Include="upscalers\xess\XeSSFeature_Dx11.h" />
+    <ClInclude Include="proxies\XeSS_Proxy.h" />
+    <ClInclude Include="NVNGX_Parameter.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="framegen\nvngx\Nvngx_Combo.cpp" />
+    <ClCompile Include="fsr4\FSR4Upgrade.cpp" />
+    <ClCompile Include="gpu_time\GpuTime_Dx11.cpp" />
+    <ClCompile Include="gpu_time\GpuTime_Dx12.cpp" />
+    <ClCompile Include="hooks\Amdxc64_Hooks.cpp" />
+    <ClCompile Include="framegen\FinalOutputEndpoint.cpp" />
+    <ClCompile Include="framegen\dlssg\DLSSG_Dx12.cpp" />
+    <ClCompile Include="framegen\dlssg\Kcd2Hdr.cpp" />
+    <ClCompile Include="framegen\dlssg\MfgUnlock.cpp" />
+    <ClCompile Include="framegen\dlssg\AmpereMfgLoader.cpp" />
+    <ClCompile Include="framegen\ffx\FSRFG_Dx12.cpp" />
+    <ClCompile Include="framegen\IFGFeature.cpp" />
+    <ClCompile Include="framegen\IFGFeature_Dx12.cpp" />
+    <ClCompile Include="framegen\nvngx\Nvngx_FG.cpp" />
+    <ClCompile Include="fsr4\FSR4ModelSelection.cpp" />
+    <ClCompile Include="hooks\D3D12_Hooks.cpp" />
+    <ClCompile Include="hooks\DxgiFactory_Hooks.cpp" />
+    <ClCompile Include="hooks\DxgiFactory_WrappedCalls.cpp" />
+    <ClCompile Include="hooks\Dxgi_Hooks.cpp" />
+    <ClCompile Include="hooks\FG_Hooks.cpp" />
+    <ClCompile Include="hooks\Kernel_Hooks.cpp" />
+    <ClCompile Include="hooks\LibraryLoad_Hooks.cpp" />
+    <ClCompile Include="hooks\VulkanwDx12_Hooks.cpp" />
+    <ClCompile Include="hooks\Xell_Hooks.cpp" />
+    <ClCompile Include="inputs\FG\Streamline_Inputs_Sl1_Dx12.cpp" />
+    <ClCompile Include="include\device_info\device_info.cpp" />
+    <ClCompile Include="inputs\FG\Upscaler_Inputs_Dx11wDx12.cpp" />
+    <ClCompile Include="low_latency\input\input_common.cpp" />
+    <ClCompile Include="low_latency\input\input_reflex.cpp" />
+    <ClCompile Include="low_latency\input\input_xell.cpp" />
+    <ClCompile Include="low_latency\input\input_antilag2.cpp" />
+    <ClCompile Include="shaders\magnifier\Magnifier_Dx11.cpp" />
+    <ClCompile Include="menu\input\input_system.cpp" />
+    <ClCompile Include="menu\input\input_system_cursor.cpp" />
+    <ClCompile Include="menu\input\input_system_detours.cpp" />
+    <ClCompile Include="menu\input\input_system_directinput.cpp" />
+    <ClCompile Include="menu\input\input_system_gameinput.cpp" />
+    <ClCompile Include="menu\input\input_system_hid.cpp" />
+    <ClCompile Include="menu\input\input_system_messages.cpp" />
+    <ClCompile Include="menu\input\input_system_raw.cpp" />
+    <ClCompile Include="menu\input\input_system_window.cpp" />
+    <ClCompile Include="menu\input\input_system_windows_hooks.cpp" />
+    <ClCompile Include="menu\input\input_system_xinput.cpp" />
+    <ClCompile Include="misc\IdentifyGpu.cpp" />
+    <ClCompile Include="misc\REFrameworkCompat.cpp" />
+    <ClCompile Include="inputs\FSR2_Dx11.cpp" />
+    <ClCompile Include="inputs\FSR2_Vk.cpp" />
+    <ClCompile Include="inputs\XeSS_Dx11.cpp" />
+    <ClCompile Include="low_latency\ll_util.cpp" />
+    <ClCompile Include="nvapi\fakenvapi\log.cpp" />
+    <ClCompile Include="nvapi\fakenvapi\low_latency.cpp" />
+    <ClCompile Include="nvapi\fakenvapi\low_latency_d3d.cpp" />
+    <ClCompile Include="low_latency\low_latency_tech\ll_antilag2.cpp" />
+    <ClCompile Include="low_latency\low_latency_tech\ll_antilag_vk.cpp" />
+    <ClCompile Include="low_latency\low_latency_tech\ll_latencyflex.cpp" />
+    <ClCompile Include="low_latency\low_latency_tech\ll_xell.cpp" />
+    <ClCompile Include="nvapi\fakenvapi\low_latency_vk.cpp" />
+    <ClCompile Include="nvapi\fakenvapi\nvapi_calls.cpp" />
+    <ClCompile Include="framegen\nvngx\Nvngx_FFX.cpp" />
+    <ClCompile Include="framegen\nvngx\Nvngx_Nukems.cpp" />
+    <ClCompile Include="framegen\nvngx\Nvngx_Arturs.cpp" />
+    <ClCompile Include="NVNGX_Parameter.cpp" />
+    <ClCompile Include="framegen\nvngx\Nvngx_DllProxy.cpp" />
+    <ClCompile Include="OptiTypes.cpp" />
+    <ClCompile Include="pch.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">Create</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="shaders\depth_invert\DI_Dx12.cpp" />
+    <ClCompile Include="shaders\hudless_compare_compute\HCC_Dx12.cpp" />
+    <ClCompile Include="shaders\hud_copy\HudCopy_Dx12.cpp" />
+    <ClCompile Include="shaders\depth_transfer\DT_Vk.cpp" />
+    <ClCompile Include="shaders\magnifier\Magnifier_Common.cpp" />
+    <ClCompile Include="shaders\magnifier\Magnifier_Dx12.cpp" />
+    <ClCompile Include="shaders\magnifier\Magnifier_Vk.cpp" />
+    <ClCompile Include="shaders\output_scaling\OS_Vk.cpp" />
+    <ClCompile Include="shaders\rcas\RCAS_Common.cpp" />
+    <ClCompile Include="shaders\rcas\RCAS_Vk.cpp" />
+    <ClCompile Include="shaders\Shader_Common.cpp" />
+    <ClCompile Include="shaders\render_ui\RUI_Dx12.cpp" />
+    <ClCompile Include="shaders\resource_copy\RC_Vk.cpp" />
+    <ClCompile Include="shaders\Shader_Dx12.cpp" />
+    <ClCompile Include="shaders\Shader_Vk.cpp" />
+    <ClCompile Include="misc\SkipSpoof.cpp" />
+    <ClCompile Include="shaders\Shader_Dx11.cpp" />
+    <ClCompile Include="spoofing\Dxgi_Spoofing.cpp" />
+    <ClCompile Include="spoofing\User32_Spoofing.cpp" />
+    <ClCompile Include="spoofing\Vulkan_Spoofing.cpp" />
+    <ClCompile Include="low_latency\input\input_uell.cpp" />
+    <ClCompile Include="upscalers\fsr2_212\FSR2Feature_VkOnDx12_212.cpp" />
+    <ClCompile Include="upscalers\ffx\FFXFeature_VkOn12.cpp" />
+    <ClCompile Include="upscalers\fsr31\FSR31Feature.cpp" />
+    <ClCompile Include="upscalers\IFeature_Vk.cpp" />
+    <ClCompile Include="upscalers\IFeature_VkwDx12.cpp" />
+    <ClCompile Include="upscaler_time\UpscalerTime_Vk.cpp" />
+    <ClCompile Include="with_dx12\dx11_with_dx12.cpp" />
+    <ClCompile Include="with_dx12\with_dx12.cpp" />
+    <ClCompile Include="with_dx12\dx11_with_dx12_sc.cpp" />
+    <ClCompile Include="wrapped\wrapped_factory.cpp" />
+    <ClCompile Include="inputs\FG\FSR3_Dx12_FG.cpp" />
+    <ClCompile Include="inputs\FG\Streamline_Inputs_Dx12.cpp" />
+    <ClCompile Include="framegen\xefg\XeFG_Dx12.cpp" />
+    <ClCompile Include="hooks\Streamline_Hooks.cpp" />
+    <ClCompile Include="hudfix\Hudfix_Dx12.cpp" />
+    <ClCompile Include="include\imgui\imgui_impl_dx11.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="include\imgui\imgui_impl_dx12.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="include\imgui\imgui_impl_uwp.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="include\imgui\imgui_impl_vulkan.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="include\imgui\imgui_impl_win32.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="include\sl.param\parameters.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="inputs\FfxApiExe_Dx12.cpp" />
+    <ClCompile Include="inputs\FG\FfxApi_Dx12_FG.cpp" />
+    <ClCompile Include="inputs\FfxApi_Vk.cpp" />
+    <ClCompile Include="inputs\FG\Upscaler_Inputs_Dx12.cpp" />
+    <ClCompile Include="inputs\XeSS_Base.cpp" />
+    <ClCompile Include="inputs\XeSS_Common.cpp" />
+    <ClCompile Include="inputs\XeSS_Dbg.cpp" />
+    <ClCompile Include="inputs\XeSS_Vulkan.cpp" />
+    <ClCompile Include="misc\FrameLimit.cpp" />
+    <ClCompile Include="nvapi\fakenvapi.cpp" />
+    <ClCompile Include="nvapi\NvApiHooks.cpp" />
+    <ClCompile Include="nvapi\NvApiTypes.cpp" />
+    <ClCompile Include="hooks\Reflex_Hooks.cpp" />
+    <ClCompile Include="native\NativeDriverDx12.cpp" />
+    <ClCompile Include="native\NativeDriverDx11.cpp" />
+    <ClCompile Include="motion\TrustMask_Dx12.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="motion\OpticalFlow_Dx12.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="motion\SceneCut_Dx12.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="native\DepthFinderCore.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="ui_mask\DrawUiMask.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="ui_mask\DrawUiMask.h" />
+    <ClInclude Include="resource_tracking\DrawObservation_Dx11.h" />
+    <ClCompile Include="native\NativeProducer.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="native\Dx12FrameSource.cpp" />
+    <ClCompile Include="native\DepthCopyDx11.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="native\DepthResolveDx12.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="native\MsaaPictureDx11.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="native\SharedFrame.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="native\Dx11FrameSource.cpp" />
+    <ClCompile Include="native\SharedFrameVk.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="native\VkFrameSource.cpp" />
+    <ClCompile Include="native\VkPresentBridgeCore.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="native\VkPresentBridge.cpp" />
+    <ClCompile Include="native\NativeDriverVk.cpp" />
+    <ClCompile Include="resource_tracking\GenericDepth_Vk.cpp" />
+    <ClCompile Include="native\VirtualUpscalerDriver.cpp" />
+    <ClCompile Include="native\NativeDriver.cpp" />
+    <ClCompile Include="native\NativeLowLatency.cpp" />
+    <ClCompile Include="resource_tracking\GenericDepth_Dx12.cpp" />
+    <ClCompile Include="resource_tracking\GenericDepth_Dx11.cpp" />
+    <ClCompile Include="resource_tracking\ResTrack_dx12.cpp" />
+    <ClCompile Include="shaders\hudless_compare\HC_Dx12.cpp" />
+    <ClCompile Include="shaders\resource_flip\RF_Dx12.cpp" />
+    <ClCompile Include="shaders\depth_scale\DS_Dx12.cpp" />
+    <ClCompile Include="shaders\depth_transfer\DT_Dx11.cpp" />
+    <ClCompile Include="upscalers\dlssd\DLSSDFeature.cpp" />
+    <ClCompile Include="upscalers\dlssd\DLSSDFeature_Dx11.cpp" />
+    <ClCompile Include="upscalers\dlssd\DLSSDFeature_Dx12.cpp" />
+    <ClCompile Include="upscalers\dlssd\DLSSDFeature_Vk.cpp" />
+    <ClCompile Include="upscalers\dlss\DLSSFeature.cpp" />
+    <ClCompile Include="upscalers\dlss\DLSSFeature_Dx11.cpp" />
+    <ClCompile Include="upscalers\dlss\DLSSFeature_Dx11On12.cpp" />
+    <ClCompile Include="upscalers\dlss\DLSSFeature_VkOn12.cpp" />
+    <ClCompile Include="upscalers\dlss\DLSSFeature_Dx12.cpp" />
+    <ClCompile Include="upscalers\dlss\DLSSFeature_Vk.cpp" />
+    <ClCompile Include="upscalers\FeatureProvider_Dx11.cpp" />
+    <ClCompile Include="upscalers\FeatureProvider_Dx12.cpp" />
+    <ClCompile Include="upscalers\FeatureProvider_Vk.cpp" />
+    <ClCompile Include="upscalers\fsr2_212\FSR2Feature_212.cpp" />
+    <ClCompile Include="upscalers\fsr2_212\FSR2Feature_Dx11On12_212.cpp" />
+    <ClCompile Include="upscalers\fsr2_212\FSR2Feature_Dx12_212.cpp" />
+    <ClCompile Include="upscalers\fsr2_212\FSR2Feature_Vk_212.cpp" />
+    <ClCompile Include="upscalers\ffx\FFXFeature.cpp" />
+    <ClCompile Include="upscalers\fsr31\FSR31Feature_Dx11.cpp" />
+    <ClCompile Include="upscalers\ffx\FFXFeature_Dx11On12.cpp" />
+    <ClCompile Include="upscalers\ffx\FFXFeature_Dx12.cpp" />
+    <ClCompile Include="upscalers\ffx\FFXFeature_Vk.cpp" />
+    <ClCompile Include="upscalers\IFeature_Dx11.cpp" />
+    <ClCompile Include="upscalers\IFeature_Dx11wDx12.cpp" />
+    <ClInclude Include="upscalers\IFeature_Dx11wDx12.h" />
+    <ClCompile Include="Config.cpp" />
+    <ClCompile Include="upscalers\fsr2\FSR2Feature.cpp" />
+    <ClCompile Include="upscalers\fsr2\FSR2Feature_Dx11.cpp" />
+    <ClCompile Include="upscalers\fsr2\FSR2Feature_Dx11On12.cpp" />
+    <ClCompile Include="upscalers\fsr2\FSR2Feature_Dx12.cpp" />
+    <ClCompile Include="upscalers\fsr2\FSR2Feature_Vk.cpp" />
+    <ClCompile Include="upscalers\IFeature.cpp" />
+    <ClCompile Include="upscalers\IFeature_Dx12.cpp" />
+    <ClCompile Include="inputs\FfxApi_Dx12.cpp" />
+    <ClCompile Include="inputs\FSR2_Dx12.cpp" />
+    <ClCompile Include="inputs\FSR3_Dx12.cpp" />
+    <ClCompile Include="hooks\D3D11_Hooks.cpp" />
+    <ClCompile Include="hooks\Vulkan_Hooks.cpp" />
+    <ClCompile Include="menu\font\Hack_Compressed.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="menu\font\Inter_Compressed.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="menu\menu_common.cpp" />
+    <ClCompile Include="menu\NextgenUi.cpp" />
+    <ClCompile Include="menu\menu_dx_base.cpp" />
+    <ClCompile Include="menu\menu_dx11.cpp" />
+    <ClCompile Include="menu\menu_dx12.cpp" />
+    <ClCompile Include="menu\menu_overlay_base.cpp" />
+    <ClCompile Include="menu\menu_overlay_dx.cpp" />
+    <ClCompile Include="menu\menu_overlay_vk.cpp" />
+    <ClCompile Include="wrapped\wrapped_swapchain.cpp" />
+    <ClCompile Include="include\imgui\imgui.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="include\imgui\imgui_draw.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="include\imgui\imgui_tables.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="include\imgui\imgui_widgets.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="include\imgui\misc\freetype\imgui_freetype.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="Logger.cpp" />
+    <ClCompile Include="inputs\NVNGX.cpp" />
+    <ClCompile Include="inputs\NVNGX_DLSS_Dx11.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_ExposureCalibrate.cpp" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_ActiveColor.h" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Vk.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_LutVk.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNrDetailReuse_Vk.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNrSpatial_Vk.cpp" />
+    <ClCompile Include="dlssnr\DlssNrFeature_Vk.cpp" />
+    <ClCompile Include="dlssnr\DlssNr_ExposureScan.cpp" />
+    <ClCompile Include="dlssnr\DlssNr_ColourEncodingStatus.cpp" />
+    <ClCompile Include="dlssnr\DlssNr_LutStatus.cpp" />
+    <ClCompile Include="dlssnr\DlssNr_Proxy.cpp" />
+    <ClCompile Include="dlssnr\DlssNr_Menu.cpp" />
+    <ClCompile Include="dlssnr\DlssNrNative.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="dlssnr\DlssNrNative_Vk.cpp" />
+    <ClCompile Include="inputs\NVNGX_DLSS_Dx12.cpp" />
+    <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="MaintenanceGate.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="inputs\NVNGX_DLSS_Vk.cpp" />
+    <ClCompile Include="upscalers\xess\XeSSFeature.cpp" />
+    <ClInclude Include="upscalers\xess\XeSSFeature.h" />
+    <ClCompile Include="upscalers\xess\XeSSFeature_Dx11.cpp" />
+    <ClCompile Include="upscalers\xess\XeSSFeature_Dx11on12.cpp" />
+    <ClCompile Include="upscalers\xess\XeSSFeature_Dx12.cpp" />
+    <ClInclude Include="upscalers\xess\XeSSFeature_Dx12.h" />
+    <ClCompile Include="scanner\scanner.cpp" />
+    <ClCompile Include="shaders\bias\Bias_Dx11.cpp" />
+    <ClCompile Include="shaders\bias\Bias_Dx12.cpp" />
+    <ClCompile Include="shaders\format_transfer\FT_Dx12.cpp" />
+    <ClCompile Include="shaders\output_scaling\OS_Dx11.cpp" />
+    <ClCompile Include="shaders\output_scaling\OS_Dx12.cpp" />
+    <ClCompile Include="shaders\sgsr1\SGSR1_Dx12.cpp" />
+    <ClCompile Include="shaders\sgsr1\SGSR1_Vk.cpp" />
+    <ClCompile Include="shaders\rcas\RCAS_Dx11.cpp" />
+    <ClCompile Include="shaders\rcas\RCAS_Dx12.cpp" />
+    <ClCompile Include="upscalers\xess\XeSSFeature_Vk.cpp" />
+    <ClCompile Include="Util.cpp" />
+    <ClCompile Include="version_check.cpp" />
+    <ClCompile Include="inputs\XeSS_Debug.cpp" />
+    <ClCompile Include="inputs\XeSS_Dx12.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="OptiScaler.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\magnifier\precompile\Magnifier_Shader_Vk.spv" />
+    <None Include="Source.def" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+  <ItemGroup>
+    <ClInclude Include="dlssnr\DlssNr_NgxResourceParameter.h" />
+    <ClCompile Include="genshin\CaptureOnlyAdmission.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\CaptureOnlyAdmission.h" />
+    <ClInclude Include="genshin\CaptureOnlyBridge.h" />
+    <ClCompile Include="genshin\CaptureOnlyConsumer.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\CaptureOnlyConsumer.h" />
+    <ClCompile Include="genshin\GenshinEngineProducer.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\GenshinEngineProducer.h" />
+    <ClCompile Include="genshin\GenshinHookCpuTiming.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="genshin\GenshinFamilySkip.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\GenshinFamilySkip.h" />
+    <ClCompile Include="genshin\GenshinLegacyCapture.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\GenshinLegacyCapture.h" />
+    <ClInclude Include="genshin\GenshinFsrSubstageProgress.h" />
+      <ClInclude Include="genshin\GenshinFgOutcome.h" />
+    <ClInclude Include="menu\GenshinFsrSubstageUi.h" />
+    <ClCompile Include="genshin\GenshinInputObserver.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\GenshinInputObserver.h" />
+    <ClCompile Include="genshin\GenshinCpuWriterProbe.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\GenshinCpuWriterProbe.h" />
+    <ClCompile Include="genshin\GenshinDepthProvider.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\GenshinDepthProvider.h" />
+    <ClInclude Include="genshin\GenshinRuntimeCapture.h" />
+    <ClInclude Include="genshin\GenshinManualCapture.h" />
+    <ClInclude Include="genshin\GenshinLegacyControls.h" />
+    <ClCompile Include="genshin\GenshinPresentLifecycle.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\GenshinPresentLifecycle.h" />
+    <ClCompile Include="genshin\GenshinResourceProvenance.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\GenshinResourceProvenance.h" />
+    <ClInclude Include="genshin\GenshinSrReceipt.h" />
+    <ClCompile Include="genshin\GenshinTypedGuides.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\GenshinTypedGuides.h" />
+    <ClInclude Include="genshin\GenshinNrProfile.h" />
+    <ClInclude Include="genshin\GenshinPresentNr.h" />
+    <ClInclude Include="genshin\GenshinVisibleDrawProbe.h" />
+    <ClInclude Include="genshin\GenshinVisibleOutput.h" />
+    <ClCompile Include="genshin\GenshinDx12Transport.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\GenshinDx12Transport.h" />
+    <ClInclude Include="genshin\GenshinOutputContract.h" />
+    <ClInclude Include="genshin\legacy\Fsr2FamilyTakeover.h" />
+    <ClCompile Include="genshin\legacy\Il2CppCallSiteHook.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="genshin\legacy\Il2CppCallSiteHook.h" />
+    <ClInclude Include="genshin\legacy\MotionFlipPolicy.h" />
+    <ClInclude Include="genshin\legacy\ResourceIdentification.h" />
+    <ClInclude Include="genshin\legacy\TranslationFrameTimePolicy.h" />
+    <ClInclude Include="inputs\FSR2_Dx11_Internal.h" />
+    <ClCompile Include="inputs\GenshinFsrContract.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="inputs\GenshinFsrContract.h" />
+    <ClCompile Include="inputs\GenshinFsrDx11.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="inputs\GenshinFsrDx11.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="integration\HoYoShade.cpp" />
+    <ClCompile Include="integration\HoYoShadeDepth.cpp" />
+    <ClCompile Include="integration\HoYoShadeDepthSemantics.cpp" />
+    <ClInclude Include="integration\HoYoShadeDepthSemantics.h" />
+    <ClInclude Include="integration\HoYoShadeDepth.h" />
+    <ClCompile Include="integration\HoYoShadeOwnedRuntime.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>HOYOSHADE_OWNED_RUNTIME_STANDALONE;HOYOSHADE_OWNED_RUNTIME_PRODUCT_LOGGING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClInclude Include="integration\HoYoShade.h" />
+    <ClInclude Include="integration\HoYoShadeApi.h" />
+    <ClInclude Include="integration\HoYoShadeOwnedRuntime.h" />
+    <ClInclude Include="integration\HoYoShadePolicy.h" />
+    <ClInclude Include="integration\hoyoshade\sdk\reshade\reshade.hpp" />
+    <ClInclude Include="integration\hoyoshade\sdk\reshade\reshade_api.hpp" />
+    <ClInclude Include="integration\hoyoshade\sdk\reshade\reshade_api_device.hpp" />
+    <ClInclude Include="integration\hoyoshade\sdk\reshade\reshade_api_pipeline.hpp" />
+    <ClInclude Include="integration\hoyoshade\sdk\reshade\reshade_api_resource.hpp" />
+    <ClInclude Include="integration\hoyoshade\sdk\reshade\reshade_events.hpp" />
+    <ClInclude Include="integration\hoyoshade\sdk\reshade\reshade_api_format.hpp" />
+    <ClInclude Include="integration\hoyoshade\sdk\reshade\reshade_overlay.hpp" />
+    <None Include="integration\hoyoshade\sdk\LICENSE.md" />
+    <ClInclude Include="genshin\GenshinFsrUiObservation.h" />
+    <ClInclude Include="genshin\GenshinHookHintPresentation.h" />
+    <ClInclude Include="genshin\GenshinLoadingProgress.h" />
+    <ClInclude Include="menu\GenshinFsrHintPolicy.h" />
+    <ClInclude Include="menu\GenshinFsrHintController.h" />
+    <ClInclude Include="menu\CriticalErrorQueue.h" />
+    <ClInclude Include="menu\CriticalErrorWindow.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="mods\gimi\GimiConfig.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiPlan.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiCommands.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiUserState.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiIdentity.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiFormats.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiDds.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiResources.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiDebugOverlay.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiNativeOverlay.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiDrawCache.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiDx11Executor.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiFormatText.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiTextRender.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiRuntime.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiShaderSource.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiShaderTools.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="mods\gimi\GimiDxbcBridge.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <FloatingPointModel>Precise</FloatingPointModel>
+      <PreprocessorDefinitions>MIGOTO_DX=11;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)gimi_GimiDxbcBridge.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\dxbc\Assembler.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp14</LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <FloatingPointModel>Precise</FloatingPointModel>
+      <PreprocessorDefinitions>MIGOTO_DX=11;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)gimi_Assembler.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\dxbc\SignatureParser.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp14</LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <FloatingPointModel>Precise</FloatingPointModel>
+      <PreprocessorDefinitions>MIGOTO_DX=11;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)gimi_SignatureParser.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_auto_possess.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_auto_possess.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_chartables.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_chartables.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_compile.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_compile.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_context.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_context.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_error.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_error.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_find_bracket.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_find_bracket.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_jit_compile.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_jit_compile.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_match.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_match.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_match_data.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_match_data.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_newline.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_newline.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_ord2utf.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_ord2utf.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_pattern_info.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_pattern_info.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_string_utils.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_string_utils.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_study.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_study.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_substitute.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_substitute.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_substring.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_substring.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_tables.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_tables.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_ucd.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_ucd.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_valid_utf.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_valid_utf.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="mods\gimi\third_party\pcre2\src\pcre2_xclass.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <CompileAs>CompileAsC</CompileAs>
+      <LanguageStandard></LanguageStandard>
+      <ConformanceMode>false</ConformanceMode>
+      <PreprocessorDefinitions>PCRE2_STATIC=1;PCRE2_CODE_UNIT_WIDTH=8;HAVE_CONFIG_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)mods\gimi\third_party\pcre2\include;$(ProjectDir)mods\gimi\third_party\pcre2\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ObjectFileName>$(IntDir)gimi_pcre2_xclass.obj</ObjectFileName>
+    </ClCompile>
+    <ClInclude Include="mods\gimi\GimiShaderTools.h" />
+    <ClInclude Include="mods\gimi\GimiOutlineContract.h" />
+    <ClInclude Include="mods\gimi\GimiDxbcBridge.h" />
+    <ClInclude Include="mods\gimi\GimiConfig.h" />
+    <ClInclude Include="mods\gimi\GimiPlan.h" />
+    <ClInclude Include="mods\gimi\GimiCommands.h" />
+    <ClInclude Include="mods\gimi\GimiUserState.h" />
+    <ClInclude Include="mods\gimi\GimiExpression.h" />
+    <ClInclude Include="mods\gimi\GimiIdentity.h" />
+    <ClInclude Include="mods\gimi\GimiFormats.h" />
+    <ClInclude Include="mods\gimi\GimiDds.h" />
+    <ClInclude Include="mods\gimi\GimiResources.h" />
+    <ClInclude Include="mods\gimi\GimiDebugOverlay.h" />
+    <ClInclude Include="mods\gimi\GimiNativeOverlay.h" />
+    <ClInclude Include="mods\gimi\third_party\texfx-overlay\DebugShaderOutputSource.h" />
+    <ClInclude Include="mods\gimi\GimiDrawCache.h" />
+    <ClInclude Include="mods\gimi\GimiDx11Resources.h" />
+    <ClInclude Include="mods\gimi\GimiDx11Executor.h" />
+    <ClInclude Include="mods\gimi\GimiFormatText.h" />
+    <ClInclude Include="mods\gimi\GimiRuntime.h" />
+    <ClInclude Include="mods\gimi\GimiShaderSource.h" />
+  </ItemGroup>
+</Project>
