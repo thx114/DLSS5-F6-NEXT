@@ -358,6 +358,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="hooks\FG_Hooks.h" />
     <ClInclude Include="hooks\Hook_Utils.h" />
     <ClInclude Include="hooks\LibraryLoad_Hooks.h" />
+    <ClInclude Include="hooks\ngx\NativeDx12Hooks.h" />
+    <ClInclude Include="hooks\ngx\NativeDx12Router.h" />
+    <ClInclude Include="hooks\ngx\SelectedFeatureRelease.h" />
     <ClInclude Include="hooks\CommandBuffer_StateTracker.h" />
     <ClInclude Include="framegen\nvngx\IFGNvngx.h" />
     <ClInclude Include="inputs\FG\Streamline_Inputs_Sl1_Dx12.h" />
@@ -711,6 +714,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="hooks\FG_Hooks.cpp" />
     <ClCompile Include="hooks\Kernel_Hooks.cpp" />
     <ClCompile Include="hooks\LibraryLoad_Hooks.cpp" />
+    <ClCompile Include="hooks\ngx\NativeDx12Hooks.cpp" />
     <ClCompile Include="hooks\VulkanwDx12_Hooks.cpp" />
     <ClCompile Include="hooks\Xell_Hooks.cpp" />
     <ClCompile Include="inputs\FG\Streamline_Inputs_Sl1_Dx12.cpp" />

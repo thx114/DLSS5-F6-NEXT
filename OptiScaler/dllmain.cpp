@@ -1089,6 +1089,8 @@ static void CheckWorkingMode()
     if (nvngxModule != nullptr)
     {
         LOG_DEBUG("nvngx.dll already in memory");
+        // Resolving the whole native table also installs ZZZ's DX12 input
+        // router, including entry points already cached by game Streamline.
         NVNGXProxy::InitNVNGX(nvngxModule);
     }
 

@@ -98,6 +98,9 @@ class IFeature_Dx12 : public virtual IFeature
     virtual bool EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) = 0;
 
   public:
+    // A caller retaining the complete feature must honor failure before any
+    // context/parameter destruction. Existing backends keep their lifecycle.
+    virtual NVSDK_NGX_Result TryRelease() { return NVSDK_NGX_Result_Success; }
     bool Init(ID3D12Device* InDevice, ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters);
     bool Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters);
     // Internal Bridge entry; the caller retains ownership of slot/fence admission.

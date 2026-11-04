@@ -3,14 +3,18 @@
 #include <upscalers/IFeature_Dx12.h>
 #include <shaders/rcas/RCAS_Dx12.h>
 #include <string>
+#include <hooks/ngx/SelectedFeatureRelease.h>
 
 class DLSSFeatureDx12 : public DLSSFeature, public IFeature_Dx12
 {
   private:
+    bool _routedRelease = false;
+    NgxInput::NativeFeatureRelease _nativeRelease;
   protected:
     bool InitDLSS(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters);
 
   public:
+    NVSDK_NGX_Result TryRelease() override;
     bool InitInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
     bool EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
 

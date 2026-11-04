@@ -22,6 +22,7 @@
 #include <imgui/ImGuiNotify.hpp>
 
 #include <hooks/D3D12_Hooks.h>
+#include <hooks/ngx/SelectedFeatureRelease.h>
 
 #include <dxgi1_4.h>
 #include <shared_mutex>
@@ -40,6 +41,59 @@ static int evalCounter = 0;
 static std::atomic_bool shutdown { false };
 static bool _skipInit = false;
 static wchar_t const** paths;
+// The ordinary exported Init borrows its device. A late router attachment has
+// no such caller lifetime contract, so it holds exactly one device reference.
+static ID3D12Device* nativeAttachedDevice = nullptr;
+
+namespace NgxInput
+{
+bool CanAttachNativeDx12Input(ID3D12Device* device)
+{
+    if (!device || State::Instance().isShuttingDown || shutdown)
+        return false;
+    // The existing input/context registry is global, not multi-device. Refuse
+    // a switch before changing any private or published device state.
+    return (!D3D12Device || D3D12Device == device) &&
+           (!State::Instance().currentD3D12Device || State::Instance().currentD3D12Device == device);
+}
+
+bool AttachNativeDx12Input(ID3D12Device* device)
+{
+    if (!CanAttachNativeDx12Input(device))
+        return false;
+    if (nativeAttachedDevice == device && D3D12Device == device && State::Instance().nvngxDx12Inited)
+        return true;
+    device->AddRef();
+    nativeAttachedDevice = device;
+    D3D12Device = device;
+    State::Instance().currentD3D12Device = device;
+    State::Instance().api = DX12;
+    D3D12Hooks::HookDevice(device);
+    UpscalerInputsDx12::Init(device);
+    State::Instance().nvngxDx12Inited = true; // input attached, not observed native Init metadata
+    return true;
+}
+
+bool DetachNativeDx12Input()
+{
+    // A router must release every selected context through its actual Release
+    // route first. This helper cannot erase live features or authorize GPU retirement.
+    if (!Dx12Contexts.empty())
+        return false;
+    const auto device = D3D12Device ? D3D12Device : nativeAttachedDevice;
+    if (State::Instance().currentD3D12Device == device)
+        State::Instance().currentD3D12Device = nullptr;
+    D3D12Device = nullptr;
+    State::Instance().nvngxDx12Inited = false;
+    UpscalerInputsDx12::Init(nullptr);
+    if (nativeAttachedDevice)
+    {
+        nativeAttachedDevice->Release();
+        nativeAttachedDevice = nullptr;
+    }
+    return true;
+}
+}
 
 class ScopedInitDx12
 {
@@ -842,7 +896,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
     return tryResult;
 }
 
-NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* InHandle)
+static NVSDK_NGX_Result ReleaseDx12Feature(NVSDK_NGX_Handle* InHandle)
 {
     if (State::Instance().isShuttingDown)
         return NVSDK_NGX_Result_Success;
@@ -915,7 +969,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     {
         auto& entry = it->second;
 
-        if (auto* deviceContext = entry.feature.get())
+        if (auto* deviceContext = entry.feature.get(); deviceContext || NgxInput::Installed())
         {
             // Clear global reference if it matches
             if (deviceContext == State::Instance().currentFeature)
@@ -936,6 +990,21 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     if (contextReleased)
         HandleToFeature.Forget(handleId);
     return NVSDK_NGX_Result_Success;
+}
+
+NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* InHandle)
+{
+    if (!NgxInput::Installed() || !InHandle)
+        return ReleaseDx12Feature(InHandle);
+    if (State::Instance().isShuttingDown)
+        return NVSDK_NGX_Result_Fail;
+    const auto context = Dx12Contexts.find(InHandle->Id);
+    if (context == Dx12Contexts.end())
+        return NVSDK_NGX_Result_FAIL_FeatureNotFound;
+    // The router has already established pointer ownership. Keep the complete
+    // selected context and its create parameters if native backend release fails.
+    return NgxInput::CommitAfterFeatureRelease(true, context->second.feature.get(),
+                                              [&] { return ReleaseDx12Feature(InHandle); });
 }
 
 /**
@@ -1062,16 +1131,22 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
             state.changeBackend[handleId] = true;
     }
 
-    // To avoid capturing potential upscaler change (creation) and then upscaling itself
-    D3D12Hooks::SetRootSignatureTracking(false);
-
     // Backend change or recreation requested
     if (state.changeBackend[handleId])
     {
-        UpscalerInputsDx12::Reset();
-
-        auto successfulPhase = FeatureProvider_Dx12::ChangeFeature(state.newBackend, D3D12Device, InCmdList, handleId,
-                                                                   InParameters, &ctxData);
+        bool successfulPhase = false;
+        const auto releaseResult = NgxInput::AdvanceAfterFeatureRelease(
+            NgxInput::Installed(), ctxData.changeBackendCounter, feature, [&] {
+                // Phase-one preflight precedes Reset, parameter/currentFeature
+                // changes, and moving the complete old feature to DelayedDestroy.
+                D3D12Hooks::SetRootSignatureTracking(false);
+                UpscalerInputsDx12::Reset();
+                successfulPhase = FeatureProvider_Dx12::ChangeFeature(state.newBackend, D3D12Device, InCmdList,
+                                                                      handleId, InParameters, &ctxData);
+                return NVSDK_NGX_Result_Success;
+            });
+        if (releaseResult != NVSDK_NGX_Result_Success)
+            return releaseResult;
         feature = ctxData.feature.get();
 
         evalCounter = 0;
@@ -1082,6 +1157,10 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
             return NVSDK_NGX_Result_Success;
         }
     }
+
+    // Phase one returned above after successful preflight; it must never
+    // Evaluate the old native handle whose ownership has just been released.
+    D3D12Hooks::SetRootSignatureTracking(false);
 
     // Fallback to FSR 2.1.2 if feature failed to initialize and user didn't explicitly request it
     if (!feature->IsInited() && cfg.Dx12Upscaler.value_or_default() != Upscaler::FSR21)

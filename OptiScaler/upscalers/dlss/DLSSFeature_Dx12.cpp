@@ -16,6 +16,8 @@ bool DLSSFeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList, NVS
 
 bool DLSSFeatureDx12::InitDLSS(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
 {
+    if (_routedRelease && _nativeRelease.HoldsOutput())
+        return false; // no overwrite of a live/uncertain native owner on Init retry
     if (NVNGXProxy::NVNGXModule() == nullptr)
     {
         LOG_ERROR("nvngx.dll not loaded!");
@@ -46,7 +48,9 @@ bool DLSSFeatureDx12::InitDLSS(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
     {
         ProcessInitParams(InParameters);
 
-        _p_dlssHandle = &_dlssHandle;
+        // Routed acquisition starts empty. The legacy inline placeholder is
+        // not evidence that native Create ever acquired a feature.
+        _p_dlssHandle = _routedRelease ? nullptr : &_dlssHandle;
 
         NVSDK_NGX_Result nvResult;
         {
@@ -56,6 +60,9 @@ bool DLSSFeatureDx12::InitDLSS(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
             nvResult = NVNGXProxy::D3D12_CreateFeature()(InCommandList, NVSDK_NGX_Feature_SuperSampling, InParameters,
                                                          &_p_dlssHandle);
         }
+
+        if (_routedRelease)
+            nvResult = _nativeRelease.ObserveCreate(nvResult, _p_dlssHandle);
 
         if (nvResult != NVSDK_NGX_Result_Success)
         {
@@ -81,6 +88,8 @@ bool DLSSFeatureDx12::InitDLSS(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
 
 bool DLSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
 {
+    if (_routedRelease && !_nativeRelease.Acquired())
+        return false;
     if (!_moduleLoaded)
     {
         GenshinSubstage::Event(GenshinSubstage::Stage::ProviderAttempt,GenshinSubstage::State::Failed,
@@ -142,6 +151,9 @@ void DLSSFeatureDx12::Shutdown(ID3D12Device* InDevice)
 DLSSFeatureDx12::DLSSFeatureDx12(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters)
     : IFeature(InHandleId, InParameters), IFeature_Dx12(InHandleId, InParameters), DLSSFeature(InHandleId, InParameters)
 {
+    // Capture actual selected ingress, not mutable EnableDlssInputs. Unrelated
+    // virtual/bridge features and other games retain their legacy lifecycle.
+    _routedRelease = NgxInput::SelectedInputCall();
     if (NVNGXProxy::NVNGXModule() == nullptr)
     {
         LOG_INFO("nvngx.dll not loaded, now loading");
@@ -151,10 +163,30 @@ DLSSFeatureDx12::DLSSFeatureDx12(unsigned int InHandleId, NVSDK_NGX_Parameter* I
     LOG_INFO("binding complete!");
 }
 
+NVSDK_NGX_Result DLSSFeatureDx12::TryRelease()
+{
+    if (!_routedRelease)
+        return NVSDK_NGX_Result_Success;
+    const auto result = _nativeRelease.TryRelease(_p_dlssHandle, NVNGXProxy::D3D12_ReleaseFeature());
+    if (result == NVSDK_NGX_Result_Success)
+        SetInit(false);
+    return result;
+}
+
 DLSSFeatureDx12::~DLSSFeatureDx12()
 {
     if (State::Instance().isShuttingDown)
         return;
+
+    if (_routedRelease)
+    {
+        // Input Release and the sole ChangeFeature caller preflight while the
+        // complete object is still owned. An already-released state is a no-op.
+        const auto result = TryRelease();
+        if (result != NVSDK_NGX_Result_Success)
+            LOG_ERROR("Routed DLSS destructor reached without successful release preflight: {:X}", (unsigned) result);
+        return;
+    }
 
     if (NVNGXProxy::D3D12_ReleaseFeature() != nullptr && _p_dlssHandle != nullptr)
     {

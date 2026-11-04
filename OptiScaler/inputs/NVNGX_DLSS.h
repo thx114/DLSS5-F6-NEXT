@@ -3,6 +3,16 @@
 #include <memory>
 #include <utility>
 
+struct ID3D12Device;
+namespace NgxInput
+{
+// Attach only the real command-list device. This does not reconstruct or call
+// NGX Init, and does not invent application/project/SDK metadata.
+bool CanAttachNativeDx12Input(ID3D12Device* device);
+bool AttachNativeDx12Input(ID3D12Device* device);
+bool DetachNativeDx12Input();
+}
+
 template <typename FeatureType> struct ContextData
 {
     using ParameterOwner = std::unique_ptr<NVSDK_NGX_Parameter, void (*)(NVSDK_NGX_Parameter*)>;

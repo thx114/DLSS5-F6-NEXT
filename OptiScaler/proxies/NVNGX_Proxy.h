@@ -1,5 +1,7 @@
 #pragma once
 #include <atomic>
+#include <mutex>
+#include <hooks/ngx/NativeDx12Hooks.h>
 
 #include "SysUtils.h"
 #include "Util.h"
@@ -415,6 +417,7 @@ class NVNGXProxy
 {
   private:
     inline static NvngxModule _module;
+    inline static std::recursive_mutex _moduleMutex;
 
     inline static bool _cudaInited = false;
     inline static bool _dx11Inited = false;
@@ -432,9 +435,16 @@ class NVNGXProxy
   public:
     static void InitNVNGX(HMODULE nvngxModule = nullptr)
     {
+        std::lock_guard lock(_moduleMutex);
         // if dll already loaded
         if (_module.dll != nullptr)
+        {
+            // The table may have been resolved before the game-specific input
+            // policy was configured. Installation is idempotent and retryable.
+            if (_module.D3D12_CreateFeature && !NgxInput::Installed())
+                NgxInput::Install(_module);
             return;
+        }
 
         LOG_INFO("");
 
@@ -612,6 +622,10 @@ class NVNGXProxy
 
             _module.UpdateFeature =
                 (PFN_UpdateFeature) KernelBaseProxy::GetProcAddress_()(_module.dll, "NVSDK_NGX_UpdateFeature");
+
+            // Resolve the complete table first. Installing sooner can publish
+            // detoured addresses back over the backend trampoline bindings.
+            NgxInput::Install(_module);
         }
     }
 
@@ -767,6 +781,12 @@ class NVNGXProxy
     {
         if (_dx12Inited)
             return true;
+        // A preloaded native runtime does not provide Init metadata. The ZZZ
+        // router adopts native availability only after a real Init or CPU
+        // parameter allocation witness;
+        // do not initialize a backend using default State appID/path/version.
+        if (!NgxInput::AllowProviderInit())
+            return false;
         _dx12ProviderGeneration.fetch_add(1, std::memory_order_relaxed);
 
         InitNVNGX();
