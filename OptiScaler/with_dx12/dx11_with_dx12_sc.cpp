@@ -3172,13 +3172,10 @@ HRESULT Dx11wDx12SC::_PresentNativeVisible(UINT sync, UINT flags, const DXGI_PRE
         _visibleReceipt.width,_visibleReceipt.height,_visibleReceipt.dpi))) {
         _visibleReceipt.reason="OwnerSnapshotNotCurrent";return nativeFallback();
     }
-    if(_visibleChild->YieldForOutputReveal()) {
-        // Bounded output drain between SDK transactions. Keep normal native
-        // filtering/pacing; no input dispatch, fake SDK success or GPU wait.
-        nativeFrame.menuFallback_=true;
-        _visibleReceipt.reason="SdkOutputRevealDrain";
-        return nativePresent();
-    }
+    // Close SDK/raw admission before native production, but DO NOT skip that
+    // production: PrepareGameMotion needs every actual camera predecessor,
+    // including pictures that will not be submitted to the SDK during drain.
+    const bool outputDrain=_visibleChild->YieldForOutputReveal();
     GenshinLegacy::OnPresent(_dx11Device); capturePolled = true;
     _fg = State::Instance().currentFG;
     GenshinBridgeFg::PresentScope scope(_real, _dx11Context, _fgSwapChain, _fg, _dx12Device, _dx12CommandQueue);
@@ -3214,6 +3211,18 @@ HRESULT Dx11wDx12SC::_PresentNativeVisible(UINT sync, UINT flags, const DXGI_PRE
     if (!scope.HasCapturedFrame()) {
         _visibleReceipt.reason = "NoAuthenticatedCameraOrGuides";
         return nativeIneligible();
+    }
+    if(outputDrain) {
+        // OnFGPresent already performed this frame's exact native guide/NR
+        // Capture -> Return -> Publish and closed depth once. Do not rerun the
+        // natural producer, prepare a provider frame or copy to its backbuffer.
+        // Retire only this scope's unused receipt through its real producer tail.
+        if(!scope.FinishOutputDrain()) {
+            _visibleReceipt.reason="OutputDrainReceiptMismatch";return nativeIneligible();
+        }
+        nativeFrame.menuFallback_=true;
+        _visibleReceipt.reason="SdkOutputRevealDrain";
+        return nativePresent();
     }
     if (!_InitInteropObjects()) {_visibleReceipt.reason="InteropInitializationRefused";return nativeFallback();}
     const UINT index=_GetDx11BackBufferIndexForPresent();_visibleReceipt.index=index;

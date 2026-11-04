@@ -901,6 +901,39 @@ public:
             p.ready->ticket.presentEpoch==stateFrame_ && p.ready->ticket.source.thread==thread_ &&
             p.ready->ticket.swapchain==Identity(nativeSwapchain_.Get());
     }
+    // Output drain is not an input skip. Native guide preparation/NR already
+    // ran once in this scope, so keep the native motion predecessor chain while
+    // discarding only its unused optional SDK recording. Never call Skip/Off,
+    // sign SDK acceptance, or leave p.ready blocking the next fresh publication.
+    bool FinishOutputDrain() noexcept {
+        ComPtr<ID3D11Device> device;
+        if(nativeContext_)nativeContext_->GetDevice(&device);
+        if(!MatchesNative(nativeSwapchain_.Get(),device.Get()) || !nativeProcessed_ || nativeObserved_ ||
+            prepared_ || attempted_ || frame_ || sdkCall_.Entered() || sdkCall_.Returned())return false;
+        const auto chain=Identity(nativeSwapchain_.Get()),context=Identity(nativeContext_.Get());
+        const auto& returned=nativeReturned_;const auto key=MakeKey(returned.ticket_);
+        std::unique_ptr<Frame> discarded;
+        {
+            auto& pool=Storage();std::lock_guard lock(pool.mutex);
+            auto* f=pool.ready.get();
+            if(!f || !returned.producer_ || !returned.depthCaptured_ ||
+                MakeKey(f->ticket)!=key || f->producer!=returned.producer_ ||
+                f->snapshotLease!=returned.snapshotLease_ || f->producerQueue.Get()!=returned.producerQueue_.Get() ||
+                f->produced.Get()!=returned.produced_.Get() || f->producedValue!=returned.producedValue_ ||
+                !f->lifecycle.DiscardReturned(key,stateFrame_,thread_,chain,context))return false;
+            discarded=std::move(pool.ready);
+        }
+        try {
+        const auto& t=discarded->ticket;
+        static std::atomic<uint64_t> reports{0};const auto count=++reports;
+        if(count<=16 || count%300==0)
+            LOG_INFO("F6 native-output-drain: pid={} thread={} present_epoch={} generation={} source_frame={} picture={} queue={:X} fence={:X} target={} lifecycle=revoked retirement=actual_producer_fence sdk_called=false sdk_predecessor_committed=false native_processed_once=true",
+                GetCurrentProcessId(),thread_,stateFrame_,t.source.generation,t.source.sourceFrame,t.pictureSerial,
+                Identity(discarded->producerQueue.Get()),Identity(discarded->produced.Get()),discarded->producedValue);
+        }catch(...){} // Diagnostics cannot prevent real-fence retirement.
+        Retire(std::move(discarded)); // completion is decided only by Frame::Complete
+        return true;
+    }
     bool MatchesNative(IDXGISwapChain* nativeSwapchain,ID3D11Device* device) const noexcept {
         ComPtr<ID3D11Device> actual;
         if(nativeContext_)nativeContext_->GetDevice(&actual);
