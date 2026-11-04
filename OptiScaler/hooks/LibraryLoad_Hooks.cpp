@@ -28,6 +28,7 @@
 #include <hooks/Vulkan_Hooks.h>
 #include <hooks/Gdi32_Hooks.h>
 #include <hooks/Streamline_Hooks.h>
+#include <hooks/ngx/NativeDx12Hooks.h>
 
 #include <fsr4/FSR4ModelSelection.h>
 #include <fsr4/FSR4Upgrade.h>
@@ -86,6 +87,16 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
     if (Config::Instance()->EnableDlssInputs.value_or_default() && CheckDllNameW(&libName, &nvngxNamesW) &&
         (!Config::Instance()->HookOriginalNvngxOnly.value_or_default() || pos == std::string::npos))
     {
+        if (NgxInput::Enabled())
+        {
+            // Preserve the actual runtime module for cached Streamline APIs.
+            // Hook its code entry points, rather than swapping a future load's
+            // return value and leaving the previously cached calls native.
+            const auto module = NtdllProxy::LoadLibraryExW_Ldr(lpLibFullPath, nullptr, 0);
+            if (module && module != dllModule)
+                NVNGXProxy::InitNVNGX(module);
+            return module;
+        }
         LOG_INFO("nvngx call: {0}, returning this dll!", libNameA);
 
         // if (!dontCount)

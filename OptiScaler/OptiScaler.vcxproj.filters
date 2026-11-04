@@ -722,6 +722,12 @@
     <ClInclude Include="hooks\LibraryLoad_Hooks.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="hooks\ngx\NativeDx12Hooks.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="hooks\ngx\NativeDx12Router.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="shaders\depth_invert\DI_Common.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -1554,6 +1560,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="hooks\LibraryLoad_Hooks.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="hooks\ngx\NativeDx12Hooks.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="spoofing\Vulkan_Spoofing.cpp">

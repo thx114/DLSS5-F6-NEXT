@@ -40,6 +40,59 @@ static int evalCounter = 0;
 static std::atomic_bool shutdown { false };
 static bool _skipInit = false;
 static wchar_t const** paths;
+// The ordinary exported Init borrows its device. A late router attachment has
+// no such caller lifetime contract, so it holds exactly one device reference.
+static ID3D12Device* nativeAttachedDevice = nullptr;
+
+namespace NgxInput
+{
+bool CanAttachNativeDx12Input(ID3D12Device* device)
+{
+    if (!device || State::Instance().isShuttingDown || shutdown)
+        return false;
+    // The existing input/context registry is global, not multi-device. Refuse
+    // a switch before changing any private or published device state.
+    return (!D3D12Device || D3D12Device == device) &&
+           (!State::Instance().currentD3D12Device || State::Instance().currentD3D12Device == device);
+}
+
+bool AttachNativeDx12Input(ID3D12Device* device)
+{
+    if (!CanAttachNativeDx12Input(device))
+        return false;
+    if (nativeAttachedDevice == device && D3D12Device == device && State::Instance().nvngxDx12Inited)
+        return true;
+    device->AddRef();
+    nativeAttachedDevice = device;
+    D3D12Device = device;
+    State::Instance().currentD3D12Device = device;
+    State::Instance().api = DX12;
+    D3D12Hooks::HookDevice(device);
+    UpscalerInputsDx12::Init(device);
+    State::Instance().nvngxDx12Inited = true; // input attached, not observed native Init metadata
+    return true;
+}
+
+bool DetachNativeDx12Input()
+{
+    // A router must release every selected context through its actual Release
+    // route first. This helper cannot erase live features or authorize GPU retirement.
+    if (!Dx12Contexts.empty())
+        return false;
+    const auto device = D3D12Device ? D3D12Device : nativeAttachedDevice;
+    if (State::Instance().currentD3D12Device == device)
+        State::Instance().currentD3D12Device = nullptr;
+    D3D12Device = nullptr;
+    State::Instance().nvngxDx12Inited = false;
+    UpscalerInputsDx12::Init(nullptr);
+    if (nativeAttachedDevice)
+    {
+        nativeAttachedDevice->Release();
+        nativeAttachedDevice = nullptr;
+    }
+    return true;
+}
+}
 
 class ScopedInitDx12
 {
