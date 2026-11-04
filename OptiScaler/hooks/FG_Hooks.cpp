@@ -1863,6 +1863,9 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         int startResult=-1,endResult=-1,sleepResult=-1; // -1: API not called
     } genshinReflex;
     sl::FrameToken* localToken = nullptr;
+    dlssg::NativeSource nativeZzzMarkerSource {};
+    auto* nativeZzzDlssg=dynamic_cast<DLSSG_Dx12*>(fg);
+    if (nativeZzzDlssg && !nativeZzzDlssg->OwnsNativeZzzSource()) nativeZzzDlssg=nullptr;
     sl::Result tokenResult = sl::Result::eErrorReflexAPI;
     if (willPresent && fg != nullptr && !fgFeatureActive)
         state.dlssgDetectedInterpolationCount = 0;
@@ -1875,7 +1878,10 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
             {
                 ((IDXGISwapChain4*) This)->GetCurrentBackBufferIndex();
                 const uint32_t frameId = (uint32_t) fg->FrameCount();
-                tokenResult = StreamlineProxy::GetNewFrameToken()(localToken, &frameId);
+                tokenResult = nativeZzzDlssg ?
+                    (nativeZzzDlssg->NativeGuidePresentToken(localToken,nativeZzzMarkerSource) ?
+                        sl::Result::eOk : sl::Result::eErrorInvalidState) :
+                    StreamlineProxy::GetNewFrameToken()(localToken, &frameId);
 
                 if (tokenResult == sl::Result::eOk && localToken != nullptr) {
                     auto markerStamp=collectStarRailPacing ? GenshinHookCpuTiming::MakeStarRailStamp(
@@ -2196,6 +2202,12 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     bool starRailReflexCalled=false;
     GenshinHookCpuTiming::WallSample starRailReflexWall;
     const bool genshinPacing = willPresent && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
+    // SDK callbacks keep their own marker counters. Reacquire the original
+    // selected-source token for End/Sleep; never substitute a newer marker/slot.
+    if (nativeZzzMarkerSource)
+        tokenResult = state.currentFG==nativeZzzDlssg &&
+            nativeZzzDlssg->NativeGuidePresentToken(localToken,nativeZzzMarkerSource) ?
+            sl::Result::eOk : sl::Result::eErrorInvalidState;
     if (tokenResult == sl::Result::eOk && localToken != nullptr &&
         (genshinSdkTransaction ? genshinReflex.startCalled : fgFeatureActive) &&
         (genshinSdkTransaction ? genshinReflex.ownMarkers :

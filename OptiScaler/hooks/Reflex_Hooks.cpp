@@ -492,9 +492,13 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
                     // Defer only clock adoption to the next guarded source entry:
                     // SDK worker -> source lock -> SDK Present would deadlock.
                     // Token/PCL forwarding below keeps the original marker ID.
+                    // Native ZZZ owns a selected-SR ordinal, independent of all
+                    // incoming game/SDK marker counters. Do not enter its source
+                    // lock from an SDK worker while Present waits for that worker.
+                    const bool nativeZzzMarker = dlssg->OwnsNativeZzzSource() || dlssg->TracksNativeGuides();
                     if (sdkStarRailMarker && StarRailF5Ds::Selected())
                         dlssg->ObserveStarRailF5DsMarker(pSetLatencyMarkerParams->frameID);
-                    else if (!sdkStarRailMarker)
+                    else if (!sdkStarRailMarker && !nativeZzzMarker)
                         dlssg->SetFrameCountFromReflex(pSetLatencyMarkerParams->frameID);
                 }
                 else

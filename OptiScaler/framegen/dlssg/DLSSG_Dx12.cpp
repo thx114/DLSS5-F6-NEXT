@@ -482,6 +482,15 @@ UINT64 DLSSG_Dx12::StartNewFrame()
         }
     if (IsGenshinBridgeOwner() || _teardownPending || _teardownQuarantined ||
         g_dlssgTeardownQuarantined.load()) return _frameCount;
+    // ZZZ native source ordinals belong to selected SR, never Reflex. Refuse
+    // nested source publication while this same provider is consuming a Present.
+    if (OwnsNativeZzzSource() && (_presentExecutionDepth || _inputRecordingDepth>1)) return _frameCount;
+    // SDK's 32-bit identity exhaustion must not wrap an old token/tag.
+    if (OwnsNativeZzzSource() && _frameCount>=UINT32_MAX-1)
+    {
+        _nativeGuideFailed=true; _managedRetained=true; Deactivate();
+        return _frameCount;
+    }
     const auto generation = _inputContinuity.SourceGeneration();
     const auto frame = IFGFeature::StartNewFrame();
     if (IsStarRailContinuousOwner())
@@ -512,6 +521,9 @@ void DLSSG_Dx12::SetFrameCountFromReflex(UINT64 frameId)
     if (IsGenshinBridgeOwner() || _teardownPending || _teardownQuarantined ||
         g_dlssgTeardownQuarantined.load()) return;
 
+    // Markers keep their original SDK/PCL IDs. Only actual selected SR may
+    // advance the native ZZZ source ring, including while it is warming up.
+    if (OwnsNativeZzzSource() || TracksNativeGuides()) return;
     // Other DLSSG owners retain the game's Reflex clock and existing diagnostics.
     const auto frameCount = FrameCount();
     if (frameId - frameCount > 1)
@@ -1493,7 +1505,7 @@ void DLSSG_Dx12::QuarantineFailedTeardown()
         _guideFlip[i][0].release();_guideFlip[i][1].release();
         auto& native=_nativeGuideUses[i];
         native.list.Detach(); native.nativeList.Detach(); native.queue.Detach(); native.fence.Detach();
-        native.depth.Detach(); native.motion.Detach();
+        native.depth.Detach(); native.motion.Detach(); native.output.Detach();
     }
     _renderUI.release(); _hudlessCompare.release(); _mvFlip.release(); _depthFlip.release();
     _uiFence = nullptr; _scFence = nullptr;
@@ -1616,6 +1628,13 @@ bool DLSSG_Dx12::OwnsUpscalerDepthContract() const
     return OwnsDepthContract() && dlssg::depth_contract::Game()!=GameRouting::Identity::Genshin;
 }
 
+bool DLSSG_Dx12::OwnsNativeZzzSource() const
+{
+    return OwnsUpscalerDepthContract() &&
+        dlssg::depth_contract::Game()==GameRouting::Identity::ZenlessZoneZero &&
+        State::Instance().swapchainInteropApi==SwapchainInteropApi::None;
+}
+
 void DLSSG_Dx12::RejectUpscalerGuideSource(const char* stage)
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
@@ -1643,8 +1662,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVS
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (!OwnsUpscalerDepthContract() || !CanSubmitInputs()) return false;
-    const bool nativeZzzSource=dlssg::depth_contract::Game()==GameRouting::Identity::ZenlessZoneZero &&
-        State::Instance().swapchainInteropApi!=SwapchainInteropApi::Dx11wDx12;
+    const bool nativeZzzSource=OwnsNativeZzzSource();
     // Activate starts the normal target-frame pause. SetResource rejects guides
     // during that pause, so defer before recording conversions or reserving a
     // native receipt. This is scheduled warmup, not partial SDK publication.
@@ -1690,6 +1708,13 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVS
         return RefuseDepthContract("conversion-producer-completion-unavailable",false);
     if (nativeZzz)
     {
+        ID3D12Resource* output=nullptr;
+        if (parameters->Get(NVSDK_NGX_Parameter_Output,&output)!=NVSDK_NGX_Result_Success)
+            parameters->Get(NVSDK_NGX_Parameter_Output,(void**)&output);
+        if (!output || !dlssg::depth_contract::OnDevice(_device,output) ||
+            dlssg::depth_contract::SameOwner(output,depth) || dlssg::depth_contract::SameOwner(output,motion) ||
+            output->GetDesc().Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+            return RefuseDepthContract("native-selected-sr-output",false);
         if (!_nativeGuideHooksRequested)
         {
             ResTrack_Dx12::HookLateNrQueue(_device); // Reuse the existing hooks, also when NR is off.
@@ -1714,11 +1739,12 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVS
             _nativeGuideFailed=true; _managedRetained=true; Deactivate();
             return false;
         }
-        ++use.value; use.serial=++_nativeGuideSerial;
-        use.generation=_inputContinuity.SourceGeneration(); use.epoch=_inputOwnerEpoch;
+        ++use.value;
+        use.source={++_nativeGuideSerial,_frameCount,_inputContinuity.SourceGeneration(),_inputOwnerEpoch,
+            static_cast<uint32_t>(_frameCount),(uintptr_t)list,(uintptr_t)output};
+        use.owner=CurrentInputOwner(); use.constants=_constants;
         use.list=list; use.nativeList=dlssg::depth_contract::NativeObject(list);
-        use.queue.Reset(); use.depth=depth; use.motion=motion;
-        use.frame=_frameCount;
+        use.queue.Reset(); use.depth=depth; use.motion=motion; use.output=output;
         use.closed=use.submitted=use.executing=use.signalled=use.srSucceeded=use.ordered=false;
         _nativeGuideTracking.store(true,std::memory_order_release);
     }
@@ -1864,8 +1890,9 @@ void DLSSG_Dx12::NativeGuidesSubmitted(ID3D12CommandQueue* queue, UINT count, ID
         }
         use.executing=false; use.signalled=true;
         if (++_nativeGuideSubmissions<=3 || _nativeGuideSubmissions%600==0)
-            LOG_INFO("R1058 native FG producer submitted: pid={} frame={} list={} native_list={} producer_queue={} fence={} target={} sr_succeeded={} SDK_snapshot=ValidNow generated=UNKNOWN",
-                GetCurrentProcessId(),use.frame,(uintptr_t)use.list.Get(),(uintptr_t)use.nativeList.Get(),
+            LOG_INFO("R1058 native FG producer submitted: pid={} frame={} serial={} source_generation={} input_epoch={} sdk_frame={} list={} native_list={} output={} producer_queue={} fence={} target={} sr_succeeded={} SDK_snapshot=ValidNow generated=UNKNOWN",
+                GetCurrentProcessId(),use.source.frame,use.source.serial,use.source.generation,use.source.epoch,use.source.sdkFrame,
+                (uintptr_t)use.list.Get(),(uintptr_t)use.nativeList.Get(),(uintptr_t)use.output.Get(),
                 (uintptr_t)queue,(uintptr_t)use.fence.Get(),use.value,use.srSucceeded);
     }
 }
@@ -1879,31 +1906,77 @@ void DLSSG_Dx12::NativeGuidesReset(ID3D12CommandList* list)
     // Reset closes recording replay authority; it is NOT GPU completion.
 }
 
-UINT64 DLSSG_Dx12::NativeGuideSource(ID3D12CommandList* list)
+dlssg::NativeSource DLSSG_Dx12::NativeGuideSource(ID3D12CommandList* list)
 {
-    if (!TracksNativeGuides()) return 0;
     std::lock_guard continuityLock(_inputContinuityMutex);
+    if (!OwnsNativeZzzSource() || !TracksNativeGuides()) return {};
     const auto& use=_nativeGuideUses[GetIndex()];
-    return use.list.Get()==list && use.frame==_frameCount && !use.closed && !use.submitted &&
-        use.epoch==_inputOwnerEpoch && use.generation==_inputContinuity.SourceGeneration() ? use.serial : 0;
+    return use.list.Get()==list && !use.closed && !use.submitted &&
+        NativeGuideSourceCurrent(use.source) ? use.source : dlssg::NativeSource{};
 }
 
-void DLSSG_Dx12::CompleteNativeGuideSource(ID3D12CommandList* list, UINT64 serial, bool succeeded)
+DLSSG_Dx12::NativeGuideUse* DLSSG_Dx12::FindNativeGuideSource(const dlssg::NativeSource& source)
 {
-    if (!serial || !TracksNativeGuides()) return;
+    if (!source) return nullptr;
+    for (auto& use:_nativeGuideUses)
+        if (use.source==source && (uintptr_t)use.list.Get()==source.list &&
+            (uintptr_t)use.output.Get()==source.output) return &use;
+    return nullptr;
+}
+
+bool DLSSG_Dx12::NativeGuideSourceCurrent(const dlssg::NativeSource& source)
+{
+    const auto* use=FindNativeGuideSource(source);
+    return use && OwnsNativeZzzSource() && CanSubmitInputs() && !_nativeGuideFailed &&
+        source.frame==_frameCount && source.generation==_inputContinuity.SourceGeneration() &&
+        source.epoch==_inputOwnerEpoch && source.sdkFrame==source.frame &&
+        use->owner==CurrentInputOwner() &&
+        use->constants.flags[FG_Flags::InfiniteDepth]==_constants.flags[FG_Flags::InfiniteDepth] &&
+        use->constants.displayWidth==_constants.displayWidth && use->constants.displayHeight==_constants.displayHeight;
+}
+
+bool DLSSG_Dx12::NativeGuideToken(const dlssg::NativeSource& source, sl::FrameToken*& token)
+{
+    token=nullptr;
+    if (!NativeGuideSourceCurrent(source)) return false;
+    const auto getToken=StreamlineProxy::GetNewFrameToken();
+    if (!getToken || getToken(token,&source.sdkFrame)!=sl::Result::eOk || !token) return false;
+    // Keep only the immutable ID in the receipt, never an SDK-owned token pointer
+    // beyond its API scope. Recursive vendor callbacks cannot relabel this call.
+    return static_cast<uint32_t>(*token)==source.sdkFrame && NativeGuideSourceCurrent(source);
+}
+
+bool DLSSG_Dx12::NativeGuidePresentToken(sl::FrameToken*& token, dlssg::NativeSource& source)
+{
     std::lock_guard continuityLock(_inputContinuityMutex);
-    auto& use=_nativeGuideUses[GetIndex()];
-    if (use.list.Get()!=list || use.serial!=serial || use.frame!=_frameCount || use.closed || use.submitted ||
-        use.epoch!=_inputOwnerEpoch || use.generation!=_inputContinuity.SourceGeneration()) return;
-    use.srSucceeded=succeeded;
-    if (!succeeded) RefuseDepthContract("native-selected-sr-failed",false);
+    token=nullptr;
+    const auto key=source ? source : _nativeGuideUses[GetIndex()].source;
+    const auto* use=FindNativeGuideSource(key);
+    if (!use || !use->srSucceeded || !use->submitted || !use->signalled || !NativeGuideToken(key,token)) return false;
+    source=key; // A later End/Sleep must resolve this same source, never the newest one.
+    return true;
+}
+
+void DLSSG_Dx12::CompleteNativeGuideSource(ID3D12CommandList* list, const dlssg::NativeSource& source,
+    ID3D12Resource* output, bool succeeded)
+{
+    if (!source || !TracksNativeGuides()) return;
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    // Evaluate may span a newer source/marker. Resolve the original transaction,
+    // never the current ring slot, and never grant it a newer frame identity.
+    auto* use=FindNativeGuideSource(source);
+    if (!use || use->list.Get()!=list || use->closed || use->submitted) return;
+    use->srSucceeded=succeeded && output==use->output.Get() &&
+        source.epoch==_inputOwnerEpoch && source.generation==_inputContinuity.SourceGeneration();
+    if (!use->srSucceeded && source.frame==_frameCount)
+        RefuseDepthContract("native-selected-sr-failed-or-output-changed",false);
 }
 
 bool DLSSG_Dx12::OrderNativeGuides(UINT slot)
 {
     auto& use=_nativeGuideUses[slot];
-    if (!use.list || use.frame!=_frameCount) return true; // Existing wDX12 UI submission path.
-    if (_nativeGuideFailed) return false;
+    if (!OwnsNativeZzzSource()) return true; // Existing wDX12 UI submission path.
+    if (!NativeGuideSourceCurrent(use.source)) return false;
     if ((use.fence && use.fence->GetCompletedValue()==UINT64_MAX) ||
         (_device && _device->GetDeviceRemovedReason()!=S_OK))
     {
@@ -1933,15 +2006,15 @@ bool DLSSG_Dx12::GuideTagsCurrent(int slot, UINT64 frame)
     if (slot<0 || slot>=BUFFER_COUNT || frame!=_frameCount ||
         !_inputContinuity.Current(slot,frame,owner)) return false;
     const auto& native=_nativeGuideUses[slot];
-    if (native.list && native.frame==frame &&
-        (_nativeGuideFailed || !native.srSucceeded || !native.submitted || !native.signalled || !native.ordered))
-        return false;
+    const bool nativeZzz=OwnsNativeZzzSource();
+    if (nativeZzz && (!NativeGuideSourceCurrent(native.source) ||
+        !native.srSucceeded || !native.submitted || !native.signalled || !native.ordered)) return false;
     std::shared_lock resources(_resourceMutex[slot]);
     for (auto type : {FG_ResourceType::Depth,FG_ResourceType::Velocity})
     {
         const auto& tag=_guideTags[slot][type==FG_ResourceType::Depth ? 0 : 1];
         const auto found=_frameResources[slot].find(type);
-        if (!tag.accepted || tag.frame!=frame ||
+        if (!tag.accepted || tag.frame!=frame || (nativeZzz && tag.nativeSerial!=native.source.serial) ||
             tag.generation!=_inputContinuity.SourceGeneration() || !(tag.owner==owner) ||
             found==_frameResources[slot].end()) return false;
         const auto& a=found->second; const auto& b=tag.input;
@@ -2019,6 +2092,8 @@ bool DLSSG_Dx12::Dispatch()
     if (fIndex < 0)
         return false;
 
+    const auto nativeSource=OwnsNativeZzzSource() ? _nativeGuideUses[fIndex].source : dlssg::NativeSource{};
+    if (OwnsNativeZzzSource() && !NativeGuideSourceCurrent(nativeSource)) return false;
     if (!IsActive() || IsPaused())
         return false;
     if (depthContractFrame && !GuideTagsCurrent(fIndex,willDispatchFrame))
@@ -2424,7 +2499,9 @@ bool DLSSG_Dx12::Dispatch()
     auto frameId = static_cast<uint32_t>(willDispatchFrame);
 
     sl::FrameToken* frameToken = nullptr;
-    auto tokenResult = StreamlineProxy::GetNewFrameToken()(frameToken, &frameId);
+    auto tokenResult = nativeSource ?
+        (NativeGuideToken(nativeSource,frameToken) ? sl::Result::eOk : sl::Result::eErrorInvalidState) :
+        StreamlineProxy::GetNewFrameToken()(frameToken, &frameId);
     if (tokenResult != sl::Result::eOk || frameToken == nullptr)
     {
         LOG_ERROR("GetNewFrameToken error: {} ({})", magic_enum::enum_name(tokenResult), (UINT) tokenResult);
@@ -2513,7 +2590,8 @@ bool DLSSG_Dx12::Dispatch()
                 willDispatchFrame, !starRailFrame || resetStarRailHistory, !starRailFrame || restartStarRailRuntime);
         _starRailUiGap = false;
     }
-    if (depthContractFrame && !GuideTagsCurrent(fIndex,willDispatchFrame))
+    if (depthContractFrame && (!GuideTagsCurrent(fIndex,willDispatchFrame) ||
+        (nativeSource && !NativeGuideSourceCurrent(nativeSource))))
         return RefuseDepthContract("guide-pair-changed-after-constants");
     if (CanRetainForInputGap()) _managedRetained = true;
     if (_managedRetained) _continuityOwner = true;
@@ -4097,6 +4175,11 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
         (type == FG_ResourceType::Depth || type == FG_ResourceType::Velocity);
     const auto sourceGeneration = _inputContinuity.SourceGeneration();
     const auto sourceFrame = _frameCount;
+    const auto nativeSource=checkedGuide && OwnsNativeZzzSource() ?
+        _nativeGuideUses[fIndex].source : dlssg::NativeSource{};
+    if (checkedGuide && OwnsNativeZzzSource() && (!nativeSource ||
+        nativeSource.list!=(uintptr_t)inputResource->cmdList || !NativeGuideSourceCurrent(nativeSource)))
+        return RefuseDepthContract("native-guide-recording-identity");
     if (starRailGuide && (!_inputRecordingDepth ||
         _starRailRecordingGeneration != sourceGeneration || _starRailRecordingFrame != sourceFrame))
         return false; // A marker alone cannot turn an old recording into new-source guides.
@@ -4367,7 +4450,9 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
             auto frameId = static_cast<uint32_t>(_frameCount - indexDiff);
 
             sl::FrameToken* frameToken = nullptr;
-            auto tokenResult = StreamlineProxy::GetNewFrameToken()(frameToken, &frameId);
+            auto tokenResult = nativeSource ?
+                (NativeGuideToken(nativeSource,frameToken) ? sl::Result::eOk : sl::Result::eErrorInvalidState) :
+                StreamlineProxy::GetNewFrameToken()(frameToken, &frameId);
             if (tokenResult != sl::Result::eOk || frameToken == nullptr)
             {
                 LOG_ERROR("GetNewFrameToken error: {} ({})", magic_enum::enum_name(tokenResult), (UINT) tokenResult);
@@ -4419,11 +4504,13 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
         if (checkedGuide)
         {
             if (!OwnsDepthContract() || !CanSubmitInputs() || sourceFrame!=_frameCount ||
-                sourceGeneration!=_inputContinuity.SourceGeneration() || !(publicationOwner==CurrentInputOwner()))
+                sourceGeneration!=_inputContinuity.SourceGeneration() || !(publicationOwner==CurrentInputOwner()) ||
+                (nativeSource && !NativeGuideSourceCurrent(nativeSource)))
                 return RefuseDepthContract("guide-publication-reentered");
             auto& tag=_guideTags[fIndex][type==FG_ResourceType::Depth ? 0 : 1];
             tag.owner=publicationOwner;tag.input=*fResource;tag.description=actualDescription;
-            tag.frame=sourceFrame;tag.generation=sourceGeneration;tag.accepted=true;tag.flipped=flipped;
+            tag.frame=sourceFrame;tag.generation=sourceGeneration;tag.nativeSerial=nativeSource.serial;
+            tag.accepted=true;tag.flipped=flipped;
         }
         SetResourceReady(type, fIndex);
         if (type == FG_ResourceType::Depth || type == FG_ResourceType::Velocity)

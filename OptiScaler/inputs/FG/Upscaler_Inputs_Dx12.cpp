@@ -29,14 +29,14 @@ void UpscalerInputsDx12::Reset()
         Hudfix_Dx12::ResetCounters();
 }
 
-void UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSDK_NGX_Parameter* InParameters,
+dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSDK_NGX_Parameter* InParameters,
                                       IFeature_Dx12* feature)
 {
-    if (!InCmdList || !InParameters || !feature) return;
+    if (!InCmdList || !InParameters || !feature) return {};
     if (dlssg::depth_contract::Game()==GameRouting::Identity::Genshin &&
         State::Instance().activeFgInput==FGInput::Upscaler &&
-        State::Instance().activeFgOutput==FGOutput::DLSSG) return; // Sealed Present adapter only.
-    if (native::OpticalFgNrEnabled() && feature->GetUpscalerType() != Upscaler::Optical) return;
+        State::Instance().activeFgOutput==FGOutput::DLSSG) return {}; // Sealed Present adapter only.
+    if (native::OpticalFgNrEnabled() && feature->GetUpscalerType() != Upscaler::Optical) return {};
 
     Hudfix_Dx12::SetSkipStatus(true);
 
@@ -103,7 +103,7 @@ void UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSD
     auto fg = State::Instance().currentFG;
 
     if (fg == nullptr || State::Instance().activeFgInput != FGInput::Upscaler || _device == nullptr)
-        return;
+        return {};
 
     FG_Constants fgConstants {};
     fgConstants.displayWidth = feature->DisplayWidth();
@@ -144,8 +144,10 @@ void UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSD
         fg->Mutex.unlockThis(4);
     }
     auto inputExecution=checkedZzz?fg->GuardExecution(FGExecutionScope::Inputs):FGExecutionGuard{};
-    if (checkedZzz && !fg->CanSubmitInputs()) return;
-    fg->StartNewFrame();
+    if (checkedZzz && !fg->CanSubmitInputs()) return {};
+    const auto previousFrame=fg->FrameCount();
+    const auto startedFrame=fg->StartNewFrame();
+    if (checkedZzz && (!fg->CanSubmitInputs() || startedFrame==previousFrame)) return {};
 
     auto aspectRatio = (float) feature->DisplayWidth() / (float) feature->DisplayHeight();
     fg->SetCameraValues(cameraNear, cameraFar, cameraVFov, aspectRatio, meterFactor);
@@ -187,13 +189,15 @@ void UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSD
             ID3D12Resource* realDepth=nullptr;
             if (InParameters->Get(NVSDK_NGX_Parameter_Depth,&realDepth)!=NVSDK_NGX_Result_Success)
                 InParameters->Get(NVSDK_NGX_Parameter_Depth,(void**)&realDepth);
-            own->SetUpscalerGuidePair(commandList,InParameters,realDepth,paramVelocity,
+            const bool published=own->SetUpscalerGuidePair(commandList,InParameters,realDepth,paramVelocity,
                 feature->RenderWidth(),feature->RenderHeight(),
                 feature->LowResMV()?feature->RenderWidth():feature->TargetWidth(),
                 feature->LowResMV()?feature->RenderHeight():feature->TargetHeight(),
                 (D3D12_RESOURCE_STATES)cfg.DepthResourceBarrier.value_or(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
                 (D3D12_RESOURCE_STATES)cfg.MVResourceBarrier.value_or(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
-            return;
+            // Mint under the same Inputs guard as StartNewFrame and both tags.
+            // NGX must carry this receipt across Evaluate, not re-query a later slot.
+            return published && own->OwnsNativeZzzSource() ? own->NativeGuideSource(InCmdList) : dlssg::NativeSource{};
         }
 
         if (paramVelocity != nullptr)
@@ -279,6 +283,7 @@ void UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSD
 
         LOG_DEBUG("(FG) copy buffers done, frame: {0}", fg->FrameCount());
     }
+    return {};
 }
 
 void UpscalerInputsDx12::UpscaleEnd(ID3D12GraphicsCommandList* InCmdList, NVSDK_NGX_Parameter* InParameters,
