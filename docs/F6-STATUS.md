@@ -1,6 +1,6 @@
 # F6 当前状态
 
-更新：2026-11-05。用户已恢复持续开发、统一构建部署与三游戏验证；长期 goal 为 active。本次恢复仍为开发轮次 1，等待、服务错误和回归修订不单独算完成轮次。每完成 10 轮重新评估实际实现与运行效果。
+更新：2026-11-05。长期 goal 为 active，但用户再次指出逐个失败点修补、损坏原功能后回退的循环。现暂停新增功能编码和架构扩展，先找回 F5 完成后的可用实物与配置、比较回归边界。历史轮次数不代表功能进度；可用基线未恢复前，不把局部契约、构建或日志成功算作一轮功能完成。
 
 用户最新指出先前原神、星铁、ZZZ 的 SR/NR/FG 均可用，仅缺 NR 深度。以该功能基线为恢复目标：最近 ZZZ 无 F6 输入、原神显示不连续是回归，不能用深度/所有权的局部进展宣称整体进步。先追最后可用 DLL、源码与配置并恢复三游戏既有功能，再验证新增 NR 深度；不预先断言回归由 NR 深度代码引起。
 
@@ -14,19 +14,20 @@ Sol 是核心源码唯一写者，另一名 Sol 独立复核；DS 处理只读�
 
 正式位：`D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/OptiScaler/official/F6/OptiScaler.dll`。
 
-- 当前部署 `0.1.29-final (bac4b64)`，34,827,264 B，mtime UTC `2026-11-04T15:37:31.9427821Z`。
-- SHA256 `6A207553506314DA0A0778DC7D45E87E2D8AF46E94228CFB73C82571F432FB64`；本次接续已重新核对，正式位和三游戏 runtime 四个 hardlink 完整。
-- Lead 在独立 `genshin-compile` 对 `bac4b64` 真实 Release x64 构建：exit 0，123 warnings、0 errors，84 秒。经本树 `Deploy-F6.ps1` 流写原对象，profiles 未变。
-- 回退件：`build/rollback/OptiScaler-20261104T153748776-d803b08d96b649f28aa7a9c289bd308c.dll`。
-- 此部署包含 NR 完整模型链历史修复及原神 `6f806fe` 输出候选，尚不包含 ZZZ `199597d` 输入接入。
+- 当前部署 `0.1.29-final (74f5ef8)`，34,873,856 B，mtime UTC `2026-11-04T16:31:29.8958880Z`。
+- SHA256 `6E7AD1870CC64CEEF70463D50FA731B9E3B92C3BC791B7F31E58EEB60B025EC9`；Lead 已核正式位和三游戏 runtime 的四个 hardlink，三个 profiles 哈希未变。
+- 独立 `genshin-compile` 真实 Release x64 构建：exit0，207 warnings、0 errors，124秒；部署前游戏数0，流写原对象。回执 `build/74f5ef8-product.json`。
+- 本次回退件 `build/rollback/OptiScaler-20261104T163201507-009d454a68254e66b77da5efe5765f26.dll`，对应此前 `bac4b64`。
+- 已集成并经独立 Sol 复核：ZZZ `199597d+ca05507` 输入接入/后端释放，原神 `808dc81` drain 连续性。Lead CPU：Router9组、Release7组、原神109项及wiring39项通过；均不证明游戏功能恢复。
+- ZZZ 最新测试 PID46372，creation FILETIME `134382835556637549`，CLI27888 exit0；日志确认74f5ef8、selected NGX Create/Evaluate、NR模型调用及FG SDK调用。用户实测：**FG没了，深度有，运动还是光流**。本版不作为可用基线；进程已退出，尾日志记录访问冲突及成功写出的转储，具体根因待查。
 
 ## 正在集成的候选
 
 | 项目 | 代码与验证 | 未完成 |
 |---|---|---|
 | NR 完整链历史 | 私有 `1247a68`，已集成 `0613134`，独立审阅通过；CPU 74 项通过，已构建部署 | 三游戏动态细节、跳模型复用和净性能 |
-| 原神 SDK 输入与真实输出 | `genshin-output` 固定 `6f806fe`，已集成 `bac4b64`；保存 SDK 调用结果独立于 Reflex marker，精确 provider/physical stream 绑定，真实最后 raw tail 与有界 reveal admission；Lead MSVC C++20/O2 独立 CPU 85 项通过 | 独立 Sol 最终静态审阅 PASS，已构建部署 `bac4b64`；实机 PID6748 有真实 owner tail 后 reveal；输入/显示周期失效、动态画面与净性能待验 |
-| ZZZ F6 NGX 输入接入 | `zzz-input-route` 基础提交 `199597d`；预载和未来加载原生入口统一 ledger，ptr+recorded ID 归属与生命周期；Lead 独立运行 9 组生产 Router CPU 回归通过，尚未集成 | Confucius 审出真实 backend Release 失败被析构吞掉的 P1；原 Sol 会话 CLI65676 正补失败传播、完整 context 保留和内部重建预检。旧待审 merge 已撤销，待最终提交复核后整体合入构建部署 |
+| 原神 SDK 输入与真实输出 | `6f806fe` 输出生命周期、`808dc81` drain前先生产原生guides并精确撤销未交SDK收据；独立复核PASS，已集成部署74f5ef8 | 待新局检查显示连续性；既有PID6748仅bac4b64，不能作为新修复验收 |
+| ZZZ F6 NGX 输入接入 | `199597d+ca05507`，独立复核PASS，已集成部署74f5ef8；Release失败保完整context并阻native Shutdown，内部替换先预检 | 未知/注入前已创建handle仍native-forward；必须实测owner=selected的Create/Evaluate及SR/NR/FG，hook安装不等于恢复 |
 | 原神 FinalOutput child runtime | `finaloutput-runtime` 从 `bac4b64` 分离，仅 HoYoShade 集成文件；已要求 Rawls 停止新增编码、保留现状，优先基线恢复 | child 创建/配置/selection/合法 raw 前更新和 GPU 退休尚未闭合，ON 实机待验；不得把扩展此链当作恢复原有 SR/NR/FG 的替代 |
 
 原神实际 FinalOutput child runtime/selection 未成立时继续拒绝过滤；不能用父窗口已过滤作为异步 child 的证明。CPU 测试仅证明标量契约，不证明 GPU 或显示。
@@ -35,9 +36,13 @@ Sol 是核心源码唯一写者，另一名 Sol 独立复核；DS 处理只读�
 
 ### ZZZ：仍未修复验收
 
-用户明确反馈：**无 F6 DLSS 输入，无 FG/NR**。失败复测 PID33548，日志载入 `ed7e598`，有 1616 条通用 Streamline Evaluate，但本项目 NGX DX12 Create/Evaluate、NR cadence、FG 深度与 source/constants 收据均为 0。启动日志确认 `sl.dlss.dll`、`nvngx.dll` 已预载，旧预载 hook 只接 GetFeatureRequirements，未接 Create/Evaluate；具体缓存函数指针的查找接口未确证。
+最新 PID46372 用户明确反馈：**FG没了，深度有，运动还是光流**。日志确认 `74f5ef8`，selected NGX Create/Evaluate各2条、项目DX12 Evaluate6256条、NR cadence8条、FG Dispatch Ok2811条；这些是日志匹配数，不能替代显示验收。7条限频SDK Present返回0，但限频MFG状态始终 `presented=1`；生成帧未得到证明，不能据此推翻用户反馈。
 
-全日志：`build/zzz-33548-OptiScaler.log`，SHA256 `BD8E7629F62D7C6005FD5E6CE61792388F8756F1F5D200651207DD339C4E8DCB`。证据提取：`build/zzz-33548-evidence.json`。PID 已退出，Lead 未 stop，原因 UNKNOWN。不能以游戏自身 Streamline 调用或独立 NR 签名告警替代 F6 主链定位。
+NR末次采样 modelCalls=2226、modelFailures=0，depth rect2080×1296、MV rect2560×1600；`motionIsPictureFlow=true`、`producerNativeGuideContract=false`、`sceneModelGuides=true`、`sceneModelMotion=false`。FG有1280×800 depth/MV tags，64条限频拒绝主要是slot-in-flight/no-fresh-source。intervalUsed=1、reuseAccepted=0；历史发布者fence target/completed=2998/2997，仍pending。深度存在不等于原生运动已接入，也不证明全屏动态细节正确。
+
+全日志 `build/zzz-46372-OptiScaler.log`，9,157,217 B、112,699行，SHA256 `517DC3B09C74089DECEE4082570373A27D142776290A0320EFA54490EFCD97A6`；提取 `build/zzz-46372-evidence.json`。末尾记录 `Unhandled exception C0000005 at 0`，成功写出 `OptiScaler_crash_46372_55540_01DD6C7A19435B6D_62980968_1.dmp`，260,939,502 B。Lead未停止游戏；有崩溃记录，具体故障模块与因果尚未确定。
+
+前一失败局 PID33548/`ed7e598` 是“无F6输入、无NR/FG”：1616条通用Streamline Evaluate，而项目NGX、NR cadence、FG depth及source收据为0。其日志 `build/zzz-33548-OptiScaler.log`，SHA256 `BD8E7629F62D7C6005FD5E6CE61792388F8756F1F5D200651207DD339C4E8DCB`。输入接入已有变化，但最新局仍未恢复FG可用性。
 
 ### 星铁：输入链有进展，动态画质待验
 
@@ -68,7 +73,7 @@ Sol 是核心源码唯一写者，另一名 Sol 独立复核；DS 处理只读�
 
 DS 限定检查了游戏根、hk4e_cn cache 和安装根 HoYoShade，未找到完整 GIMI Mods/d3dx.ini；此结论仅限检查范围。当前 ReShade preset 是 Mod OFF.ini，启用 MartysMods Launchpad/MXAO，实际 shaders 存在；BeforeSR 有材料可做单独验证，但尚无生效或像素证明。未扫描私密缓存。
 
-下一步：DS 追最后三游戏 SR/NR/FG 可用基线的 DLL、源码与配置身份，Lead 对照回归边界；原有 ZZZ Release 安全和原神连续性修复继续收口，暂不扩大新增 runtime。仅在明确基线关系且最终独立复核通过后统一构建部署。部署前确认三游戏均未运行，保留日志和 profiles、hardlink；分别绑定新 PID/creation/version/session，先核原有 SR/NR/FG 可用性，再核新增 NR depth/MV、历史、动态细节和同条件净性能。
+下一步以恢复可用基线为先：寻找 F5_三游戏覆盖包_Final_20261103.zip 或其DLL（33,359,360 B，声明SHA256 `5986BC7377A34A5451ED14DC0CE481A20F30F8808B966ADC47583CF845986BB3`），核实实物及配置后再安排恢复验证。此声明来自历史包记录，尚未找到并复核实物，不能盲目部署。已保护的预迁移a4d7a345并非已知可用版本，不充当回退答案。并行只读查最新崩溃及FG回归边界，暂停新增NR原生MV/FinalOutput扩展。每次修改保留可用回退件；先确认原有SR/NR/FG仍正常，再单独验新深度，发生退化便停止叠加后续改动。部署前确认游戏均未运行，保留现有profiles及hardlinks。
 
 `tools/runtime/Get-F6RunEvidence.ps1` 对保存/关闭日志用同一排写句柄解析和 hash，拒绝 PID/commit 不符，保留原行号。已实际提取上述两局；计数只是日志行，RecordedFenceTargetReached 只是记录值，不独立证明对象归属、selected SR、像素或性能。
 
