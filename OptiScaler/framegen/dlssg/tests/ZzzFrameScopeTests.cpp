@@ -221,12 +221,8 @@ void MissingCrossThreadAndUnregisteredOrigin()
 
 void FailedUpstreamOrSelectedRevokesOnlyConsumption()
 {
-    struct Resources { int value=99; };
     for (unsigned failure=0;failure!=3;++failure)
     {
-        auto owner=std::make_unique<Resources>();
-        auto* retained=owner.get();
-        uint64_t realFenceTarget=77;
         std::shared_ptr<Receipt> receipt;
         {
             Scope scope(OriginFor(),true);
@@ -237,8 +233,7 @@ void FailedUpstreamOrSelectedRevokesOnlyConsumption()
         }
         const bool srSucceeded=failure!=1;
         assert(!receipt->Consumable(srSucceeded));
-        assert(owner.get()==retained && retained->value==99 && realFenceTarget==77);
-        assert(receipt->origin.frame==4646); // revocation does not rewrite frame/owners/fence
+        assert(receipt->origin.frame==4646); // GPU owners/fences are checked at actual call sites, not mocked here.
     }
     std::shared_ptr<Receipt> receipt;
     {
@@ -286,6 +281,198 @@ void VendorCallbacksCannotRelabelSourceOrReviveScope()
     callbackReceipt.reset();
 }
 
+void UnattemptedPresentPreservesPassThrough()
+{
+    // Actual FG Off/paused/warmup/non-FG/TEST admission is wired in FGPresent,
+    // checked statically below Windows. This tests its real shared decision,
+    // not a loop giving different names to the same false argument.
+    unsigned beginCalls=0, offCalls=0, baseCalls=0;
+    const auto action=ResolvePresent(false,false,BasePresentSafe(false,false,false),[&] { ++beginCalls; return false; },
+        [&] { ++offCalls; return false; });
+    assert(action==PresentAction::PassThrough && beginCalls==0 && offCalls==0);
+    const int result=RunPresent(action,-1,[&] { ++baseCalls; return -37; });
+    assert(result==-37 && baseCalls==1); // Preserve actual base failure too, not a synthetic Success.
+}
+
+dlssg::InputOwner OffOwner()
+{
+    dlssg::InputOwner owner {};
+    owner.device=0x600; owner.queue=0x700; owner.epoch=8; owner.width=1280; owner.height=800;
+    return owner;
+}
+
+void SafeGapCallsActualOffAndBaseThenSourceRecovers()
+{
+    GapOffProof proof;
+    auto owner=OffOwner();
+    bool sdkOn=true;
+    unsigned offCalls=0, beginCalls=0, baseCalls=0;
+    auto off=[&] { ++offCalls; sdkOn=false; return true; }; // External SDK seam, called by production Ensure.
+    auto safe=[] { return true; };
+    auto ensure=[&] { return proof.Ensure(owner,0,off,safe); };
+    assert(!proof.Current(owner,0)); // Neither a new provider nor no-running-options is an Off receipt.
+    const auto gap=ResolvePresent(true,false,true,[&] { ++beginCalls; return false; },ensure);
+    assert(gap==PresentAction::KnownOffSafeBasePresent && offCalls==1 && beginCalls==0 && !sdkOn);
+    assert(RunPresent(gap,-1,[&] { ++baseCalls; assert(!sdkOn); return 29; })==29 && baseCalls==1);
+    assert(ensure() && offCalls==1); // Exact owner/viewport proof may be checked again without inventing a result.
+
+    Scope scope(OriginFor(),true);
+    Selection selected(api,feature,0,list,featureOwner,provider);
+    const auto receipt=Current();
+    assert(receipt);
+    scope.Finish(true);
+    proof.Invalidate(); // Production Dispatch does this BEFORE its actual On/options call.
+    assert(!proof.Current(owner,0));
+    sdkOn=true;
+    bool presented=false;
+    auto begin=[&] { ++beginCalls; return receipt->Consumable(true) && ConsumePresentOnce(presented); };
+    const auto recovered=ResolvePresent(true,true,true,begin,ensure);
+    assert(recovered==PresentAction::Consume && sdkOn && presented && beginCalls==1 && offCalls==1);
+    assert(RunPresent(recovered,-1,[&] { ++baseCalls; return 31; })==31);
+    const auto duplicate=ResolvePresent(true,true,true,begin,ensure);
+    assert(duplicate==PresentAction::KnownOffSafeBasePresent && offCalls==2 && !sdkOn && presented);
+    assert(RunPresent(duplicate,-1,[&] { ++baseCalls; return 33; })==33 && baseCalls==3);
+}
+
+void OffFailureOrUnknownSubmissionBlocksBase()
+{
+    GapOffProof proof;
+    const auto owner=OffOwner();
+    unsigned offCalls=0, baseCalls=0;
+    bool sdkAcceptsOff=false, submissionKnown=true;
+    auto ensure=[&] {
+        return proof.Ensure(owner,0,[&] { ++offCalls; return sdkAcceptsOff; },
+            [&] { return submissionKnown; });
+    };
+    auto action=ResolvePresent(true,false,true,[] { return true; },ensure);
+    assert(action==PresentAction::UnsafeFailure && offCalls==1 && !proof.Current(owner,0));
+    assert(RunPresent(action,-11,[&] { ++baseCalls; return 0; })==-11 && baseCalls==0);
+    sdkAcceptsOff=true;
+    submissionKnown=false; // External safety seam; this does NOT pretend to test GPU/fence lifetime.
+    action=ResolvePresent(true,false,true,[] { return true; },ensure);
+    assert(action==PresentAction::UnsafeFailure && offCalls==1); // Unsafe Execute/Signal state cannot be hidden by Off.
+    assert(RunPresent(action,-12,[&] { ++baseCalls; return 0; })==-12 && baseCalls==0);
+    submissionKnown=true;
+    assert(ensure() && offCalls==2);
+    submissionKnown=false;
+    assert(!ensure() && !proof.Current(owner,0) && offCalls==2); // Existing Off is no authority over unsafe submissions.
+}
+
+void OnAttemptAndReentryRevokeOldOffProof()
+{
+    GapOffProof proof;
+    auto owner=OffOwner();
+    unsigned offCalls=0;
+    auto success=[&] { ++offCalls; return true; };
+    auto safe=[] { return true; };
+    assert(proof.Ensure(owner,0,success,safe) && offCalls==1);
+    proof.Invalidate();
+    auto actualOn=[&] { assert(!proof.Current(owner,0)); return false; };
+    assert(!actualOn()); // A failed/partial On attempt still supersedes the old successful Off.
+    const auto action=ResolvePresent(true,false,true,[] { return false; },[&] {
+        return proof.Ensure(owner,0,[&] { ++offCalls; return false; },safe);
+    });
+    assert(action==PresentAction::UnsafeFailure && offCalls==2 && !proof.Current(owner,0));
+    assert(proof.Ensure(owner,0,success,safe) && offCalls==3); // Only a fresh actual Off may restore proof.
+    proof.Invalidate();
+    assert(!proof.Ensure(owner,0,[&] { proof.Invalidate(); return true; },safe)); // Recursive On during Off invalidates publication.
+    assert(!proof.Current(owner,0));
+    assert(proof.Ensure(owner,0,success,safe));
+    auto replacement=owner; ++replacement.epoch;
+    assert(!proof.Current(replacement,0) && !proof.Current(owner,1));
+    assert(proof.Ensure(replacement,1,success,safe)); // New owner/viewport can recover only via real Off.
+    assert(proof.Current(replacement,1) && !proof.Current(owner,0));
+    proof.Invalidate();
+    auto currentOwner=replacement;
+    assert(!proof.Ensure(replacement,1,[&] { ++currentOwner.epoch; return true; },
+        [&] { return currentOwner==replacement; })); // Owner changed during vendor callback.
+}
+
+void InvalidSourceNeedsFreshOffBeforeBasePresent()
+{
+    enum class Failure { Missing, Stale, Upstream, Selected, Pending };
+    for (auto failure : { Failure::Missing,Failure::Stale,Failure::Upstream,Failure::Selected,Failure::Pending })
+    {
+        Scope scope(OriginFor(),true);
+        Selection selected(api,feature,0,list,featureOwner,provider);
+        auto receipt=Current();
+        assert(receipt);
+        if (failure!=Failure::Pending) scope.Finish(failure!=Failure::Upstream);
+        const dlssg::NativeSource expected { 1,23,8,4,4646,list,0x400,api,9,0,true,provider };
+        auto candidate=expected;
+        if (failure==Failure::Missing) candidate={};
+        if (failure==Failure::Stale) ++candidate.serial;
+        bool presented=false;
+        GapOffProof proof;
+        const auto owner=OffOwner();
+        unsigned offCalls=0, baseCalls=0;
+        auto begin=[&] {
+            return candidate && candidate==expected && receipt->Consumable(failure!=Failure::Selected) &&
+                ConsumePresentOnce(presented);
+        };
+        const auto action=ResolvePresent(true,true,true,begin,[&] {
+            return proof.Ensure(owner,0,[&] { ++offCalls; return true; },[] { return true; });
+        });
+        assert(action==PresentAction::KnownOffSafeBasePresent && !presented && offCalls==1);
+        assert(RunPresent(action,-1,[&] { ++baseCalls; return 41; })==41 && baseCalls==1);
+        assert(action!=PresentAction::Consume); // Real hook clears source/End/Sleep before the base call (wiring checked).
+    }
+}
+
+void FailedOffStaysUnsafeAcrossInactivePresents()
+{
+    GapOffProof proof;
+    const auto owner=OffOwner();
+    bool sdkAcceptsOff=false, active=true, teardownPending=false, teardownOffAccepted=false;
+    bool ownerUnsafe=false;
+    unsigned offCalls=0, beginCalls=0, baseCalls=0;
+    auto setOff=[&] { ++offCalls; return sdkAcceptsOff; }; // External SDK result seam only.
+    auto baseSafe=[&] { return BasePresentSafe(teardownPending,teardownOffAccepted,ownerUnsafe); };
+    auto begin=[&] { ++beginCalls; return false; };
+    auto ensure=[&] {
+        const bool off=proof.Ensure(owner,0,setOff,[] { return true; });
+        if (!off)
+        {
+            // Mirror only Deactivate's logical state transition and actual Off
+            // result, not its GPU resources. Static wiring binds the real fields.
+            proof.Invalidate();
+            active=false;
+            teardownPending=true;
+            teardownOffAccepted=setOff();
+        }
+        return off;
+    };
+    auto base=[&] { ++baseCalls; return 53; };
+    const auto failed=ResolvePresent(active,false,baseSafe(),begin,ensure);
+    assert(failed==PresentAction::UnsafeFailure && !active && teardownPending && !teardownOffAccepted);
+    assert(offCalls==2 && beginCalls==0 && RunPresent(failed,-19,base)==-19 && baseCalls==0);
+
+    auto nextInactivePresent=[&] {
+        return ResolvePresent(active,false,baseSafe(),begin,ensure);
+    };
+    const auto next=nextInactivePresent(); // Actual next Present: attempted=false after Deactivate.
+    assert(next==PresentAction::UnsafeFailure && offCalls==2 && beginCalls==0);
+    assert(RunPresent(next,-20,base)==-20 && baseCalls==0);
+    teardownOffAccepted=setOff(); // A later existing teardown retry also fails.
+    assert(!teardownOffAccepted && nextInactivePresent()==PresentAction::UnsafeFailure && offCalls==3);
+
+    sdkAcceptsOff=true;
+    teardownOffAccepted=setOff(); // Only a real accepted Off changes the next decision.
+    const auto offSafe=nextInactivePresent();
+    assert(teardownPending && offSafe==PresentAction::PassThrough && offCalls==4 && beginCalls==0);
+    assert(RunPresent(offSafe,-21,base)==53 && baseCalls==1);
+    ownerUnsafe=true; // Actual provider wires failed/unknown submission, owner change and quarantine here.
+    const auto quarantined=nextInactivePresent();
+    assert(quarantined==PresentAction::UnsafeFailure && RunPresent(quarantined,-22,base)==-22 && baseCalls==1);
+    teardownPending=false;
+    teardownOffAccepted=false;
+    assert(nextInactivePresent()==PresentAction::UnsafeFailure); // Off/completed flags cannot clear quarantine.
+    ownerUnsafe=false; // External seam for the already-proven existing safe teardown boundary.
+    const auto completed=nextInactivePresent();
+    assert(completed==PresentAction::PassThrough && RunPresent(completed,-23,base)==53 && baseCalls==2);
+    assert(offCalls==4 && beginCalls==0); // No stale source, no extra SDK Off on unattempted paths.
+}
+
 int main()
 {
     gameApi.store(api);
@@ -297,5 +484,11 @@ int main()
     MissingCrossThreadAndUnregisteredOrigin();
     FailedUpstreamOrSelectedRevokesOnlyConsumption();
     VendorCallbacksCannotRelabelSourceOrReviveScope();
-    std::puts("PASS 8 ZZZ production-frame-scope suites: 4646 not 1, nested shadows/restoration, exact joins, nonzero game/local viewport namespaces, zero/restart, real SL chains, cross-thread, failures, immutable callbacks");
+    UnattemptedPresentPreservesPassThrough();
+    SafeGapCallsActualOffAndBaseThenSourceRecovers();
+    OffFailureOrUnknownSubmissionBlocksBase();
+    OnAttemptAndReentryRevokeOldOffProof();
+    InvalidSourceNeedsFreshOffBeforeBasePresent();
+    FailedOffStaysUnsafeAcrossInactivePresents();
+    std::puts("PASS 14 ZZZ production-frame-scope suites: original 8 identity/outcome suites, unattempted pass-through, real Off/base/recovery, unsafe submission or Off failure, On/reentrant stale-proof invalidation, invalid-source safe fallback, cross-Present failed-Off persistence/recovery; CPU does not prove GPU lifecycle");
 }

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <sl_core_types.h>
+#include "DlssgInputContinuity.h"
 
 // ZZZ synchronous SL DLSS -> selected NGX input only. These CPU receipts grant
 // consumption, never resource retirement. No token objects, COM owners or GPU
@@ -126,6 +127,67 @@ class Selection
             providerOwner==active->provider ? active->receipt : nullptr;
     }
 };
+
+// SDK acknowledgement only, under the provider's existing continuity lock.
+// No GPU owner is released by Off. Every actual options attempt invalidates
+// this proof first, including reentrant calls while an Off is in progress.
+class GapOffProof
+{
+    InputOwner owner {};
+    uint32_t viewport=0;
+    bool accepted=false, pending=false;
+  public:
+    void Invalidate() { accepted=false; pending=false; }
+    bool Current(const InputOwner& value, uint32_t localViewport) const
+    { return accepted && !pending && owner==value && viewport==localViewport; }
+    template<class SetOff, class StillSafe>
+    bool Ensure(const InputOwner& value, uint32_t localViewport, SetOff setOff, StillSafe stillSafe)
+    {
+        if (!stillSafe()) { Invalidate(); return false; }
+        if (Current(value,localViewport)) return true;
+        Invalidate();
+        pending=true;
+        const bool succeeded=setOff();
+        const bool unchanged=pending;
+        pending=false;
+        accepted=unchanged && succeeded && stillSafe();
+        if (accepted) { owner=value; viewport=localViewport; }
+        return accepted;
+    }
+};
+
+enum class PresentAction { PassThrough, Consume, KnownOffSafeBasePresent, UnsafeFailure };
+
+inline bool ConsumePresentOnce(bool& presented)
+{
+    if (presented) return false;
+    presented=true;
+    return true;
+}
+
+// Logical inactivity cannot erase a failed SDK Off. The provider supplies its
+// existing teardown/owner state; this grants no GPU retirement authority.
+inline bool BasePresentSafe(bool teardownPending, bool teardownOffAccepted, bool ownerUnsafe)
+{
+    return !ownerUnsafe && (!teardownPending || teardownOffAccepted);
+}
+
+// attempted is latched in the actual Dispatch branch before vendor callbacks.
+// An inactive path still checks unresolved SDK state from earlier Presents.
+template<class BeginSource, class EnsureOff>
+PresentAction ResolvePresent(bool attempted, bool dispatched, bool unattemptedSafe,
+    BeginSource beginSource, EnsureOff ensureOff)
+{
+    if (!attempted) return unattemptedSafe ? PresentAction::PassThrough : PresentAction::UnsafeFailure;
+    if (dispatched && beginSource()) return PresentAction::Consume;
+    return ensureOff() ? PresentAction::KnownOffSafeBasePresent : PresentAction::UnsafeFailure;
+}
+
+template<class Result, class BasePresent>
+Result RunPresent(PresentAction action, Result unsafeResult, BasePresent basePresent)
+{
+    return action==PresentAction::UnsafeFailure ? unsafeResult : basePresent();
+}
 
 // The ID is copied before the vendor call; even a recursive callback cannot
 // rewrite a source receipt through the frameIndex argument.

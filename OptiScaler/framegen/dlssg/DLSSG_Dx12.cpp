@@ -1046,6 +1046,7 @@ bool DLSSG_Dx12::CanSubmitInputs()
 
 bool DLSSG_Dx12::DisableRetainedProvider()
 {
+    _nativeGapOffProof.Invalidate();
     InvalidateStarRailOptions();
     auto options = _lastRunningOptions;
     options.mode = sl::DLSSGMode::eOff;
@@ -1091,6 +1092,7 @@ void DLSSG_Dx12::RetryGenshinReflexOff()
 void DLSSG_Dx12::Deactivate()
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
+    _nativeGapOffProof.Invalidate();
     InvalidateStarRailOptions();
     const bool wasActive = _isActive || _waitingNewFrameData || _inputContinuity.Held();
     _starRailDispatchPending = false;
@@ -1590,6 +1592,11 @@ bool DLSSG_Dx12::RefuseDepthContract(const char* stage, bool publicationStarted)
             // With no running inputs there is no GPU work to tear down.
             return false;
         }
+        if (OwnsNativeZzzSource())
+        {
+            PrepareNativeGuideGapPresent();
+            return false; // The hook distinguishes successful Off from unsafe failure.
+        }
         if (!_haveRunningOptions) return false;
         // Native missing/busy sources suspend SDK generation, not SR/NR or
         // physical owners. A later complete source sends On/reset normally.
@@ -1998,11 +2005,69 @@ bool DLSSG_Dx12::BeginNativeGuidePresent(const dlssg::NativeSource& source)
     auto* use=FindNativeGuideSource(source);
     // A successful Dispatch authorizes one actual SDK Present, independently
     // of who sends Reflex markers. Failed/occluded Presents consume it too.
-    if (!source || source!=_nativeGuideDispatch || !use || !use->dispatched || use->presented ||
+    if (!source || source!=_nativeGuideDispatch || !use || !use->dispatched ||
         !IsActive() || IsPaused() || !NativeGuideSourceCurrent(source) ||
         !GuideTagsCurrent(static_cast<int>(source.frame%BUFFER_COUNT),source.frame)) return false;
-    use->presented=true;
+    return dlssg::zzz::ConsumePresentOnce(use->presented);
+}
+
+bool DLSSG_Dx12::NativeGuideBasePresentSafe()
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    // Off failure deactivates logical FG but leaves this real teardown pending.
+    // Its successful Off (or completed safe teardown) may permit base Present;
+    // unknown Execute/Signal or quarantine never becomes safe just by going Off.
+    if (!OwnsNativeZzzSource() || !dlssg::zzz::BasePresentSafe(_teardownPending,_teardownOffAccepted,
+        _nativeGuideFailed || _zzzSCFailed || _hookRetiring || _ownerChanging || _teardownCompleting ||
+        _teardownQuarantined || g_dlssgTeardownQuarantined.load())) return false;
+    for (const auto& use:_nativeGuideUses)
+        if (use.executing || (use.submitted && (!use.signalled || !use.queue || !use.fence ||
+            !use.value || use.value==UINT64_MAX || use.fence->GetCompletedValue()==UINT64_MAX))) return false;
     return true;
+}
+
+bool DLSSG_Dx12::NativeGuideGapSafe()
+{
+    if (!OwnsNativeZzzSource() || !CanSubmitInputs() || _nativeGuideFailed || _zzzSCFailed ||
+        !_device || !_gameCommandQueue || _device->GetDeviceRemovedReason()!=S_OK) return false;
+    for (const auto& use:_nativeGuideUses)
+        if (use.executing || (use.submitted && (!use.signalled || !use.queue || !use.fence ||
+            !use.value || use.value==UINT64_MAX || use.fence->GetCompletedValue()==UINT64_MAX))) return false;
+    return true; // A known pending fence retains its owners; Off does not retire it.
+}
+
+bool DLSSG_Dx12::PrepareNativeGuideGapPresent()
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    const auto owner=CurrentInputOwner();
+    const auto localViewport=static_cast<uint32_t>(viewport);
+    const auto stillSafe=[&] {
+        return NativeGuideGapSafe() && CurrentInputOwner()==owner &&
+            static_cast<uint32_t>(viewport)==localViewport;
+    };
+    if (!stillSafe()) { _nativeGapOffProof.Invalidate(); return false; }
+    // Revoke consumption only. Keep all native recordings/resources and their
+    // real queue/fence receipts, including work which has not been submitted.
+    _depthSourceRejected=true;
+    _guideTags[GetIndex()][0].accepted=false;
+    _guideTags[GetIndex()][1].accepted=false;
+    _nativeGuideDispatch={};
+    const bool off=_nativeGapOffProof.Ensure(owner,localViewport,[&] {
+        auto options=_lastRunningOptions;
+        options.mode=sl::DLSSGMode::eOff;
+        options.flags|=sl::DLSSGFlags::eRetainResourcesWhenOff;
+        const auto setOptions=StreamlineProxy::DLSSGSetOptions();
+        return setOptions && setOptions(viewport,options)==sl::Result::eOk;
+    },stillSafe);
+    if (off) _depthSourceGap=true;
+    else if (OwnsNativeZzzSource() && CurrentInputOwner()==owner)
+    {
+        // An unsuccessful/unknown Off must not be retried into a fake safe
+        // result on this Present stack. Existing teardown retains the owners.
+        _managedRetained=true;
+        Deactivate();
+    }
+    return off;
 }
 
 void DLSSG_Dx12::CompleteNativeGuideSource(ID3D12CommandList* list, const dlssg::NativeSource& source,
@@ -2372,7 +2437,17 @@ bool DLSSG_Dx12::Dispatch()
         bool optionsSubmitted = false;
         const auto result = SetStarRailDispatchOptions(_starRailDlssgOptions, options,
             willDispatchFrame, resumingInputGap && (!starRailFrame || restartStarRailRuntime),
-            [&]() { return StreamlineProxy::DLSSGSetOptions()(viewport, options); }, &optionsSubmitted);
+            [&]() {
+                // Invalidate even if this provider temporarily left the native
+                // route: any actual options attempt supersedes its earlier Off.
+                _nativeGapOffProof.Invalidate();
+                if (nativeSource)
+                {
+                    _teardownOffAccepted=false;
+                    _lastRunningOptions=options;
+                }
+                return StreamlineProxy::DLSSGSetOptions()(viewport, options);
+            }, &optionsSubmitted);
         // Only this exact failed On/options transaction may suspend the child.
         // Off, GetState warnings and recursive owner changes cannot sign it.
         if (genshinFrame && optionsSubmitted && options.mode != sl::DLSSGMode::eOff &&

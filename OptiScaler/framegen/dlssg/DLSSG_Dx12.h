@@ -178,6 +178,8 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     bool RefuseDepthContract(const char* stage, bool publicationStarted = true);
     // Rejection of a source is not GPU failure or physical resource retirement.
     bool _depthSourceRejected=false, _depthSourceGap=false;
+    dlssg::zzz::GapOffProof _nativeGapOffProof;
+    bool NativeGuideGapSafe();
     struct NativeGuideUse
     {
         Microsoft::WRL::ComPtr<ID3D12CommandList> list, nativeList;
@@ -436,6 +438,8 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     FGExecutionGuard BeginNativeUpscalerInputs(ID3D12Device* device, FG_Constants& fgConstants);
     bool NativeGuidePresentToken(sl::FrameToken*& token, dlssg::NativeSource& source);
     bool BeginNativeGuidePresent(const dlssg::NativeSource& source);
+    bool NativeGuideBasePresentSafe();
+    bool PrepareNativeGuideGapPresent();
     bool SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Parameter* parameters,
         ID3D12Resource* depth, ID3D12Resource* motion, UINT width, UINT height, UINT mvWidth, UINT mvHeight,
         D3D12_RESOURCE_STATES depthState, D3D12_RESOURCE_STATES motionState);
