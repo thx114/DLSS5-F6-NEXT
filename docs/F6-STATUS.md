@@ -52,9 +52,13 @@ NR末次采样 modelCalls=2226、modelFailures=0，depth rect2080×1296、MV rec
 
 前一失败局 PID33548/`ed7e598` 是“无F6输入、无NR/FG”：1616条通用Streamline Evaluate，而项目NGX、NR cadence、FG depth及source收据为0。其日志 `build/zzz-33548-OptiScaler.log`，SHA256 `BD8E7629F62D7C6005FD5E6CE61792388F8756F1F5D200651207DD339C4E8DCB`。输入接入已有变化，但最新局仍未恢复FG可用性。
 
-### 星铁：输入链有进展，动态画质待验
+### 星铁：本次 SR/NR/FG 用户确认基本正常
 
-最新复测 PID27252，creation FILETIME `134382779130093750`，日志确认 `0613134`。Computer Use 观察到世界角色画面；仅静态观察，未改配置或操作登录。
+5a61e97 本局 PID30980，creation FILETIME `134382917978895818`，CLI61816真实exit0。**用户确认 SR、NR、插帧基本正常**；这是本轮基础功能验收，不扩大为动态细节、深度像素或跳模型复用/净性能验收。原生运动仍在，保持adamfg/F5-DS调度。进程已退出，Lead未stop；退出方式UNKNOWN。
+
+运行中采样 `build/starrail-30980-OptiScaler.log`（SHA256 `D6284100E41F8F3A91021759DC6BD9E471449E40BC1CBA2D6C8186FB5EC47AAC`），模型 depth/MV均1280×800、work2096×1312，motionIsPictureFlow=false、nativePhaseVerified=true，modelCalls1200/failures0、historyUsable/FusionRecorded=true。fence target/completed1199/1198仍pending；intervalUsed1/reuseAccepted0。FG日志明确F5-DS，后段SDK有presented6/status0。此前日志匹配1790条Dispatch Ok、3条启动拒绝；这些计数不是实际插帧数。尝试退出后取完整日志时，公共日志已属于另一PID68120；提取器实际拒绝PID不匹配，未产生30980的final evidence。当前只有上述已绑定的运行中采样，不能把后局日志归入本局。
+
+此前复测 PID27252，creation FILETIME `134382779130093750`，日志确认 `0613134`。Computer Use 观察到世界角色画面；仅静态观察，未改配置或操作登录。
 
 - NR 8 组 cadence，最新 modelCalls=3000、failures=0，depth/MV 非零且 rect=1280×800，work=2096×1312；模型链 completed/planned=1/1，historyAnswerComplete=true。后 6 组反馈历史可用且融合已录制。
 - 最新发布者 fence `0x1bea62344e0` target/completed=2999/2997，queue-ordered-gpu-pending，不能称该历史已完成或退休。
@@ -85,7 +89,7 @@ DS 限定检查了游戏根、hk4e_cn cache 和安装根 HoYoShade，未找到�
 
 可用基线搜寻：DS已限定检查旧项目根、workers、安装根（含OptiScaler、cache/games及具名备份）及已知recovered-temp/cleanup/_evidence/work/artifacts/references，未找到 F5_三游戏覆盖包_Final_20261103.zip 或33,359,360 B的DLL。声明SHA256 `5986BC7377A34A5451ED14DC0CE481A20F30F8808B966ADC47583CF845986BB3`只有清单证据。r301输出有33,361,408 B、SHA `8AD975292E08EE5B735B035C0B8F05AABF05F8E1EBA10697806AF29F2B6DC8CE`、UTC2026-11-03T14:31:31Z的实际候选，版本同为a4d7a345，但与F5 Final不同，尚未绑定用户可用反馈；预迁移34,796,544 B的a4d7a345也不是已知可用版本。版本号和目录标签不能充当基线，不盲目部署。
 
-下一步优先原神重建/显示回归与星铁实测；ZZZ同步帧错配已修复且用户确认插帧恢复，保留5a61e97恢复点。ZZZ NR方向和间歇卡顿仅在隔离树调查，暂停新增NR原生MV/FinalOutput扩展。星铁本次PID30980，creation FILETIME `134382917978895818`，CLI61816真实exit0；运行验收待采样和用户观察。部署前确认游戏均未运行，保留现有profiles及hardlinks。
+下一步优先原神重建/显示回归；星铁SR/NR/FG与ZZZ插帧均有本轮用户确认，保留5a61e97恢复点。ZZZ NR方向和间歇卡顿仅在隔离树调查，暂停新增NR原生MV/FinalOutput扩展。星铁不改adamfg/F5-DS调度；复用收益与三游戏动态细节尚未验收。部署前确认游戏均未运行，保留现有profiles及hardlinks。
 
 `tools/runtime/Get-F6RunEvidence.ps1` 对保存/关闭日志用同一排写句柄解析和 hash，拒绝 PID/commit 不符，保留原行号。已实际提取上述两局；计数只是日志行，RecordedFenceTargetReached 只是记录值，不独立证明对象归属、selected SR、像素或性能。
 
