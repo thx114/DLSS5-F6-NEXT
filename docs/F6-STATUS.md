@@ -2,7 +2,9 @@
 
 **2026-11-04 用户已恢复持续开发、分派编码、统一构建部署与三游戏验证；长期 goal 为 active。** 暂停时的完整快照见根 [HANDOFF.md](../HANDOFF.md)。本次恢复轮次 1，每完成 10 轮依据实际提交与运行效果重新评估实现方案；服务错误和重复等待不计作已完成开发轮次。
 
-接手实测：主树保存点 `726430b`、产品及正式 DLL `ed7e598` / 34,816,000 B，二者 SHA256 相同，正式位与三游戏 cache 的四个硬链接完整，接手时三游戏与编译进程数均为 0。当前 Lead 执行会话实测**未提权**，交接时 DSH 已提权的结论不适用于当前会话。恢复后尚未重新构建、部署或运行游戏。
+接手实测：主树保存点 `726430b`、产品及正式 DLL `ed7e598` / 34,816,000 B，二者 SHA256 相同，正式位与三游戏 cache 的四个硬链接完整，接手时三游戏与编译进程数均为 0。当前 Lead 执行会话实测**未提权**，交接时 DSH 已提权的结论不适用于当前会话。恢复后已独立编译原神保存点并运行一次现有正式 ZZZ；尚未部署新候选。
+
+**工作区隔离**：原根已由并发任务切换到 `f7/clean-rewrite`，保留其全部在途文件。F6 的集成、构建部署和当前说明统一位于 `D:/CODE/DLSS5_NEXT-workers/f6-integration`（`codex/f6-integration`）；不得对原根 checkout、reset 或清理。
 
 当前三个互不冲突任务：Sol 在 `D:/CODE/DLSS5_NEXT-workers/genshin-output` 完成原神实际 SDK output stream/queue-tail/owner reveal 生命周期；Sol 在 `D:/CODE/DLSS5_NEXT-workers/nr-detail` 核查并修复三游戏 NR 深度、相邻历史与细节保留的确证缺陷；DeepSeek 只读定位 ZZZ PID61120 日志断点。星铁现有 adamfg/F5-DS 式 FG 保持独立，GIMI/BeforeSR 次优先。Lead 是唯一集成、构建与游戏操作 owner。
 
@@ -11,6 +13,8 @@
 Lead 在独立 detached 工作树 `D:/CODE/DLSS5_NEXT-workers/genshin-compile` 对保存点 `b904cae` 完成真实全量编译/链接：`build.ps1 -Jobs 8`，exit 0，335 warnings、0 errors，194 秒；产物 `0.1.29-final (b904cae)` / 34,836,992 B / mtime UTC `2026-11-04T14:21:02.5380537Z`。该结果仅证明原 WIP 编译闭合；原神写者还在修生命周期缺口，未集成或部署此产物。
 
 ZZZ PID61120 日志已保护到 `build/zzz-61120-OptiScaler.log`。已核本项目 selected-source/constants/producer 收据为零；游戏 Streamline 初始化有 NR 签名加载告警，但本项目实际模型经 `shaders/dlssnr/DlssNr_Dx12.cpp` 的独立 forwarder 到达，不能由该告警直接推断项目 NR 加载失败。正在区分游戏 Streamline 与 selected SR/NGX 接入链路。
+
+ZZZ 复测 PID **33548**：launch-only CLI exit 0，经启动器自身 UAC 中继注入，日志确认载入 **`ed7e598`**。用户实测明确反馈“无 F6 的 DLSS 输入，无 FG/NR”；本局也没有项目 NGX Create/Evaluate、NR cadence 或 native FG producer 收据，不能以游戏 Streamline Evaluate/Present 冒验收。启动早期日志确认 `sl.dlss.dll`、`nvngx.dll` 已在内存；现有预载 NGX 接入仅 detour GetFeatureRequirements，未接管 Create/Evaluate。Sol 正在独立 `zzz-input-route` 工作树修复输入接入及原生调用/句柄归属。PID33548 已退出，Lead 未发送 stop，退出原因 UNKNOWN；全日志已保护到本工作树 `build/zzz-33548-OptiScaler.log`。
 
 以下保留暂停前的阶段记录。当前执行状态以上文为准；历史提交与测试的最终边界以 [HANDOFF.md](../HANDOFF.md) 为准。
 
