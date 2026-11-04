@@ -54,6 +54,8 @@ private:
     struct PhysicalContent {
         ContentSource source{};
         std::shared_ptr<const GenshinBridgeFg::SdkInputSource> inputSource;
+        GenshinBridgeFg::SdkStreamOwner streamOwner{};
+        std::shared_ptr<std::atomic<bool>> streamLive; // scope revocation, never input/output completion
         uint64_t epoch=0,stream=0,outputGeneration=0,sequence=0,value=0;
         UINT index=0,rawFlags=0;
         bool primed=false; // hidden RESTART requested, not a DWM/pixel witness
@@ -67,9 +69,13 @@ private:
             return inputSource && source.Matches(inputSource->Identity()) &&
                 inputSource->Matches(inputSource->Identity(),inputSource->SdkFrame());
         }
+        bool StreamKnown() const noexcept {
+            return streamOwner.Known() && streamLive && streamLive->load(std::memory_order_acquire);
+        }
+        bool Qualified() const noexcept {return streamLive ? StreamKnown() : SourceKnown();}
         bool OutputLive() const noexcept {return outputLive && outputLive->load(std::memory_order_acquire);}
         bool Ready(uint64_t& completed) const noexcept {
-            if(!SourceKnown() || !OutputLive() || !chain || !color || !queue || !fence || !device ||
+            if(!Qualified() || !OutputLive() || !chain || !color || !queue || !fence || !device ||
                 !value || value==UINT64_MAX)return false;
             completed=fence->GetCompletedValue();
             return completed!=UINT64_MAX && completed>=value && SUCCEEDED(device->GetDeviceRemovedReason());
@@ -86,6 +92,19 @@ private:
         HWND child=nullptr;
         bool live=false,hiddenAcknowledged=false;
         std::weak_ptr<std::atomic<bool>> outputLive;
+        // One immutable SDK owner per child lifetime. No token/frame is stored
+        // here: a worker raw is an output of this stream, never a guessed source.
+        GenshinVisibleChild* owner=nullptr; // dereferenced only while holding mutex
+        GenshinBridgeFg::SdkStreamOwner streamOwner{};
+        uintptr_t device12=0,physicalChain=0,physicalQueue=0;
+        uint64_t stream=0,outputGeneration=0,scopeEpoch=0;
+        ULONGLONG inputUntil=0;
+        std::shared_ptr<std::atomic<bool>> streamLive;
+        bool streamRawInFlight=false;
+        void RevokeStream() noexcept {
+            if(streamLive)streamLive->store(false,std::memory_order_release);
+            streamLive.reset();inputUntil=0;
+        }
         struct HiddenTail {
             Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
             Microsoft::WRL::ComPtr<ID3D12Fence> fence;
@@ -104,7 +123,7 @@ private:
         // real queue/fence, or after its prior work has positively completed.
         std::array<HiddenTail,4> hiddenTails;
         bool HiddenReady() noexcept {
-            bool ready=true;
+            bool ready=!streamRawInFlight;
             for(auto& tail:hiddenTails) {
                 if(!tail.Complete())ready=false;
                 else tail={}; // release observations only after actual completion (or no raw)
@@ -112,6 +131,7 @@ private:
             return ready;
         }
         bool RawInFlight() const noexcept {
+            if(streamRawInFlight)return true;
             for(const auto& tail:hiddenTails)if(tail.inFlight)return true;
             return false;
         }
@@ -176,6 +196,7 @@ private:
         if(!hideLatched_) {
             BumpEpoch();hideRequested_.store(epoch_.load());hideLatched_=true;
         }
+        display_->RevokeStream();
         showEpoch_.store(0);showUntil_.store(0);parentContent_={};
     }
     // Bounded scalar observation only. Calls are outside snapshotMutex_.
@@ -203,7 +224,7 @@ private:
         std::lock_guard display(display_->mutex);
         // Only the child's OWN visibility bit acknowledges hidden bootstrap.
         // An invisible/minimized parent does not make a visible child safe.
-        display_->child=child_;
+        display_->child=child_;display_->owner=this;
         display_->live=child_ && !closed_ && GetPropW(child_,Property)==this;
         display_->hiddenAcknowledged=display_->live && !(GetWindowLongPtrW(child_,GWL_STYLE)&WS_VISIBLE);
         const bool visible=child_ && IsWindowVisible(child_)!=FALSE;
@@ -220,12 +241,13 @@ private:
         std::lock_guard lock(snapshotMutex_);return snapshot_;
     }
     bool Current(const WindowSnapshot& s) const noexcept {
-        return s.ready && s.epoch && s.epoch!=UINT64_MAX && s.epoch==epoch_.load() &&
+        return s.ready && s.parent==GetForegroundWindow() && s.epoch && s.epoch!=UINT64_MAX && s.epoch==epoch_.load() &&
             !hideRequested_.load() && GetTickCount64()-s.published<=SnapshotMs;
     }
     void OwnerCommand() noexcept {
         commandPosted_.store(false);if(showEpoch_.load() || hideRequested_.load())Observe("owner-command");
         if(hideRequested_.load())Hide();
+        if(GetForegroundWindow()!=parent_){Hide();Publish(false);return;}
         if(!Prepare()){Observe("owner-prepare-refused");return;}
         const auto e=showEpoch_.load();
         if(e && e==epoch_.load() && GetTickCount64()<showUntil_.load())ApplyShow(e);
@@ -533,22 +555,26 @@ private:
             hiddenValue=tail.value;hiddenCompleted=tail.fence?tail.fence->GetCompletedValue():UINT64_MAX;
             hiddenInFlight=tail.inFlight;hiddenUncertain=tail.uncertain;break;
         }
-        LOG_INFO("R1069 owner-content: pid={} thread={} event={} source_generation={} source_frame={} instance={} picture={} present={} source_submit={} source_copy={} epoch={} stream={} output_generation={} output_sequence={} chain={:X} color={:X} index={} queue={:X} fence={:X} tail={} completed={} raw_flags={:X} required_generation={} required_frame={} required_instance={} required_picture={} hidden_queue={:X} hidden_fence={:X} hidden_tail={} hidden_completed={} hidden_inflight={} hidden_uncertain={} association=same_thread_sdk_call content_age=UNKNOWN visual=UNKNOWN",
+        LOG_INFO("R1069 owner-content: pid={} thread={} event={} source_generation={} source_frame={} instance={} picture={} present={} source_submit={} source_copy={} epoch={} stream={} output_generation={} output_sequence={} chain={:X} color={:X} index={} queue={:X} fence={:X} tail={} completed={} raw_flags={:X} required_generation={} required_frame={} required_instance={} required_picture={} hidden_queue={:X} hidden_fence={:X} hidden_tail={} hidden_completed={} hidden_inflight={} hidden_uncertain={} association={} content_age=UNKNOWN visual=UNKNOWN",
             GetCurrentProcessId(),GetCurrentThreadId(),event,content.source.generation,content.source.sourceFrame,
             content.source.instance,content.source.picture,content.source.present,content.source.submit,content.source.copy,
             content.epoch,content.stream,content.outputGeneration,content.sequence,reinterpret_cast<uintptr_t>(content.chain.Get()),
             content.color,content.index,reinterpret_cast<uintptr_t>(content.queue.Get()),
             reinterpret_cast<uintptr_t>(content.fence.Get()),content.value,completed,content.rawFlags,
             required.generation,required.sourceFrame,required.instance,required.picture,
-            hiddenQueue,hiddenFence,hiddenValue,hiddenCompleted,hiddenInFlight,hiddenUncertain);
+            hiddenQueue,hiddenFence,hiddenValue,hiddenCompleted,hiddenInFlight,hiddenUncertain,
+            content.streamLive?"sdk_output_stream":"same_thread_sdk_call");
     }
     bool AcceptContent(PhysicalContent& content) noexcept {
         const auto acceptedEpoch=content.epoch;
         {
             std::lock_guard display(display_->mutex);
             std::lock_guard lock(snapshotMutex_);
+            const bool streamCurrent=content.StreamKnown() && content.streamLive==display_->streamLive &&
+                content.streamOwner==display_->streamOwner && display_->scopeEpoch==content.epoch &&
+                GetTickCount64()<display_->inputUntil;
             if(!Current(snapshot_) || content.epoch!=epoch_.load() || !content.OutputLive() ||
-                !(content.source==parentContent_) || !content.SourceKnown())return false;
+                !(streamCurrent || (content.source==parentContent_ && content.SourceKnown())))return false;
             std::swap(pendingContent_,content); // old COM refs leave the lock in content
         }
         // Show merely schedules owner evaluation; a hidden HWND is revealed only
@@ -576,8 +602,12 @@ private:
             ObserveContent("hidden-raw-in-flight-or-tail-pending",content,0,required);
             return false; // no CPU lease/epoch substitutes for any physical queue tail
         }
+        const bool streamCurrent=content.StreamKnown() && content.streamLive==display_->streamLive &&
+            content.streamOwner==display_->streamOwner && display_->scopeEpoch==epoch &&
+            GetTickCount64()<display_->inputUntil;
+        if(content.streamLive && !streamCurrent){Hide();return false;}
         if(alreadyVisible)return true; // valid existing visible lease, no new GPU claim
-        if(!(content.source==required) || content.epoch!=epoch || !content.primed) {
+        if((!streamCurrent && !(content.source==required)) || content.epoch!=epoch || !content.primed) {
             if(content.sequence)ObserveContent("source-superseded-before-reveal",content,0,required);
             return false;
         }
@@ -597,9 +627,10 @@ private:
         Publish(true);ObserveContent("shown-after-physical-tail",content,completed,required);return Visible(epoch);
     }
 public:
-    // SDK entry is separate from content authority: hidden startup/worker raw
-    // can progress, but only an exact ReturnedPicture -> authenticated SDK call
-    // -> physical output -> completed tail can enter the owner reveal path.
+    // Every SDK input still requires its exact ReturnedPicture receipt. Output
+    // may be synchronous with that input or asynchronous in its separately bound
+    // SDK creation owner/physical stream. Only actual raw + completed physical
+    // tail can reveal; stream output never asserts a source or generated kind.
     class PresentPermit final
     {
         friend class Dx11wDx12SC;
@@ -643,13 +674,34 @@ public:
             p->sdkEntered_=false;p->called_=true;p->actualResult_=result;
             if(!p->armed_ || result!=S_OK)p->owner_.Hide();
         }
+        bool AcceptStream() noexcept {
+            auto* p=this;
+            if(current_!=this || !eligible_ || !armed_ || !called_ || actualResult_!=S_OK ||
+                PhysicalFailure() || !sdkSource_)return false;
+            std::lock_guard display(p->owner_.display_->mutex);
+            auto& gate=*p->owner_.display_;
+            const auto binding=p->sdkSource_->StreamOwner();
+            std::lock_guard snapshot(p->owner_.snapshotMutex_);
+            if(!binding.Known() || (gate.streamOwner.Known() && !(gate.streamOwner==binding)) ||
+                p->owner_.Epoch()!=p->epoch_ || p->owner_.hideRequested_.load() ||
+                !(p->source_==p->owner_.parentContent_))return false;
+            // First successful SDK input binds this child's provider domain.
+            // A changed domain requires child/provider retirement, never relabels
+            // late work from the old epoch. FrameToken is intentionally absent.
+            if(!gate.streamLive) {
+                try{gate.streamLive=std::make_shared<std::atomic<bool>>(true);}catch(...){return false;}
+            }
+            gate.streamOwner=binding;gate.device12=p->source_.device12;
+            gate.scopeEpoch=p->epoch_;gate.inputUntil=GetTickCount64()+LeaseMs;
+            return true;
+        }
         // The captured Genshin endpoint may advance an acknowledged hidden
         // child without a source. It must never borrow newest source/TLS to turn
         // that bootstrap or vendor worker output into a reveal receipt.
         class PhysicalOutput final {
             PresentPermit* permit_=nullptr;
             PhysicalContent content_;
-            std::shared_ptr<DisplayGate> hiddenDisplay_;
+            std::shared_ptr<DisplayGate> hiddenDisplay_,streamDisplay_;
             size_t hiddenSlot_=0;
             bool submitted_=false,finished_=false,hiddenFinished_=false,hiddenRawEntered_=false;
             void FinishHidden(bool rawCalled,bool tailKnown,ID3D12Fence* fence,uint64_t value) noexcept {
@@ -663,6 +715,22 @@ public:
                 tail.inFlight=false;hiddenFinished_=true;
             }
         public:
+            // Call only after Endpoint has positively collected every old queue
+            // tail and committed buffer/provider retirement. This revokes CPU
+            // observations; it never releases GPU resources or opens admission.
+            static void BuffersRetired(uint64_t outputOwner,uint64_t stream,uint64_t generation) noexcept {
+                auto gate=retainedDisplay_.load(std::memory_order_acquire);if(!gate)return;
+                std::lock_guard display(gate->mutex);
+                if(gate->streamOwner.outputOwner!=outputOwner || gate->stream!=stream ||
+                    gate->outputGeneration!=generation || gate->streamRawInFlight)return;
+                gate->RevokeStream();
+                if(gate->owner) {
+                    {std::lock_guard snapshot(gate->owner->snapshotMutex_);gate->owner->ArmHideLocked();}
+                    gate->owner->QueueCommand();
+                }
+                gate->streamOwner={};gate->device12=gate->physicalChain=gate->physicalQueue=0;
+                gate->stream=gate->outputGeneration=gate->scopeEpoch=0;
+            }
             static void Refused(const char* reason,IDXGISwapChain* chain,
                                 ID3D12CommandQueue* queue=nullptr,ID3D12Resource* color=nullptr,
                                 UINT index=UINT_MAX,uint64_t stream=0,uint64_t generation=0,
@@ -680,7 +748,7 @@ public:
                     p?p->source_.thread:0,n);
             }
             bool Bind(IDXGISwapChain3* chain,ID3D12CommandQueue* queue,ID3D12Resource* color,
-                      UINT index,uint64_t stream,uint64_t generation,uint64_t sequence,
+                      UINT index,uint64_t stream,uint64_t generation,uint64_t sequence,uint64_t outputOwner,
                       std::shared_ptr<std::atomic<bool>>& outputLive,ID3D12Fence* fence,UINT inputFlags) noexcept {
                 auto* p=current_;permit_=p;
                 const auto refuse=[&](const char* reason){
@@ -714,6 +782,32 @@ public:
                 }
                 content_.stream=stream;content_.outputGeneration=generation;content_.sequence=sequence;content_.index=index;
                 content_.chain=chain;content_.queue=queue;content_.color=Key(color);content_.device=device;content_.fence=fence;
+                const bool streamAuthorized=gate->owner && gate->streamLive &&
+                    gate->streamLive->load(std::memory_order_acquire) && gate->streamOwner.Known() &&
+                    outputOwner && gate->streamOwner.outputOwner==outputOwner &&
+                    gate->scopeEpoch==gate->owner->Epoch() && !gate->owner->hideRequested_.load() &&
+                    GetForegroundWindow()==GetAncestor(gate->child,GA_ROOT) &&
+                    GetTickCount64()<gate->inputUntil && gate->device12==Key(device.Get()) &&
+                    d.BufferDesc.Width==gate->streamOwner.width && d.BufferDesc.Height==gate->streamOwner.height;
+                if(streamAuthorized && !gate->RawInFlight()) {
+                    if(gate->stream && (gate->stream!=stream || gate->outputGeneration!=generation ||
+                        gate->physicalChain!=Key(chain) || gate->physicalQueue!=Key(queue)))
+                        return refuse("OutputStreamLifetimeChangedRequiresRetirement");
+                    if(!outputLive || !outputLive->load(std::memory_order_acquire)) {
+                        try{outputLive=std::make_shared<std::atomic<bool>>(true);}
+                        catch(...){return refuse("PhysicalLifetimeAllocationFailed");}
+                    }
+                    gate->stream=stream;gate->outputGeneration=generation;
+                    gate->physicalChain=Key(chain);gate->physicalQueue=Key(queue);
+                    if(auto old=gate->outputLive.lock();old && old!=outputLive)old->store(false,std::memory_order_release);
+                    gate->outputLive=outputLive;
+                    content_.streamOwner=gate->streamOwner;content_.streamLive=gate->streamLive;
+                    content_.epoch=gate->scopeEpoch;content_.outputLive=outputLive;
+                    content_.primed=gate->hiddenAcknowledged;
+                    gate->streamRawInFlight=true;
+                    streamDisplay_=gate;permit_=nullptr;
+                    return true; // output source/pixel kind intentionally UNKNOWN
+                }
                 if(!authenticated || gate->RawInFlight()) {
                     // Never borrow a current/latest source for startup or a vendor
                     // worker. Only the owner's acknowledged hidden child may advance.
@@ -755,12 +849,25 @@ public:
                 content_.primed=gate->hiddenAcknowledged;return true;
             }
             bool HiddenOnly() const noexcept {return hiddenDisplay_!=nullptr;}
+            bool StreamScoped() const noexcept {return streamDisplay_!=nullptr;}
             bool RawEntered() noexcept {
                 if(finished_ || hiddenRawEntered_)return false;
                 hiddenRawEntered_=true;return true; // one actual raw call per bound output
             }
             bool Prime() const noexcept {return content_.primed;}
             bool MayPresent() const noexcept {
+                if(streamDisplay_) {
+                    std::unique_lock display(streamDisplay_->mutex,std::try_to_lock);
+                    return display.owns_lock() && streamDisplay_->live && streamDisplay_->owner &&
+                        content_.StreamKnown() && content_.OutputLive() &&
+                        content_.streamLive==streamDisplay_->streamLive &&
+                        content_.epoch==streamDisplay_->owner->Epoch() &&
+                        !streamDisplay_->owner->hideRequested_.load() &&
+                        GetForegroundWindow()==GetAncestor(streamDisplay_->child,GA_ROOT) &&
+                        GetTickCount64()<streamDisplay_->inputUntil &&
+                        streamDisplay_->physicalChain==Key(content_.chain.Get()) &&
+                        streamDisplay_->physicalQueue==Key(content_.queue.Get());
+                }
                 if(hiddenDisplay_) {
                     std::unique_lock display(hiddenDisplay_->mutex,std::try_to_lock);
                     return display.owns_lock() && hiddenDisplay_->live && hiddenDisplay_->hiddenAcknowledged &&
@@ -803,6 +910,26 @@ public:
                             static_cast<unsigned>(rawResult),Key(fence),value,completed,rawCalled && tailValid);
                     return;
                 }
+                if(streamDisplay_) {
+                    std::lock_guard display(streamDisplay_->mutex);
+                    auto& gate=*streamDisplay_;
+                    gate.streamRawInFlight=false;
+                    content_.rawFlags=rawFlags;content_.value=value;
+                    const bool valid=rawCalled && accepted && tailValid && rawResult==S_OK &&
+                        gate.live && gate.owner && content_.StreamKnown() && content_.OutputLive() &&
+                        content_.streamLive==gate.streamLive && content_.epoch==gate.owner->Epoch() &&
+                        !gate.owner->hideRequested_.load() && GetTickCount64()<gate.inputUntil;
+                    if(valid){auto candidate=content_;submitted_=gate.owner->AcceptContent(candidate);}
+                    else if(rawCalled && gate.owner)gate.owner->Hide();
+                    static std::atomic<uint64_t> reports{0};const auto n=++reports;
+                    if(n<=16 || n%600==0)
+                        LOG_INFO("F6 stream-output: thread={} stream={} generation={} sequence={} provider={} sdk_output_owner={} visibility_epoch={} chain={:X} queue={:X} raw_called={} raw_hr={:X} fence={:X} tail={} completed={} accepted={} source=UNKNOWN kind=UNKNOWN visual=UNKNOWN",
+                            GetCurrentThreadId(),content_.stream,content_.outputGeneration,content_.sequence,
+                            content_.streamOwner.provider,content_.streamOwner.outputOwner,content_.epoch,
+                            Key(content_.chain.Get()),Key(content_.queue.Get()),rawCalled,static_cast<unsigned>(rawResult),
+                            Key(fence),value,completed,submitted_);
+                    return;
+                }
                 if(!permit_)return;
                 auto* p=permit_;
                 bool sourceCurrent=false;
@@ -825,15 +952,21 @@ public:
                 static std::atomic<bool> failureReported{false};
                 const bool firstFailure=!submitted_ && !failureReported.exchange(true);
                 if(n<=16 || firstFailure || n%600==0)
-                    LOG_INFO("R1069 physical-content: pid={} thread={} source_generation={} source_frame={} picture={} present={} instance={} source_submit={} source_copy={} source_history={} source_config={} source_owner={} source_device={} epoch={} chain={:X} color={:X} index={} queue={:X} stream={} output_generation={} output_sequence={} raw_called={} raw_flags={:X} raw_hr={:X} tail_fence={:X} tail={} completed={} primed={} accepted={} gpu_ready={} association=same_thread_sdk_call content_age=UNKNOWN visual=UNKNOWN",
+                    LOG_INFO("R1069 physical-content: pid={} thread={} source_generation={} source_frame={} picture={} present={} instance={} source_submit={} source_copy={} source_history={} source_config={} source_owner={} source_device={} epoch={} chain={:X} color={:X} index={} queue={:X} stream={} output_generation={} output_sequence={} raw_called={} raw_flags={:X} raw_hr={:X} tail_fence={:X} tail={} completed={} primed={} accepted={} gpu_ready={} association={} content_age=UNKNOWN visual=UNKNOWN",
                         GetCurrentProcessId(),GetCurrentThreadId(),content_.source.generation,content_.source.sourceFrame,
                         content_.source.picture,content_.source.present,content_.source.instance,content_.source.submit,content_.source.copy,
                         content_.source.historyEpoch,content_.source.configEpoch,content_.source.ownerEpoch,content_.source.deviceEpoch,
                         content_.epoch,Key(content_.chain.Get()),content_.color,content_.index,Key(content_.queue.Get()),
                         content_.stream,content_.outputGeneration,content_.sequence,rawCalled,rawFlags,static_cast<unsigned>(rawResult),Key(fence),value,completed,
-                        content_.primed,submitted_,submitted_ && completed>=value);
+                        content_.primed,submitted_,submitted_ && completed>=value,"same_thread_sdk_call");
             }
             ~PhysicalOutput(){
+                if(streamDisplay_ && !finished_) {
+                    std::lock_guard display(streamDisplay_->mutex);
+                    streamDisplay_->streamRawInFlight=false;
+                    streamDisplay_->RevokeStream();
+                    if(streamDisplay_->owner)streamDisplay_->owner->Hide();
+                }
                 // An unfinished raw poisons the observation; only a reservation
                 // that never entered raw can cancel without a real tail.
                 if(hiddenRawEntered_ && !finished_ && permit_)permit_->physicalTailFailed_=true;
@@ -842,6 +975,14 @@ public:
             }
         };
         bool Called() const noexcept {return called_;}
+        bool StreamAccepted() const noexcept {
+            if(!eligible_ || !armed_ || !called_ || actualResult_!=S_OK || !sdkSource_)return false;
+            std::lock_guard display(owner_.display_->mutex);
+            const auto& gate=*owner_.display_;
+            return gate.live && gate.streamLive && gate.streamLive->load(std::memory_order_acquire) &&
+                gate.streamOwner==sdkSource_->StreamOwner() && gate.scopeEpoch==epoch_ &&
+                owner_.Epoch()==epoch_ && !owner_.hideRequested_.load() && GetTickCount64()<gate.inputUntil;
+        }
         bool HasPhysicalOutput() const noexcept {return physicalCount_ && !physicalFailed_;}
         bool ContinuityAccepted() const noexcept {return continuityAccepted_;}
         bool PhysicalFailure() const noexcept {return physicalRawFailed_ || physicalTailFailed_;}
@@ -860,7 +1001,7 @@ public:
             return committed_;
         }
         ~PresentPermit() {
-            if(!continuityAccepted_)owner_.Hide();
+            if(!continuityAccepted_ && !StreamAccepted())owner_.Hide();
             if(current_==this)current_=nullptr;
         }
     };
@@ -871,6 +1012,7 @@ public:
         {
             std::lock_guard display(display_->mutex);
             closed_=true;display_->live=false;display_->hiddenAcknowledged=false;
+            display_->owner=nullptr;display_->RevokeStream();
         }
         Hide();
         if(ownedChild_)ReleasePhysicalOutputs();

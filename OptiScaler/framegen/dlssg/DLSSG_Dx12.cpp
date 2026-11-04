@@ -2557,7 +2557,8 @@ bool DLSSG_Dx12::Dispatch()
             // real successful SetConstants above can seal this input identity.
             lease->source = std::shared_ptr<const GenshinBridgeFg::SdkInputSource>(
                 new GenshinBridgeFg::SdkInputSource(lease->guides->key, willDispatchFrame,
-                    genshinToken, lease->owner, lease->epoch, lease->guides->preparedPacket));
+                    genshinToken, lease->owner, lease->epoch,
+                    framegen::final_output::ProviderIdentity(_finalOutputProvider),lease->guides->preparedPacket));
         } catch (const std::bad_alloc&) { return false; } // tags retain their original retirement owner
     }
     if (!genshinFrame || DetailedGenshinFrameLog(willDispatchFrame)) LOG_DEBUG("Result: Ok");

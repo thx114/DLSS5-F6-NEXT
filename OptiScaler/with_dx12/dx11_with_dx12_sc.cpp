@@ -3385,6 +3385,19 @@ HRESULT Dx11wDx12SC::_PresentNativeVisible(UINT sync, UINT flags, const DXGI_PRE
         _visibleReceipt.childResult==DXGI_ERROR_WAS_STILL_DRAWING || childCallResult==DXGI_STATUS_OCCLUDED ||
         _visibleReceipt.childResult==DXGI_STATUS_OCCLUDED);
     const bool hiddenOrAdmission=permit.HiddenRawCount() || permit.OutputAdmissionPending() || sdkRetry;
+    const bool streamInputAccepted=submitted && !permit.PhysicalFailure() &&
+        childCallResult==S_OK && _visibleReceipt.childResult==S_OK &&
+        Config::Instance()->FGEnabled.value_or_default() && _ValidateNativeVisible() &&
+        _visibleChild->Epoch()==_visibleReceipt.epoch && permit.AcceptStream();
+    if(streamInputAccepted && !permit.HasPhysicalOutput()) {
+        // SDK input acceptance and worker output are different axes. The stream
+        // owns no guessed source token; its exact physical endpoint will publish
+        // the real raw result/tail and request owner reveal asynchronously.
+        _visibleReceipt.reason="SdkInputAcceptedAwaitingStreamOutput";
+        _visibleReceipt.shown=_visibleChild->Visible(_visibleReceipt.epoch);
+        scope.Presented(permit.ActualResult(),false,permit.Called());
+        return parentResult;
+    }
     if(scope.LastResult()!=GenshinBridgeFg::Result::ProviderRefused && !permit.HasPhysicalOutput() &&
        !permit.PhysicalFailure() && nonterminalChildResult(childCallResult) &&
        nonterminalChildResult(_visibleReceipt.childResult) && (hiddenOrAdmission || submitted)) {

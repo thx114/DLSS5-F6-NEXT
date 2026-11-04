@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <Windows.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -12,6 +12,9 @@ namespace framegen::final_output
 class Provider;
 std::shared_ptr<Provider> CreateProvider() noexcept;
 void BindInput(const std::shared_ptr<Provider>&, IDXGISwapChain*) noexcept;
+// Identity of the actual SDK factory creation owner, independent of source
+// token/input epoch and physical buffer generation. No GPU completion authority.
+uint64_t ProviderIdentity(const std::shared_ptr<Provider>&) noexcept;
 void RetireProvider(std::shared_ptr<Provider>&) noexcept;
 // Closing admission persists on pending/failure. No wait and no implicit rollback to live.
 // Commit rechecks all endpoint tails after the provider's public host teardown.

@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "FinalOutputEndpoint.h"
 #include <integration/HoYoShade.h>
 #include <with_dx12/GenshinVisibleChild.h>
@@ -107,6 +107,12 @@ void BindInput(const std::shared_ptr<Provider>& p, IDXGISwapChain* input) noexce
     std::lock_guard lock(p->mutex);
     if (!p->live || p->retiring) return;
     p->input = identity; p->source = {}; p->prepared = p->active = false;
+}
+uint64_t ProviderIdentity(const std::shared_ptr<Provider>& p) noexcept
+{
+    if(!p)return 0;
+    std::lock_guard lock(p->mutex);
+    return p->live && !p->retiring && p->owner!=UINT64_MAX ? p->owner : 0;
 }
 void RetireProvider(std::shared_ptr<Provider>& provider) noexcept
 {
@@ -509,10 +515,11 @@ HRESULT Endpoint::PresentImpl(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
         }
         if(!s.fence && FAILED(s.device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&s.fence))))return E_FAIL;
         if(!physical.Bind(s.chain.Get(),physicalQueue,physicalColor.Get(),physicalIndex,
-                          s.stream,s.generation,s.genshinPhysicalSequence+1,s.genshinOutputLive,s.fence.Get(),flags))
+                          s.stream,s.generation,s.genshinPhysicalSequence+1,s.provider->owner,s.genshinOutputLive,s.fence.Get(),flags))
             return DXGI_ERROR_WAS_STILL_DRAWING;
         ++s.genshinPhysicalSequence;
         if(physical.HiddenOnly())s.InvalidateGenshinOutput();
+        if(physical.StreamScoped())crossResult.enabled=false;
         // Authenticated hidden output may request RESTART to skip queued flips.
         // Keep its actual flags/HRESULT: neither acceptance nor this queue tail
         // proves a changed latched front buffer or DWM/pixel output. Source-less
@@ -566,11 +573,15 @@ HRESULT Endpoint::PresentImpl(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
     if (s.resizing || s.retired || s.retryAmbiguous || !FullPresent(flags, params)) return untouched();
     HoYoShade::PhysicalSource source;
     bool bound = false;
-    {
+    if(genshin && physical.StreamScoped()) {
+        // The output's own runtime exports selection and suppression authority
+        // on THIS worker call. It does not consume any DX11 copied-source ticket.
+        // Missing runtime/selection remains a filtered-parent fallback.
+        source=HoYoShade::PreparePhysicalSource(s.chain.Get());
+        bound=bool(source);
+    } else {
         std::lock_guard providerLock(s.provider->mutex);
-        // This adapter supports nested synchronous outputs only. A legitimate
-        // vendor worker/late output has no authenticated source association
-        // through this scope; it is unsupported here, not classified foreign.
+        // Synchronous copied-source adapter remains exact to its input scope.
         bound = s.provider->live && s.provider->active && s.provider->inputThread == GetCurrentThreadId();
         source = s.provider->source;
         if (crossApi) {
@@ -582,7 +593,7 @@ HRESULT Endpoint::PresentImpl(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
                 s.provider->copyFence->GetCompletedValue() != UINT64_MAX;
         }
     }
-    if (!bound || !source || (s.thread && s.thread != GetCurrentThreadId())) return untouched();
+    if (!bound || !source || (!(genshin && physical.StreamScoped()) && s.thread && s.thread != GetCurrentThreadId())) return untouched();
     const auto index = s.chain->GetCurrentBackBufferIndex();
     if (index >= s.count || !s.queues[index].queue) return untouched();
     // An admitted snapshot/restore still owns this slot until its actual tail.
@@ -786,6 +797,7 @@ void Endpoint::Resize::Complete(HRESULT hr, UINT count, const UINT* nodes,
         for (UINT i = 0; i < desc.BufferCount; ++i) updated[i] = s.queues[0];
     }
     s.queues = std::move(updated); s.count = desc.BufferCount;
+    GenshinVisibleChild::PresentPermit::PhysicalOutput::BuffersRetired(s.provider->owner,s.stream,s.generation-1);
 }
 HRESULT Endpoint::TryRetire(const std::shared_ptr<Provider>& provider, bool commit) noexcept
 {
@@ -824,6 +836,7 @@ HRESULT Endpoint::TryRetire(const std::shared_ptr<Provider>& provider, bool comm
         auto& s = *states[i];
         s.retired = true;
         s.InvalidateGenshinOutput();
+        GenshinVisibleChild::PresentPermit::PhysicalOutput::BuffersRetired(s.provider->owner,s.stream,s.generation);
         released[i].stream = s.stream;
         released[i].pending = std::move(s.pending);
         released[i].queues = std::move(s.queues);

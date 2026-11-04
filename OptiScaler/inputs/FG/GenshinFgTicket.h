@@ -37,25 +37,37 @@ struct Key {
             a.width==b.width && a.height==b.height && a.selectedSubresource==b.selectedSubresource;
     }
 };
+// Stream ownership deliberately excludes the per-input frame/token/picture.
+// It grants no source-to-output join and no GPU retirement authority.
+struct SdkStreamOwner {
+    uint64_t provider=0,outputOwner=0,device=0;
+    uint32_t width=0,height=0;
+    bool Known() const noexcept {return provider && outputOwner && device && width && height;}
+    bool operator==(const SdkStreamOwner&) const = default;
+};
 // CPU source identity only. The real provider seals it after the SDK accepts
 // constants with this exact FrameToken value. It keeps the immutable packet;
 // SDK acceptance, GPU retirement and physical output are separate facts.
-// An async raw call still needs a documented callback carrying THIS receipt;
-// neither an input fence nor an NVAPI present counter can select it.
+// Joining an async raw to THIS receipt needs a documented callback carrying it;
+// the independent output-stream scope deliberately makes no such source join.
+// Neither an input fence nor an NVAPI present counter can select a source.
 class SdkInputSource final {
     friend class ::DLSSG_Dx12;
     const Key key_;
-    const uint64_t frame_,token_,provider_,epoch_;
+    const uint64_t frame_,token_,provider_,epoch_,outputOwner_;
     const std::shared_ptr<const GenshinTransport::PreparedDepthPacket> packet_;
     SdkInputSource(const Key& key,uint64_t frame,uint64_t token,uint64_t provider,uint64_t epoch,
-        std::shared_ptr<const GenshinTransport::PreparedDepthPacket> packet)
-        :key_(key),frame_(frame),token_(token),provider_(provider),epoch_(epoch),packet_(std::move(packet)){}
+        uint64_t outputOwner,std::shared_ptr<const GenshinTransport::PreparedDepthPacket> packet)
+        :key_(key),frame_(frame),token_(token),provider_(provider),epoch_(epoch),outputOwner_(outputOwner),packet_(std::move(packet)){}
 public:
     const Key& Identity()const noexcept{return key_;}
     uint64_t SdkFrame()const noexcept{return token_;} // copied from the actual SetConstants FrameToken
     const auto& Packet()const noexcept{return packet_;}
+    SdkStreamOwner StreamOwner() const noexcept {
+        return {provider_,outputOwner_,key_.device,key_.width,key_.height};
+    }
     bool Matches(const Key& key,uint64_t frame)const noexcept {
-        return packet_ && provider_ && epoch_ && frame_ && frame_<=UINT32_MAX && token_==frame_ &&
+        return packet_ && provider_ && epoch_ && outputOwner_ && frame_ && frame_<=UINT32_MAX && token_==frame_ &&
             key_.Known() && key_==key && frame_==frame;
     }
 };
