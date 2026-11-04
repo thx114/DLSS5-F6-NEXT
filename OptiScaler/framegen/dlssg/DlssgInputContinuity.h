@@ -5,6 +5,17 @@
 
 // CPU provenance only. This neither owns GPU resources nor substitutes for their fences.
 namespace dlssg {
+// Exact selected native SR transaction. Identity only; the provider retains
+// list/output COM owners and requires Reset plus its real fence for retirement.
+struct NativeSource
+{
+    uint64_t serial=0, frame=0, generation=0, epoch=0;
+    uint32_t sdkFrame=0;
+    uintptr_t list=0, output=0;
+    explicit operator bool() const noexcept { return serial!=0; }
+    bool operator==(const NativeSource&) const = default;
+};
+
 struct InputOwner
 {
     uintptr_t device = 0, queue = 0;

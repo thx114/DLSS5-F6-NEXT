@@ -1100,9 +1100,8 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
     state.currentFeature = feature;
 
     // Prepare upscaling inputs
-    UpscalerInputsDx12::UpscaleStart(InCmdList, InParameters, feature);
     auto* nativeGuideOwner=dynamic_cast<DLSSG_Dx12*>(state.currentFG);
-    const auto fgSourceSerial=nativeGuideOwner ? nativeGuideOwner->NativeGuideSource(InCmdList) : 0;
+    const auto fgSource=UpscalerInputsDx12::UpscaleStart(InCmdList, InParameters, feature);
     FSR3FG::SetUpscalerInputs(InCmdList, InParameters, feature);
 
     // Evaluate the feature
@@ -1114,8 +1113,14 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
         ScopedSkipHeapCapture skip {};
         evalSuccess = feature->Evaluate(InCmdList, InParameters);
     }
-    if (auto* fg=dynamic_cast<DLSSG_Dx12*>(state.currentFG); fg && fg==nativeGuideOwner && fg->TracksNativeGuides())
-        fg->CompleteNativeGuideSource(InCmdList,fgSourceSerial,evalSuccess);
+    if (fgSource)
+    {
+        ID3D12Resource* actualOutput=nullptr;
+        if (InParameters->Get(NVSDK_NGX_Parameter_Output,&actualOutput)!=NVSDK_NGX_Result_Success)
+            InParameters->Get(NVSDK_NGX_Parameter_Output,(void**)&actualOutput);
+        if (auto* fg=dynamic_cast<DLSSG_Dx12*>(state.currentFG); fg && fg==nativeGuideOwner && fg->TracksNativeGuides())
+            fg->CompleteNativeGuideSource(InCmdList,fgSource,actualOutput,evalSuccess);
+    }
 
     if (!evalSuccess)
     {

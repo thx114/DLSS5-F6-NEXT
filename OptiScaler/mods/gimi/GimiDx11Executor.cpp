@@ -221,7 +221,7 @@ struct PreparedAction
     Action action;
     bool skipRaster = false; // XXMI auto with an empty IB emits no physical draw
     std::uint32_t resource = NoResource;
-    std::uint32_t parameters = 0;
+    std::uint32_t parameters = 0; // exact immutable page at this action/reader
     std::array<std::uint32_t, 4> overlayResources{}; // owning packet indices, including known-null
     std::array<std::uint64_t, D3D11_SO_BUFFER_SLOT_COUNT> streamBytes{};
     std::array<ID3D11RenderTargetView*, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> outputs{};
@@ -1792,6 +1792,11 @@ struct Dx11ExecutionLease::Storage
                                 !pipeline.vertexReplacement->AddedConstantBytes()[slot])))
                             return Fail(Dx11ExecutionError::Unsupported);
                 }
+                // Freeze the whole image at EVERY actual reader, including
+                // the unchanged original draw and POST replacement draws.
+                // SetParameter actions remain fully validated above; only
+                // their redundant physical SRV setters are deferred.
+                prepared.parameters = finalParameters;
                 const bool indexed = original ? r.draw.drawIndexed : a.op != ActionOp::Draw;
                 const auto count = original ? (indexed ? r.draw.indexCount : r.draw.vertexCount) : a.count;
                 if (!VertexTextureMaterials(r) || !PixelMaterials(r) || !OutlineMaterial(r) || !DiffuseMaterial(r) || !PrepareStreams(r, count, indexed, prepared.streamBytes)) return false;
@@ -1930,10 +1935,11 @@ Dx11ExecutionResult Dx11Executor::Execute(const Dx11ExecutionRequest& r) noexcep
         const auto& prepared = work.tape[action]; const auto& a = prepared.action;
         if (!r.owner->Current(r.device, r.context, work.pipeline.epochs) || !r.owner->InternalActive(r.context))
         { successful = false; executionError = Dx11ExecutionError::OwnerChanged; break; }
-        if (work.parameters && !parametersBound)
-            bindParameters(work.initialParameters);
-        if (a.op == ActionOp::SetParameter) bindParameters(prepared.parameters);
-        else if (a.op == ActionOp::ClearTarget)
+        // PrepareTape already validated every scalar transition and retained
+        // every page. Bind the frozen complete image only when a GPU reader
+        // reaches it; PRE/POST writes and restores still commit in full.
+        if (a.op == ActionOp::SetParameter) continue;
+        if (a.op == ActionOp::ClearTarget)
         {
             gpuIssued = true; // before the void clear: partial submission retains real owner
             ClearPrivateTexture(r.context, *work.resources[prepared.resource].ownedTexture);
@@ -2005,6 +2011,7 @@ Dx11ExecutionResult Dx11Executor::Execute(const Dx11ExecutionRequest& r) noexcep
             // This packet is already Reserved with all four SRVs, s0, immutable
             // t120 pages, shaders, OM owners and alias before/after images.
             // Any setter may have reached the driver: no fallback redraw.
+            if (work.parameters) bindParameters(prepared.parameters);
             gpuIssued = true;
             work.BeginOverlay(r.context, prepared);
             const bool before = r.owner->BeforeDraw(r.context, 3, 0, false);
@@ -2022,6 +2029,7 @@ Dx11ExecutionResult Dx11Executor::Execute(const Dx11ExecutionRequest& r) noexcep
                  (a.op == ActionOp::OriginalDrawBoundary && !a.skipOriginal))
         {
             if (prepared.skipRaster) continue;
+            if (work.parameters) bindParameters(prepared.parameters);
             const bool original = a.op == ActionOp::OriginalDrawBoundary;
             const bool indexed = original ? r.draw.drawIndexed : a.op != ActionOp::Draw;
             const bool instanced = original ? r.draw.instanced : a.op == ActionOp::DrawIndexedInstanced;

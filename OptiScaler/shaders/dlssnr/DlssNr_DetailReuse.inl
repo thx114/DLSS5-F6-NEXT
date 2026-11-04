@@ -206,6 +206,13 @@ template <class F> void EachRecording(F&& visit) { orderedHistory.Each(std::forw
 unsigned PendingRecordings() { return orderedHistory.Pending(); }
 HistoryContract publishedContract;
 UINT64 publishedOrdinal = 0, publishedFence = 0, recordingGeneration = 0;
+// A fence value belongs to its published writer, not the next recording's fence.
+Microsoft::WRL::ComPtr<ID3D12Fence> publishedFenceOwner;
+uintptr_t sourceFenceIdentity = 0; // same observation as reuseEvidence.sourceFence/Completed
+const char* historyReadiness = "no-history";
+const char* recordingReadiness = "no-recording";
+// Defined beside Late's private slots in this TU; never resets a borrowed list.
+void RetireCompletedNativeRecordings(const Frame& f);
 ID3D12Device* historyFenceDevice = nullptr; // identity; never retained/dereferenced
 bool historyPublished = false;
 DlssNrCadence::NrCadenceLedger ledger;
@@ -318,6 +325,7 @@ void DiscardTemporalRecording()
 {
     host.DiscardTemporalRecording(); shownValid=false; temporalHistoryQueue=nullptr;
     historyPublished = false;
+    publishedFenceOwner.Reset();
     EachRecording([](TemporalRecording& slot) { slot.publish = false; });
 }
 
@@ -329,6 +337,7 @@ void PublishHistory(TemporalRecording& slot, bool queueOrdered)
             cur = accepted.write; shownValid = accepted.shown;
             publishedContract = accepted.contract; publishedOrdinal = accepted.ordinal;
             publishedFence = accepted.value; publishedQueueOrdered = ordered;
+            publishedFenceOwner = accepted.fence;
             historyPublished = true; temporalHistoryQueue = accepted.queue;
             cadence.Captured(true); // logical publication; never resource retirement
         });
@@ -1008,7 +1017,17 @@ Plan BeforeModel(const Frame& f)
     temporalFusionRecorded = false;
     debugReady = debugReadable = false;
     CollectHistory();
-    const bool orderedAdvance = AdvanceOrderedRecording(f);
+    bool orderedAdvance = AdvanceOrderedRecording(f);
+    // Adjacency/contract changes must not be bypassed to move an old writer.
+    // If that private native generation really finished, its owner can instead
+    // Reset it through the normal hook, then collect the exact completed record.
+    // In-flight or uncertain generations keep their original owners and fences.
+    if (!orderedAdvance && f.orderedNativeQueue && PendingRecordings() != 0)
+    {
+        RetireCompletedNativeRecordings(f);
+        CollectHistory();
+        orderedAdvance = AdvanceOrderedRecording(f);
+    }
     const bool completedRetirements = !orderedAdvance && CompletedPictureRetirements(f);
     const bool recordingAvailable = orderedAdvance || completedRetirements;
     reuseEvidence = {};
@@ -1035,21 +1054,30 @@ Plan BeforeModel(const Frame& f)
     reuseEvidence.sourceFence = publishedFence; // target, not a claimed completion
     reuseEvidence.sourceQueueOrdered = historyPublished && publishedQueueOrdered;
     reuseEvidence.pendingRecordings = PendingRecordings();
-    if (temporalRecording.fence != nullptr)
+    sourceFenceIdentity = historyPublished ? reinterpret_cast<uintptr_t>(publishedFenceOwner.Get()) : 0;
+    if (historyPublished && publishedFenceOwner != nullptr)
     {
-        const auto completed = temporalRecording.fence->GetCompletedValue();
+        const auto completed = publishedFenceOwner->GetCompletedValue();
         if (completed != UINT64_MAX) reuseEvidence.sourceFenceCompleted = completed;
     }
+    historyReadiness = "not-evaluated";
+    recordingReadiness = orderedAdvance ? "ordered-adjacent" :
+        completedRetirements ? "completed-picture-retained" : "available";
     reuseEvidence.slotInFlight = !recordingAvailable && PendingRecordings() != 0 ? 1u : 0u;
     if (!recordingAvailable && PendingRecordings() != 0)
     {
-        bool unknownFence = false;
+        bool unknownFence = false, unsubmitted = false, gpuPending = false;
         EachRecording([&](const TemporalRecording& slot)
         {
             if (!slot.pending) return;
             reuseEvidence.bytes = (std::max)(reuseEvidence.bytes, slot.bytes);
             unknownFence = unknownFence || slot.quarantined || slot.retirementAmbiguous;
+            unsubmitted = unsubmitted || !slot.submitted;
+            gpuPending = gpuPending || (slot.resourceUse && !slot.resourceUse->GpuComplete());
         });
+        recordingReadiness = unknownFence ? "uncertain-owner" : unsubmitted ? "unsubmitted" :
+            gpuPending ? "gpu-pending" : "completed-executable-retained";
+        historyReadiness = "recording-blocked";
         // No shared auxiliary resource is touched while a prior recording is
         // unsubmitted, in flight or quarantined. The ordinary full-model path
         // remains available and uses its existing lifetime management.
@@ -1147,8 +1175,15 @@ Plan BeforeModel(const Frame& f)
     const bool singleSourceStep = f.orderedPictureQueue || f.nativeTemporalRouteRequested;
     const bool matchingOrdinal = publishedOrdinal < f.frameNumber &&
         (!singleSourceStep || f.frameNumber - publishedOrdinal == 1);
-    const bool matchingHistory = historyPublished && matchingOrdinal &&
-        publishedContract == Contract(f) && !f.modelReset;
+    const bool matchingContract = historyPublished && publishedContract == Contract(f);
+    const bool matchingHistory = historyPublished && matchingOrdinal && matchingContract && !f.modelReset;
+    // Observation only: the existing CacheReason also covers ordinal failures.
+    // Keep a genuine source gap distinct from a changed exposure/Look/config key.
+    historyReadiness = f.modelReset ? "reset" : !historyPublished ? "no-history" :
+        !matchingOrdinal ? (publishedOrdinal >= f.frameNumber ? "non-forward-source" : "source-gap") :
+        !matchingContract ? "contract-changed" :
+        publishedQueueOrdered && reuseEvidence.sourceFenceCompleted < publishedFence
+            ? "queue-ordered-gpu-pending" : "completed";
     if (!matchingHistory)
     {
         if (plan.active) reuseEvidence.cacheReason = f.modelReset ? DlssNrCadence::CacheReason::Reset :
@@ -1707,6 +1742,9 @@ void Release()
     publishedGeneration = 0; publishedQueueOrdered = false;
     producerOwners = {}; producerOwnerNext = 0;
     historyPublished = false; publishedOrdinal = publishedFence = 0;
+    publishedFenceOwner.Reset();
+    sourceFenceIdentity = 0;
+    historyReadiness = "no-history"; recordingReadiness = "no-recording";
     publishedContract = {}; temporalHistoryQueue = nullptr;
     historyFenceDevice = nullptr;
     allocationBudget.clear(); budgetDevice = nullptr;

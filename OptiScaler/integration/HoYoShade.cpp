@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <cstring>
 #include <thread>
 #include <vector>
@@ -2077,14 +2078,13 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         // Native BeforeNR 29->28 copies retain encoded values. The existing
         // API20 view pair still follows preset SRGBTexture/SRGBWriteEnabled;
         // source format alone never forces a view or an adapter conversion.
-        {
-            if (endpoint.stage == Stage::BeforeSr) {
-                Selection::RenderScope render(natural.selection, runtime, transaction->runtimeGeneration,
-                    sdkList, target->linear, target->srgb);
-                if (render.Ready()) runtime->render_effects(sdkList, target->linear, target->srgb);
-                result.techniques = render.RecordedTechniques();
-            } else runtime->render_effects(sdkList, target->linear, target->srgb);
-        }
+        std::optional<Selection::RenderScope> selectedRender;
+        if (endpoint.stage == Stage::BeforeSr) {
+            selectedRender.emplace(natural.selection, runtime, transaction->runtimeGeneration,
+                sdkList, target->linear, target->srgb);
+            if (selectedRender->Ready()) runtime->render_effects(sdkList, target->linear, target->srgb);
+            result.techniques = selectedRender->RecordedTechniques();
+        } else runtime->render_effects(sdkList, target->linear, target->srgb);
         if (recordingRevoked()) return retainRevokedRecording();
         if (depthRead) depthRead->End(runtime, sdkList, transaction->lease.NativeList());
         else Depth::Clear(runtime);
@@ -2098,6 +2098,7 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         // Dynamic producer/lease/four-resource checks are repeated at the
         // copyback boundary; only allocation descriptors/COM owners are reused.
         if (!AdmitColor(endpoint, result, immutable)) return retainRevokedRecording();
+        if (selectedRender) result.techniques = selectedRender->RecordedTechniques();
         const bool effectsRecorded = result.techniques != 0 && sourceCurrent();
         if (direct) {
             if (!effectsRecorded) result.techniques = 0;
@@ -2126,6 +2127,9 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
 
         if (selectionDonor && (!sourceCurrent() || !AdmitColor(endpoint, result, immutable)))
             return retainRevokedRecording();
+        if (effectsRecorded && selectedRender && !selectedRender->RecordedTechniques())
+            return retainRevokedRecording();
+        selectedRender.reset(); // witness ends before Submit/update and the natural empty-RTV suppression
         OwnedRuntime::Completion completion;
         const auto submitStatus = transaction->lease.Submit(completion, &ownedDetail);
         const bool unknownDonorCompletion = selectionDonor && submitStatus == OwnedRuntime::Status::Ready &&
@@ -2216,6 +2220,7 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
             }
         }
         result.attempt.state = SubmissionState::Submitted;
+        if (result.techniques && !direct) result.beforeSr.Recorded(endpoint);
         const auto report = Get().executionReports.Next(Diagnostics::ExecutionStream::OwnedSubmit);
         if (report.emit) LOG_INFO("HoYoShade stage owned render submitted report_count={} runtime_generation={} format={} state={} techniques={} fence_value={} effects_executed={} natural_suppressed={}",
             report.count, transaction->runtimeGeneration, static_cast<unsigned>(nativeDesc.Format),
@@ -2969,6 +2974,7 @@ bool OnOwnedStageEffects(reshade::api::effect_runtime* runtime, bool enabled) no
         std::lock_guard lock(Get().executionMutex);
         ObservationSelectionRequested(); // BEFORE request, not acknowledgement of the new state.
         ReportSelectionCallback(runtime, enabled ? "effects-enable-request" : "effects-disable-request");
+        Selection::RenderScope::SelectionRequested(runtime);
         return OwnedStage::EffectsRequested(runtime, enabled);
     }
     catch (...) { return false; }
@@ -2979,6 +2985,7 @@ bool OnOwnedStageTechnique(reshade::api::effect_runtime* runtime, reshade::api::
         std::lock_guard lock(Get().executionMutex);
         ObservationSelectionRequested(); // Old zero-selection Capture cannot be claimed again.
         ReportSelectionCallback(runtime, "selected-technique-request", technique, enabled);
+        Selection::RenderScope::SelectionRequested(runtime);
         OwnedStage::SelectionRequested(runtime);
     }
     catch (...) {}
@@ -2986,7 +2993,12 @@ bool OnOwnedStageTechnique(reshade::api::effect_runtime* runtime, reshade::api::
 }
 bool OnOwnedStageUniform(reshade::api::effect_runtime* runtime, reshade::api::effect_uniform_variable variable, const void*, size_t) noexcept
 {
-    try { std::lock_guard lock(Get().executionMutex); RevokeEnabledObservationDemand(); OwnedStage::UniformRequested(runtime, variable); }
+    try {
+        std::lock_guard lock(Get().executionMutex);
+        RevokeEnabledObservationDemand();
+        Selection::RenderScope::UniformRequested(runtime, variable);
+        OwnedStage::UniformRequested(runtime, variable);
+    }
     catch (...) {}
     return false;
 }

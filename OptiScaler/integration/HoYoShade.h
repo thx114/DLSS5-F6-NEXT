@@ -210,17 +210,44 @@ struct ColorEndpoint
     PhysicalSource physicalSource;
     OutputToken outputToken;
 };
+// Synchronous copyback observation for the next selected SR call. It carries
+// no ownership or GPU-completion authority; the existing owned transaction
+// retains the real inputs and scratch through its own queue/fence retirement.
+struct BeforeSrCopyback
+{
+    ID3D12Resource* color = nullptr;
+    ID3D12CommandQueue* queue = nullptr;
+    uint64_t stream = 0, generation = 0, frame = 0;
+    uint32_t x = 0, y = 0, width = 0, height = 0;
+    D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
+    void Recorded(const ColorEndpoint& e) noexcept
+    {
+        if (e.stage == Stage::BeforeSr)
+            *this = {e.color, e.queue, e.stream, e.generation, e.frame,
+                e.colorX, e.colorY, e.width, e.height, e.state};
+    }
+    bool Matches(const ColorEndpoint& e) const noexcept
+    {
+        return color && queue && e.stage == Stage::BeforeSr && e.stateKnown &&
+            color == e.color && queue == e.queue && stream == e.stream &&
+            generation == e.generation && frame == e.frame &&
+            x == e.colorX && y == e.colorY && width == e.width && height == e.height && state == e.state;
+    }
+};
 struct StageResult
 {
     Reason reason = Reason::Disabled;
     NativeColorAdmission nativeColor = NativeColorAdmission::NotRequested;
     Attempt attempt;
     OwnedRuntime::Completion completion;
+    BeforeSrCopyback beforeSr;
     uint64_t techniques = 0;
     bool depthAvailable = false; // actual owned DEPTH binding reflected by the core
     bool Submitted() const noexcept { return attempt.state == SubmissionState::Submitted; }
     // Execution evidence only. Identity/pass-through techniques need not change pixels.
     bool EffectsExecuted() const noexcept { return Submitted() && techniques != 0; }
+    bool BeforeSrInputMatches(const ColorEndpoint& e) const noexcept
+    { return EffectsExecuted() && beforeSr.Matches(e); }
     // Legacy native scheduling name; never use as pixel-delta acceptance.
     bool PictureChanged() const noexcept { return EffectsExecuted(); }
     bool Uncertain() const noexcept { return attempt.state == SubmissionState::RecordedOrUncertain; }

@@ -157,7 +157,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         dlssg::InputOwner owner {};
         Dx12Resource input {};
         D3D12_RESOURCE_DESC description {};
-        UINT64 frame=0, generation=0;
+        UINT64 frame=0, generation=0, nativeSerial=0;
         bool accepted=false, flipped=false;
     } _guideTags[BUFFER_COUNT][2];
     // Real per-provider/slot scale owners, released only after the existing
@@ -182,16 +182,28 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         Microsoft::WRL::ComPtr<ID3D12CommandList> list, nativeList;
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
         Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-        Microsoft::WRL::ComPtr<ID3D12Resource> depth, motion;
-        UINT64 frame=0, value=0, serial=0, generation=0, epoch=0;
+        Microsoft::WRL::ComPtr<ID3D12Resource> depth, motion, output;
+        dlssg::NativeSource source {};
+        dlssg::InputOwner owner {};
+        FG_Constants settings {};
+        sl::Constants constants {};
+        UINT64 value=0;
         bool closed=false, submitted=false, executing=false, signalled=false, srSucceeded=false, ordered=false;
+        bool dispatched=false, presented=false;
     } _nativeGuideUses[BUFFER_COUNT];
     std::atomic<bool> _nativeGuideTracking{false};
     bool _nativeGuideFailed=false, _nativeGuideHooksRequested=false;
     UINT64 _nativeGuideSubmissions=0, _nativeGuideSerial=0;
+    uint32_t _nativeGuideSdkFrame=0; // Explicit SDK IDs; never adopted from incoming markers.
+    dlssg::NativeSource _nativeGuideDispatch {};
+    bool BuildGuideConstants(int slot, sl::Constants& constants, bool includeCamera);
+    void EvaluateStateLocked(ID3D12Device* device, FG_Constants& fgConstants);
     bool NativeGuideRetired(const NativeGuideUse& use) const;
     bool NativeGuidesRetired() const;
     bool OrderNativeGuides(UINT slot);
+    NativeGuideUse* FindNativeGuideSource(const dlssg::NativeSource& source);
+    bool NativeGuideSourceCurrent(const dlssg::NativeSource& source);
+    bool NativeGuideToken(const dlssg::NativeSource& source, sl::FrameToken*& token);
     UINT64 _depthContractCalls=0, _depthContractLogTick=0;
     unsigned _depthContractRows=0;
     const char* _depthContractStage=nullptr;
@@ -418,6 +430,10 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     // Ordinary selected-SR guides. Genshin cannot enter this API; its sealed
     // FinishedPicture/Present transaction remains the only guide authority.
     bool OwnsUpscalerDepthContract() const;
+    bool OwnsNativeZzzSource() const;
+    FGExecutionGuard BeginNativeUpscalerInputs(ID3D12Device* device, FG_Constants& fgConstants);
+    bool NativeGuidePresentToken(sl::FrameToken*& token, dlssg::NativeSource& source);
+    bool BeginNativeGuidePresent(const dlssg::NativeSource& source);
     bool SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Parameter* parameters,
         ID3D12Resource* depth, ID3D12Resource* motion, UINT width, UINT height, UINT mvWidth, UINT mvHeight,
         D3D12_RESOURCE_STATES depthState, D3D12_RESOURCE_STATES motionState);
@@ -427,8 +443,9 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     void NativeGuidesSubmitting(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
     void NativeGuidesSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
     void NativeGuidesReset(ID3D12CommandList* list);
-    UINT64 NativeGuideSource(ID3D12CommandList* list);
-    void CompleteNativeGuideSource(ID3D12CommandList* list, UINT64 serial, bool succeeded);
+    dlssg::NativeSource NativeGuideSource(ID3D12CommandList* list);
+    void CompleteNativeGuideSource(ID3D12CommandList* list, const dlssg::NativeSource& source,
+        ID3D12Resource* output, bool succeeded);
     bool SetResource(Dx12Resource* inputResource) override final;
     void SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue) override final;
 

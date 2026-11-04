@@ -26,6 +26,7 @@ template <class Record, class Apply>
 bool PublishHistoryRecord(Record& slot, bool queueOrdered, UINT64& publishedGeneration, Apply&& apply)
 {
     if (!slot.publish || slot.quarantined || !slot.resourceUse || slot.resourceUse->quarantined ||
+        !slot.value || slot.value == UINT64_MAX ||
         slot.logicalPublished || slot.generation <= publishedGeneration) return false;
     publishedGeneration = slot.generation;
     slot.logicalPublished = true;
@@ -86,7 +87,7 @@ public:
         DlssNrOrderedReuse::Facts proof;
         proof.localProducer = authenticated && slot.ordered;
         proof.submitted = slot.submitted;
-        proof.signalled = slot.retirementProven && slot.fence && slot.value;
+        proof.signalled = slot.retirementProven && slot.fence && slot.value && slot.value != UINT64_MAX;
         proof.sameQueue = slot.queue == nextQueue && slot.retirementQueue.Get() == nextQueue;
         proof.sameDeviceAndType = SameDevice(slot.commandOwner.Get(), nextQueue) &&
             SameDevice(nextList, nextQueue) && nextQueue && nextList &&
@@ -140,7 +141,8 @@ public:
                 slot.submitted = true;
                 if (repeated && (!slot.retirementProven || slot.retirementQueue.Get() != queue))
                     slot.retirementAmbiguous = true;
-                if (!valid || queue != slot.queue || repeated || !Healthy(slot) || signalValue == UINT64_MAX)
+                // UINT64_MAX is the device-loss sentinel, never a usable signal target.
+                if (!valid || queue != slot.queue || repeated || !Healthy(slot) || signalValue >= UINT64_MAX - 1)
                 {
                     slot.quarantined = true;
                     if (slot.resourceUse) slot.resourceUse->quarantined = true;

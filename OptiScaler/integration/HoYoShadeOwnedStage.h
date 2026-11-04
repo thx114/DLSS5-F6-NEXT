@@ -985,6 +985,7 @@ inline StageResult Render(const ColorEndpoint e, ID3D12Device* device, HMODULE c
         }
         result.depthAvailable = hasDepth && s.depthVerified && !s.depthLost;
         result.techniques = copiedBack ? count : 0;
+        if (result.techniques) result.beforeSr.Recorded(e);
         result.attempt.naturalSuppressed = s.owesRestore;
         result.reason = accepted ? Reason::ExecutionUnverified : Reason::SelectionPending;
         if (accepted && !commit && current()) { s.warmup = {}; s.phase = Phase::Ready; }

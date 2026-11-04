@@ -183,8 +183,11 @@ ParameterDomain ParameterExpression(const Expression& expression, const std::vec
             if (value.bits.empty() && !value.unknown) value.bits.push_back(spec.defaults[token.index]);
             break;
         case ExprOp::Filter: value = filters.For(token.target); break;
-        case ExprOp::InstanceCount: value.bits.push_back(IniParameterBits(1.0f)); break;
-        case ExprOp::FirstInstance: value.bits.push_back(0); break;
+        // Authentic indexed-instanced callers carry arbitrary instance data.
+        // Keep it unknown here; comparisons may still prove a finite result,
+        // but a guessed noninstanced 1/0 must never authorize a reader page.
+        case ExprOp::InstanceCount: case ExprOp::FirstInstance:
+            value.unknown = true; break;
         case ExprOp::DrawType:
             // Exact finite union of the supported authentic physical callers.
             // The runtime still refuses Unknown/inconsistent/unsupported types.
@@ -323,6 +326,18 @@ IniParameterSpec ParameterUsage(const Plan& plan)
         // still feed a finite comparison; it cannot supply a guessed page value.
         if (plan.Variables()[id].persistent) variables[id].unknown = true;
         else variables[id].bits.push_back(IniParameterBits(plan.Variables()[id].initial));
+    }
+    // Key cycles are semantic writers outside the command IR. Include every
+    // declared value before the assignment fixed point, so a later F6/F12 edge
+    // cannot select a value absent from the immutable pages. Conditions never
+    // remove values from the proof. Persistent input remains an open domain.
+    for (const auto& cycle : plan.KeyCycles())
+    {
+        if (cycle.variable >= variables.size())
+            Fail(cycle.source, "Invalid IniParams key-cycle variable", DiagnosticCode::InvalidSyntax);
+        auto& domain = variables[cycle.variable];
+        if (needed[cycle.variable] && !domain.unknown)
+            for (const auto value : cycle.values) AddValue(domain, IniParameterBits(value), cycle.source);
     }
     for (const auto* store : stores)
     {
