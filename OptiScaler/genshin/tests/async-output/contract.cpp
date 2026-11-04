@@ -129,6 +129,33 @@ void BoundedRevealAdmission() {
     window.Release();
     Check(!window.BlocksRaw(601),"no blocked worker survives explicit lifetime revocation");
 }
+void StreamLeaseAcrossSlowSdkCall() {
+    SdkStreamLease lease;
+    Check(!lease.Current(100) && !lease.Accepted(),"no input authority before real entry");
+    Check(!lease.Accept(100,250),"S_OK cannot accept a scope without entry");
+    Check(lease.Begin(100,250),"authenticated SDK entry opens one transaction");
+    Check(!lease.Begin(200,250),"overlapping input cannot replace the open transaction");
+    Check(lease.Current(1000),"slow SDK call outlives display freshness without revocation");
+    Check(!lease.Accepted(),"an open CPU call alone cannot reveal output");
+    Check(lease.Accept(1000,250),"saved SDK S_OK renews the bounded accepted stream");
+    lease.End(true);
+    Check(lease.Current(1249) && !lease.Current(1250),"closed call retains only its accepted freshness bound");
+    Check(lease.Begin(1300,250),"a freshly authenticated dispatch renews the same creation owner");
+    lease.Revoke();
+    Check(!lease.Current(1301) && !lease.Accepted(),"real revocation overrides an in-progress SDK call");
+    Check(!lease.Accept(1302,250),"a late S_OK cannot resurrect the revoked call");
+    lease.End(false);
+    Check(!lease.Current(1303),"late scope destruction cannot resurrect a stream");
+    Check(!lease.Begin(UINT64_MAX-100,250) && !lease.Begin(100,0),"invalid lease bounds cannot grant authority");
+    Check(lease.Begin(1400,250),"new scope may enter after real revocation");
+    lease.End(false);
+    Check(!lease.Current(1401) && !lease.Accept(1401,250),"failed or unwound call leaves neither open entry nor residual authorization");
+    Check(lease.Begin(1500,250) && lease.Accept(1501,250),"next valid SDK call is not permanently refused");
+    lease.End(true);
+    Check(lease.Begin(1600,250) && lease.Accepted(),"next same-stream input retains prior accepted output authority");
+    lease.End(false);
+    Check(!lease.Current(1601) && !lease.Accepted(),"failure after earlier success revokes the whole old stream lease");
+}
 void NativeOnlyReturnedDrain() {
     auto key=Source();
     const auto discard=[&](Lifecycle& life,const Key& candidate) {
@@ -180,6 +207,6 @@ void UnboundScopeRetirement() {
 }
 }
 int main() {
-    SavedSdkInput();ExactPhysicalBinding();BoundedRevealAdmission();NativeOnlyReturnedDrain();UnboundScopeRetirement();
+    SavedSdkInput();ExactPhysicalBinding();BoundedRevealAdmission();StreamLeaseAcrossSlowSdkCall();NativeOnlyReturnedDrain();UnboundScopeRetirement();
     std::printf("async-output CPU contracts: %u checks passed (no GPU/display claim)\n",checks);
 }

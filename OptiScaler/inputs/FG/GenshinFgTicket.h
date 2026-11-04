@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <memory>
 #include <utility>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 
 class DLSSG_Dx12;
 namespace GenshinTransport { class PreparedDepthPacket; }
@@ -88,12 +91,38 @@ public:
         owner_={};device12_=0;physical_={};buffersRetired_=false;return true; // also clears a scope with no raw binding
     }
 };
-// Bounded admission policy only, never a completion proof. The wrapper arms
-// this BETWEEN SDK input transactions for an authenticated pending output.
-// It also blocks new worker raws, allowing the last already-admitted real tail
-// to drain. Repeated owner retries cannot extend the original freshness bound.
+// A real authenticated SDK call may take longer than a display lease. Keep its
+// stream scope alive until that call's postvalidation finishes; elapsed CPU time
+// must not revoke a worker halfway through the call. This proves no GPU work.
+class SdkStreamLease final {
+    uint64_t until_=0;
+    bool open_=false,accepted_=false;
+public:
+    bool Begin(uint64_t now,uint64_t duration) noexcept {
+        if(open_ || !duration || now>UINT64_MAX-duration)return false;
+        open_=true;until_=now+duration;return true;
+    }
+    bool Accept(uint64_t now,uint64_t duration) noexcept {
+        if(!open_ || !duration || now>UINT64_MAX-duration)return false;
+        accepted_=true;until_=now+duration;return true;
+    }
+    void End(bool accepted) noexcept {
+        open_=false;
+        if(!accepted)Revoke();
+    }
+    void Revoke() noexcept {until_=0;open_=accepted_=false;}
+    bool Current(uint64_t now) const noexcept {return until_ && (open_ || now<until_);}
+    bool Accepted() const noexcept {return accepted_;}
+    uint64_t Until() const noexcept {return until_;}
+};
+// The wrapper pauses NEW INPUTS between SDK calls to let an output tail drain.
+// Already scheduled worker raws must wait for that owner handoff, not return a
+// synthetic DXGI error: Streamline defers that error to the next host Present,
+// which correctly tears down the provider. Neither a wake nor a deadline proves
+// GPU completion; callers recheck the original stream/queue/fence identities.
 class OutputRevealWindow final {
     uint64_t sequence_=0,until_=0;
+    std::condition_variable_any ownerChanged_;
 public:
     bool Hold(uint64_t sequence,uint64_t now,uint64_t outputUntil,uint64_t inputUntil) noexcept {
         if(!sequence)return false;
@@ -103,7 +132,16 @@ public:
         return BlocksRaw(now);
     }
     bool BlocksRaw(uint64_t now) const noexcept {return sequence_ && now<until_;}
-    void Release() noexcept {sequence_=until_=0;}
+    uint64_t Remaining(uint64_t now) const noexcept {return BlocksRaw(now)?until_-now:0;}
+    template<class Mutex,class Ready>
+    bool AwaitOwner(std::unique_lock<Mutex>& lock,uint64_t budgetMs,Ready ready) noexcept {
+        // A recursive mutex must be held exactly once here. Bind's two callers
+        // have returned from all recursive helpers before entering this wait.
+        try{return ownerChanged_.wait_for(lock,std::chrono::milliseconds(budgetMs),std::move(ready));}
+        catch(...){return false;} // no exception may escape the SDK Present hook
+    }
+    void OwnerChanged() noexcept {ownerChanged_.notify_all();}
+    void Release() noexcept {sequence_=until_=0;OwnerChanged();}
 };
 // CPU source identity only. The real provider seals it after the SDK accepts
 // constants with this exact FrameToken value. It keeps the immutable packet;

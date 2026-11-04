@@ -113,4 +113,54 @@ check("bool ready=streamTail.Complete()" in child,
       "CPU inFlight clearing still cannot substitute for GPU completion")
 check("revealWindow.BlocksRaw(GetTickCount64())" in child,
       "new worker raw remains bounded by the real admission window")
+bind = child[child.index("bool Bind(IDXGISwapChain3*"):child.index("bool HiddenOnly()")]
+check('return refuse("OwnerRevealDrainPending")' not in bind,
+      "ordinary owner reveal cannot inject a deferred SDK Present error")
+check("revealWindow.AwaitOwner(display,budget" in bind and
+      "revealWindow.Remaining(GetTickCount64())" in bind,
+      "queued worker waits outside the display lock only until the original reveal deadline")
+check("gate->owner->OnOwnerThread())gate->revealWindow.Release()" in bind,
+      "synchronous raw cannot wait on its own HWND owner stack")
+check("revealWindow.AwaitOwner(display,HandoffBudget()" in bind and
+      "gate->hiddenAcknowledged" in bind,
+      "source-less raw waits for actual bounded hidden publication")
+check("handoffUntil_=GetTickCount64()+LeaseMs" in bind and
+      "(std::min)(HandoffBudget(),gate->revealWindow.Remaining(" in bind,
+      "one raw shares its scheduling budget across lock, reveal, and hide")
+for witness in ("PhysicalWindowLifetimeChangedAfterHandoff", "SdkOutputOwnerMismatchAfterHandoff",
+                "PhysicalWindowLifetimeChangedAfterHide", "SdkOutputOwnerMismatchAfterHide",
+                "gate->binding.BindPhysical(outputOwner,content_.Identity())",
+                "gate->inputLease.Current(GetTickCount64())"):
+    check(witness in bind, f"post-wait admission retains real authority: {witness}")
+arm = child[child.index("bool ArmStream()"):child.index("PresentPermit(const PresentPermit&)")]
+check(arm.index("source_!=owner_.parentContent_") < arm.index("gate.inputLease.Begin("),
+      "only the exact fresh dispatch/parent may open or renew a stream lease")
+accept = child[child.index("bool AcceptStream()"):child.index("class PhysicalOutput final")]
+check("actualResult_!=S_OK" in accept and "gate.inputLease.Accept(" in accept,
+      "acceptance still requires saved original SDK S_OK")
+cleanup = child[child.index("~PresentPermit()"):child.index("~GenshinVisibleChild()")]
+check("inputLease.End(accepted)" in cleanup,
+      "open SDK authorization ends at the actual scope lifetime")
+check("streamLive==streamScope_" in cleanup and "owner_.Epoch()==epoch_ && (!streamScope_ || sameScope)" in cleanup,
+      "late old-scope cleanup cannot close or hide a replacement epoch")
+endpoint = read("OptiScaler/framegen/FinalOutputEndpoint.cpp")
+check(endpoint.count("physical.Bind(") == 1 and
+      endpoint.index("physical.Bind(") < endpoint.index("const auto actualPresent="),
+      "only endpoint admission calls Bind before any raw Present callback")
+check(bind.count("std::unique_lock display(") == 1 and bind.count("revealWindow.AwaitOwner(") == 2,
+      "both waits share the sole depth-one Bind lock")
+for owner_method in ("void OwnerCommand()", "void Hide()", "void ExpireVisibleOutput()", "bool ApplyShow("):
+    start = child.index(owner_method)
+    end = child.index("\n    }",start)
+    check("AwaitOwner(" not in child[start:end] and "PresentGenshin(" not in child[start:end],
+          f"window owner does not recursively enter a waiting SDK raw: {owner_method}")
+expiry = child[child.index("void ExpireVisibleOutput()"):child.index("void Invalidate()")]
+check("ShowWindow(child_,SW_HIDE)" in expiry and "Publish(true)" in expiry,
+      "expired visible output still hides and publishes actual HWND state")
+check("inputLease.Current(" in expiry and "RevokeStream()" not in expiry and "BumpEpoch()" not in expiry,
+      "fresh input owner survives output-only expiry; true expiry still calls normal Hide")
+check(expiry.index("PhysicalContent discard") < expiry.index("std::lock_guard display"),
+      "output-only expiry releases discarded COM observations after display unlock")
+check("display_->revealWindow.OwnerChanged()" in child,
+      "real owner snapshot publication wakes asynchronous hide waiters")
 print(f"PASS {checks} production wiring checks (no compile/GPU/display claim)")
