@@ -16,6 +16,8 @@ ZZZ PID61120 日志已保护到 `build/zzz-61120-OptiScaler.log`。已核本项�
 
 ZZZ 复测 PID **33548**：launch-only CLI exit 0，经启动器自身 UAC 中继注入，日志确认载入 **`ed7e598`**。用户实测明确反馈“无 F6 的 DLSS 输入，无 FG/NR”；本局也没有项目 NGX Create/Evaluate、NR cadence 或 native FG producer 收据，不能以游戏 Streamline Evaluate/Present 冒验收。启动早期日志确认 `sl.dlss.dll`、`nvngx.dll` 已在内存；现有预载 NGX 接入仅 detour GetFeatureRequirements，未接管 Create/Evaluate。Sol 正在独立 `zzz-input-route` 工作树修复输入接入及原生调用/句柄归属。PID33548 已退出，Lead 未发送 stop，退出原因 UNKNOWN；全日志已保护到本工作树 `build/zzz-33548-OptiScaler.log`。
 
+独立审阅确认原神游戏 Reflex marker 分支会把缺失的本地 marker 编码成 0，导致成功 Dispatch 的 SDK 输入收据被拒；已扩原写者范围到 `FG_Hooks.cpp` / `GenshinBridge_Present_Dx12.h` 修复，未集成。NR 写者已给出完整 pass 链历史候选，Lead 用 MSVC 14.44 / C++20 / O2 独立运行 `dlssnr/tests/nr_model_chain_history.cpp`，**exit 0 / 74 checks PASS**；该结果只覆盖 CPU cadence 与完整链判定，不证明 GPU、画面或性能。NR 候选仍在独立审阅，等待最终提交。
+
 以下保留暂停前的阶段记录。当前执行状态以上文为准；历史提交与测试的最终边界以 [HANDOFF.md](../HANDOFF.md) 为准。
 
 当前优先级：**F6 开发 → 部署 → 测试**。SSE 解析错误调查按用户指示暂停；诊断副本在 `build/dsh-diagnostics/`，没有修改运行中的 DSH 安装包。
