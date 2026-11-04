@@ -680,7 +680,8 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
     if (NullFrameToken(frame, __FUNCTION__, nullTokenLogged))
         return o_slEvaluateFeature(feature, frame, inputs, numInputs, cmdBuffer);
 
-    LOG_DEBUG("frameIndex: {}", static_cast<uint32_t>(frame));
+    LOG_DEBUG("frameIndex: {}, feature: {}, inputCount: {}", static_cast<uint32_t>(frame),
+              static_cast<uint32_t>(feature), numInputs);
 
     if (State::Instance().activeFgInput == FGInput::DLSSG && numInputs > 0 && inputs != nullptr)
     {
