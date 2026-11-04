@@ -13,6 +13,7 @@
 #include <mutex>
 #include <array>
 #include <wrl/client.h>
+#include <inputs/FG/GenshinFgTicket.h>
 #pragma comment(lib, "comctl32.lib")
 
 // R564 bounded owner: only same-process, top-level windowed parent and
@@ -34,6 +35,14 @@ public:
                 deviceEpoch && ownerEpoch && configEpoch && instance && generation && picture &&
                 submit && copy && thread;
         }
+        bool Matches(const GenshinBridgeFg::Key& k) const noexcept {
+            return Known() && k.Known() && device11==k.device && context11==k.context && native==k.swapchain &&
+                backbuffer==k.backbuffer && selected==k.selected && deviceEpoch==k.deviceEpoch &&
+                ownerEpoch==k.ownerEpoch && configEpoch==k.configEpoch && historyEpoch==k.historyEpoch &&
+                instance==k.instance && generation==k.generation && sourceFrame==k.sourceFrame &&
+                picture==k.picture && present==k.present && submit==k.submitSerial && copy==k.copyOrderedSerial &&
+                thread==k.thread && subresource==k.selectedSubresource;
+        }
         bool operator==(const ContentSource& b) const noexcept {
             return std::tie(device11,context11,device12,native,backbuffer,selected,deviceEpoch,ownerEpoch,
                 configEpoch,historyEpoch,instance,generation,sourceFrame,picture,present,submit,copy,thread,subresource)==
@@ -44,6 +53,7 @@ public:
 private:
     struct PhysicalContent {
         ContentSource source{};
+        std::shared_ptr<const GenshinBridgeFg::SdkInputSource> inputSource;
         uint64_t epoch=0,stream=0,outputGeneration=0,sequence=0,value=0;
         UINT index=0,rawFlags=0;
         bool primed=false; // hidden RESTART requested, not a DWM/pixel witness
@@ -592,6 +602,7 @@ public:
         GenshinVisibleChild& owner_;
         IDXGISwapChain* swapchain_;
         ContentSource source_;
+        std::shared_ptr<const GenshinBridgeFg::SdkInputSource> sdkSource_;
         uint64_t epoch_;
         bool eligible_,armed_=false,called_=false,committed_=false,continuityAccepted_=false;
         bool sdkEntered_=false,physicalFailed_=false,physicalRawFailed_=false,physicalTailFailed_=false;
@@ -613,10 +624,11 @@ public:
     public:
         PresentPermit(const PresentPermit&)=delete;
         PresentPermit& operator=(const PresentPermit&)=delete;
-        static void BeforePresent(IDXGISwapChain* sc,bool authenticatedDispatch) noexcept {
+        static void BeforePresent(IDXGISwapChain* sc,std::shared_ptr<const GenshinBridgeFg::SdkInputSource> source) noexcept {
             auto* p=current_;
             if(!p || !p->eligible_ || !Key(sc) || Key(sc)!=Key(p->swapchain_))return;
-            p->armed_=authenticatedDispatch && p->owner_.Epoch()==p->epoch_;
+            p->sdkSource_=std::move(source);
+            p->armed_=p->sdkSource_ && p->source_.Matches(p->sdkSource_->Identity()) && p->owner_.Epoch()==p->epoch_;
             p->sdkEntered_=true; // actual SDK entry includes startup/paused; it is NOT display authority
             if(!p->armed_)p->owner_.Hide();
         }
@@ -689,8 +701,10 @@ public:
                     p->source_.thread==GetCurrentThreadId() && p->owner_.display_==gate &&
                     Key(device.Get())==p->source_.device12;
                 if(authenticated) {
+                    authenticated=p->sdkSource_ && p->source_.Matches(p->sdkSource_->Identity()) &&
+                        d.BufferDesc.Width==p->sdkSource_->Identity().width && d.BufferDesc.Height==p->sdkSource_->Identity().height;
                     std::lock_guard lock(p->owner_.snapshotMutex_);
-                    authenticated=p->epoch_==p->owner_.epoch_.load() && !p->owner_.hideRequested_.load() &&
+                    authenticated=authenticated && p->epoch_==p->owner_.epoch_.load() && !p->owner_.hideRequested_.load() &&
                         p->source_==p->owner_.parentContent_;
                 }
                 content_.stream=stream;content_.outputGeneration=generation;content_.sequence=sequence;content_.index=index;

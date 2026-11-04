@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <cstdint>
+#include <memory>
+#include <utility>
+
+class DLSSG_Dx12;
+namespace GenshinTransport { class PreparedDepthPacket; }
 
 namespace GenshinBridgeFg {
 // Scalar ordering only. The GPU adapter owns/authenticates all resources and
@@ -32,6 +37,28 @@ struct Key {
             a.width==b.width && a.height==b.height && a.selectedSubresource==b.selectedSubresource;
     }
 };
+// CPU source identity only. The real provider seals it before tagging this
+// input. It keeps the shared immutable source packet, never a global/latest
+// token. SDK acceptance, GPU retirement and physical output are separate facts.
+// An async raw call still needs a documented callback carrying THIS receipt;
+// neither an input fence nor an NVAPI present counter can select it.
+class SdkInputSource final {
+    friend class ::DLSSG_Dx12;
+    const Key key_;
+    const uint64_t frame_,provider_,epoch_;
+    const std::shared_ptr<const GenshinTransport::PreparedDepthPacket> packet_;
+    SdkInputSource(const Key& key,uint64_t frame,uint64_t provider,uint64_t epoch,
+        std::shared_ptr<const GenshinTransport::PreparedDepthPacket> packet)
+        :key_(key),frame_(frame),provider_(provider),epoch_(epoch),packet_(std::move(packet)){}
+public:
+    const Key& Identity()const noexcept{return key_;}
+    uint64_t SdkFrame()const noexcept{return frame_;}
+    const auto& Packet()const noexcept{return packet_;}
+    bool Matches(const Key& key,uint64_t frame)const noexcept {
+        return packet_ && provider_ && epoch_ && frame_ && frame_<=UINT32_MAX &&
+            key_.Known() && key_==key && frame_==frame;
+    }
+};
 // Provider-history policy is independent of HWND visibility. An ordinary
 // ineligible frame cannot certify continuity and cannot erase the last real
 // submission. Once a NEW fully authenticated current frame is available, a
@@ -44,7 +71,7 @@ inline ContinuityAction DecideContinuity(bool known,bool continues,bool /*resetR
     if(!known)return ContinuityAction::Seed;
     return ContinuityAction::Reset;
 }
-enum class Phase : unsigned char { Empty, Recorded, Returned, Copied, Tagged, Dispatched, Presented, Revoked };
+enum class Phase : unsigned char { Empty, Recorded, Returned, Copied, Tagged, Dispatched, InputAccepted, Revoked };
 class Lifecycle final {
     Key key_{};
     Phase phase_=Phase::Empty;
@@ -56,7 +83,7 @@ public:
     bool Advance(const Key& key,Phase from,Phase to) noexcept {
         const bool edge=(from==Phase::Recorded && to==Phase::Returned) ||
             (from==Phase::Returned && to==Phase::Copied) || (from==Phase::Copied && to==Phase::Tagged) ||
-            (from==Phase::Tagged && to==Phase::Dispatched) || (from==Phase::Dispatched && to==Phase::Presented);
+            (from==Phase::Tagged && to==Phase::Dispatched) || (from==Phase::Dispatched && to==Phase::InputAccepted);
         if(!edge || phase_!=from || key!=key_)return false;
         phase_=to;return true;
     }

@@ -713,6 +713,9 @@ public:
             ++p.reservations;p.bytes+=bytes;s.reserved=true;}
         s.ticket=scope->ticket;s.producer=std::move(producer);s.origin=offer.Transfer();s.device=device;s.producerQueue=queue;s.producerList=cmd;
         s.gameMotion=gameMotion;
+        const auto& packet=s.ticket.depth.preparedPacket;
+        if(!packet || packet->Transfer()!=s.origin || !packet->Matches(s.producer->Guides()->Get()) ||
+           !s.ticket.depth.nativeGuide || s.ticket.depth.nativeGuide->preparedSource!=packet->Source())return {};
         s.sourceDepth=nativeFrame.depth;s.sourceMotion=nativeFrame.motion;s.constants=camera.constants;s.cameraLineage=camera;
         s.pictureKind=scope->FgKind();
         s.guideEpoch=nativeFrame.guideEpoch;s.guideCutSerial=nativeFrame.guideCutSerial;
@@ -749,6 +752,7 @@ public:
         auto guides=std::shared_ptr<DLSSG_Dx12::GenshinNormalizedGuides>(
             new DLSSG_Dx12::GenshinNormalizedGuides(*provider));
         guides->key=MakeKey(s.ticket);guides->swapchain=offer.providerSwapchain;
+        guides->privateOutput=s.ticket.source.privateOutput;guides->preparedPacket=packet;
         guides->guideEpoch=s.guideEpoch;guides->guideCutSerial=s.guideCutSerial;
         guides->device=device;guides->producerQueue=queue;
         guides->depth=s.depth;guides->motion=s.motion;guides->constants=s.constants;
@@ -808,6 +812,9 @@ class PresentScope final {
     bool waited_=false,attempted_=false,dispatched_=false,nativeObserved_=false;
     bool prepared_=false,presented_=false,closed_=false,nativeProcessed_=false;
     uint64_t providerFrame_=0;
+    std::shared_ptr<const SdkInputSource> sdkSource_;
+    bool sdkEntered_=false,sdkReturned_=false;
+    HRESULT sdkResult_=E_PENDING;
     Key repeatedPicture_{}; // no resources and no permission to dispatch
     bool MatchesPresentedPicture(const Key& key) const noexcept {
         const auto provider=reinterpret_cast<uintptr_t>(static_cast<IFGFeature_Dx12*>(provider_));
@@ -1271,6 +1278,23 @@ public:
         const bool submitted=current_ && current_->TryPresent(current_->finished_?*current_->finished_:outcome);
         if(!submitted)Skip(); // no old On/options may consume a missing current frame
         return submitted;
+    }
+    std::shared_ptr<const SdkInputSource> InputSource() const noexcept {
+        if(current_!=this || GetCurrentThreadId()!=thread_ || presented_ || !dispatched_ || !frame_ ||
+           frame_->lifecycle.State()!=Phase::Dispatched || !frame_->providerRetirement ||
+           State::Instance().currentFG!=provider_ ||
+           !provider_->GenshinSourceCurrent(frame_->providerRetirement,MakeKey(frame_->ticket),providerFrame_))return {};
+        const auto& source=frame_->providerRetirement->Source();
+        return source && source->Packet()==frame_->ticket.depth.preparedPacket ? source : nullptr;
+    }
+    std::shared_ptr<const SdkInputSource> EnterSdkPresent(IDXGISwapChain* sc) noexcept {
+        if(sdkEntered_ || sdkReturned_ || Identity(sc)!=Identity(swapchain_.Get()))return {};
+        sdkSource_=InputSource();sdkEntered_=bool(sdkSource_);return sdkSource_;
+    }
+    void ReturnSdkPresent(IDXGISwapChain* sc,HRESULT result) noexcept {
+        if(current_!=this || GetCurrentThreadId()!=thread_ || !sdkEntered_ || sdkReturned_ ||
+           Identity(sc)!=Identity(swapchain_.Get()))return;
+        sdkEntered_=false;sdkReturned_=true;sdkResult_=result; // saved original SDK HRESULT only
     }
     void Presented(HRESULT result,bool continuityValid=true,bool sdkReturned=false) noexcept {
         if(presented_)return;

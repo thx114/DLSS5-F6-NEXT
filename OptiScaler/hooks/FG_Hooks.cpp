@@ -2099,11 +2099,11 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         starRailSdkContext.attribution.sync=SyncInterval;starRailSdkContext.attribution.flags=Flags;
     }
     if(willPresent && genshinDlssg) {
-        const auto* current=GenshinBridgeFg::PresentScope::Current();
-        // No pre-Present HWND reveal. This exact SDK call is the only supported
-        // source association for its nested actual physical outputs.
+        auto* current=GenshinBridgeFg::PresentScope::Current();
+        // Seal this exact source at the real SDK call. A worker without a
+        // documented source callback still cannot inherit this stack scope.
         GenshinVisibleChild::PresentPermit::BeforePresent(This,
-            current && current->LastResult()==GenshinBridgeFg::Result::Submitted);
+            current ? current->EnterSdkPresent(This) : nullptr);
     }
     GenshinHookCpuTiming::Scope sdkPresentTiming(GenshinHookCpuTiming::Stage::FgSdkPresent,
                                                collectStarRailPacing && !starRailSourceFailed);
@@ -2121,7 +2121,10 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         GenshinHookCpuTiming::RecordStarRailCall(GenshinHookCpuTiming::StarRailCall::SdkPresent,starRailSdkContext.attribution,starRailSdkWall);
     }
 
-    if (willPresent && genshinDlssg) GenshinVisibleChild::PresentPermit::AfterPresent(This, result);
+    if (willPresent && genshinDlssg) {
+        if(auto* current=GenshinBridgeFg::PresentScope::Current())current->ReturnSdkPresent(This,result);
+        GenshinVisibleChild::PresentPermit::AfterPresent(This, result);
+    }
     if(genshinSdkTransaction){
         genshinReflex.afterOwner=fg && state.currentFG==fg;
         genshinReflex.afterActive=fgPacingActive();

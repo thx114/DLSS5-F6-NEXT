@@ -32,6 +32,8 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         GenshinNormalizedGuides& operator=(const GenshinNormalizedGuides&) = delete;
         UINT64 owner=0,swapchain=0,guideEpoch=0,guideCutSerial=0;
         GenshinBridgeFg::Key key{};
+        uint64_t privateOutput=0;
+        std::shared_ptr<const GenshinTransport::PreparedDepthPacket> preparedPacket;
         Microsoft::WRL::ComPtr<ID3D12Device> device;
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> producerQueue;
         Microsoft::WRL::ComPtr<ID3D12Resource> depth,motion;
@@ -75,6 +77,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         // Retain the exact immutable guide allocations through vendor retirement,
         // including partial tag acceptance and uncertain/failed Present paths.
         std::shared_ptr<const GenshinNormalizedGuides> guides;
+        std::shared_ptr<const GenshinBridgeFg::SdkInputSource> source;
         // Separate from the immutable vendor receipt. Only the real post-Present
         // Signal(value) on the accepted blocking presenting queue may establish this.
         bool presentingQueueRetirement=false;
@@ -83,6 +86,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         std::atomic<bool> retired{false};
       public:
         bool Retired() const noexcept {return retired.load(std::memory_order_acquire);}
+        const auto& Source() const noexcept {return source;} // identity, never completion
     };
   private:
     // Exact frame-scoped camera observations for the Genshin adapter only.
@@ -395,6 +399,8 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     std::shared_ptr<const GenshinInputRetirement> SetGenshinConstants(
         const std::shared_ptr<const GenshinNormalizedGuides>& guides, const GenshinBridgeFg::Key& key,
         UINT64 frame, bool reset);
+    bool GenshinSourceCurrent(const std::shared_ptr<const GenshinInputRetirement>& receipt,
+        const GenshinBridgeFg::Key& key, UINT64 frame);
     // Publishes a sealed receipt before the first Wait, including partial failure.
     bool WaitGenshinInputs(ID3D12Device* device, IDXGISwapChain* swapchain, ID3D12CommandQueue* queue,
         ID3D12Fence* produced, UINT64 producedValue, ID3D12Fence* copied, UINT64 copiedValue,
