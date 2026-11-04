@@ -1,4 +1,16 @@
-# tools/runtime — 精确游戏入场 helper（已迁移，未运行）
+# tools/runtime
+
+`Deploy-F6.ps1` 将已构建 DLL 流写到正式文件原对象，保留 runtime hardlink，并备份原字节；构建、部署和实际游戏验收分别记录。
+
+`Get-F6RunEvidence.ps1` 从已关闭或保存的日志提取版本、PID、NR cadence、FG 深度标签、ZZZ SDK source 及实际 GPU 完成字段。它拒绝版本/PID 不符及读取期间变化的文件，输出保留原行号和最后若干样本。计数均为日志行数；Streamline Evaluate 不证明 F6 输入，queue-ordered history 不等于 GPU 完成，interval 不可相加。画面与性能验收另行进行。
+
+```powershell
+pwsh -NoProfile -File ./tools/runtime/Get-F6RunEvidence.ps1 `
+  -Log ./build/starrail-27252-OptiScaler.log -ExpectedPid 27252 -ExpectedCommit 0613134 `
+  -Output ./build/starrail-27252-evidence.json
+```
+
+## 精确入场 helper 的迁移记录与限制
 
 从启动器仓库机械迁移的两个文件，**只做参数与语法验证，未执行**：
 
