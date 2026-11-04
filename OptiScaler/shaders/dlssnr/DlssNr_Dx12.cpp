@@ -5751,6 +5751,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if(!reused)GenshinSubstage::Event(GenshinSubstage::Stage::NrExecute,GenshinSubstage::State::Running);
     static_assert(DlssNr::MaxPassCount == DlssNrSceneCut::SubmissionReceipts::kPasses);
     const auto sceneCutAttempt = SceneCut::BeginModelAttempt(reused ? 0u : effectivePasses, false);
+    unsigned completedModelPasses = 0;
     for (unsigned int pass = 0; !reused && pass < effectivePasses && result == NVSDK_NGX_Result_Success;
          ++pass)
     {
@@ -5914,6 +5915,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             }
         }
 
+        ++completedModelPasses;
         if (pass + 1 < effectivePasses)
         {
             // passClampScratch2 is only allocated when the base clamp buffer (passClampScratch) is,
@@ -5991,10 +5993,15 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         g_ngxTime->End(cmdList);
     modelCpu.Stop();
 
+    // A failed interpass clamp may leave a displayable successful prefix. Its
+    // detail is not the full chain named by reuseFrame.revision/Contract(f), so
+    // neither feedback nor skipped-model history may capture that prefix.
+    const bool historyAnswerComplete = DlssNrDetailReuse::HistoryAnswerComplete(
+        result == NVSDK_NGX_Result_Success, reused, effectivePasses, completedModelPasses);
     // Steady a full frame's answer and save this frame's history (DlssNr_DetailReuse.inl).
     {
         DlssNrCadence::StageScope afterCpu(DetailReuse::ledger, DlssNrCadence::Stage::ReuseAfter, cadenceIdentity);
-        DetailReuse::AfterModel(reuseFrame, reusePlan, result == NVSDK_NGX_Result_Success, finalAnswer);
+        DetailReuse::AfterModel(reuseFrame, reusePlan, historyAnswerComplete, finalAnswer);
     }
 
     g_nr.reset = false;
@@ -6594,7 +6601,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     "feedbackRequested={} feedbackMode={} guideGate={} producerDepthGuides={} producerFlowGuides={} feedbackActive={} feedbackHistoryUsable={} feedbackFusionRecorded={} feedbackDurationMs={} feedbackCoeff={} feedbackMaxAgeMs={} feedbackStrengthLimit={} feedbackReset={} feedbackDepth={} completedRetirementsOnly={} "
                     "sceneModelGuides={} sceneModelMotion={} conditionalSceneGeometry={} sceneSource={} sceneGuideGate={} guideMappingVersion=1 "
                     "modelMode={} modelDispatch={} modelCallsThisDispatch={} modelFailuresThisDispatch={} "
-                    "modelLastPass={} modelLastResult={} modelOutcome={} modelDepth=0x{:x} modelMV=0x{:x} "
+                    "modelLastPass={} modelLastResult={} modelOutcome={} modelPassesCompleted={} modelPassesPlanned={} historyAnswerComplete={} modelDepth=0x{:x} modelMV=0x{:x} "
                     "modelDepthRect={},{}+{}x{} modelMVRect={},{}+{}x{} modelSize={}x{} "
                     "modelInput_scope=last_actual_evaluate_this_dispatch modelGpuComplete=UNKNOWN "
                     "sr_to_backbuffer_pixels=UNKNOWN presented=UNKNOWN queueWait=UNKNOWN gpuExclusive=UNKNOWN exportLine={}/64",
@@ -6647,6 +6654,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     modelInputSample.dispatch, modelInputSample.calls, modelInputSample.failures,
                     modelInputSample.lastPass, modelInputSample.lastResult,
                     !modelInputSample.calls ? "not-called" : modelInputSample.failures ? "failure" : "success",
+                    completedModelPasses, effectivePasses, historyAnswerComplete,
                     modelInputSample.depth, modelInputSample.motion,
                     modelInputSample.calls ? evalDepthX : 0u, modelInputSample.calls ? evalDepthY : 0u,
                     modelInputSample.calls ? evalGuideW : 0u, modelInputSample.calls ? evalGuideH : 0u,

@@ -47,6 +47,15 @@ enum class Kind
     Reuse, // skip the model; input + reprojected saved detail
 };
 
+// A displayable prefix cannot seed the history keyed to the planned full chain.
+// Count a pass only after its model and selected layer Look both record successfully.
+// Reused answers already passed the backend's exact history contract. This is
+// recording evidence only; publication and retirement still require their GPU owners.
+constexpr bool HistoryAnswerComplete(bool succeeded, bool reused, unsigned plannedPasses, unsigned completedPasses)
+{
+    return succeeded && plannedPasses != 0 && (reused || completedPasses == plannedPasses);
+}
+
 // What the caller knows about this frame.
 struct FrameFacts
 {
