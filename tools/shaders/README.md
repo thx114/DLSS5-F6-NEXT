@@ -36,7 +36,7 @@ python "D:\CODE\DLSS5_NEXT\tools\shaders\regenerate-look-shaders.py" `
 
 - `py_compile` 语法通过；`--help` 正常输出。
 - 五条错误路径均按要求拒绝且**零写入**（`build/shaders` 目录根本没有被创建）：旧根 `--source`、`--evidence` 指向根本身、`--evidence` 越界、`--cleanup` 越界、相对路径。
-- 未运行成功路径：它会**原地改写产品源码的两个内嵌头**并写备份，属产品改动，需要单独授权与构建验证。
+- 未运行成功路径：它会**原地改写产品源码的两个内嵌头**并写备份；实际再生成后需要重新构建和验证。
 
 脚本自带的 `status` 语义不变：成功也只到 `SHADERS_GENERATED_ONLY`（`targetedCompile/fullBuild/dllBuild = NOT_RUN`、`deployed=false`），不等于构建、部署或画面验收。
 
