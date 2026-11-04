@@ -5455,8 +5455,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         reuseFrame.temporalQueue = DlssNrGpuLifetime::SelectProducerQueue(reuseFrame.orderedPictureQueue,
             reuseFrame.temporalQueue, DetailReuse::ProvenProducerQueue(cmdList, reuseFrame.temporalQueue));
     // The StarRail endpoint records its own independent list, then executes it on
-    // this same actual queue. Authenticate the native capture/guide receipt here;
-    // a queue hint or an unqualified ZZZ fresh-colour fallback cannot mint this.
+    // this same actual queue. Resolve authenticates the CURRENT consumer guides,
+    // after row normalization and vector decoding. The producer's aggregate
+    // NativeGuideContractVerified predates those operations and rejects manual
+    // row/sign controls even when Resolve proves their actual normalized result.
+    // Keep exact capture/endpoint identity; a queue hint or fresh-colour fallback
+    // cannot grant ordered publication. Physical owners still retire on real fences.
     auto* nativeEndpointQueue = timingQueue;
     if (reuseFrame.nativeTemporalRouteRequested && nativeEndpointQueue != nullptr)
     {
@@ -5465,7 +5469,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             nativeEndpointQueue = realEndpointQueue;
     }
     reuseFrame.orderedNativeQueue = reuseFrame.nativeTemporalRouteRequested &&
-        frame.IndependentCommands && frame.NativeGuideContractVerified && nativePhase.verified &&
+        frame.IndependentCommands && nativePhase.verified &&
+        frame.SourceCaptureSerial != 0 && frame.SourceCaptureSerial != UINT64_MAX &&
+        frame.SourceCaptureEpoch != 0 && frame.SourceCaptureEpoch != UINT64_MAX &&
         reuseFrame.baseIdentityVerified && reuseFrame.currentDepthVerified && !frame.FreshColorResetFallback &&
         reuseFrame.temporalQueue != nullptr && nativeEndpointQueue == reuseFrame.temporalQueue && !vulkanGame;
     reuseFrame.nativeGuidePhaseVerified = nativePhase.verified;
@@ -6584,6 +6590,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 const auto& account = DetailReuse::ledger;
                 const auto& reuse = DetailReuse::reuseEvidence;
                 LOG_INFO("DLSS-NR cadence recorded owner=0x{:x} config={} picture={} dispatch={} queue=0x{:x} list=0x{:x} listGen={} modelCalls={} modelFailures={} reuseFull={} reuseAccepted={} reuseRefused={} requested={} intervalUsed={} cacheReason={} sourceOrdinal={} sourceFenceTarget={} sourceFenceCompleted={} sourceQueueOrdered={} pendingRecordings={} targetFence={} slotInFlight={} bytesUpperBound={} exposureUnknown={} fenceUnknown={} slotBusy={} byteCap={} gpuCompletionSamples={} colourSize={}x{} workSize={}x{} motionRect={},{}+{}x{} modelMvScale={},{} reuseMvScale={},{} coordinateKey={} motionIsPictureFlow={} nativePhaseVerified={} historyReadSlot={} historyWriteSlot={} captureRecorded={} sourceOrdinal_scope=nr_reuse_source nativeSrJoin={} srGeneration={} srSourceFrame={} srPictureSerial={} "
+                    "historyReadiness={} recordingReadiness={} sourceFenceObject=0x{:x} orderedNativeQueue={} producerNativeGuideContract={} "
                     "feedbackRequested={} feedbackMode={} guideGate={} producerDepthGuides={} producerFlowGuides={} feedbackActive={} feedbackHistoryUsable={} feedbackFusionRecorded={} feedbackDurationMs={} feedbackCoeff={} feedbackMaxAgeMs={} feedbackStrengthLimit={} feedbackReset={} feedbackDepth={} completedRetirementsOnly={} "
                     "sceneModelGuides={} sceneModelMotion={} conditionalSceneGeometry={} sceneSource={} sceneGuideGate={} guideMappingVersion=1 "
                     "modelMode={} modelDispatch={} modelCallsThisDispatch={} modelFailuresThisDispatch={} "
@@ -6612,6 +6619,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     nativeInputObservation?nativeInputObservation->generation:0,
                     nativeInputObservation?nativeInputObservation->sourceFrame:0,
                     nativeInputObservation?nativeInputObservation->pictureSerial:0,
+                    DetailReuse::historyReadiness, DetailReuse::recordingReadiness,
+                    DetailReuse::sourceFenceIdentity,
+                    reuseFrame.orderedNativeQueue, frame.NativeGuideContractVerified,
                     cfg.DlssNrPresentedTemporalDetail.value_or_default(),
                     reuseFrame.sceneGeometryVerified ? "picture-flow-conditional-scene-geometry" :
                     reuseFrame.pictureFlowReuseVerified ? "picture-flow-source-interval-no-depth" :
@@ -7859,3 +7869,35 @@ void Shutdown()
     fgComposeLogged = false;
 }
 } // namespace DlssNr
+
+namespace
+{
+namespace DetailReuse
+{
+void RetireCompletedNativeRecordings(const Frame& f)
+{
+    // Only the actual StarRail independent endpoint can ask its pool owner to
+    // close idle recordings. The current list is already recording and MUST be
+    // excluded. Serial/epoch tie it to this source, not a physical FG Present.
+    if (!f.orderedNativeQueue || !f.info || !DlssNr::Late::IsStarRailProcess() ||
+        !f.info->NativeSceneRoute || !f.info->IndependentCommands ||
+        f.info->FreshColorResetFallback || !f.frameNumber || f.frameNumber == UINT64_MAX ||
+        !f.info->SourceCaptureEpoch || f.info->SourceCaptureEpoch == UINT64_MAX)
+        return;
+    auto* currentList = RealTemporalCommands(f.cmdList);
+    for (const auto& slot : DlssNr::Late::slots)
+    {
+        if (!slot.dx11Bridge || slot.residualOnly || slot.quarantined || !slot.commands ||
+            RealSubmittedCommands(slot.commands.Get()) != currentList ||
+            slot.serial != f.frameNumber || slot.frame.SourceCaptureSerial != f.frameNumber ||
+            slot.frame.SourceCaptureEpoch != f.info->SourceCaptureEpoch || !slot.backBufferIdentity)
+            continue;
+        // The existing owner checks each idle slot's ORIGINAL final fence and
+        // every NR execution token before allocator/list Reset. The real reset
+        // hook closes generations; CollectHistory alone never fabricates closure.
+        DlssNr::Late::RetireCompletedPrivateRecordings(&slot);
+        return;
+    }
+}
+} // namespace DetailReuse
+} // namespace
