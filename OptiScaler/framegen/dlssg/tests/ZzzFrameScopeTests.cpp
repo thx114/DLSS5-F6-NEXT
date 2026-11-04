@@ -31,6 +31,39 @@ sl::Result GetToken(sl::FrameToken*& token, const uint32_t* frame)
     return failToken?sl::Result::eErrorInvalidState:sl::Result::eOk;
 }
 
+// Mirror the production virtual IFeature / DX12 plus backend hierarchy. The
+// previous integer-only fixtures missed the real base-subobject adjustment.
+struct FeatureBase { virtual ~FeatureBase() = default; uint64_t baseValue=1; };
+struct FeatureBackend : virtual FeatureBase { uint64_t backendValue=2; };
+struct FeatureDx12 : virtual FeatureBase { uint64_t dx12Value=3; };
+struct SelectedFeature final : FeatureBackend, FeatureDx12 {};
+
+void FeatureIdentitySurvivesVirtualBaseAdjustment()
+{
+    SelectedFeature object, other;
+    FeatureDx12* selected=&object;
+    FeatureBase* published=selected;
+    assert(reinterpret_cast<uintptr_t>(selected)!=reinterpret_cast<uintptr_t>(published));
+    const auto selectedId=SelectedFeatureIdentity<FeatureBase>(selected);
+    const auto publishedId=SelectedFeatureIdentity<FeatureBase>(published);
+    assert(selectedId && selectedId==publishedId);
+    assert(SelectedFeatureIdentity<FeatureBase>(static_cast<FeatureDx12*>(nullptr))==0);
+    Scope scope(OriginFor(),true);
+    Selection entry(api,feature,0,list,selectedId,provider);
+    auto receipt=Selection::Current(list,publishedId,0,provider);
+    assert(receipt && receipt->origin.frame==4646);
+    // Raw alternate-interface addresses and a different object still fail.
+    assert(!Selection::Current(list,reinterpret_cast<uintptr_t>(selected),0,provider));
+    assert(!Selection::Current(list,SelectedFeatureIdentity<FeatureBase>(&other),0,provider));
+    // Publication receives the actual selected caller, not a global that may
+    // point to this different feature during a nested backend invocation.
+    FeatureBase* changedGlobal=&other;
+    assert(SelectedFeatureIdentity<FeatureBase>(changedGlobal)!=publishedId);
+    assert(Selection::Current(list,SelectedFeatureIdentity<FeatureBase>(selected),0,provider)==receipt);
+    scope.Finish(true);
+    assert(receipt->Consumable(true));
+}
+
 void Actual4646IsNotIndependentOrdinal1()
 {
     Scope scope(OriginFor(),true);
@@ -476,6 +509,7 @@ void FailedOffStaysUnsafeAcrossInactivePresents()
 int main()
 {
     gameApi.store(api);
+    FeatureIdentitySurvivesVirtualBaseAdjustment();
     Actual4646IsNotIndependentOrdinal1();
     NestedScopesShadowAndRestore();
     ExactApiFeatureViewportListAndOwner();
@@ -490,5 +524,5 @@ int main()
     OnAttemptAndReentryRevokeOldOffProof();
     InvalidSourceNeedsFreshOffBeforeBasePresent();
     FailedOffStaysUnsafeAcrossInactivePresents();
-    std::puts("PASS 14 ZZZ production-frame-scope suites: original 8 identity/outcome suites, unattempted pass-through, real Off/base/recovery, unsafe submission or Off failure, On/reentrant stale-proof invalidation, invalid-source safe fallback, cross-Present failed-Off persistence/recovery; CPU does not prove GPU lifecycle");
+    std::puts("PASS 15 ZZZ production-frame-scope suites: virtual-base selected feature identity, original 8 identity/outcome suites, unattempted pass-through, real Off/base/recovery, unsafe submission or Off failure, On/reentrant stale-proof invalidation, invalid-source safe fallback, cross-Present failed-Off persistence/recovery; CPU does not prove GPU lifecycle");
 }

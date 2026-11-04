@@ -1669,7 +1669,8 @@ bool DLSSG_Dx12::FlipOwnedUpscalerGuide(Dx12Resource* input)
     return true;
 }
 
-bool DLSSG_Dx12::SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Parameter* parameters,
+bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsCommandList* list,
+    const NVSDK_NGX_Parameter* parameters,
     ID3D12Resource* depth, ID3D12Resource* motion, UINT width, UINT height, UINT mvWidth, UINT mvHeight,
     D3D12_RESOURCE_STATES depthState, D3D12_RESOURCE_STATES motionState)
 {
@@ -1699,7 +1700,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVS
     const bool flip=Config::Instance()->FGResourceFlip.value_or_default();
     if ((scale && (left || top)) || (flip && (left || top || mvLeft || mvTop)))
         return RefuseDepthContract("conversion-subrect-not-supported",false);
-    auto* feature=State::Instance().currentFeature;
+    auto* feature=selectedFeature;
     const UINT scaleWidth=feature?feature->DisplayWidth():0;
     const UINT scaleHeight=feature?feature->DisplayHeight():0;
     if (scale && (!feature || width>scaleWidth || height>scaleHeight || !scaleWidth || !scaleHeight))
@@ -1725,7 +1726,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVS
         Microsoft::WRL::ComPtr<IUnknown> listIdentity;
         if (canonicalList) canonicalList.As(&listIdentity);
         const auto frameScope=dlssg::zzz::Selection::Current(reinterpret_cast<uintptr_t>(listIdentity.Get()),
-            reinterpret_cast<uintptr_t>(feature),static_cast<uint32_t>(viewport),reinterpret_cast<uintptr_t>(this));
+            dlssg::zzz::SelectedFeatureIdentity<IFeature>(feature),static_cast<uint32_t>(viewport),reinterpret_cast<uintptr_t>(this));
         if (!frameScope) return RefuseDepthContract("native-frame-scope-not-selected-entry",false);
         ID3D12Resource* output=nullptr;
         if (parameters->Get(NVSDK_NGX_Parameter_Output,&output)!=NVSDK_NGX_Result_Success)
@@ -1772,7 +1773,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVS
         _nativeGuideTracking.store(true,std::memory_order_release);
         if (use.source.serial<=3 || use.source.serial%600==0)
             LOG_INFO("F6 ZZZ selected frame source: api={} feature={} selected={} game_viewport={} provider={} provider_viewport={} upstream_raw={} sdk_frame={} frame={} serial={} native_list={} list={} thread={} upstream=pending",
-                use.source.upstreamApi,frameScope->origin.feature,reinterpret_cast<uintptr_t>(feature),
+                use.source.upstreamApi,frameScope->origin.feature,dlssg::zzz::SelectedFeatureIdentity<IFeature>(feature),
                 use.source.upstreamViewport,use.source.provider,use.source.providerViewport,
                 frameScope->origin.frame,use.source.sdkFrame,use.source.frame,use.source.serial,
                 reinterpret_cast<uintptr_t>(listIdentity.Get()),reinterpret_cast<uintptr_t>(list),GetCurrentThreadId());

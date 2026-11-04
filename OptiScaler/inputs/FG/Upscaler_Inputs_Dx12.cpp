@@ -133,17 +133,18 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
         selectedList=dlssg::depth_contract::NativeObject(InCmdList);
         if (selectedList) selectedList.As(&selectedIdentity);
     }
+    const auto selectedFeatureId=dlssg::zzz::SelectedFeatureIdentity<IFeature>(feature);
     dlssg::zzz::Selection selectedEntry(
         dlssg::zzz::gameApi.load(std::memory_order_acquire),static_cast<uint32_t>(sl::kFeatureDLSS),
         nativeZzz?own->NativeZzzViewport():0,reinterpret_cast<uintptr_t>(selectedIdentity.Get()),
-        reinterpret_cast<uintptr_t>(feature),reinterpret_cast<uintptr_t>(own));
+        selectedFeatureId,reinterpret_cast<uintptr_t>(own));
     if (nativeZzz && !dlssg::zzz::Selection::Current(reinterpret_cast<uintptr_t>(selectedIdentity.Get()),
-        reinterpret_cast<uintptr_t>(feature),own->NativeZzzViewport(),reinterpret_cast<uintptr_t>(own)))
+        selectedFeatureId,own->NativeZzzViewport(),reinterpret_cast<uintptr_t>(own)))
     {
         static std::atomic<unsigned> rows { 0 };
         if (rows.fetch_add(1,std::memory_order_relaxed)<8)
             LOG_WARN("F6 ZZZ selected frame refused: reason=no-matching-synchronous-game-DLSS-scope list={} feature={} viewport={} thread={} async_cross_thread=unsupported",
-                reinterpret_cast<uintptr_t>(selectedIdentity.Get()),reinterpret_cast<uintptr_t>(feature),
+                reinterpret_cast<uintptr_t>(selectedIdentity.Get()),selectedFeatureId,
                 own->NativeZzzViewport(),GetCurrentThreadId());
         own->RejectUpscalerGuideSource("native-frame-scope-missing-or-mismatched");
         return {};
@@ -213,7 +214,7 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
             ID3D12Resource* realDepth=nullptr;
             if (InParameters->Get(NVSDK_NGX_Parameter_Depth,&realDepth)!=NVSDK_NGX_Result_Success)
                 InParameters->Get(NVSDK_NGX_Parameter_Depth,(void**)&realDepth);
-            const bool published=own->SetUpscalerGuidePair(commandList,InParameters,realDepth,paramVelocity,
+            const bool published=own->SetUpscalerGuidePair(static_cast<IFeature*>(feature),commandList,InParameters,realDepth,paramVelocity,
                 feature->RenderWidth(),feature->RenderHeight(),
                 feature->LowResMV()?feature->RenderWidth():feature->TargetWidth(),
                 feature->LowResMV()?feature->RenderHeight():feature->TargetHeight(),

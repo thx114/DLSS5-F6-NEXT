@@ -250,7 +250,7 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
             own->RejectUpscalerGuideSource("selected-sr-cache-source-mismatch");
             return;
         }
-        own->SetUpscalerGuidePair(cmdList,InParameters,paramDepth,paramVelocity,
+        own->SetUpscalerGuidePair(static_cast<IFeature*>(feature),cmdList,InParameters,paramDepth,paramVelocity,
             feature->RenderWidth(),feature->RenderHeight(),
             feature->LowResMV()?feature->RenderWidth():feature->TargetWidth(),
             feature->LowResMV()?feature->RenderHeight():feature->TargetHeight(),

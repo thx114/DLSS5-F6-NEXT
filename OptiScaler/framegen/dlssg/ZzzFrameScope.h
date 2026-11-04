@@ -13,6 +13,15 @@
 namespace dlssg::zzz
 {
 inline std::atomic<uintptr_t> gameApi { 0 };
+
+// Multiple/virtual inheritance gives one feature different interface addresses.
+// Bind both selected entry and publication through the same explicit base type;
+// comparing raw addresses of different interfaces rejects the very same object.
+template<class CommonBase, class Feature>
+uintptr_t SelectedFeatureIdentity(Feature* feature)
+{
+    return reinterpret_cast<uintptr_t>(static_cast<CommonBase*>(feature));
+}
 struct Origin
 {
     uintptr_t api=0, list=0;

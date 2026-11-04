@@ -13,6 +13,7 @@
 
 #include <proxies/Streamline_Proxy.h>
 
+class IFeature;
 namespace GenshinBridgeFg { class Recording; }
 namespace DrawUiMask { class Frame; }
 
@@ -440,7 +441,10 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     bool BeginNativeGuidePresent(const dlssg::NativeSource& source);
     bool NativeGuideBasePresentSafe();
     bool PrepareNativeGuideGapPresent();
-    bool SetUpscalerGuidePair(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Parameter* parameters,
+    // The selected caller supplies the actual feature; global currentFeature
+    // can use another base address or change during nested backend calls.
+    bool SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsCommandList* list,
+        const NVSDK_NGX_Parameter* parameters,
         ID3D12Resource* depth, ID3D12Resource* motion, UINT width, UINT height, UINT mvWidth, UINT mvHeight,
         D3D12_RESOURCE_STATES depthState, D3D12_RESOURCE_STATES motionState);
     void RejectUpscalerGuideSource(const char* stage);
