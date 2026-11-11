@@ -2,15 +2,18 @@
 
 ## 当前入口
 
+- [完整F6交接](F6-HANDOFF.md)：当前产品、精确身份、构建／测试与未完成项。
+- [外部参考仓库](../../../DLSS5_NEXT/docs/REFERENCE-REPOSITORIES.md)：共享来源、位置、版本与采用证据。
+- [性能审查](F6-PERFORMANCE-REVIEW.md)、[诊断操作](F6-GUIDE-DIAGNOSTICS.md)、[HUD对接](FG-BRIDGE-HUD-CONTRACT.md)。
 - [CURRENT-STATE.md](CURRENT-STATE.md)：实际整理结果、构建验证、旧根位置与后续问题。
 - [README](../README.md)：项目目录与构建命令。
-- [AGENTS](../AGENTS.md)：当前协作规则，DS/sol 分工及产品边界。
+- [AGENTS](../AGENTS.md)：当前协作规则，用户最新模型要求及产品边界。
 - [构建入口](../build.ps1)：Release x64；输出和日志收在 `build/`。
 - [Look shader 工具说明](../tools/shaders/README.md)：从既有 recipe 迁入后的调用方法和验证范围。
 - [许可与署名](../Licenses/README.md)、[主许可证](../LICENSE)。
 - [CLI 导航](../CLI.md)：启动器历史接口说明，不代表本轮已运行游戏。
 
-## 本次整理记录
+## 迁移基线整理记录（2026-11-04）
 
 初始审计是删除前快照，执行记录说明最终取舍；不能用初始“候选”清单代替实际删除结果。
 

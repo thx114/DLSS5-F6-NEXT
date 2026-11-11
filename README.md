@@ -6,7 +6,7 @@
 
 原神默认 **真实源帧呈现输入 → NR → 细节保留 → FG**；原有单选条现可实际切换 SR 前／SR 后入口作对照。内部 FSR 桥继续禁用，保留外部桥 2.4 ABI、用户参数、独立 NR／FG 坐标设置及真实 queue/fence/Reset 退休门。
 
-OptiScaler F6 隔离工作树，Windows x64 / C++ / MSVC。工作树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`，HEAD 基线 `db0e646`；改写尚未提交。原根 `D:/CODE/DLSS5_NEXT`、旧工作区与历史恢复资料继续保留。
+OptiScaler F6 隔离工作树，Windows x64 / C++ / MSVC。工作树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`，累计产品保存点 `ea8c304`；本次交接后续提交只整理文档和 Git 忽略说明。候选仍是保存前构建的原字节，内嵌版本不能用新 HEAD 冒认。原根 `D:/CODE/DLSS5_NEXT`、旧工作区与历史恢复资料继续保留。
 
 ## 目录
 
@@ -37,4 +37,4 @@ pwsh -NoProfile -File ./tools/tests/Run-CommonCoreTests.ps1
 
 ## 文档
 
-接手先读 [当前状态](docs/CURRENT-STATE.md)；[F6转交](docs/F6-HANDOFF.md)、[F6状态](docs/F6-STATUS.md)与 [运行核查](docs/F6-RUNTIME-REVIEW.md)保留操作边界、实测证据及未确定项。[docs/history/](docs/history/)中的旧路径与流程仅供历史查阅。维护简短当前说明，不新增逐轮证据目录；保留源码、许可和用户profiles。
+接手先读 [完整交接](docs/F6-HANDOFF.md)和 [外部参考仓库](../../DLSS5_NEXT/docs/REFERENCE-REPOSITORIES.md)，再读 [当前状态](docs/CURRENT-STATE.md)；[F6状态](docs/F6-STATUS.md)与 [运行核查](docs/F6-RUNTIME-REVIEW.md)保留操作边界、实测证据及未确定项。[docs/history/](docs/history/)中的旧路径与流程仅供历史查阅。维护简短当前说明，不新增逐轮证据目录；保留源码、许可和用户profiles。

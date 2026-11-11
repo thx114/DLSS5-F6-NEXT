@@ -1,5 +1,7 @@
 # F6 原神：呈现分支、历史残留与延迟核查
 
+> 本文为固定旧候选的设计／运行研究。2026-11-12 当前身份：DD53514B 已构建未部署，安装仍81DBE9A5；7C281A54主链改善获用户确认，历史效果与延迟仍未验收。当前以 [完整交接](F6-HANDOFF.md)、[当前状态](CURRENT-STATE.md)和 [性能审查](F6-PERFORMANCE-REVIEW.md)为准，下方“本轮／最新”均按原文日期解释。
+
 2026-11-11（UTC+08）。产品写树：`D:/CODE/DLSS5_NEXT-workers/f6-rewrite`。最新失败局为 **07324C3D／PID162340，07:28:38—07:32:37**。新候选 **0AD66318** 于 **08:10:48** 部署，修复离线复现的分辨率重建 recording 未收尾问题；构建、测试及完整测量统一见 [当前状态](CURRENT-STATE.md)。新候选尚未实机验收，低帧数、NR＋FG 闪回／残影和高延迟仍未解决。
 
 PID162340 的呈现入口窗口源 Evaluate 19.645 Hz，SDK LocalPresent 117.968 Hz 仅代表突发 API 回调；14 组配对模型／NR total GPU 样本中位 34.081／35.498 ms，Reflex 报告区间中位 71.053 ms。约 37.961 ms 的 copy allocator CPU 等待已包含在 copy／resolve 中，不能与它或 GPU 包含跨度相加。较小 pre-SR 模型不是同绝对尺寸的路线对照。真实显示事件与配对实际输入像素仍缺，不猜改运动 Y 或帧偏移。完整原日志为 `build/genshin-162340-OptiScaler.log`，31,053,934 B，session 的 16 MiB 副本不完整。
