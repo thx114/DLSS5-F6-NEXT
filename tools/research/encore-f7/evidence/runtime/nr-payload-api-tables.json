@@ -1,0 +1,179 @@
+{
+  "payload_export_names": [
+    {
+      "rva": "0x738a10",
+      "bytes": "4e5653444b5f4e47585f44334431325f496e69745f45787400",
+      "name": "NVSDK_NGX_D3D12_Init_Ext"
+    },
+    {
+      "rva": "0x55a6a0",
+      "bytes": "4e5653444b5f4e47585f44334431325f4372656174654665617475726500",
+      "name": "NVSDK_NGX_D3D12_CreateFeature"
+    },
+    {
+      "rva": "0x55a760",
+      "bytes": "4e5653444b5f4e47585f44334431325f4576616c756174654665617475726500",
+      "name": "NVSDK_NGX_D3D12_EvaluateFeature"
+    },
+    {
+      "rva": "0x55a940",
+      "bytes": "4e5653444b5f4e47585f44334431325f52656c656173654665617475726500",
+      "name": "NVSDK_NGX_D3D12_ReleaseFeature"
+    },
+    {
+      "rva": "0x55b208",
+      "bytes": "4e5653444b5f4e47585f44334431325f53687574646f776e3100",
+      "name": "NVSDK_NGX_D3D12_Shutdown1"
+    }
+  ],
+  "payload_identity_rows": [
+    {
+      "table_rva": "0x71b7a0",
+      "prefix_bytes": "90b9718001000000a8bc558001000000",
+      "sha256_text_rva": "0x71b990",
+      "sha256_text": "e16bcf15e16e13f527491cdf7845b2fe6521a738d8f7c9c721866a8496e1fc8e",
+      "version_text_rva": "0x55bca8",
+      "version_text": "310.8.0"
+    },
+    {
+      "table_rva": "0x71b808",
+      "prefix_bytes": "c0bc558001000000b0bc558001000000",
+      "sha256_text_rva": "0x55bcc0",
+      "sha256_text": "2bc19bc09a7b89dd44f73e2ac0108fcc586e2154bdd0830f242f4f040e28789f",
+      "version_text_rva": "0x55bcb0",
+      "version_text": "310.9.16"
+    }
+  ],
+  "parameter_vtable": [
+    {
+      "slot": "0x0",
+      "table_rva": "0x599750",
+      "bytes": "90a6158001000000",
+      "function_rva": "0x15a690"
+    },
+    {
+      "slot": "0x8",
+      "table_rva": "0x599758",
+      "bytes": "90a6158001000000",
+      "function_rva": "0x15a690"
+    },
+    {
+      "slot": "0x10",
+      "table_rva": "0x599760",
+      "bytes": "90a6158001000000",
+      "function_rva": "0x15a690"
+    },
+    {
+      "slot": "0x18",
+      "table_rva": "0x599768",
+      "bytes": "50a6158001000000",
+      "function_rva": "0x15a650"
+    },
+    {
+      "slot": "0x20",
+      "table_rva": "0x599770",
+      "bytes": "60a6158001000000",
+      "function_rva": "0x15a660"
+    },
+    {
+      "slot": "0x28",
+      "table_rva": "0x599778",
+      "bytes": "80a6158001000000",
+      "function_rva": "0x15a680"
+    },
+    {
+      "slot": "0x30",
+      "table_rva": "0x599780",
+      "bytes": "70a6158001000000",
+      "function_rva": "0x15a670"
+    },
+    {
+      "slot": "0x38",
+      "table_rva": "0x599788",
+      "bytes": "a0a6158001000000",
+      "function_rva": "0x15a6a0"
+    },
+    {
+      "slot": "0x40",
+      "table_rva": "0x599790",
+      "bytes": "70cc148001000000",
+      "function_rva": "0x14cc70"
+    },
+    {
+      "slot": "0x48",
+      "table_rva": "0x599798",
+      "bytes": "70cc148001000000",
+      "function_rva": "0x14cc70"
+    },
+    {
+      "slot": "0x50",
+      "table_rva": "0x5997a0",
+      "bytes": "70cc148001000000",
+      "function_rva": "0x14cc70"
+    },
+    {
+      "slot": "0x58",
+      "table_rva": "0x5997a8",
+      "bytes": "20c9148001000000",
+      "function_rva": "0x14c920"
+    },
+    {
+      "slot": "0x60",
+      "table_rva": "0x5997b0",
+      "bytes": "f0c9148001000000",
+      "function_rva": "0x14c9f0"
+    },
+    {
+      "slot": "0x68",
+      "table_rva": "0x5997b8",
+      "bytes": "a0cb148001000000",
+      "function_rva": "0x14cba0"
+    },
+    {
+      "slot": "0x70",
+      "table_rva": "0x5997c0",
+      "bytes": "c0ca148001000000",
+      "function_rva": "0x14cac0"
+    },
+    {
+      "slot": "0x78",
+      "table_rva": "0x5997c8",
+      "bytes": "40cd148001000000",
+      "function_rva": "0x14cd40"
+    },
+    {
+      "slot": "0x80",
+      "table_rva": "0x5997d0",
+      "bytes": "c066158001000000",
+      "function_rva": "0x1566c0"
+    }
+  ],
+  "feature_owner_vtable_prefix": [
+    {
+      "slot": "0x0",
+      "table_rva": "0x59c2f8",
+      "bytes": "d0da158001000000",
+      "function_rva": "0x15dad0"
+    },
+    {
+      "slot": "0x8",
+      "table_rva": "0x59c300",
+      "bytes": "f05d118001000000",
+      "function_rva": "0x115df0"
+    }
+  ],
+  "parameter_rtti": {
+    "locator_rva": "0xcf8248",
+    "locator_bytes": "0100000000000000000000008811d8007082cf004882cf00",
+    "locator_pointer_rva": "0x599748",
+    "locator_pointer_bytes": "4882cf8001000000",
+    "type_descriptor_rva": "0xd81188",
+    "name_rva": "0xd81198",
+    "name_bytes": "2e3f4156506172616d6574657273406e725f72756e74696d65404000",
+    "name": ".?AVParameters@nr_runtime@@"
+  },
+  "target_executed": false,
+  "payload_executed": false,
+  "payload_abi_authenticated": false,
+  "identity_rows_are_historical_labels": true
+}

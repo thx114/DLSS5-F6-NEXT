@@ -1,0 +1,86 @@
+{
+  "keys": [
+    {
+      "rva": "0x572318",
+      "bytes": "576964746800",
+      "key": "Width"
+    },
+    {
+      "rva": "0x572320",
+      "bytes": "48656967687400",
+      "key": "Height"
+    },
+    {
+      "rva": "0x572328",
+      "bytes": "4f7574576964746800",
+      "key": "OutWidth"
+    },
+    {
+      "rva": "0x572338",
+      "bytes": "4f757448656967687400",
+      "key": "OutHeight"
+    },
+    {
+      "rva": "0x599b38",
+      "bytes": "444c53534e522e576964746800",
+      "key": "DLSSNR.Width"
+    },
+    {
+      "rva": "0x599b48",
+      "bytes": "444c53534e522e48656967687400",
+      "key": "DLSSNR.Height"
+    },
+    {
+      "rva": "0x599b20",
+      "bytes": "444c53534e522e5363616c696e67526174696f00",
+      "key": "DLSSNR.ScalingRatio"
+    },
+    {
+      "rva": "0x599b58",
+      "bytes": "444c53534e52436f6d707574655363616c696e67526174696f43616c6c6261636b00",
+      "key": "DLSSNRComputeScalingRatioCallback"
+    },
+    {
+      "rva": "0x599b80",
+      "bytes": "444c53534e522e48696e742e52656e6465722e50726573657400",
+      "key": "DLSSNR.Hint.Render.Preset"
+    },
+    {
+      "rva": "0x5723e8",
+      "bytes": "506572665175616c69747956616c756500",
+      "key": "PerfQualityValue"
+    },
+    {
+      "rva": "0x55abe0",
+      "bytes": "444c53532e466561747572652e4372656174652e466c61677300",
+      "key": "DLSS.Feature.Create.Flags"
+    }
+  ],
+  "literals": [
+    {
+      "rva": "0x53fba0",
+      "bytes": "000000000000f03f",
+      "format": "<d",
+      "value": 1.0
+    },
+    {
+      "rva": "0x53fb94",
+      "bytes": "0000803f",
+      "format": "<f",
+      "value": 1.0
+    }
+  ],
+  "local_callback_rva": "0x15a240",
+  "common_parameter_initializer_rva": "0x15bdf0",
+  "create_flag_mask": "0xffffffbe",
+  "feature_identity_fields": [
+    "runtime+0x170",
+    "runtime+0x174",
+    "runtime+0x178"
+  ],
+  "target_executed": false,
+  "callback_executed": false,
+  "gpu_tested": false,
+  "complete_reuse_admission_proven": false,
+  "cross_payload_abi_authenticated": false
+}

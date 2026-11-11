@@ -1,0 +1,74 @@
+{
+  "guids": [
+    {
+      "rva": "0x53c870",
+      "name": "sl::Resource",
+      "bytes": "cf709d3a1824724b839113f8721c7261"
+    },
+    {
+      "rva": "0x53c880",
+      "name": "sl::ResourceTag",
+      "bytes": "ad5a6a4c45b46c4987ff1af3845be653"
+    },
+    {
+      "rva": "0x53ce20",
+      "name": "ID3D12Device",
+      "bytes": "f1199818b61d574bbe541821339b85f7"
+    },
+    {
+      "rva": "0x53ce30",
+      "name": "ID3D12GraphicsCommandList",
+      "bytes": "0f0d165b1bac85418ba8b3ae42a5a455"
+    }
+  ],
+  "export": {
+    "rva": "0x53d0f8",
+    "name": "slSetTagForFrame",
+    "bytes": "736c536574546167466f724672616d6500"
+  },
+  "tag_pointer_rva": "0xda1088",
+  "resource_slots": [
+    {
+      "method": "GetDevice",
+      "slot": 7,
+      "byte_offset": "0x38"
+    },
+    {
+      "method": "GetDesc",
+      "slot": 10,
+      "byte_offset": "0x50"
+    }
+  ],
+  "tags": {
+    "kBufferTypeDepth": 0,
+    "kBufferTypeMotionVectors": 1,
+    "kBufferTypeHUDLessColor": 2
+  },
+  "lifecycle": {
+    "eOnlyValidNow": 0,
+    "eValidUntilPresent": 1,
+    "eValidUntilEvaluate": 2
+  },
+  "descriptors": {
+    "FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION": "0x20002",
+    "FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE": "0x20004"
+  },
+  "observed_descriptor_sizes": {
+    "configure": "0x90",
+    "prepare": "0xb8"
+  },
+  "exact_key_slot": {
+    "count": 8,
+    "stride": "0x2b0",
+    "helper_rva": "0xffa0",
+    "compared_key_offset": "0x348",
+    "matching_return_rva": "0x10364"
+  },
+  "module_base": "0x180000000",
+  "target_executed": false,
+  "gpu_tested": false,
+  "source_consumption_proven": false,
+  "resource_retirement_proven": false,
+  "complete_frame_slot_lifecycle_proven": false,
+  "public_abi_compiled": false
+}

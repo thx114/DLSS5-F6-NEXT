@@ -1,0 +1,4045 @@
+{
+  "schema": 1,
+  "format": "F7-dlss-input-with-or-without-encoding",
+  "records": 22,
+  "declared_print_model": {
+    "significant_digits": 6,
+    "uncertainty": "full decimal quantum plus loose float32 rounding margin",
+    "zero_means_exact_zero": true,
+    "format_authenticated": false
+  },
+  "observations": [
+    {
+      "line": 133,
+      "utc": "2026-11-06T22:58:32.467Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 1,
+        "owner": 2085189469464,
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 1,
+        "sdk": 1,
+        "queue": 2083457496080,
+        "fence_target": 1,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 1,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 0,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 1,
+        "frame": 2,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000325521",
+          "0.000347222"
+        ],
+        "sdk_pixel_jitter": [
+          "0.5",
+          "0.333333"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:58:32.467Z [INFO ] [dlss-input] evaluate=1 result=1 history_slot=0 instance=7696593624672 context=7696649845376 generation=1 token_frame=1 sdk=1 frame=2 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=1 render=1536x960 display=2560x1600 token_jitter=0.000325521,0.000347222 sdk_pixel_jitter=0.5,0.333333 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=1 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.49967347792238953,
+              "printed_center_residual_pixels": -0.499674479
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5003245199223895,
+              "printed_center_residual_pixels": -0.500325521
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 2.56e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.9999976007902832,
+              "printed_center_residual_pixels": -1.000000256
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.49999771999957277,
+              "printed_center_residual_pixels": -0.500000256
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.2499980443951416,
+              "printed_center_residual_pixels": -0.249999872
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7499983003951416,
+              "printed_center_residual_pixels": -0.750000128
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.33298477691721556,
+              "printed_center_residual_pixels": -0.332985778
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3336792209172156,
+              "printed_center_residual_pixels": -0.333680222
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 1.2e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6666640805269622,
+              "printed_center_residual_pixels": -0.66666612
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.16666412026329042,
+              "printed_center_residual_pixels": -0.16666612
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.16666492026348115,
+              "printed_center_residual_pixels": -0.16666644
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.49999804026348116,
+              "printed_center_residual_pixels": -0.49999956
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 135,
+      "utc": "2026-11-06T22:58:32.576Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 2,
+        "owner": 2085189469464,
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 2,
+        "sdk": 2,
+        "queue": 2083457496080,
+        "fence_target": 2,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 1,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 0,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 1,
+        "frame": 2,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000325521",
+          "0.000347222"
+        ],
+        "sdk_pixel_jitter": [
+          "0.5",
+          "0.333333"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:58:32.576Z [INFO ] [dlss-input] evaluate=2 result=1 history_slot=0 instance=7696593624672 context=7696649845376 generation=2 token_frame=1 sdk=2 frame=2 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=2 render=1536x960 display=2560x1600 token_jitter=0.000325521,0.000347222 sdk_pixel_jitter=0.5,0.333333 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=1 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.49967347792238953,
+              "printed_center_residual_pixels": -0.499674479
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5003245199223895,
+              "printed_center_residual_pixels": -0.500325521
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 2.56e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.9999976007902832,
+              "printed_center_residual_pixels": -1.000000256
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.49999771999957277,
+              "printed_center_residual_pixels": -0.500000256
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.2499980443951416,
+              "printed_center_residual_pixels": -0.249999872
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7499983003951416,
+              "printed_center_residual_pixels": -0.750000128
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.33298477691721556,
+              "printed_center_residual_pixels": -0.332985778
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3336792209172156,
+              "printed_center_residual_pixels": -0.333680222
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 1.2e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6666640805269622,
+              "printed_center_residual_pixels": -0.66666612
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.16666412026329042,
+              "printed_center_residual_pixels": -0.16666612
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.16666492026348115,
+              "printed_center_residual_pixels": -0.16666644
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.49999804026348116,
+              "printed_center_residual_pixels": -0.49999956
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 138,
+      "utc": "2026-11-06T22:58:32.586Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 3,
+        "owner": 2085189469464,
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 4,
+        "sdk": 4,
+        "queue": 2083457496080,
+        "fence_target": 3,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 1,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 0,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 3,
+        "frame": 4,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000488281",
+          "0.000115741"
+        ],
+        "sdk_pixel_jitter": [
+          "0.75",
+          "0.111111"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:58:32.586Z [INFO ] [dlss-input] evaluate=3 result=1 history_slot=0 instance=7696593624672 context=7696649845376 generation=4 token_frame=3 sdk=4 frame=4 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=3 render=1536x960 display=2560x1600 token_jitter=0.000488281,0.000115741 sdk_pixel_jitter=0.75,0.111111 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=1 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7495107178835845,
+              "printed_center_residual_pixels": -0.749511719
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7504872798835845,
+              "printed_center_residual_pixels": -0.750488281
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -3.84e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.499996901185791,
+              "printed_center_residual_pixels": -1.499999616
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.9999970203950805,
+              "printed_center_residual_pixels": -0.999999616
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3749983345928955,
+              "printed_center_residual_pixels": -0.375000192
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.1249979505928955,
+              "printed_center_residual_pixels": -1.124999808
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.11099425797240496,
+              "printed_center_residual_pixels": -0.110995259
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.11122573997240495,
+              "printed_center_residual_pixels": -0.111226741
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 3.6e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.22222037350875853,
+              "printed_center_residual_pixels": -0.22222236
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.27777558728149415,
+              "printed_center_residual_pixels": 0.27777764
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.055553826754379275,
+              "printed_center_residual_pixels": -0.05555532
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.16666518675437927,
+              "printed_center_residual_pixels": -0.16666668
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 139,
+      "utc": "2026-11-06T22:58:32.719Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 4,
+        "owner": 2085189469464,
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 6,
+        "sdk": 6,
+        "queue": 2083457496080,
+        "fence_target": 4,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 1,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 0,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 5,
+        "frame": 6,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000406901",
+          "0.000810185"
+        ],
+        "sdk_pixel_jitter": [
+          "0.625",
+          "0.777778"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:58:32.719Z [INFO ] [dlss-input] evaluate=4 result=1 history_slot=0 instance=7696593624672 context=7696649845376 generation=6 token_frame=5 sdk=6 frame=6 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=4 render=1536x960 display=2560x1600 token_jitter=0.000406901,0.000810185 sdk_pixel_jitter=0.625,0.777778 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=1 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.624592097902987,
+              "printed_center_residual_pixels": -0.624593099
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.625405899902987,
+              "printed_center_residual_pixels": -0.625406901
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -6.4e-08
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.249997250988037,
+              "printed_center_residual_pixels": -1.249999936
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7499973701973267,
+              "printed_center_residual_pixels": -0.749999936
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.31249818949401853,
+              "printed_center_residual_pixels": -0.312500032
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.9374981254940186,
+              "printed_center_residual_pixels": -0.937499968
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7769668138068366,
+              "printed_center_residual_pixels": -0.776967815
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7785871838068366,
+              "printed_center_residual_pixels": -0.778588185
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -4e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.5555534545631409,
+              "printed_center_residual_pixels": -1.5555556
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.0555535737724304,
+              "printed_center_residual_pixels": -1.0555556
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.38888762728157045,
+              "printed_center_residual_pixels": -0.3888892
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.1666652272815705,
+              "printed_center_residual_pixels": -1.1666668
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 140,
+      "utc": "2026-11-06T22:58:32.805Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 5,
+        "owner": 2085189469464,
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 7,
+        "sdk": 7,
+        "queue": 2083457496080,
+        "fence_target": 5,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 0,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 6,
+        "frame": 7,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000244141",
+          "0.000231481"
+        ],
+        "sdk_pixel_jitter": [
+          "0.375",
+          "0.222222"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:58:32.805Z [INFO ] [dlss-input] evaluate=5 result=1 history_slot=0 instance=7696593624672 context=7696649845376 generation=7 token_frame=6 sdk=7 frame=7 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=5 render=1536x960 display=2560x1600 token_jitter=0.000244141,0.000231481 sdk_pixel_jitter=0.375,0.222222 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.37475485794179203,
+              "printed_center_residual_pixels": -0.374755859
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.37524313994179204,
+              "printed_center_residual_pixels": -0.375244141
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 5.76e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7499979505925293,
+              "printed_center_residual_pixels": -0.750000576
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.24999801019744872,
+              "printed_center_residual_pixels": -0.250000576
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.18749789929626465,
+              "printed_center_residual_pixels": -0.187499712
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5624984752962646,
+              "printed_center_residual_pixels": -0.562500288
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.2219895179448104,
+              "printed_center_residual_pixels": -0.221990519
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.22245247994481038,
+              "printed_center_residual_pixels": -0.222453481
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -2.4e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.44444174701797484,
+              "printed_center_residual_pixels": -0.44444376
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.05555421377227783,
+              "printed_center_residual_pixels": 0.05555624
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.11110961350898743,
+              "printed_center_residual_pixels": -0.11111112
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.33333137350898745,
+              "printed_center_residual_pixels": -0.33333288
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 141,
+      "utc": "2026-11-06T22:58:33.107Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 6,
+        "owner": 2085189469464,
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 8,
+        "sdk": 8,
+        "queue": 2083457496080,
+        "fence_target": 6,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 0,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 7,
+        "frame": 8,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000569661",
+          "0.000578704"
+        ],
+        "sdk_pixel_jitter": [
+          "0.875",
+          "0.555556"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:58:33.107Z [INFO ] [dlss-input] evaluate=6 result=1 history_slot=0 instance=7696593624672 context=7696649845376 generation=8 token_frame=7 sdk=8 frame=8 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=6 render=1536x960 display=2560x1600 token_jitter=0.000569661,0.000578704 sdk_pixel_jitter=0.875,0.555556 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.874429337864182,
+              "printed_center_residual_pixels": -0.874430339
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.875568659864182,
+              "printed_center_residual_pixels": -0.875569661
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -7.04e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.749996551383545,
+              "printed_center_residual_pixels": -1.749999296
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.2499966705928345,
+              "printed_center_residual_pixels": -1.249999296
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.43749847969177247,
+              "printed_center_residual_pixels": -0.437500352
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.3124977756917724,
+              "printed_center_residual_pixels": -1.312499648
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5549762948620259,
+              "printed_center_residual_pixels": -0.554977296
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.556133702862026,
+              "printed_center_residual_pixels": -0.556134704
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -1.6e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.1111097475449372,
+              "printed_center_residual_pixels": -1.11111184
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6111098667542267,
+              "printed_center_residual_pixels": -0.61111184
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.2777765337724686,
+              "printed_center_residual_pixels": -0.27777808
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.8333323737724686,
+              "printed_center_residual_pixels": -0.83333392
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 142,
+      "utc": "2026-11-06T22:58:33.173Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 7,
+        "owner": 2085189469464,
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 9,
+        "sdk": 9,
+        "queue": 2083457496080,
+        "fence_target": 7,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 0,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 8,
+        "frame": 9,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "4.06901e-05",
+          "0.000925926"
+        ],
+        "sdk_pixel_jitter": [
+          "0.0625",
+          "0.888889"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:58:33.173Z [INFO ] [dlss-input] evaluate=7 result=1 history_slot=0 instance=7696593624672 context=7696649845376 generation=9 token_frame=8 sdk=9 frame=9 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=7 render=1536x960 display=2560x1600 token_jitter=4.06901e-05,0.000925926 sdk_pixel_jitter=0.0625,0.888889 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.0624592097902987,
+              "printed_center_residual_pixels": -0.0624593099
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.0625405899902987,
+              "printed_center_residual_pixels": -0.0625406901
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -6.4e-09
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.12499972509880371,
+              "printed_center_residual_pixels": -0.1249999936
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3749996484918335,
+              "printed_center_residual_pixels": 0.3750000064
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.031249818949401854,
+              "printed_center_residual_pixels": -0.0312500032
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.09374981254940186,
+              "printed_center_residual_pixels": -0.0937499968
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.8879620727792418,
+              "printed_center_residual_pixels": -0.887963074
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.8898139247792418,
+              "printed_center_residual_pixels": -0.889814926
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -4e-08
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.7777757880721283,
+              "printed_center_residual_pixels": -1.77777796
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.2777759072814179,
+              "printed_center_residual_pixels": -1.27777796
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.44444293403606416,
+              "printed_center_residual_pixels": -0.44444452
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.3333318940360641,
+              "printed_center_residual_pixels": -1.33333348
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 143,
+      "utc": "2026-11-06T22:58:33.253Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 8,
+        "owner": 2085189469464,
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 10,
+        "sdk": 10,
+        "queue": 2083457496080,
+        "fence_target": 8,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 0,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 9,
+        "frame": 10,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000366211",
+          "3.85802e-05"
+        ],
+        "sdk_pixel_jitter": [
+          "0.5625",
+          "0.037037"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:58:33.253Z [INFO ] [dlss-input] evaluate=8 result=1 history_slot=0 instance=7696593624672 context=7696649845376 generation=10 token_frame=9 sdk=10 frame=10 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=8 render=1536x960 display=2560x1600 token_jitter=0.000366211,3.85802e-05 sdk_pixel_jitter=0.5625,0.037037 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5621327879126883,
+              "printed_center_residual_pixels": -0.562133789
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5628652099126883,
+              "printed_center_residual_pixels": -0.562866211
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 9.6e-08
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.1249974258891602,
+              "printed_center_residual_pixels": -1.125000096
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6249975450984497,
+              "printed_center_residual_pixels": -0.625000096
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.2812481169445801,
+              "printed_center_residual_pixels": -0.281249952
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.84374821294458,
+              "printed_center_residual_pixels": -0.843750048
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.03699831969080174,
+              "printed_center_residual_pixels": -0.0369984198
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.03707548009080174,
+              "printed_center_residual_pixels": -0.0370755802
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -8e-09
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.0740737871696701,
+              "printed_center_residual_pixels": -0.074073992
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.4259257016209946,
+              "printed_center_residual_pixels": 0.425926008
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.01851835158483505,
+              "printed_center_residual_pixels": -0.018518504
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.055555343584835055,
+              "printed_center_residual_pixels": -0.055555496
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 149,
+      "utc": "2026-11-06T22:58:49.136Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 600,
+        "owner": 2085189469464,
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 614,
+        "sdk": 614,
+        "queue": 2083457496080,
+        "fence_target": 600,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 0,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 613,
+        "frame": 614,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000508626",
+          "0.000424383"
+        ],
+        "sdk_pixel_jitter": [
+          "0.78125",
+          "0.407407"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:58:49.136Z [INFO ] [dlss-input] evaluate=600 result=1 history_slot=0 instance=7696593624672 context=7696649845376 generation=614 token_frame=613 sdk=614 frame=614 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=600 render=1536x960 display=2560x1600 token_jitter=0.000508626,0.000424383 sdk_pixel_jitter=0.78125,0.407407 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7807403728787339,
+              "printed_center_residual_pixels": -0.780741374
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7817576248787339,
+              "printed_center_residual_pixels": -0.781758626
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -4.64e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.5624968137352295,
+              "printed_center_residual_pixels": -1.562499536
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.062496932944519,
+              "printed_center_residual_pixels": -1.062499536
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3906233708676147,
+              "printed_center_residual_pixels": -0.390625232
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.1718729068676148,
+              "printed_center_residual_pixels": -1.171874768
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.406981615898819,
+              "printed_center_residual_pixels": -0.406982617
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.407830381898819,
+              "printed_center_residual_pixels": -0.407831383
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 6.8e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.8148126228662109,
+              "printed_center_residual_pixels": -0.81481468
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.31481269792404176,
+              "printed_center_residual_pixels": -0.31481468
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.20370163143310546,
+              "printed_center_residual_pixels": -0.20370316
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6111093114331054,
+              "printed_center_residual_pixels": -0.61111084
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 156,
+      "utc": "2026-11-06T22:58:59.095Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 1200,
+        "owner": 2085189469464,
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 1215,
+        "sdk": 1215,
+        "queue": 2083457496080,
+        "fence_target": 1200,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 0,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 1214,
+        "frame": 1215,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "8.13802e-05",
+          "0.000462963"
+        ],
+        "sdk_pixel_jitter": [
+          "0.125",
+          "0.444444"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:58:59.095Z [INFO ] [dlss-input] evaluate=1200 result=1 history_slot=0 instance=7696593624672 context=7696649845376 generation=1215 token_frame=1214 sdk=1215 frame=1215 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=1200 render=1536x960 display=2560x1600 token_jitter=8.13802e-05,0.000462963 sdk_pixel_jitter=0.125,0.444444 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.12491761968059742,
+              "printed_center_residual_pixels": -0.1249186198
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.12508038008059744,
+              "printed_center_residual_pixels": -0.1250813802
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -1.28e-08
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.24999880379764405,
+              "printed_center_residual_pixels": -0.2499999872
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.24999876979299315,
+              "printed_center_residual_pixels": 0.2500000128
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.062498914698822024,
+              "printed_center_residual_pixels": -0.0625000064
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.187498901898822,
+              "printed_center_residual_pixels": -0.1874999936
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.44398003588962076,
+              "printed_center_residual_pixels": -0.443981037
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.4449059618896208,
+              "printed_center_residual_pixels": -0.444906963
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 4.8e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.8888864140359497,
+              "printed_center_residual_pixels": -0.88888848
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.388886506754303,
+              "printed_center_residual_pixels": -0.38888848
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.22222022701797486,
+              "printed_center_residual_pixels": -0.22222176
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6666647070179749,
+              "printed_center_residual_pixels": -0.66666624
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 169,
+      "utc": "2026-11-06T22:59:21.622Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 1,
+        "owner": 2085189469464,
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1303,
+        "sdk": 1303,
+        "queue": 2083457496080,
+        "fence_target": 1280,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 1,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 1,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 1,
+        "frame": 2,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000325521",
+          "0.000347222"
+        ],
+        "sdk_pixel_jitter": [
+          "0.5",
+          "0.333333"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:59:21.622Z [INFO ] [dlss-input] evaluate=1 result=1 history_slot=1 instance=7697242932640 context=7697370884800 generation=1303 token_frame=1 sdk=1303 frame=2 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=1280 render=1536x960 display=2560x1600 token_jitter=0.000325521,0.000347222 sdk_pixel_jitter=0.5,0.333333 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=1 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.49967347792238953,
+              "printed_center_residual_pixels": -0.499674479
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5003245199223895,
+              "printed_center_residual_pixels": -0.500325521
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 2.56e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.9999976007902832,
+              "printed_center_residual_pixels": -1.000000256
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.49999771999957277,
+              "printed_center_residual_pixels": -0.500000256
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.2499980443951416,
+              "printed_center_residual_pixels": -0.249999872
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7499983003951416,
+              "printed_center_residual_pixels": -0.750000128
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.33298477691721556,
+              "printed_center_residual_pixels": -0.332985778
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3336792209172156,
+              "printed_center_residual_pixels": -0.333680222
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 1.2e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6666640805269622,
+              "printed_center_residual_pixels": -0.66666612
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.16666412026329042,
+              "printed_center_residual_pixels": -0.16666612
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.16666492026348115,
+              "printed_center_residual_pixels": -0.16666644
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.49999804026348116,
+              "printed_center_residual_pixels": -0.49999956
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 170,
+      "utc": "2026-11-06T22:59:22.545Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 2,
+        "owner": 2085189469464,
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1304,
+        "sdk": 1304,
+        "queue": 2083457496080,
+        "fence_target": 1281,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 1,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 2,
+        "frame": 3,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.00016276",
+          "0.000694444"
+        ],
+        "sdk_pixel_jitter": [
+          "0.25",
+          "0.666667"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:59:22.545Z [INFO ] [dlss-input] evaluate=2 result=1 history_slot=1 instance=7697242932640 context=7697370884800 generation=1304 token_frame=2 sdk=1304 frame=3 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=1281 render=1536x960 display=2560x1600 token_jitter=0.00016276,0.000694444 sdk_pixel_jitter=0.25,0.666667 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.24983623896119475,
+              "printed_center_residual_pixels": -0.24983724
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.25016175896119475,
+              "printed_center_residual_pixels": -0.25016276
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -6.4e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.4999967643951416,
+              "printed_center_residual_pixels": -0.49999936
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 6.4e-07
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.1249985221975708,
+              "printed_center_residual_pixels": -0.12500032
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3749978821975708,
+              "printed_center_residual_pixels": -0.37499968
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6659715548344314,
+              "printed_center_residual_pixels": -0.665972556
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6673604428344314,
+              "printed_center_residual_pixels": -0.667361444
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -7.6e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.3333311210541534,
+              "printed_center_residual_pixels": -1.33333324
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.833331240263443,
+              "printed_center_residual_pixels": -0.83333324
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.33333232052707673,
+              "printed_center_residual_pixels": -0.33333388
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.9999985605270767,
+              "printed_center_residual_pixels": -1.00000012
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 171,
+      "utc": "2026-11-06T22:59:22.676Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 3,
+        "owner": 2085189469464,
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1306,
+        "sdk": 1306,
+        "queue": 2083457496080,
+        "fence_target": 1282,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 1,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 1,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 4,
+        "frame": 5,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "8.13802e-05",
+          "0.000462963"
+        ],
+        "sdk_pixel_jitter": [
+          "0.125",
+          "0.444444"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:59:22.676Z [INFO ] [dlss-input] evaluate=3 result=1 history_slot=1 instance=7697242932640 context=7697370884800 generation=1306 token_frame=4 sdk=1306 frame=5 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=1282 render=1536x960 display=2560x1600 token_jitter=8.13802e-05,0.000462963 sdk_pixel_jitter=0.125,0.444444 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=1 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.12491761968059742,
+              "printed_center_residual_pixels": -0.1249186198
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.12508038008059744,
+              "printed_center_residual_pixels": -0.1250813802
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -1.28e-08
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.24999880379764405,
+              "printed_center_residual_pixels": -0.2499999872
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.24999876979299315,
+              "printed_center_residual_pixels": 0.2500000128
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.062498914698822024,
+              "printed_center_residual_pixels": -0.0625000064
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.187498901898822,
+              "printed_center_residual_pixels": -0.1874999936
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.44398003588962076,
+              "printed_center_residual_pixels": -0.443981037
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.4449059618896208,
+              "printed_center_residual_pixels": -0.444906963
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 4.8e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.8888864140359497,
+              "printed_center_residual_pixels": -0.88888848
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.388886506754303,
+              "printed_center_residual_pixels": -0.38888848
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.22222022701797486,
+              "printed_center_residual_pixels": -0.22222176
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6666647070179749,
+              "printed_center_residual_pixels": -0.66666624
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 172,
+      "utc": "2026-11-06T22:59:22.737Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 4,
+        "owner": 2085189469464,
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1307,
+        "sdk": 1307,
+        "queue": 2083457496080,
+        "fence_target": 1283,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 1,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 5,
+        "frame": 6,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000406901",
+          "0.000810185"
+        ],
+        "sdk_pixel_jitter": [
+          "0.625",
+          "0.777778"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:59:22.737Z [INFO ] [dlss-input] evaluate=4 result=1 history_slot=1 instance=7697242932640 context=7697370884800 generation=1307 token_frame=5 sdk=1307 frame=6 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=1283 render=1536x960 display=2560x1600 token_jitter=0.000406901,0.000810185 sdk_pixel_jitter=0.625,0.777778 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.624592097902987,
+              "printed_center_residual_pixels": -0.624593099
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.625405899902987,
+              "printed_center_residual_pixels": -0.625406901
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -6.4e-08
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.249997250988037,
+              "printed_center_residual_pixels": -1.249999936
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7499973701973267,
+              "printed_center_residual_pixels": -0.749999936
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.31249818949401853,
+              "printed_center_residual_pixels": -0.312500032
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.9374981254940186,
+              "printed_center_residual_pixels": -0.937499968
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7769668138068366,
+              "printed_center_residual_pixels": -0.776967815
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7785871838068366,
+              "printed_center_residual_pixels": -0.778588185
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -4e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.5555534545631409,
+              "printed_center_residual_pixels": -1.5555556
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.0555535737724304,
+              "printed_center_residual_pixels": -1.0555556
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.38888762728157045,
+              "printed_center_residual_pixels": -0.3888892
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.1666652272815705,
+              "printed_center_residual_pixels": -1.1666668
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 176,
+      "utc": "2026-11-06T22:59:22.872Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 5,
+        "owner": 2085189469464,
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1309,
+        "sdk": 1309,
+        "queue": 2083457496080,
+        "fence_target": 1284,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 1,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 1,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 7,
+        "frame": 8,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000569661",
+          "0.000578704"
+        ],
+        "sdk_pixel_jitter": [
+          "0.875",
+          "0.555556"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:59:22.872Z [INFO ] [dlss-input] evaluate=5 result=1 history_slot=1 instance=7697242932640 context=7697370884800 generation=1309 token_frame=7 sdk=1309 frame=8 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=1284 render=1536x960 display=2560x1600 token_jitter=0.000569661,0.000578704 sdk_pixel_jitter=0.875,0.555556 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=1 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.874429337864182,
+              "printed_center_residual_pixels": -0.874430339
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.875568659864182,
+              "printed_center_residual_pixels": -0.875569661
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -7.04e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.749996551383545,
+              "printed_center_residual_pixels": -1.749999296
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.2499966705928345,
+              "printed_center_residual_pixels": -1.249999296
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.43749847969177247,
+              "printed_center_residual_pixels": -0.437500352
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.3124977756917724,
+              "printed_center_residual_pixels": -1.312499648
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5549762948620259,
+              "printed_center_residual_pixels": -0.554977296
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.556133702862026,
+              "printed_center_residual_pixels": -0.556134704
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -1.6e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.1111097475449372,
+              "printed_center_residual_pixels": -1.11111184
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6111098667542267,
+              "printed_center_residual_pixels": -0.61111184
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.2777765337724686,
+              "printed_center_residual_pixels": -0.27777808
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.8333323737724686,
+              "printed_center_residual_pixels": -0.83333392
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 177,
+      "utc": "2026-11-06T22:59:22.929Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 6,
+        "owner": 2085189469464,
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1310,
+        "sdk": 1310,
+        "queue": 2083457496080,
+        "fence_target": 1285,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 1,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 8,
+        "frame": 9,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "4.06901e-05",
+          "0.000925926"
+        ],
+        "sdk_pixel_jitter": [
+          "0.0625",
+          "0.888889"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:59:22.929Z [INFO ] [dlss-input] evaluate=6 result=1 history_slot=1 instance=7697242932640 context=7697370884800 generation=1310 token_frame=8 sdk=1310 frame=9 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=1285 render=1536x960 display=2560x1600 token_jitter=4.06901e-05,0.000925926 sdk_pixel_jitter=0.0625,0.888889 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.0624592097902987,
+              "printed_center_residual_pixels": -0.0624593099
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.0625405899902987,
+              "printed_center_residual_pixels": -0.0625406901
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -6.4e-09
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.12499972509880371,
+              "printed_center_residual_pixels": -0.1249999936
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3749996484918335,
+              "printed_center_residual_pixels": 0.3750000064
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.031249818949401854,
+              "printed_center_residual_pixels": -0.0312500032
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.09374981254940186,
+              "printed_center_residual_pixels": -0.0937499968
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.8879620727792418,
+              "printed_center_residual_pixels": -0.887963074
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.8898139247792418,
+              "printed_center_residual_pixels": -0.889814926
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -4e-08
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.7777757880721283,
+              "printed_center_residual_pixels": -1.77777796
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.2777759072814179,
+              "printed_center_residual_pixels": -1.27777796
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.44444293403606416,
+              "printed_center_residual_pixels": -0.44444452
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.3333318940360641,
+              "printed_center_residual_pixels": -1.33333348
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 178,
+      "utc": "2026-11-06T22:59:22.964Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 7,
+        "owner": 2085189469464,
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1311,
+        "sdk": 1311,
+        "queue": 2083457496080,
+        "fence_target": 1286,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 1,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 9,
+        "frame": 10,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000366211",
+          "3.85802e-05"
+        ],
+        "sdk_pixel_jitter": [
+          "0.5625",
+          "0.037037"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:59:22.964Z [INFO ] [dlss-input] evaluate=7 result=1 history_slot=1 instance=7697242932640 context=7697370884800 generation=1311 token_frame=9 sdk=1311 frame=10 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=1286 render=1536x960 display=2560x1600 token_jitter=0.000366211,3.85802e-05 sdk_pixel_jitter=0.5625,0.037037 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5621327879126883,
+              "printed_center_residual_pixels": -0.562133789
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5628652099126883,
+              "printed_center_residual_pixels": -0.562866211
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 9.6e-08
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.1249974258891602,
+              "printed_center_residual_pixels": -1.125000096
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6249975450984497,
+              "printed_center_residual_pixels": -0.625000096
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.2812481169445801,
+              "printed_center_residual_pixels": -0.281249952
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.84374821294458,
+              "printed_center_residual_pixels": -0.843750048
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.03699831969080174,
+              "printed_center_residual_pixels": -0.0369984198
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.03707548009080174,
+              "printed_center_residual_pixels": -0.0370755802
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -8e-09
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.0740737871696701,
+              "printed_center_residual_pixels": -0.074073992
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.4259257016209946,
+              "printed_center_residual_pixels": 0.425926008
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.01851835158483505,
+              "printed_center_residual_pixels": -0.018518504
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.055555343584835055,
+              "printed_center_residual_pixels": -0.055555496
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 179,
+      "utc": "2026-11-06T22:59:22.991Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 8,
+        "owner": 2085189469464,
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1312,
+        "sdk": 1312,
+        "queue": 2083457496080,
+        "fence_target": 1287,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 1,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 10,
+        "frame": 11,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000203451",
+          "0.000385803"
+        ],
+        "sdk_pixel_jitter": [
+          "0.3125",
+          "0.37037"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:59:22.991Z [INFO ] [dlss-input] evaluate=8 result=1 history_slot=1 instance=7697242932640 context=7697370884800 generation=1312 token_frame=10 sdk=1312 frame=11 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=1287 render=1536x960 display=2560x1600 token_jitter=0.000203451,0.000385803 sdk_pixel_jitter=0.3125,0.37037 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3122955479514933,
+              "printed_center_residual_pixels": -0.312296549
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.31270244995149327,
+              "printed_center_residual_pixels": -0.312703451
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 7.36e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6249981254936523,
+              "printed_center_residual_pixels": -0.625000736
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.12499815529632569,
+              "printed_center_residual_pixels": -0.125000736
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.15624782674682616,
+              "printed_center_residual_pixels": -0.156249632
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.4687485627468262,
+              "printed_center_residual_pixels": -0.468750368
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.36998319590801715,
+              "printed_center_residual_pixels": -0.369984197
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3707548019080172,
+              "printed_center_residual_pixels": -0.370755803
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 8.8e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7407388316964721,
+              "printed_center_residual_pixels": -0.74074088
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.24073888909378052,
+              "printed_center_residual_pixels": -0.24074088
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.1851830358482361,
+              "printed_center_residual_pixels": -0.18518456
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5555539158482361,
+              "printed_center_residual_pixels": -0.55555544
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 188,
+      "utc": "2026-11-06T22:59:33.295Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 600,
+        "owner": 2085189469464,
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1917,
+        "sdk": 1917,
+        "queue": 2083457496080,
+        "fence_target": 1879,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 1,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 615,
+        "frame": 616,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000427246",
+          "0.000192901"
+        ],
+        "sdk_pixel_jitter": [
+          "0.65625",
+          "0.185185"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:59:33.295Z [INFO ] [dlss-input] evaluate=600 result=1 history_slot=1 instance=7697242932640 context=7697370884800 generation=1917 token_frame=615 sdk=1917 frame=616 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=1879 render=1536x960 display=2560x1600 token_jitter=0.000427246,0.000192901 sdk_pixel_jitter=0.65625,0.185185 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6558217528981364,
+              "printed_center_residual_pixels": -0.655822754
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6566762448981364,
+              "printed_center_residual_pixels": -0.656677246
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -1.44e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.3124971635374756,
+              "printed_center_residual_pixels": -1.312499856
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.8124972827467651,
+              "printed_center_residual_pixels": -0.812499856
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3281232257687378,
+              "printed_center_residual_pixels": -0.328125072
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.9843730817687378,
+              "printed_center_residual_pixels": -0.984374928
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.1849910979540086,
+              "printed_center_residual_pixels": -0.184992099
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.18537689995400858,
+              "printed_center_residual_pixels": -0.185377901
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -4e-08
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.37036795584823606,
+              "printed_center_residual_pixels": -0.37036996
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.1296280049420166,
+              "printed_center_residual_pixels": 0.12963004
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.09259101792411804,
+              "printed_center_residual_pixels": -0.09259252
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.27777597792411807,
+              "printed_center_residual_pixels": -0.27777748
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 196,
+      "utc": "2026-11-06T22:59:43.608Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 1200,
+        "owner": 2085189469464,
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 2527,
+        "sdk": 2527,
+        "queue": 2083457496080,
+        "fence_target": 2479,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 1,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 1225,
+        "frame": 1226,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000610352",
+          "0.000270062"
+        ],
+        "sdk_pixel_jitter": [
+          "0.9375",
+          "0.259259"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:59:43.608Z [INFO ] [dlss-input] evaluate=1200 result=1 history_slot=1 instance=7697242932640 context=7697370884800 generation=2527 token_frame=1225 sdk=2527 frame=1226 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=2479 render=1536x960 display=2560x1600 token_jitter=0.000610352,0.000270062 sdk_pixel_jitter=0.9375,0.259259 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.9368886468544805,
+              "printed_center_residual_pixels": -0.936889648
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.9381093508544806,
+              "printed_center_residual_pixels": -0.938110352
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 6.72e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.8749979124820557,
+              "printed_center_residual_pixels": -1.875000672
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.3749980316913453,
+              "printed_center_residual_pixels": -1.375000672
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.4687477842410278,
+              "printed_center_residual_pixels": -0.468749664
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.4062484562410278,
+              "printed_center_residual_pixels": -1.406250336
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.25898793693561195,
+              "printed_center_residual_pixels": -0.258988938
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.259528060935612,
+              "printed_center_residual_pixels": -0.259529062
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 5.2e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5185164981874847,
+              "printed_center_residual_pixels": -0.51851852
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.018516502602767944,
+              "printed_center_residual_pixels": -0.01851852
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.12962772909374237,
+              "printed_center_residual_pixels": -0.12962924
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3888872490937424,
+              "printed_center_residual_pixels": -0.38888876
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 210,
+      "utc": "2026-11-06T22:59:55.696Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 1800,
+        "owner": 2085189469464,
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 3137,
+        "sdk": 3137,
+        "queue": 2083457496080,
+        "fence_target": 3079,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 1,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 1835,
+        "frame": 1836,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000366211",
+          "3.85802e-05"
+        ],
+        "sdk_pixel_jitter": [
+          "0.5625",
+          "0.037037"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T22:59:55.696Z [INFO ] [dlss-input] evaluate=1800 result=1 history_slot=1 instance=7697242932640 context=7697370884800 generation=3137 token_frame=1835 sdk=3137 frame=1836 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=3079 render=1536x960 display=2560x1600 token_jitter=0.000366211,3.85802e-05 sdk_pixel_jitter=0.5625,0.037037 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5621327879126883,
+              "printed_center_residual_pixels": -0.562133789
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.5628652099126883,
+              "printed_center_residual_pixels": -0.562866211
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 9.6e-08
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.1249974258891602,
+              "printed_center_residual_pixels": -1.125000096
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6249975450984497,
+              "printed_center_residual_pixels": -0.625000096
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.2812481169445801,
+              "printed_center_residual_pixels": -0.281249952
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.84374821294458,
+              "printed_center_residual_pixels": -0.843750048
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.03699831969080174,
+              "printed_center_residual_pixels": -0.0369984198
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.03707548009080174,
+              "printed_center_residual_pixels": -0.0370755802
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -8e-09
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.0740737871696701,
+              "printed_center_residual_pixels": -0.074073992
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.4259257016209946,
+              "printed_center_residual_pixels": 0.425926008
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.01851835158483505,
+              "printed_center_residual_pixels": -0.018518504
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.055555343584835055,
+              "printed_center_residual_pixels": -0.055555496
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    },
+    {
+      "line": 218,
+      "utc": "2026-11-06T23:00:05.712Z",
+      "fields": {
+        "epoch": 1,
+        "evaluate": 2400,
+        "owner": 2085189469464,
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 3741,
+        "sdk": 3741,
+        "queue": 2083457496080,
+        "fence_target": 3679,
+        "requested_reset": 0,
+        "depth_inverted": 1,
+        "sdk_reset": 0,
+        "motion_format": 34,
+        "color_format": 28,
+        "history_slot": 1,
+        "creation_flags": 74,
+        "depth_format": 41,
+        "result": 1,
+        "token_frame": 2439,
+        "frame": 2440,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ],
+        "token_jitter": [
+          "0.000508626",
+          "0.000424383"
+        ],
+        "sdk_pixel_jitter": [
+          "0.78125",
+          "0.407407"
+        ],
+        "sdk_mv_scale": [
+          "1536",
+          "960"
+        ],
+        "frame_time_ms": "16.666"
+      },
+      "raw_line": "2026-11-06T23:00:05.712Z [INFO ] [dlss-input] evaluate=2400 result=1 history_slot=1 instance=7697242932640 context=7697370884800 generation=3741 token_frame=2439 sdk=3741 frame=2440 owner=2085189469464 queue=2083457496080 epoch=1 fence_target=3679 render=1536x960 display=2560x1600 token_jitter=0.000508626,0.000424383 sdk_pixel_jitter=0.78125,0.407407 sdk_mv_scale=1536,960 requested_reset=0 sdk_reset=0 creation_flags=74 depth_inverted=1 color_format=28 depth_format=41 motion_format=34 frame_time_ms=16.666 semantics=sdk-call-inputs; completion-and-quality-unproven",
+      "token_jitter_encoding_recorded": false,
+      "log_segment": 1,
+      "log_open_boundary_observed": true,
+      "axes": [
+        {
+          "axis": "x",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7807403728787339,
+              "printed_center_residual_pixels": -0.780741374
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.7817576248787339,
+              "printed_center_residual_pixels": -0.781758626
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": -4.64e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.5624968137352295,
+              "printed_center_residual_pixels": -1.562499536
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.062496932944519,
+              "printed_center_residual_pixels": -1.062499536
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.3906233708676147,
+              "printed_center_residual_pixels": -0.390625232
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 1.1718729068676148,
+              "printed_center_residual_pixels": -1.171874768
+            }
+          ]
+        },
+        {
+          "axis": "y",
+          "models": [
+            {
+              "formula": "raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.406981615898819,
+              "printed_center_residual_pixels": -0.406982617
+            },
+            {
+              "formula": "-raw",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.407830381898819,
+              "printed_center_residual_pixels": -0.407831383
+            },
+            {
+              "formula": "raw*extent",
+              "intervals_overlap_under_declared_print_model": true,
+              "minimum_interval_gap_pixels": 0.0,
+              "printed_center_residual_pixels": 6.8e-07
+            },
+            {
+              "formula": "-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.8148126228662109,
+              "printed_center_residual_pixels": -0.81481468
+            },
+            {
+              "formula": "0.5-raw*extent",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.31481269792404176,
+              "printed_center_residual_pixels": -0.31481468
+            },
+            {
+              "formula": "raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.20370163143310546,
+              "printed_center_residual_pixels": -0.20370316
+            },
+            {
+              "formula": "-raw*extent/2",
+              "intervals_overlap_under_declared_print_model": false,
+              "minimum_interval_gap_pixels": 0.6111093114331054,
+              "printed_center_residual_pixels": -0.61111084
+            }
+          ]
+        }
+      ],
+      "evaluate_result_is_success_code_1": true
+    }
+  ],
+  "log_open_boundaries": [
+    {
+      "line": 1,
+      "utc": "2026-11-06T22:57:26.250Z",
+      "log_segment": 1
+    }
+  ],
+  "descriptive_scopes": [
+    {
+      "scope": {
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 1,
+        "sdk": 1,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 0,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        133
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        1
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 2,
+        "sdk": 2,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 0,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        135
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        1
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 4,
+        "sdk": 4,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 0,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        138
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        1
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 6,
+        "sdk": 6,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 0,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        139
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        1
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 7,
+        "sdk": 7,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 0,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        140
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 8,
+        "sdk": 8,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 0,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        141
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 9,
+        "sdk": 9,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 0,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        142
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 10,
+        "sdk": 10,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 0,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        143
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 614,
+        "sdk": 614,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 0,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        149
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7696593624672,
+        "context": 7696649845376,
+        "generation": 1215,
+        "sdk": 1215,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 0,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        156
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1303,
+        "sdk": 1303,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 1,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        169
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        1
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1304,
+        "sdk": 1304,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 1,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        170
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1306,
+        "sdk": 1306,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 1,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        171
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        1
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1307,
+        "sdk": 1307,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 1,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        172
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1309,
+        "sdk": 1309,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 1,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        176
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        1
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1310,
+        "sdk": 1310,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 1,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        177
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1311,
+        "sdk": 1311,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 1,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        178
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1312,
+        "sdk": 1312,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 1,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        179
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 1917,
+        "sdk": 1917,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 1,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        188
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 2527,
+        "sdk": 2527,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 1,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        196
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 3137,
+        "sdk": 3137,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 1,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        210
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    },
+    {
+      "scope": {
+        "instance": 7697242932640,
+        "context": 7697370884800,
+        "generation": 3741,
+        "sdk": 3741,
+        "owner": 2085189469464,
+        "queue": 2083457496080,
+        "epoch": 1,
+        "history_slot": 1,
+        "render": [
+          1536,
+          960
+        ],
+        "display": [
+          2560,
+          1600
+        ]
+      },
+      "log_segment": 1,
+      "lines": [
+        218
+      ],
+      "requested_reset_values": [
+        0
+      ],
+      "sdk_reset_values": [
+        0
+      ]
+    }
+  ],
+  "model_counts": {
+    "x": {
+      "raw": {
+        "overlap": 0,
+        "disjoint": 22
+      },
+      "-raw": {
+        "overlap": 0,
+        "disjoint": 22
+      },
+      "raw*extent": {
+        "overlap": 22,
+        "disjoint": 0
+      },
+      "-raw*extent": {
+        "overlap": 0,
+        "disjoint": 22
+      },
+      "0.5-raw*extent": {
+        "overlap": 1,
+        "disjoint": 21
+      },
+      "raw*extent/2": {
+        "overlap": 0,
+        "disjoint": 22
+      },
+      "-raw*extent/2": {
+        "overlap": 0,
+        "disjoint": 22
+      }
+    },
+    "y": {
+      "raw": {
+        "overlap": 0,
+        "disjoint": 22
+      },
+      "-raw": {
+        "overlap": 0,
+        "disjoint": 22
+      },
+      "raw*extent": {
+        "overlap": 22,
+        "disjoint": 0
+      },
+      "-raw*extent": {
+        "overlap": 0,
+        "disjoint": 22
+      },
+      "0.5-raw*extent": {
+        "overlap": 0,
+        "disjoint": 22
+      },
+      "raw*extent/2": {
+        "overlap": 0,
+        "disjoint": 22
+      },
+      "-raw*extent/2": {
+        "overlap": 0,
+        "disjoint": 22
+      }
+    }
+  },
+  "interval_model_is_overapproximation": true,
+  "float32_execution_witness_proven": false,
+  "adjacent_frames_assumed": false,
+  "preferred_formula": null,
+  "apply_formula": false,
+  "physical_jitter_semantics": "UNKNOWN",
+  "provenance_authenticated": false,
+  "gpu_completion_proven": false,
+  "quality_accepted": false,
+  "device_fault_cause": "UNKNOWN",
+  "target_executed": false,
+  "gpu_tested": false,
+  "input_file": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-M-sdk-input-20261106T225633\\session\\F7.log",
+  "input_bytes": 120296,
+  "input_sha256": "a43874b29ea9f0ad216d6860127445be4cbe4db58067cf898db25271a7971ee5",
+  "caller_supplied_session_receipt": {
+    "file": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-M-sdk-input-20261106T225633\\session\\result.json",
+    "sha256": "322fd332054ea4fd177dc3ef9b6caaaccd9eb5c2025571b10662dff247c8deb8",
+    "reported_pid": 23412,
+    "reported_creation_filetime": 134384794461024050,
+    "reported_started_utc": "2026-11-06T22:57:22.9597182Z",
+    "reported_modules": [
+      {
+        "path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-M-sdk-input-20261106T225633\\runtime\\OptiScaler.dll",
+        "bytes": 5095424,
+        "diskSha256": "A872E0443D60E5AEE4354FC902DB9E9E9317C3547B4C92EFE42F13E73E9CDD3A",
+        "mappedFullShaKnown": false,
+        "base": 140737159954432
+      }
+    ],
+    "reported_config_sha256": {
+      "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-M-sdk-input-20261106T225633\\runtime\\OptiScaler.ini": "a49f19dae9b97a80572cc9a81e90c01d7cc083ba005f28ffaf6754b35934f246"
+    },
+    "reported_runtime_inputs_stable": true,
+    "reported_final_process_state": {
+      "Pid": 23412,
+      "State": "Exited",
+      "Error": 0,
+      "CreationFileTime": 134384794461024050,
+      "ExitCode": 1,
+      "WaitResult": 0
+    },
+    "association": "caller-selected sidecar, not proven from dlss-input line contents",
+    "process_or_loaded_memory_identity_authenticated": false
+  }
+}

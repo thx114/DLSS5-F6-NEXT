@@ -1,0 +1,632 @@
+{
+  "schema": 1,
+  "cb": "C:\\Users\\thx11\\AppData\\Local\\Temp\\F7-isolated-tests\\scene-cb-motion-reviewed-20261106T193038\\raw-input\\camera-input-40288-929910133393-0\\capture-2.vs-cb2.bin",
+  "cb_bytes": 560,
+  "cb_sha256": "e67c41dd5fa53b23aee43f7ee849519fecf08a28c3ba723ceaddef2d1bbc304e",
+  "byte_order": "little-endian",
+  "offset_domain": "absolute bytes in entire resource; no range slicing",
+  "assumed_storage": "row-major",
+  "assumed_vectors": "row",
+  "camera_authority": false,
+  "source_authenticated": false,
+  "frame_authenticated": false,
+  "matrices": [
+    {
+      "resource_offset": 80,
+      "resource_float4": 5,
+      "raw_rows": [
+        [
+          1.5088834762573242,
+          -0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          -2.4142134189605713,
+          0.0,
+          0.0
+        ],
+        [
+          0.0008951376075856388,
+          -0.00100311532150954,
+          0.00041681528091430664,
+          -1.0
+        ],
+        [
+          0.0,
+          -0.0,
+          0.25010421872138977,
+          0.0
+        ]
+      ],
+      "interpretations": [
+        {
+          "storage": "row-major",
+          "vectors": "row",
+          "projection": {
+            "accepted": true,
+            "reason": "numerical-candidate-only",
+            "shape_residual": 0.0,
+            "homogeneous_scale": 1.0,
+            "w_z_sign": -1.0,
+            "focal_scale": [
+              1.5088834762573242,
+              -2.4142134189605713
+            ],
+            "fov_y_radians": 0.7853982054020061,
+            "aspect": 1.5999999051940395,
+            "ndc_center": [
+              -0.0008951376075856388,
+              0.00100311532150954
+            ],
+            "offset_semantics": "UNKNOWN",
+            "depth_a": -0.00041681528091430664,
+            "depth_b": 0.25010421872138977,
+            "hypotheses": [
+              {
+                "clip_range": "zero-to-one",
+                "reverse_z": true,
+                "near": 0.25000001489495277,
+                "far": 600.0361075361076,
+                "infinite_far": false,
+                "far_endpoint_gap": 0.00041681528091430664,
+                "endpoint_residual_domain": "full normalized matrix on view axis",
+                "near_ndc_residual": 0.0,
+                "far_ndc_residual": 0.0
+              }
+            ],
+            "camera_authority": false
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.828426432289291,
+            "determinant3": -0.0015183608403829306,
+            "affine_column_max_abs": 1.0,
+            "translation_row": [
+              0.0,
+              -0.0,
+              0.25010421872138977
+            ],
+            "camera_authority": false
+          }
+        },
+        {
+          "storage": "row-major",
+          "vectors": "column",
+          "projection": {
+            "accepted": false,
+            "reason": "noncanonical-depth-or-homogeneous-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.828427438529639,
+            "determinant3": -0.0015183608403829306,
+            "affine_column_max_abs": 1.0,
+            "translation_row": [
+              0.0,
+              0.0,
+              -1.0
+            ],
+            "camera_authority": false
+          }
+        },
+        {
+          "storage": "column-major",
+          "vectors": "row",
+          "projection": {
+            "accepted": false,
+            "reason": "noncanonical-depth-or-homogeneous-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.828427438529639,
+            "determinant3": -0.0015183608403829306,
+            "affine_column_max_abs": 1.0,
+            "translation_row": [
+              0.0,
+              0.0,
+              -1.0
+            ],
+            "camera_authority": false
+          }
+        },
+        {
+          "storage": "column-major",
+          "vectors": "column",
+          "projection": {
+            "accepted": true,
+            "reason": "numerical-candidate-only",
+            "shape_residual": 0.0,
+            "homogeneous_scale": 1.0,
+            "w_z_sign": -1.0,
+            "focal_scale": [
+              1.5088834762573242,
+              -2.4142134189605713
+            ],
+            "fov_y_radians": 0.7853982054020061,
+            "aspect": 1.5999999051940395,
+            "ndc_center": [
+              -0.0008951376075856388,
+              0.00100311532150954
+            ],
+            "offset_semantics": "UNKNOWN",
+            "depth_a": -0.00041681528091430664,
+            "depth_b": 0.25010421872138977,
+            "hypotheses": [
+              {
+                "clip_range": "zero-to-one",
+                "reverse_z": true,
+                "near": 0.25000001489495277,
+                "far": 600.0361075361076,
+                "infinite_far": false,
+                "far_endpoint_gap": 0.00041681528091430664,
+                "endpoint_residual_domain": "full normalized matrix on view axis",
+                "near_ndc_residual": 0.0,
+                "far_ndc_residual": 0.0
+              }
+            ],
+            "camera_authority": false
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.828426432289291,
+            "determinant3": -0.0015183608403829306,
+            "affine_column_max_abs": 1.0,
+            "translation_row": [
+              0.0,
+              -0.0,
+              0.25010421872138977
+            ],
+            "camera_authority": false
+          }
+        }
+      ]
+    },
+    {
+      "resource_offset": 144,
+      "resource_float4": 9,
+      "raw_rows": [
+        [
+          -1.000000238418579,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.9950659275054932,
+          -0.09921568632125854,
+          0.0
+        ],
+        [
+          0.0,
+          0.09921568632125854,
+          0.9950661659240723,
+          0.0
+        ],
+        [
+          0.0,
+          0.18117046356201172,
+          62.29133605957031,
+          1.0
+        ]
+      ],
+      "interpretations": [
+        {
+          "storage": "row-major",
+          "vectors": "row",
+          "projection": {
+            "accepted": false,
+            "reason": "nonfinite-or-no-perspective-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.768372150465439e-07,
+            "determinant3": -1.0000004281553947,
+            "affine_column_max_abs": 0.0,
+            "translation_row": [
+              0.0,
+              0.18117046356201172,
+              62.29133605957031
+            ],
+            "camera_authority": false
+          }
+        },
+        {
+          "storage": "row-major",
+          "vectors": "column",
+          "projection": {
+            "accepted": false,
+            "reason": "noncanonical-depth-or-homogeneous-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.768372150465439e-07,
+            "determinant3": -1.0000004281553947,
+            "affine_column_max_abs": 62.29133605957031,
+            "translation_row": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "camera_authority": false
+          }
+        },
+        {
+          "storage": "column-major",
+          "vectors": "row",
+          "projection": {
+            "accepted": false,
+            "reason": "noncanonical-depth-or-homogeneous-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.768372150465439e-07,
+            "determinant3": -1.0000004281553947,
+            "affine_column_max_abs": 62.29133605957031,
+            "translation_row": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "camera_authority": false
+          }
+        },
+        {
+          "storage": "column-major",
+          "vectors": "column",
+          "projection": {
+            "accepted": false,
+            "reason": "nonfinite-or-no-perspective-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.768372150465439e-07,
+            "determinant3": -1.0000004281553947,
+            "affine_column_max_abs": 0.0,
+            "translation_row": [
+              0.0,
+              0.18117046356201172,
+              62.29133605957031
+            ],
+            "camera_authority": false
+          }
+        }
+      ]
+    },
+    {
+      "resource_offset": 208,
+      "resource_float4": 13,
+      "raw_rows": [
+        [
+          -0.9999997615814209,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.9950660467147827,
+          0.09921567142009735,
+          0.0
+        ],
+        [
+          -0.0,
+          -0.09921567142009735,
+          0.9950658082962036,
+          0.0
+        ],
+        [
+          -0.0,
+          6.000000476837158,
+          -62.001953125,
+          1.0
+        ]
+      ],
+      "interpretations": [
+        {
+          "storage": "row-major",
+          "vectors": "row",
+          "projection": {
+            "accepted": false,
+            "reason": "nonfinite-or-no-perspective-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.7683710135970614e-07,
+            "determinant3": -0.9999997111191268,
+            "affine_column_max_abs": 0.0,
+            "translation_row": [
+              -0.0,
+              6.000000476837158,
+              -62.001953125
+            ],
+            "camera_authority": false
+          }
+        },
+        {
+          "storage": "row-major",
+          "vectors": "column",
+          "projection": {
+            "accepted": false,
+            "reason": "noncanonical-depth-or-homogeneous-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.7683710135970614e-07,
+            "determinant3": -0.9999997111191268,
+            "affine_column_max_abs": 62.001953125,
+            "translation_row": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "camera_authority": false
+          }
+        },
+        {
+          "storage": "column-major",
+          "vectors": "row",
+          "projection": {
+            "accepted": false,
+            "reason": "noncanonical-depth-or-homogeneous-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.7683710135970614e-07,
+            "determinant3": -0.9999997111191268,
+            "affine_column_max_abs": 62.001953125,
+            "translation_row": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "camera_authority": false
+          }
+        },
+        {
+          "storage": "column-major",
+          "vectors": "column",
+          "projection": {
+            "accepted": false,
+            "reason": "nonfinite-or-no-perspective-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.7683710135970614e-07,
+            "determinant3": -0.9999997111191268,
+            "affine_column_max_abs": 0.0,
+            "translation_row": [
+              -0.0,
+              6.000000476837158,
+              -62.001953125
+            ],
+            "camera_authority": false
+          }
+        }
+      ]
+    },
+    {
+      "resource_offset": 272,
+      "resource_float4": 17,
+      "raw_rows": [
+        [
+          -1.5088838338851929,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          -8.881169196683913e-05,
+          -2.4022021293640137,
+          -4.1354614950250834e-05,
+          0.09921568632125854
+        ],
+        [
+          0.0008907211595214903,
+          -0.2405260056257248,
+          0.0004147587751504034,
+          -0.9950661659240723
+        ],
+        [
+          0.05575931817293167,
+          -0.49986955523490906,
+          0.27606821060180664,
+          -62.29133605957031
+        ]
+      ],
+      "interpretations": [
+        {
+          "storage": "row-major",
+          "vectors": "row",
+          "projection": {
+            "accepted": false,
+            "reason": "noncanonical-depth-or-homogeneous-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.770575079918722,
+            "determinant3": 0.0015183615454530967,
+            "affine_column_max_abs": 63.29133605957031,
+            "translation_row": [
+              0.05575931817293167,
+              -0.49986955523490906,
+              0.27606821060180664
+            ],
+            "camera_authority": false
+          }
+        },
+        {
+          "storage": "row-major",
+          "vectors": "column",
+          "projection": {
+            "accepted": false,
+            "reason": "noncanonical-depth-or-homogeneous-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.8284278297032674,
+            "determinant3": 0.0015183615454530967,
+            "affine_column_max_abs": 63.29133605957031,
+            "translation_row": [
+              0.0,
+              0.09921568632125854,
+              -0.9950661659240723
+            ],
+            "camera_authority": false
+          }
+        },
+        {
+          "storage": "column-major",
+          "vectors": "row",
+          "projection": {
+            "accepted": false,
+            "reason": "noncanonical-depth-or-homogeneous-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.8284278297032674,
+            "determinant3": 0.0015183615454530967,
+            "affine_column_max_abs": 63.29133605957031,
+            "translation_row": [
+              0.0,
+              0.09921568632125854,
+              -0.9950661659240723
+            ],
+            "camera_authority": false
+          }
+        },
+        {
+          "storage": "column-major",
+          "vectors": "column",
+          "projection": {
+            "accepted": false,
+            "reason": "noncanonical-depth-or-homogeneous-w"
+          },
+          "rigid": {
+            "orthogonality_max_abs": 4.770575079918722,
+            "determinant3": 0.0015183615454530967,
+            "affine_column_max_abs": 63.29133605957031,
+            "translation_row": [
+              0.05575931817293167,
+              -0.49986955523490906,
+              0.27606821060180664
+            ],
+            "camera_authority": false
+          }
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "path": "C:\\Users\\thx11\\AppData\\Local\\Temp\\F7-isolated-tests\\scene-cb-motion-reviewed-20261106T193038\\raw-input\\camera-input-40288-929910133393-0\\capture-2.json",
+    "sha256": "5d7ecc96307c05f4e65f83784e48c221c0b0b435e93700bb0b4b4e091290a340",
+    "observation": {
+      "pid": 40288,
+      "captureOrdinal": 2,
+      "qpc": "930661271757",
+      "vertexShaderHashFnv1a64": "0xd6a48a95ee161282",
+      "pixelShaderHashFnv1a64": "0x397309a4f449ba95",
+      "cbSlot": 2,
+      "cbDumpRange": "entire-resource-raw-no-range-or-field-interpretation"
+    },
+    "firstConstant16ByteUnits": 0,
+    "numConstants16ByteUnits": 4096,
+    "requested_bytes": [
+      0,
+      65536
+    ],
+    "requested_range_extends_past_resource": true,
+    "range_interpretation": "recorded only; no crop, clamp or correction"
+  },
+  "inverse_pair": {
+    "offsets": [
+      144,
+      208
+    ],
+    "residual": {
+      "a_times_b": {
+        "max_abs": 4.901505832322073e-07,
+        "relative_max": 4.901505832322073e-07
+      },
+      "b_times_a": {
+        "max_abs": 3.881564765606527e-06,
+        "relative_max": 3.881564765606527e-06
+      }
+    }
+  },
+  "product": {
+    "offsets": [
+      144,
+      80,
+      272
+    ],
+    "order": "first * second compared with third",
+    "residual": {
+      "max_abs": 1.39204888061073e-07,
+      "relative_max": 2.2347391606426437e-09
+    }
+  },
+  "clip_relation": {
+    "previous_cb": "C:\\Users\\thx11\\AppData\\Local\\Temp\\F7-isolated-tests\\scene-cb-motion-reviewed-20261106T193038\\raw-input\\camera-input-40288-929910133393-0\\capture-1.vs-cb2.bin",
+    "previous_sha256": "9baa33e1bf6326140533e8e517e0c1c183b01ded30f33544160ebcc4dd645d81",
+    "resource_offset": 272,
+    "assumptions": "common world; same declared layout; jitter retained; order supplied by caller",
+    "result": {
+      "matrix": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.1490468063693406e-12,
+          0.9999999647575627,
+          -2.4923081103193435e-21,
+          5.030360342488635e-18
+        ],
+        [
+          -1.7044481208282137e-08,
+          2.6368731420589597e-06,
+          0.9999999999999999,
+          2.0872192862952943e-14
+        ],
+        [
+          -0.00016278501198173137,
+          0.00046293320198123513,
+          -9.232659125071874e-20,
+          1.0000000000000002
+        ]
+      ],
+      "inverse": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          -1.1490468476834193e-12,
+          1.0000000352424385,
+          2.492308198154359e-21,
+          -5.030360519770799e-18
+        ],
+        [
+          1.704448120791435e-08,
+          -2.6368732349791373e-06,
+          1.0000000000000002,
+          -2.087219284968852e-14
+        ],
+        [
+          0.00016278501198226328,
+          -0.00046293321829612993,
+          9.232543747850424e-20,
+          0.9999999999999998
+        ]
+      ],
+      "inverse_residual": {
+        "a_times_b": {
+          "max_abs": 4.754449597105314e-21,
+          "relative_max": 4.754449597105314e-21
+        },
+        "b_times_a": {
+          "max_abs": 4.754828678119311e-21,
+          "relative_max": 4.754828678119311e-21
+        }
+      },
+      "reconstruction": {
+        "max_abs": 7.105427357601002e-15,
+        "relative_max": 1.140676666624385e-16
+      },
+      "camera_authority": false,
+      "history_authenticated": false
+    }
+  }
+}

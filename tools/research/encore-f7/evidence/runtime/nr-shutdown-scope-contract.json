@@ -1,0 +1,923 @@
+{
+  "function_records": [
+    {
+      "name": "payload_loader",
+      "begin": "0x356f60",
+      "end": "0x35829a",
+      "unwind": "0xd3c130"
+    },
+    {
+      "name": "state_accessor",
+      "begin": "0x35a450",
+      "end": "0x35a4cc",
+      "unwind": "0xd3c84c"
+    },
+    {
+      "name": "state_exit_cleanup_head",
+      "begin": "0x539bc0",
+      "end": "0x539bea",
+      "unwind": "0xd03020"
+    },
+    {
+      "name": "state_exit_cleanup_middle",
+      "begin": "0x539bea",
+      "end": "0x539c0a",
+      "unwind": "0xd3c870"
+    },
+    {
+      "name": "state_exit_cleanup_tail",
+      "begin": "0x539c0a",
+      "end": "0x539c43",
+      "unwind": "0xd3c884"
+    },
+    {
+      "name": "context_capture_caller",
+      "begin": "0x153260",
+      "end": "0x155b5e",
+      "unwind": "0xd19ac4"
+    },
+    {
+      "name": "context_evaluate_consumer",
+      "begin": "0x1458f0",
+      "end": "0x145d10",
+      "unwind": "0xd19c90"
+    },
+    {
+      "name": "cleanup_narrow_buffer",
+      "begin": "0xc6c0",
+      "end": "0xc725",
+      "unwind": "0xd03004"
+    },
+    {
+      "name": "cleanup_pointer_buffer",
+      "begin": "0xc7b0",
+      "end": "0xc818",
+      "unwind": "0xd03004"
+    },
+    {
+      "name": "cleanup_wide_buffer",
+      "begin": "0x18200",
+      "end": "0x1826f",
+      "unwind": "0xd03004"
+    },
+    {
+      "name": "cleanup_config_head",
+      "begin": "0x35ae70",
+      "end": "0x35ae89",
+      "unwind": "0xd03480"
+    },
+    {
+      "name": "cleanup_config_middle",
+      "begin": "0x35ae89",
+      "end": "0x35aee8",
+      "unwind": "0xd3c7e4"
+    },
+    {
+      "name": "cleanup_config_tail",
+      "begin": "0x35aee8",
+      "end": "0x35af26",
+      "unwind": "0xd3c7f8"
+    },
+    {
+      "name": "cleanup_heap_free",
+      "begin": "0x50b6c0",
+      "end": "0x50b6fc",
+      "unwind": "0xd59d34"
+    }
+  ],
+  "imports": [
+    {
+      "iat_rva": "0x53b3f0",
+      "dll": "KERNEL32.dll",
+      "name": "FreeLibrary"
+    },
+    {
+      "iat_rva": "0x53b668",
+      "dll": "KERNEL32.dll",
+      "name": "HeapFree"
+    },
+    {
+      "iat_rva": "0x53b348",
+      "dll": "KERNEL32.dll",
+      "name": "GetLastError"
+    }
+  ],
+  "bounded_cleanup": {
+    "windows": [
+      {
+        "name": "nr-cleanup-narrow-buffer",
+        "begin": "0xc6c0",
+        "end": "0xc725",
+        "function_records": [
+          {
+            "name": "cleanup_narrow_buffer",
+            "begin": "0xc6c0",
+            "end": "0xc725",
+            "unwind": "0xd03004"
+          }
+        ]
+      },
+      {
+        "name": "nr-cleanup-pointer-buffer",
+        "begin": "0xc7b0",
+        "end": "0xc818",
+        "function_records": [
+          {
+            "name": "cleanup_pointer_buffer",
+            "begin": "0xc7b0",
+            "end": "0xc818",
+            "unwind": "0xd03004"
+          }
+        ]
+      },
+      {
+        "name": "nr-cleanup-wide-buffer",
+        "begin": "0x18200",
+        "end": "0x1826f",
+        "function_records": [
+          {
+            "name": "cleanup_wide_buffer",
+            "begin": "0x18200",
+            "end": "0x1826f",
+            "unwind": "0xd03004"
+          }
+        ]
+      },
+      {
+        "name": "nr-cleanup-config-records",
+        "begin": "0x35ae70",
+        "end": "0x35af26",
+        "function_records": [
+          {
+            "name": "cleanup_config_head",
+            "begin": "0x35ae70",
+            "end": "0x35ae89",
+            "unwind": "0xd03480"
+          },
+          {
+            "name": "cleanup_config_middle",
+            "begin": "0x35ae89",
+            "end": "0x35aee8",
+            "unwind": "0xd3c7e4"
+          },
+          {
+            "name": "cleanup_config_tail",
+            "begin": "0x35aee8",
+            "end": "0x35af26",
+            "unwind": "0xd3c7f8"
+          }
+        ]
+      },
+      {
+        "name": "nr-cleanup-free-thunk-1",
+        "begin": "0x4e76f0",
+        "end": "0x4e76f5",
+        "function_records": []
+      },
+      {
+        "name": "nr-cleanup-free-thunk-2",
+        "begin": "0x4e80a0",
+        "end": "0x4e80a5",
+        "function_records": []
+      },
+      {
+        "name": "nr-cleanup-free-thunk-3",
+        "begin": "0x4f7de0",
+        "end": "0x4f7de5",
+        "function_records": []
+      },
+      {
+        "name": "nr-cleanup-heap-free",
+        "begin": "0x50b6c0",
+        "end": "0x50b6fc",
+        "function_records": [
+          {
+            "name": "cleanup_heap_free",
+            "begin": "0x50b6c0",
+            "end": "0x50b6fc",
+            "unwind": "0xd59d34"
+          }
+        ]
+      }
+    ],
+    "direct_edges": [
+      {
+        "rva": "0x539bcb",
+        "bytes": "e8e02badff",
+        "target_rva": "0xc7b0",
+        "mnemonic": "call",
+        "purpose": "pointer-buffer"
+      },
+      {
+        "rva": "0x539bf8",
+        "bytes": "e8f3dafaff",
+        "target_rva": "0x4e76f0",
+        "mnemonic": "call",
+        "purpose": "linked-node buffer"
+      },
+      {
+        "rva": "0x539c16",
+        "bytes": "e8d5dafaff",
+        "target_rva": "0x4e76f0",
+        "mnemonic": "call",
+        "purpose": "linked-node root buffer"
+      },
+      {
+        "rva": "0x539c22",
+        "bytes": "e8d9e5adff",
+        "target_rva": "0x18200",
+        "mnemonic": "call",
+        "purpose": "first wide-buffer"
+      },
+      {
+        "rva": "0x539c2e",
+        "bytes": "e83d12e2ff",
+        "target_rva": "0x35ae70",
+        "mnemonic": "call",
+        "purpose": "config-record vector"
+      },
+      {
+        "rva": "0x539c3e",
+        "bytes": "e9bde5adff",
+        "target_rva": "0x18200",
+        "mnemonic": "jmp",
+        "purpose": "tail wide-buffer"
+      },
+      {
+        "rva": "0x35ae9b",
+        "bytes": "e82018cbff",
+        "target_rva": "0xc6c0",
+        "mnemonic": "call",
+        "purpose": "record inner narrow-buffer"
+      },
+      {
+        "rva": "0x35af09",
+        "bytes": "e8e2c71800",
+        "target_rva": "0x4e76f0",
+        "mnemonic": "call",
+        "purpose": "config backing buffer"
+      },
+      {
+        "rva": "0xc707",
+        "bytes": "e8e4af4d00",
+        "target_rva": "0x4e76f0",
+        "mnemonic": "call",
+        "purpose": "narrow backing buffer"
+      },
+      {
+        "rva": "0xc800",
+        "bytes": "e8ebae4d00",
+        "target_rva": "0x4e76f0",
+        "mnemonic": "call",
+        "purpose": "pointer backing buffer"
+      },
+      {
+        "rva": "0x1824f",
+        "bytes": "e89cf44c00",
+        "target_rva": "0x4e76f0",
+        "mnemonic": "call",
+        "purpose": "wide backing buffer"
+      },
+      {
+        "rva": "0x50b6e8",
+        "bytes": "e88fb5feff",
+        "target_rva": "0x4f6c7c",
+        "mnemonic": "call",
+        "purpose": "UNKNOWN failure helper"
+      },
+      {
+        "rva": "0x50b6ef",
+        "bytes": "e8c8b6feff",
+        "target_rva": "0x4f6dbc",
+        "mnemonic": "call",
+        "purpose": "UNKNOWN failure helper"
+      }
+    ],
+    "leaf_thunks": [
+      {
+        "rva": "0x4e76f0",
+        "bytes": "e9ab090000",
+        "end_rva": "0x4e76f5",
+        "target_rva": "0x4e80a0",
+        "mnemonic": "jmp",
+        "pdata_coverage": false
+      },
+      {
+        "rva": "0x4e80a0",
+        "bytes": "e93bfd0000",
+        "end_rva": "0x4e80a5",
+        "target_rva": "0x4f7de0",
+        "mnemonic": "jmp",
+        "pdata_coverage": false
+      },
+      {
+        "rva": "0x4f7de0",
+        "bytes": "e9db380100",
+        "end_rva": "0x4f7de5",
+        "target_rva": "0x50b6c0",
+        "mnemonic": "jmp",
+        "pdata_coverage": false
+      }
+    ],
+    "import_calls": [
+      {
+        "rva": "0x50b6d6",
+        "bytes": "ff158cff0200",
+        "iat_rva": "0x53b668",
+        "dll": "KERNEL32.dll",
+        "name": "HeapFree"
+      },
+      {
+        "rva": "0x50b6e0",
+        "bytes": "ff1562fc0200",
+        "iat_rva": "0x53b348",
+        "dll": "KERNEL32.dll",
+        "name": "GetLastError"
+      }
+    ],
+    "instruction_bindings": [
+      {
+        "rva": "0x539bc4",
+        "bytes": "488d0d95a41201",
+        "mnemonic": "lea",
+        "operands": "rcx, [rip + 0x112a495]",
+        "observation": "pointer-buffer at 0x1664060"
+      },
+      {
+        "rva": "0x539bd0",
+        "bytes": "488b0d79a41201",
+        "mnemonic": "mov",
+        "operands": "rcx, qword ptr [rip + 0x112a479]",
+        "observation": "node root at 0x1664050"
+      },
+      {
+        "rva": "0x539bd7",
+        "bytes": "488b4108",
+        "mnemonic": "mov",
+        "operands": "rax, qword ptr [rcx + 8]",
+        "observation": "node root link +0x8"
+      },
+      {
+        "rva": "0x539bdb",
+        "bytes": "48c70000000000",
+        "mnemonic": "mov",
+        "operands": "qword ptr [rax], 0",
+        "observation": "clear pointed-to link"
+      },
+      {
+        "rva": "0x539be2",
+        "bytes": "488b09",
+        "mnemonic": "mov",
+        "operands": "rcx, qword ptr [rcx]",
+        "observation": "node root +0x0"
+      },
+      {
+        "rva": "0x539bf0",
+        "bytes": "488b19",
+        "mnemonic": "mov",
+        "operands": "rbx, qword ptr [rcx]",
+        "observation": "next node +0x0 before free"
+      },
+      {
+        "rva": "0x539bf3",
+        "bytes": "ba20000000",
+        "mnemonic": "mov",
+        "operands": "edx, 0x20",
+        "observation": "node allocation size argument"
+      },
+      {
+        "rva": "0x539c03",
+        "bytes": "75eb",
+        "mnemonic": "jne",
+        "operands": "0x180539bf0",
+        "observation": "continue non-null node traversal"
+      },
+      {
+        "rva": "0x539c0a",
+        "bytes": "488b0d3fa41201",
+        "mnemonic": "mov",
+        "operands": "rcx, qword ptr [rip + 0x112a43f]",
+        "observation": "node root backing pointer"
+      },
+      {
+        "rva": "0x539c11",
+        "bytes": "ba20000000",
+        "mnemonic": "mov",
+        "operands": "edx, 0x20",
+        "observation": "root allocation size argument"
+      },
+      {
+        "rva": "0x539c1b",
+        "bytes": "488d0d3ea31201",
+        "mnemonic": "lea",
+        "operands": "rcx, [rip + 0x112a33e]",
+        "observation": "wide-buffer at 0x1663f60"
+      },
+      {
+        "rva": "0x539c27",
+        "bytes": "488d0d1aa31201",
+        "mnemonic": "lea",
+        "operands": "rcx, [rip + 0x112a31a]",
+        "observation": "config vector at 0x1663f48"
+      },
+      {
+        "rva": "0x539c33",
+        "bytes": "488d0d26a21201",
+        "mnemonic": "lea",
+        "operands": "rcx, [rip + 0x112a226]",
+        "observation": "wide-buffer at 0x1663e60"
+      },
+      {
+        "rva": "0xc6c9",
+        "bytes": "488b4918",
+        "mnemonic": "mov",
+        "operands": "rcx, qword ptr [rcx + 0x18]",
+        "observation": "narrow capacity +0x18"
+      },
+      {
+        "rva": "0xc6cd",
+        "bytes": "4883f90f",
+        "mnemonic": "cmp",
+        "operands": "rcx, 0xf",
+        "observation": "narrow inline capacity 15"
+      },
+      {
+        "rva": "0xc6d1",
+        "bytes": "7639",
+        "mnemonic": "jbe",
+        "operands": "0x18000c70c",
+        "observation": "narrow inline skips free"
+      },
+      {
+        "rva": "0xc6d3",
+        "bytes": "488b03",
+        "mnemonic": "mov",
+        "operands": "rax, qword ptr [rbx]",
+        "observation": "narrow backing pointer +0x0"
+      },
+      {
+        "rva": "0xc6d6",
+        "bytes": "488d5101",
+        "mnemonic": "lea",
+        "operands": "rdx, [rcx + 1]",
+        "observation": "narrow capacity plus terminator"
+      },
+      {
+        "rva": "0xc70c",
+        "bytes": "48c7431000000000",
+        "mnemonic": "mov",
+        "operands": "qword ptr [rbx + 0x10], 0",
+        "observation": "narrow length +0x10 reset"
+      },
+      {
+        "rva": "0xc714",
+        "bytes": "48c743180f000000",
+        "mnemonic": "mov",
+        "operands": "qword ptr [rbx + 0x18], 0xf",
+        "observation": "narrow capacity reset"
+      },
+      {
+        "rva": "0xc71c",
+        "bytes": "c60300",
+        "mnemonic": "mov",
+        "operands": "byte ptr [rbx], 0",
+        "observation": "narrow first byte reset"
+      },
+      {
+        "rva": "0xc7b6",
+        "bytes": "488b11",
+        "mnemonic": "mov",
+        "operands": "rdx, qword ptr [rcx]",
+        "observation": "pointer-buffer begin +0x0"
+      },
+      {
+        "rva": "0xc7bf",
+        "bytes": "7451",
+        "mnemonic": "je",
+        "operands": "0x18000c812",
+        "observation": "null pointer-buffer skips free/reset"
+      },
+      {
+        "rva": "0xc7c1",
+        "bytes": "488b4110",
+        "mnemonic": "mov",
+        "operands": "rax, qword ptr [rcx + 0x10]",
+        "observation": "pointer-buffer allocation end +0x10"
+      },
+      {
+        "rva": "0xc7c5",
+        "bytes": "482bc2",
+        "mnemonic": "sub",
+        "operands": "rax, rdx",
+        "observation": "pointer-buffer allocated byte span"
+      },
+      {
+        "rva": "0xc7c8",
+        "bytes": "48c1f803",
+        "mnemonic": "sar",
+        "operands": "rax, 3",
+        "observation": "pointer element count divides by 8"
+      },
+      {
+        "rva": "0xc7cc",
+        "bytes": "488d04c500000000",
+        "mnemonic": "lea",
+        "operands": "rax, [rax*8]",
+        "observation": "pointer element stride 8"
+      },
+      {
+        "rva": "0xc805",
+        "bytes": "33c0",
+        "mnemonic": "xor",
+        "operands": "eax, eax",
+        "observation": "pointer reset value zero"
+      },
+      {
+        "rva": "0xc807",
+        "bytes": "488903",
+        "mnemonic": "mov",
+        "operands": "qword ptr [rbx], rax",
+        "observation": "pointer begin +0x0 reset"
+      },
+      {
+        "rva": "0xc80a",
+        "bytes": "48894308",
+        "mnemonic": "mov",
+        "operands": "qword ptr [rbx + 8], rax",
+        "observation": "pointer end +0x8 reset"
+      },
+      {
+        "rva": "0xc80e",
+        "bytes": "48894310",
+        "mnemonic": "mov",
+        "operands": "qword ptr [rbx + 0x10], rax",
+        "observation": "pointer allocation end +0x10 reset"
+      },
+      {
+        "rva": "0x18209",
+        "bytes": "488b4918",
+        "mnemonic": "mov",
+        "operands": "rcx, qword ptr [rcx + 0x18]",
+        "observation": "wide capacity +0x18"
+      },
+      {
+        "rva": "0x1820d",
+        "bytes": "4883f907",
+        "mnemonic": "cmp",
+        "operands": "rcx, 7",
+        "observation": "wide inline capacity 7"
+      },
+      {
+        "rva": "0x18211",
+        "bytes": "7641",
+        "mnemonic": "jbe",
+        "operands": "0x180018254",
+        "observation": "wide inline skips free"
+      },
+      {
+        "rva": "0x18213",
+        "bytes": "488b03",
+        "mnemonic": "mov",
+        "operands": "rax, qword ptr [rbx]",
+        "observation": "wide backing pointer +0x0"
+      },
+      {
+        "rva": "0x18216",
+        "bytes": "488d144d02000000",
+        "mnemonic": "lea",
+        "operands": "rdx, [rcx*2 + 2]",
+        "observation": "wide 2-byte units plus terminator"
+      },
+      {
+        "rva": "0x18254",
+        "bytes": "33c0",
+        "mnemonic": "xor",
+        "operands": "eax, eax",
+        "observation": "wide reset value zero"
+      },
+      {
+        "rva": "0x18256",
+        "bytes": "48c7431000000000",
+        "mnemonic": "mov",
+        "operands": "qword ptr [rbx + 0x10], 0",
+        "observation": "wide length +0x10 reset"
+      },
+      {
+        "rva": "0x1825e",
+        "bytes": "668903",
+        "mnemonic": "mov",
+        "operands": "word ptr [rbx], ax",
+        "observation": "wide first 2-byte unit reset"
+      },
+      {
+        "rva": "0x18261",
+        "bytes": "48c7431807000000",
+        "mnemonic": "mov",
+        "operands": "qword ptr [rbx + 0x18], 7",
+        "observation": "wide capacity reset"
+      },
+      {
+        "rva": "0x35ae7a",
+        "bytes": "488b19",
+        "mnemonic": "mov",
+        "operands": "rbx, qword ptr [rcx]",
+        "observation": "config begin +0x0"
+      },
+      {
+        "rva": "0x35ae83",
+        "bytes": "0f8492000000",
+        "mnemonic": "je",
+        "operands": "0x18035af1b",
+        "observation": "null config begin skips cleanup"
+      },
+      {
+        "rva": "0x35ae8e",
+        "bytes": "488b7908",
+        "mnemonic": "mov",
+        "operands": "rdi, qword ptr [rcx + 8]",
+        "observation": "config end +0x8"
+      },
+      {
+        "rva": "0x35ae95",
+        "bytes": "7412",
+        "mnemonic": "je",
+        "operands": "0x18035aea9",
+        "observation": "empty config vector skips inner cleanup"
+      },
+      {
+        "rva": "0x35ae97",
+        "bytes": "488d4b18",
+        "mnemonic": "lea",
+        "operands": "rcx, [rbx + 0x18]",
+        "observation": "config inner narrow-buffer +0x18"
+      },
+      {
+        "rva": "0x35aea0",
+        "bytes": "4883c348",
+        "mnemonic": "add",
+        "operands": "rbx, 0x48",
+        "observation": "config record stride 0x48"
+      },
+      {
+        "rva": "0x35aea7",
+        "bytes": "75ee",
+        "mnemonic": "jne",
+        "operands": "0x18035ae97",
+        "observation": "repeat inner cleanup up to end"
+      },
+      {
+        "rva": "0x35aea9",
+        "bytes": "4c8b06",
+        "mnemonic": "mov",
+        "operands": "r8, qword ptr [rsi]",
+        "observation": "config backing pointer +0x0"
+      },
+      {
+        "rva": "0x35aeb6",
+        "bytes": "488b4e10",
+        "mnemonic": "mov",
+        "operands": "rcx, qword ptr [rsi + 0x10]",
+        "observation": "config allocation end +0x10"
+      },
+      {
+        "rva": "0x35af0e",
+        "bytes": "33c0",
+        "mnemonic": "xor",
+        "operands": "eax, eax",
+        "observation": "config reset value zero"
+      },
+      {
+        "rva": "0x35af10",
+        "bytes": "488906",
+        "mnemonic": "mov",
+        "operands": "qword ptr [rsi], rax",
+        "observation": "config begin +0x0 reset"
+      },
+      {
+        "rva": "0x35af13",
+        "bytes": "48894608",
+        "mnemonic": "mov",
+        "operands": "qword ptr [rsi + 8], rax",
+        "observation": "config end +0x8 reset"
+      },
+      {
+        "rva": "0x35af17",
+        "bytes": "48894610",
+        "mnemonic": "mov",
+        "operands": "qword ptr [rsi + 0x10], rax",
+        "observation": "config allocation end +0x10 reset"
+      },
+      {
+        "rva": "0xc6ff",
+        "bytes": "cd29",
+        "mnemonic": "int",
+        "operands": "0x29",
+        "observation": "narrow invalid-allocation fail-fast"
+      },
+      {
+        "rva": "0xc7f8",
+        "bytes": "cd29",
+        "mnemonic": "int",
+        "operands": "0x29",
+        "observation": "pointer invalid-allocation fail-fast"
+      },
+      {
+        "rva": "0x18247",
+        "bytes": "cd29",
+        "mnemonic": "int",
+        "operands": "0x29",
+        "observation": "wide invalid-allocation fail-fast"
+      },
+      {
+        "rva": "0x35af04",
+        "bytes": "cd29",
+        "mnemonic": "int",
+        "operands": "0x29",
+        "observation": "config invalid-allocation fail-fast"
+      },
+      {
+        "rva": "0x50b6c0",
+        "bytes": "4885c9",
+        "mnemonic": "test",
+        "operands": "rcx, rcx",
+        "observation": "null allocation test"
+      },
+      {
+        "rva": "0x50b6c3",
+        "bytes": "7436",
+        "mnemonic": "je",
+        "operands": "0x18050b6fb",
+        "observation": "null allocation returns without HeapFree"
+      },
+      {
+        "rva": "0x50b6ca",
+        "bytes": "4c8bc1",
+        "mnemonic": "mov",
+        "operands": "r8, rcx",
+        "observation": "HeapFree allocation argument"
+      },
+      {
+        "rva": "0x50b6cd",
+        "bytes": "33d2",
+        "mnemonic": "xor",
+        "operands": "edx, edx",
+        "observation": "HeapFree flags zero"
+      },
+      {
+        "rva": "0x50b6cf",
+        "bytes": "488b0d5ab71501",
+        "mnemonic": "mov",
+        "operands": "rcx, qword ptr [rip + 0x115b75a]",
+        "observation": "heap handle from 0x1666e30"
+      },
+      {
+        "rva": "0x50b6dc",
+        "bytes": "85c0",
+        "mnemonic": "test",
+        "operands": "eax, eax",
+        "observation": "HeapFree BOOL result test"
+      },
+      {
+        "rva": "0x50b6de",
+        "bytes": "7516",
+        "mnemonic": "jne",
+        "operands": "0x18050b6f6",
+        "observation": "nonzero HeapFree result skips failure helpers"
+      },
+      {
+        "rva": "0x50b6e6",
+        "bytes": "8bc8",
+        "mnemonic": "mov",
+        "operands": "ecx, eax",
+        "observation": "GetLastError result passed to UNKNOWN helper"
+      },
+      {
+        "rva": "0x50b6ed",
+        "bytes": "8bd8",
+        "mnemonic": "mov",
+        "operands": "ebx, eax",
+        "observation": "save first UNKNOWN helper result"
+      },
+      {
+        "rva": "0x50b6f4",
+        "bytes": "8918",
+        "mnemonic": "mov",
+        "operands": "dword ptr [rax], ebx",
+        "observation": "write result through second UNKNOWN helper pointer"
+      },
+      {
+        "rva": "0x50b6fb",
+        "bytes": "c3",
+        "mnemonic": "ret",
+        "operands": "",
+        "observation": "allocation-free block return"
+      }
+    ],
+    "container_layouts": {
+      "narrow_buffer": {
+        "pointer_offset": "0x0",
+        "length_offset": "0x10",
+        "capacity_offset": "0x18",
+        "inline_capacity": 15,
+        "unit_bytes": 1
+      },
+      "pointer_buffer": {
+        "begin_offset": "0x0",
+        "end_offset": "0x8",
+        "allocation_end_offset": "0x10",
+        "element_stride": "0x8"
+      },
+      "wide_buffer": {
+        "pointer_offset": "0x0",
+        "length_offset": "0x10",
+        "capacity_offset": "0x18",
+        "inline_capacity": 7,
+        "unit_bytes": 2
+      },
+      "config_records": {
+        "begin_offset": "0x0",
+        "end_offset": "0x8",
+        "allocation_end_offset": "0x10",
+        "record_stride": "0x48",
+        "inner_narrow_offset": "0x18",
+        "inner_argument_rva": "0x35ae97",
+        "advance_rva": "0x35aea0"
+      },
+      "linked_nodes": {
+        "next_offset": "0x0",
+        "allocation_size_argument": "0x20"
+      }
+    },
+    "normal_heap_path": {
+      "null_return_branch_rva": "0x50b6c3",
+      "allocation_to_r8_rva": "0x50b6ca",
+      "flags_zero_rva": "0x50b6cd",
+      "heap_handle_slot_rva": "0x1666e30",
+      "heap_handle_load_rva": "0x50b6cf",
+      "heap_free_call_rva": "0x50b6d6",
+      "result_test_rva": "0x50b6dc",
+      "nonzero_branch_rva": "0x50b6de",
+      "nonzero_target_rva": "0x50b6f6",
+      "return_rva": "0x50b6fb",
+      "runtime_success_proven": false
+    },
+    "failure_path": {
+      "condition": "HeapFree returned zero",
+      "get_last_error_call_rva": "0x50b6e0",
+      "result_store_rva": "0x50b6f4",
+      "helpers_fully_recovered": false
+    },
+    "unknown_failure_helpers": [
+      {
+        "call_rva": "0x50b6e8",
+        "target_rva": "0x4f6c7c",
+        "status": "UNKNOWN",
+        "body_decoded": false
+      },
+      {
+        "call_rva": "0x50b6ef",
+        "target_rva": "0x4f6dbc",
+        "status": "UNKNOWN",
+        "body_decoded": false
+      }
+    ],
+    "invalid_allocation_fail_fast_rvas": [
+      "0xc6ff",
+      "0xc7f8",
+      "0x18247",
+      "0x35af04"
+    ],
+    "scope": "Only the decoded direct paths show CPU container memory cleanup; failure helper bodies remain UNKNOWN; no payload Shutdown, GPU retirement or successful-session unload authentication"
+  },
+  "payload_state_rva": "0x1663e60",
+  "api_table_rva": "0x1663ed0",
+  "shutdown_slot_rva": "0x1663ef0",
+  "shutdown_export_required": {
+    "check_rva": "0x357640",
+    "missing_branch_rva": "0x357645",
+    "missing_target_rva": "0x358122",
+    "unload_call_rva": "0x358125"
+  },
+  "exit_cleanup": {
+    "registration_call_rva": "0x35a4b1",
+    "entry_rva": "0x539bc0",
+    "end_rva": "0x539c43"
+  },
+  "context_evaluate": {
+    "capture_rva": "0x15502b",
+    "captured_table_read_rva": "0x145c8b",
+    "context_field_offset": "0x20",
+    "api_call_rva": "0x145caa",
+    "api_slot_offset": "0x10"
+  },
+  "target_executed": false,
+  "payload_executed": false,
+  "gpu_tested": false,
+  "shutdown_call_identified": false,
+  "complete_dynamic_call_coverage_proven": false,
+  "transitive_cleanup_authenticated": false,
+  "complete_session_lifetime_proven": false,
+  "successful_session_unload_proven": false,
+  "resource_retirement_proven": false,
+  "scope": "Bounded required-export failure, exit-cleanup direct container paths and captured Evaluate call only; not proof that Shutdown has no dynamic callers"
+}

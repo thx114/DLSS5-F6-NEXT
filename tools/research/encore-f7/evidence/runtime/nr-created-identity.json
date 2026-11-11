@@ -1,0 +1,100 @@
+[
+  {
+    "rva": "0x157f86",
+    "bytes": "8b5580",
+    "mnemonic": "mov",
+    "operands": "edx, dword ptr [rbp - 0x80]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157f89",
+    "bytes": "41899670010000",
+    "mnemonic": "mov",
+    "operands": "dword ptr [r14 + 0x170], edx",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157f90",
+    "bytes": "448b4584",
+    "mnemonic": "mov",
+    "operands": "r8d, dword ptr [rbp - 0x7c]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157f94",
+    "bytes": "45898674010000",
+    "mnemonic": "mov",
+    "operands": "dword ptr [r14 + 0x174], r8d",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157f9b",
+    "bytes": "8b4598",
+    "mnemonic": "mov",
+    "operands": "eax, dword ptr [rbp - 0x68]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157f9e",
+    "bytes": "41898678010000",
+    "mnemonic": "mov",
+    "operands": "dword ptr [r14 + 0x178], eax",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157fa5",
+    "bytes": "488b45d0",
+    "mnemonic": "mov",
+    "operands": "rax, qword ptr [rbp - 0x30]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157fa9",
+    "bytes": "0fb68034010000",
+    "mnemonic": "movzx",
+    "operands": "eax, byte ptr [rax + 0x134]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157fb0",
+    "bytes": "f6d8",
+    "mnemonic": "neg",
+    "operands": "al",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157fb2",
+    "bytes": "1bc9",
+    "mnemonic": "sbb",
+    "operands": "ecx, ecx",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157fb4",
+    "bytes": "83e10a",
+    "mnemonic": "and",
+    "operands": "ecx, 0xa",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157fb7",
+    "bytes": "41898e98010000",
+    "mnemonic": "mov",
+    "operands": "dword ptr [r14 + 0x198], ecx",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157fbe",
+    "bytes": "41c60601",
+    "mnemonic": "mov",
+    "operands": "byte ptr [r14], 1",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157fc2",
+    "bytes": "41c7868801000000000000",
+    "mnemonic": "mov",
+    "operands": "dword ptr [r14 + 0x188], 0",
+    "data_refs": []
+  }
+]

@@ -1,0 +1,37 @@
+[
+  {
+    "rva": "0x157a2e",
+    "bytes": "498d86b8000000",
+    "mnemonic": "lea",
+    "operands": "rax, [r14 + 0xb8]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157a35",
+    "bytes": "488985a8000000",
+    "mnemonic": "mov",
+    "operands": "qword ptr [rbp + 0xa8], rax",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157a3c",
+    "bytes": "488d8f88000000",
+    "mnemonic": "lea",
+    "operands": "rcx, [rdi + 0x88]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157a43",
+    "bytes": "488bd0",
+    "mnemonic": "mov",
+    "operands": "rdx, rax",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157a46",
+    "bytes": "e82551ebff",
+    "mnemonic": "call",
+    "operands": "0x18000cb70",
+    "data_refs": []
+  }
+]

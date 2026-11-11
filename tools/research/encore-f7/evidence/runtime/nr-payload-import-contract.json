@@ -1,0 +1,51 @@
+{
+  "import_names": [
+    {
+      "rva": "0x738a30",
+      "bytes": "4765744d6f64756c6546696c654e616d655700",
+      "name": "GetModuleFileNameW"
+    },
+    {
+      "rva": "0x56b538",
+      "bytes": "47657450726f634164647265737300",
+      "name": "GetProcAddress"
+    }
+  ],
+  "imports": [
+    {
+      "iat_rva": "0x53b3a0",
+      "dll": "KERNEL32.dll",
+      "name": "GetModuleHandleExW"
+    },
+    {
+      "iat_rva": "0x53b448",
+      "dll": "KERNEL32.dll",
+      "name": "SetLastError"
+    },
+    {
+      "iat_rva": "0x53b498",
+      "dll": "KERNEL32.dll",
+      "name": "VirtualProtect"
+    },
+    {
+      "iat_rva": "0x53b370",
+      "dll": "KERNEL32.dll",
+      "name": "GetCurrentProcess"
+    },
+    {
+      "iat_rva": "0x53b5a0",
+      "dll": "KERNEL32.dll",
+      "name": "FlushInstructionCache"
+    }
+  ],
+  "replacement_rva": "0x356c30",
+  "install_rva": "0x357cc4",
+  "original_function_state_offset": "0x148",
+  "installed_pointer_bytes": 8,
+  "target_executed": false,
+  "payload_executed": false,
+  "gpu_tested": false,
+  "cross_payload_abi_authenticated": false,
+  "f7_integration_ready": false,
+  "scope": "Fixed Encore import lookup, installation and module-name replacement only; not an implementation to transplant"
+}

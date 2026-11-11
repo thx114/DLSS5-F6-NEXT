@@ -1,0 +1,54 @@
+{
+  "keys": [
+    {
+      "rva": "0x59d5b0",
+      "bytes": "4a69747465722e4f66667365742e5800",
+      "key": "Jitter.Offset.X"
+    },
+    {
+      "rva": "0x59d5c0",
+      "bytes": "4a69747465722e4f66667365742e5900",
+      "key": "Jitter.Offset.Y"
+    },
+    {
+      "rva": "0x5a6718",
+      "bytes": "53686172706e65737300",
+      "key": "Sharpness"
+    },
+    {
+      "rva": "0x599640",
+      "bytes": "526573657400",
+      "key": "Reset"
+    },
+    {
+      "rva": "0x59a260",
+      "bytes": "4d562e5363616c652e5800",
+      "key": "MV.Scale.X"
+    },
+    {
+      "rva": "0x59a270",
+      "bytes": "4d562e5363616c652e5900",
+      "key": "MV.Scale.Y"
+    },
+    {
+      "rva": "0x59d5e8",
+      "bytes": "444c53532e5072652e4578706f7375726500",
+      "key": "DLSS.Pre.Exposure"
+    },
+    {
+      "rva": "0x59d5d0",
+      "bytes": "444c53532e4578706f737572652e5363616c6500",
+      "key": "DLSS.Exposure.Scale"
+    }
+  ],
+  "literals": [
+    {
+      "rva": "0x53fba0",
+      "bytes": "000000000000f03f",
+      "format": "double",
+      "value": 1.0
+    }
+  ],
+  "target_executed": false,
+  "runtime_values_authenticated": false
+}

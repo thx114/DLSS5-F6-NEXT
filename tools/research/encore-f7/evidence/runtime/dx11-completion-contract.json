@@ -1,0 +1,124 @@
+{
+  "vtable_prefix": [
+    {
+      "slot": "0x0",
+      "table_rva": "0x559908",
+      "bytes": "d051088001000000",
+      "function_rva": "0x851d0"
+    },
+    {
+      "slot": "0x8",
+      "table_rva": "0x559910",
+      "bytes": "e0c1098001000000",
+      "function_rva": "0x9c1e0"
+    },
+    {
+      "slot": "0x10",
+      "table_rva": "0x559918",
+      "bytes": "b0d50d8001000000",
+      "function_rva": "0xdd5b0"
+    },
+    {
+      "slot": "0x18",
+      "table_rva": "0x559920",
+      "bytes": "009a0a8001000000",
+      "function_rva": "0xa9a00"
+    }
+  ],
+  "rtti": {
+    "locator_rva": "0xcf74f8",
+    "locator_bytes": "0100000000000000000000006804d8002075cf00f874cf00",
+    "locator_pointer_rva": "0x559900",
+    "locator_pointer_bytes": "f874cf8001000000",
+    "type_descriptor_rva": "0xd80468",
+    "name_rva": "0xd80478",
+    "name_bytes": "2e3f4155443131436f6d706c6574696f6e406e67785f6c6976655f707265736574404000",
+    "name": ".?AUD11Completion@ngx_live_preset@@"
+  },
+  "imports": [
+    {
+      "iat_rva": "0x53b3d0",
+      "dll": "KERNEL32.dll",
+      "name": "GetCurrentThreadId"
+    },
+    {
+      "iat_rva": "0x53b360",
+      "dll": "KERNEL32.dll",
+      "name": "WaitForSingleObject"
+    },
+    {
+      "iat_rva": "0x53b368",
+      "dll": "KERNEL32.dll",
+      "name": "CreateEventW"
+    },
+    {
+      "iat_rva": "0x53b340",
+      "dll": "KERNEL32.dll",
+      "name": "CloseHandle"
+    }
+  ],
+  "public_api_headers": {
+    "d3d11.h": {
+      "path": "C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\um\\d3d11.h",
+      "sha256": "b2c0caa561cc1f422f31c44ca38c861c43a8fa135ccef476ee2f3e47dca99e2d",
+      "interfaces": {
+        "ID3D11Device": [
+          {
+            "method": "CreateQuery",
+            "slot": 24,
+            "byte_offset": "0xc0"
+          },
+          {
+            "method": "GetImmediateContext",
+            "slot": 40,
+            "byte_offset": "0x140"
+          }
+        ],
+        "ID3D11DeviceContext": [
+          {
+            "method": "GetDevice",
+            "slot": 3,
+            "byte_offset": "0x18"
+          },
+          {
+            "method": "End",
+            "slot": 28,
+            "byte_offset": "0xe0"
+          },
+          {
+            "method": "GetData",
+            "slot": 29,
+            "byte_offset": "0xe8"
+          }
+        ]
+      }
+    },
+    "d3d12.h": {
+      "path": "C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\um\\d3d12.h",
+      "sha256": "82eb33195558e43cee6a254fb48c076d65fb55209be2eb6878573585aa7ae5c8",
+      "interfaces": {
+        "ID3D12Fence": [
+          {
+            "method": "GetCompletedValue",
+            "slot": 8,
+            "byte_offset": "0x40"
+          },
+          {
+            "method": "SetEventOnCompletion",
+            "slot": 9,
+            "byte_offset": "0x48"
+          }
+        ]
+      }
+    }
+  },
+  "query_flag": {
+    "name": "D3D11_ASYNC_GETDATA_DONOTFLUSH",
+    "value": 1
+  },
+  "target_executed": false,
+  "gpu_tested": false,
+  "performance_measured": false,
+  "caller_schedule_authenticated": false,
+  "f7_causality_proven": false
+}

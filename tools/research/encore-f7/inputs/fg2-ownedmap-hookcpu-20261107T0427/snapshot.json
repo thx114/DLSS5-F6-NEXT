@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "process_state_now": {
+    "status": "Exited",
+    "wait": 0
+  },
+  "pid": 39384,
+  "creation_filetime": "134384992027619583",
+  "receipt_completed": false,
+  "runtime_inputs_stable": true,
+  "performance_inputs_stable": true,
+  "scene_ready_observed": false,
+  "source_code_for_build_authenticated": false,
+  "game_fg_proof": false,
+  "performance_baseline": false,
+  "files": {
+    "F7.log": {
+      "source": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\session\\F7.log",
+      "sha256": "a8a7cce88305bdee1e45bb14c4c4603d7a553d6b4f4b18536f898516b4f66d58",
+      "bytes": 224794,
+      "mtime_ns": "1794025924959789300"
+    },
+    "result.json": {
+      "source": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\session\\result.json",
+      "sha256": "2fbfeade2954dde149468957714e2f8930b890b81c7bbefd0705d61b005e5a7d",
+      "bytes": 3750,
+      "mtime_ns": "1794025932597377200"
+    },
+    "stage.json": {
+      "source": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\stage.json",
+      "sha256": "bf1dbf8555226281337726524bdde819e8ca4b517e3509c9a60f0953e29214c6",
+      "bytes": 5641,
+      "mtime_ns": "1794025578377220600"
+    }
+  }
+}

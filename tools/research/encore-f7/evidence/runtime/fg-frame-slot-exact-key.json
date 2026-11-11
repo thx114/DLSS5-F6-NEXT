@@ -1,0 +1,116 @@
+[
+  {
+    "rva": "0x1000c",
+    "bytes": "4c8bf2",
+    "mnemonic": "mov",
+    "operands": "r14, rdx",
+    "data_refs": []
+  },
+  {
+    "rva": "0x1000f",
+    "bytes": "488bd9",
+    "mnemonic": "mov",
+    "operands": "rbx, rcx",
+    "data_refs": []
+  },
+  {
+    "rva": "0x10012",
+    "bytes": "488bc2",
+    "mnemonic": "mov",
+    "operands": "rax, rdx",
+    "data_refs": []
+  },
+  {
+    "rva": "0x10015",
+    "bytes": "83e007",
+    "mnemonic": "and",
+    "operands": "eax, 7",
+    "data_refs": []
+  },
+  {
+    "rva": "0x10018",
+    "bytes": "4869f8b0020000",
+    "mnemonic": "imul",
+    "operands": "rdi, rax, 0x2b0",
+    "data_refs": []
+  },
+  {
+    "rva": "0x1001f",
+    "bytes": "488d340f",
+    "mnemonic": "lea",
+    "operands": "rsi, [rdi + rcx]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x10023",
+    "bytes": "80bc0f5003000000",
+    "mnemonic": "cmp",
+    "operands": "byte ptr [rdi + rcx + 0x350], 0",
+    "data_refs": []
+  },
+  {
+    "rva": "0x1002b",
+    "bytes": "742d",
+    "mnemonic": "je",
+    "operands": "0x18001005a",
+    "data_refs": []
+  },
+  {
+    "rva": "0x1002d",
+    "bytes": "48399648030000",
+    "mnemonic": "cmp",
+    "operands": "qword ptr [rsi + 0x348], rdx",
+    "data_refs": []
+  },
+  {
+    "rva": "0x10034",
+    "bytes": "0f842a030000",
+    "mnemonic": "je",
+    "operands": "0x180010364",
+    "data_refs": []
+  },
+  {
+    "rva": "0x1003a",
+    "bytes": "80bc0f5103000000",
+    "mnemonic": "cmp",
+    "operands": "byte ptr [rdi + rcx + 0x351], 0",
+    "data_refs": []
+  },
+  {
+    "rva": "0x10042",
+    "bytes": "7516",
+    "mnemonic": "jne",
+    "operands": "0x18001005a",
+    "data_refs": []
+  },
+  {
+    "rva": "0x10044",
+    "bytes": "83bc0f5c03000000",
+    "mnemonic": "cmp",
+    "operands": "dword ptr [rdi + rcx + 0x35c], 0",
+    "data_refs": []
+  },
+  {
+    "rva": "0x1004c",
+    "bytes": "740c",
+    "mnemonic": "je",
+    "operands": "0x18001005a",
+    "data_refs": []
+  },
+  {
+    "rva": "0x1004e",
+    "bytes": "488d157bcd5200",
+    "mnemonic": "lea",
+    "operands": "rdx, [rip + 0x52cd7b]",
+    "data_refs": [
+      "0x53cdd0"
+    ]
+  },
+  {
+    "rva": "0x10055",
+    "bytes": "e91d030000",
+    "mnemonic": "jmp",
+    "operands": "0x180010377",
+    "data_refs": []
+  }
+]

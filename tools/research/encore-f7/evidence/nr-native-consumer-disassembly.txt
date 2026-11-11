@@ -1,0 +1,170 @@
+Observed current COFF object only; no native fixture or payload execution.
+Object: D:\CODE\DLSS5_NEXT-workers\f7-clean-rewrite\build\tests\nr-parameter-store\NrParameterStoreTests.dir\Release\NrParameterStoreConsumer.obj
+Object SHA256: 440775fcf9c400ef78367bbd1d93970ca0137798f86cc6d4c4d793d391e9dc9d
+Tool: D:\VS2022BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\dumpbin.exe
+Tool SHA256: cfee7ed764b7b0866aae0be12f9c0ad2a7f5aecc4046ba2b7de26335827ca815
+Command: dumpbin.exe /nologo /disasm <object>
+Tool exit: 0 (not a compiler exit receipt)
+Offsets below are section-relative COFF symbol offsets, not Encore RVAs.
+
+
+Dump of file D:\CODE\DLSS5_NEXT-workers\f7-clean-rewrite\build\tests\nr-parameter-store\NrParameterStoreTests.dir\Release\NrParameterStoreConsumer.obj
+
+File Type: COFF OBJECT
+
+?ConsumerGetAll@encore_research@@YA?AUConsumerResults@1@AEBUNVSDK_NGX_Parameter@@AEAUConsumerValues@1@@Z (struct encore_research::ConsumerResults __cdecl encore_research::ConsumerGetAll(struct NVSDK_NGX_Parameter const &,struct encore_research::ConsumerValues &)):
+  0000000000000000: 48 89 5C 24 08     mov         qword ptr [rsp+8],rbx
+  0000000000000005: 48 89 74 24 10     mov         qword ptr [rsp+10h],rsi
+  000000000000000A: 57                 push        rdi
+  000000000000000B: 48 83 EC 20        sub         rsp,20h
+  000000000000000F: 48 8B 02           mov         rax,qword ptr [rdx]
+  0000000000000012: 48 8B FA           mov         rdi,rdx
+  0000000000000015: 48 8B F1           mov         rsi,rcx
+  0000000000000018: C7 01 00 00 D0 BA  mov         dword ptr [rcx],0BAD00000h
+  000000000000001E: C7 41 04 00 00 D0  mov         dword ptr [rcx+4],0BAD00000h
+                    BA
+  0000000000000025: 48 8D 15 00 00 00  lea         rdx,[??_C@_0N@MCIDFEGN@consumer?4ull@]
+                    00
+  000000000000002C: C7 41 08 00 00 D0  mov         dword ptr [rcx+8],0BAD00000h
+                    BA
+  0000000000000033: 49 8B D8           mov         rbx,r8
+  0000000000000036: C7 41 0C 00 00 D0  mov         dword ptr [rcx+0Ch],0BAD00000h
+                    BA
+  000000000000003D: C7 41 10 00 00 D0  mov         dword ptr [rcx+10h],0BAD00000h
+                    BA
+  0000000000000044: C7 41 14 00 00 D0  mov         dword ptr [rcx+14h],0BAD00000h
+                    BA
+  000000000000004B: C7 41 18 00 00 D0  mov         dword ptr [rcx+18h],0BAD00000h
+                    BA
+  0000000000000052: C7 41 1C 00 00 D0  mov         dword ptr [rcx+1Ch],0BAD00000h
+                    BA
+  0000000000000059: 48 8B CF           mov         rcx,rdi
+  000000000000005C: FF 50 78           call        qword ptr [rax+78h]
+  000000000000005F: 89 06              mov         dword ptr [rsi],eax
+  0000000000000061: 4C 8D 43 08        lea         r8,[rbx+8]
+  0000000000000065: 48 8B 07           mov         rax,qword ptr [rdi]
+  0000000000000068: 48 8B CF           mov         rcx,rdi
+  000000000000006B: 48 8D 15 00 00 00  lea         rdx,[??_C@_0P@CJOEIALK@consumer?4float@]
+                    00
+  0000000000000072: FF 50 70           call        qword ptr [rax+70h]
+  0000000000000075: 89 46 04           mov         dword ptr [rsi+4],eax
+  0000000000000078: 4C 8D 43 10        lea         r8,[rbx+10h]
+  000000000000007C: 48 8B 07           mov         rax,qword ptr [rdi]
+  000000000000007F: 48 8B CF           mov         rcx,rdi
+  0000000000000082: 48 8D 15 00 00 00  lea         rdx,[??_C@_0BA@IMMJAHC@consumer?4double@]
+                    00
+  0000000000000089: FF 50 68           call        qword ptr [rax+68h]
+  000000000000008C: 89 46 08           mov         dword ptr [rsi+8],eax
+  000000000000008F: 4C 8D 43 18        lea         r8,[rbx+18h]
+  0000000000000093: 48 8B 07           mov         rax,qword ptr [rdi]
+  0000000000000096: 48 8B CF           mov         rcx,rdi
+  0000000000000099: 48 8D 15 00 00 00  lea         rdx,[??_C@_0O@EMMIAGBP@consumer?4uint@]
+                    00
+  00000000000000A0: FF 50 60           call        qword ptr [rax+60h]
+  00000000000000A3: 89 46 0C           mov         dword ptr [rsi+0Ch],eax
+  00000000000000A6: 4C 8D 43 1C        lea         r8,[rbx+1Ch]
+  00000000000000AA: 48 8B 07           mov         rax,qword ptr [rdi]
+  00000000000000AD: 48 8B CF           mov         rcx,rdi
+  00000000000000B0: 48 8D 15 00 00 00  lea         rdx,[??_C@_0N@FJNDPAHN@consumer?4int@]
+                    00
+  00000000000000B7: FF 50 58           call        qword ptr [rax+58h]
+  00000000000000BA: 89 46 10           mov         dword ptr [rsi+10h],eax
+  00000000000000BD: 4C 8D 43 20        lea         r8,[rbx+20h]
+  00000000000000C1: 48 8B 07           mov         rax,qword ptr [rdi]
+  00000000000000C4: 48 8B CF           mov         rcx,rdi
+  00000000000000C7: 48 8D 15 00 00 00  lea         rdx,[??_C@_0P@OINMGLFK@consumer?4d3d11@]
+                    00
+  00000000000000CE: FF 50 50           call        qword ptr [rax+50h]
+  00000000000000D1: 89 46 14           mov         dword ptr [rsi+14h],eax
+  00000000000000D4: 4C 8D 43 28        lea         r8,[rbx+28h]
+  00000000000000D8: 48 8B 07           mov         rax,qword ptr [rdi]
+  00000000000000DB: 48 8B CF           mov         rcx,rdi
+  00000000000000DE: 48 8D 15 00 00 00  lea         rdx,[??_C@_0P@MDPBDIJJ@consumer?4d3d12@]
+                    00
+  00000000000000E5: FF 50 48           call        qword ptr [rax+48h]
+  00000000000000E8: 89 46 18           mov         dword ptr [rsi+18h],eax
+  00000000000000EB: 4C 8D 43 30        lea         r8,[rbx+30h]
+  00000000000000EF: 48 8B 07           mov         rax,qword ptr [rdi]
+  00000000000000F2: 48 8B CF           mov         rcx,rdi
+  00000000000000F5: 48 8D 15 00 00 00  lea         rdx,[??_C@_0BB@HPLCKILE@consumer?4pointer@]
+                    00
+  00000000000000FC: FF 50 40           call        qword ptr [rax+40h]
+  00000000000000FF: 48 8B 5C 24 30     mov         rbx,qword ptr [rsp+30h]
+  0000000000000104: 89 46 1C           mov         dword ptr [rsi+1Ch],eax
+  0000000000000107: 48 8B C6           mov         rax,rsi
+  000000000000010A: 48 8B 74 24 38     mov         rsi,qword ptr [rsp+38h]
+  000000000000010F: 48 83 C4 20        add         rsp,20h
+  0000000000000113: 5F                 pop         rdi
+  0000000000000114: C3                 ret
+
+?ConsumerReset@encore_research@@YAXAEAUNVSDK_NGX_Parameter@@@Z (void __cdecl encore_research::ConsumerReset(struct NVSDK_NGX_Parameter &)):
+  0000000000000000: 48 8B 01           mov         rax,qword ptr [rcx]
+  0000000000000003: 48 FF A0 80 00 00  jmp         qword ptr [rax+0000000000000080h]
+                    00
+
+?ConsumerSetAll@encore_research@@YAXAEAUNVSDK_NGX_Parameter@@AEBUConsumerValues@1@@Z (void __cdecl encore_research::ConsumerSetAll(struct NVSDK_NGX_Parameter &,struct encore_research::ConsumerValues const &)):
+  0000000000000000: 48 89 5C 24 08     mov         qword ptr [rsp+8],rbx
+  0000000000000005: 57                 push        rdi
+  0000000000000006: 48 83 EC 20        sub         rsp,20h
+  000000000000000A: 4C 8B 02           mov         r8,qword ptr [rdx]
+  000000000000000D: 48 8B DA           mov         rbx,rdx
+  0000000000000010: 48 8B 01           mov         rax,qword ptr [rcx]
+  0000000000000013: 48 8D 15 00 00 00  lea         rdx,[??_C@_0N@MCIDFEGN@consumer?4ull@]
+                    00
+  000000000000001A: 48 8B F9           mov         rdi,rcx
+  000000000000001D: FF 50 38           call        qword ptr [rax+38h]
+  0000000000000020: 48 8B 07           mov         rax,qword ptr [rdi]
+  0000000000000023: 48 8D 15 00 00 00  lea         rdx,[??_C@_0P@CJOEIALK@consumer?4float@]
+                    00
+  000000000000002A: F3 0F 10 53 08     movss       xmm2,dword ptr [rbx+8]
+  000000000000002F: 48 8B CF           mov         rcx,rdi
+  0000000000000032: FF 50 30           call        qword ptr [rax+30h]
+  0000000000000035: 48 8B 07           mov         rax,qword ptr [rdi]
+  0000000000000038: 48 8D 15 00 00 00  lea         rdx,[??_C@_0BA@IMMJAHC@consumer?4double@]
+                    00
+  000000000000003F: F2 0F 10 53 10     movsd       xmm2,mmword ptr [rbx+10h]
+  0000000000000044: 48 8B CF           mov         rcx,rdi
+  0000000000000047: FF 50 28           call        qword ptr [rax+28h]
+  000000000000004A: 48 8B 07           mov         rax,qword ptr [rdi]
+  000000000000004D: 48 8D 15 00 00 00  lea         rdx,[??_C@_0O@EMMIAGBP@consumer?4uint@]
+                    00
+  0000000000000054: 44 8B 43 18        mov         r8d,dword ptr [rbx+18h]
+  0000000000000058: 48 8B CF           mov         rcx,rdi
+  000000000000005B: FF 50 20           call        qword ptr [rax+20h]
+  000000000000005E: 48 8B 07           mov         rax,qword ptr [rdi]
+  0000000000000061: 48 8D 15 00 00 00  lea         rdx,[??_C@_0N@FJNDPAHN@consumer?4int@]
+                    00
+  0000000000000068: 44 8B 43 1C        mov         r8d,dword ptr [rbx+1Ch]
+  000000000000006C: 48 8B CF           mov         rcx,rdi
+  000000000000006F: FF 50 18           call        qword ptr [rax+18h]
+  0000000000000072: 48 8B 07           mov         rax,qword ptr [rdi]
+  0000000000000075: 48 8D 15 00 00 00  lea         rdx,[??_C@_0P@OINMGLFK@consumer?4d3d11@]
+                    00
+  000000000000007C: 4C 8B 43 20        mov         r8,qword ptr [rbx+20h]
+  0000000000000080: 48 8B CF           mov         rcx,rdi
+  0000000000000083: FF 50 10           call        qword ptr [rax+10h]
+  0000000000000086: 48 8B 07           mov         rax,qword ptr [rdi]
+  0000000000000089: 48 8D 15 00 00 00  lea         rdx,[??_C@_0P@MDPBDIJJ@consumer?4d3d12@]
+                    00
+  0000000000000090: 4C 8B 43 28        mov         r8,qword ptr [rbx+28h]
+  0000000000000094: 48 8B CF           mov         rcx,rdi
+  0000000000000097: FF 50 08           call        qword ptr [rax+8]
+  000000000000009A: 48 8B 07           mov         rax,qword ptr [rdi]
+  000000000000009D: 48 8D 15 00 00 00  lea         rdx,[??_C@_0BB@HPLCKILE@consumer?4pointer@]
+                    00
+  00000000000000A4: 4C 8B 43 30        mov         r8,qword ptr [rbx+30h]
+  00000000000000A8: 48 8B CF           mov         rcx,rdi
+  00000000000000AB: 48 8B 5C 24 30     mov         rbx,qword ptr [rsp+30h]
+  00000000000000B0: 48 83 C4 20        add         rsp,20h
+  00000000000000B4: 5F                 pop         rdi
+  00000000000000B5: 48 FF 20           jmp         qword ptr [rax]
+
+  Summary
+
+          90 .chks64
+          DC .debug$S
+          2F .drectve
+          18 .pdata
+          76 .rdata
+         1D7 .text$mn
+          1C .xdata

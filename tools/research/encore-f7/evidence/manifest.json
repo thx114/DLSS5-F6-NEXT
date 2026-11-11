@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "profile": "camera",
+  "target": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\research\\rtx-encore-v2.0.1\\extracted\\rtx-encore.dll",
+  "sha256": "06a7fd63ee0f0e95574f3869d70c3c9ae4aaf326ba53ff8c864064410a5f1217",
+  "image_base": "0x180000000",
+  "method": "bounded fresh static decode",
+  "target_executed": false,
+  "camera_authority": false,
+  "code": [
+    {
+      "name": "camera-constants",
+      "lo": "0xe010",
+      "hi": "0xe807",
+      "instructions": 400,
+      "sha256": "2d929616b86d434a5802d072f8e043d926c0fee35697013a99d158a98b62a69f"
+    },
+    {
+      "name": "synthetic-projection",
+      "lo": "0x13050",
+      "hi": "0x13447",
+      "instructions": 207,
+      "sha256": "f4508855e4b83391f89bb569000f3680ffe9ef1e8777cd36a48a7cb51d034e91"
+    },
+    {
+      "name": "submit-camera",
+      "lo": "0x137ec",
+      "hi": "0x138a3",
+      "instructions": 43,
+      "sha256": "c9e9482954dc201ebd21ff9af51fad64d35b975cb2677e97614321efe3914ea4"
+    }
+  ],
+  "shaders": [
+    {
+      "name": "feed-preprocess",
+      "rva": "0x713d80",
+      "size": 5072,
+      "table_rva": null,
+      "code_ref": null,
+      "size_ref": null,
+      "sha256": "df8a80548ac1be5e7af551f05911a99843a3d1052e404c5caa5580585ecc49f0",
+      "tokens": 149
+    },
+    {
+      "name": "feed-guides",
+      "rva": "0x715150",
+      "size": 23852,
+      "table_rva": null,
+      "code_ref": null,
+      "size_ref": null,
+      "sha256": "c7050af785de4d591e1995ba96bcf883bc48f1f410d74f520a4e28f9024f9ef4",
+      "tokens": 679
+    },
+    {
+      "name": "encore-pso-38",
+      "rva": "0x781570",
+      "size": 96084,
+      "table_rva": "0x798cc8",
+      "code_ref": null,
+      "size_ref": null,
+      "sha256": "c7a53dc7112abf5885b935a1ad33515788f3860d9e4fbc59c4053ed6a7369890",
+      "tokens": 2998
+    },
+    {
+      "name": "encore-pso-40",
+      "rva": "0x798ce0",
+      "size": 102956,
+      "table_rva": "0x7b1f10",
+      "code_ref": null,
+      "size_ref": null,
+      "sha256": "092344655010f9800d005462b9278c5405a6aacc255c2e548f7730a34edb0abd",
+      "tokens": 3029
+    },
+    {
+      "name": "encore-pso-48",
+      "rva": "0x7b1f20",
+      "size": 21168,
+      "table_rva": "0x7b71d0",
+      "code_ref": null,
+      "size_ref": null,
+      "sha256": "48510972dad442f93566ba87db4d877fc15f99eb639a25a3ad90e722ff9622f5",
+      "tokens": 709
+    }
+  ],
+  "tools": {
+    "python": "3.12.12",
+    "pefile": "2024.8.26",
+    "capstone": "5.0.7",
+    "fxc": "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64\\fxc.exe"
+  },
+  "sdk_reference_hashes": {
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_struct.h": "f4285f0a83e91c2737a57efd456d47c43bd98d62717e594dd311c1be8cfb94ae",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_dlss_g.h": "075bc65a5d30a59e158d3c1ea4dff34f8335bc16486c31b33394e9270ee59e8c",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_consts.h": "5928b7b1b8365f723a909461ad111b5f902069ee99bc942a7137ac4489f11fe4"
+  },
+  "files": {
+    "camera-constants.json": "5cde1cad8575056f2d6d5fb26eda2a4bdbdf77d4bcdf8542b2a6af34383c8cec",
+    "camera-literals.json": "c07587ab649730e6dd73587f67c4e77ed516b3e24fe2befb496da2cf4194f619",
+    "encore-pso-38.asm.txt": "970634b1c668967086c455dfc813828a241cc1cd008bdd1bca5efccd9a35b7eb",
+    "encore-pso-38.tokens.json": "458dd9d4fbdc86e835298c3d7298597eb1d7d9af8f2efeef8c46b78576be2d56",
+    "encore-pso-40.asm.txt": "85c9326a6230865f9ea1a2443808d4d899c592fb41f08046cddbd41f912fd4cf",
+    "encore-pso-40.tokens.json": "c97393526c594822b72fc3dd9fc9a9621b321d64ac806192c962a39945ad28b5",
+    "encore-pso-48.asm.txt": "34fe32064553b5ee33b57aafe5da8aa448be682976d856f0ac0b0b0a5ac6827f",
+    "encore-pso-48.tokens.json": "4d6fd83cb0b1a4f2702a67f72234aff5270d99f161d3a67cba39edf1eecfbcff",
+    "feed-guides.asm.txt": "c2aae87542e0577607f347aca51f0b90726f8201048933059746c38bcef462e2",
+    "feed-guides.tokens.json": "925c58a23968088a3a03918d935c5e8f08c53dba02d9d2f26c50964b5e4d0147",
+    "feed-preprocess.asm.txt": "41c065142b25de91fd400eaf2572647e198dbe6e632f0edcaa743c2d5a3612da",
+    "feed-preprocess.tokens.json": "e25104e4e8763868bd4878a11d45a242bcc3cf491fa0a3f2000cedeafa950e80",
+    "submit-camera.json": "3ed2b10e90fe862d3e7df5bc294acd00ba39ecfa3da273ea55de8779b3860c3d",
+    "synthetic-projection.json": "34f2499f0672eb65d0a1839a107794d6034eafd308e7e2206829463e25d0f8c0"
+  }
+}

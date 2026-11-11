@@ -1,0 +1,957 @@
+{
+  "schema": 1,
+  "profile": "runtime",
+  "target": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\research\\rtx-encore-v2.0.1\\extracted\\rtx-encore.dll",
+  "sha256": "06a7fd63ee0f0e95574f3869d70c3c9ae4aaf326ba53ff8c864064410a5f1217",
+  "image_base": "0x180000000",
+  "method": "bounded fresh static decode",
+  "target_executed": false,
+  "camera_authority": false,
+  "code": [
+    {
+      "name": "fg-options",
+      "lo": "0x14f80",
+      "hi": "0x15299",
+      "instructions": 190,
+      "sha256": "59aa08355232c33b034bfeb15f9fe3f48361e5abab931c52af83ba3c2d99c248"
+    },
+    {
+      "name": "fg-post-present",
+      "lo": "0x140d0",
+      "hi": "0x14b04",
+      "instructions": 577,
+      "sha256": "0aa6c95cc14db7f2b954153d04acf68cb998316e80c27a86613c0007736a7749"
+    },
+    {
+      "name": "fg-request-callback",
+      "lo": "0xdc130",
+      "hi": "0xdc2b5",
+      "instructions": 93,
+      "sha256": "55c2171fd346a1bcecdcfa77f9b7ccbbedfbfbe47aa003cc97d2d49f897302a3"
+    },
+    {
+      "name": "fg-state-telemetry",
+      "lo": "0xf5cc0",
+      "hi": "0xf5ea9",
+      "instructions": 139,
+      "sha256": "3bf85fedd889a06c94725e5d85de429d6e50ac69278cdf7790473fda2ddd63ed"
+    },
+    {
+      "name": "fg-state-callback",
+      "lo": "0xf5eb0",
+      "hi": "0xf6028",
+      "instructions": 90,
+      "sha256": "6f860e2f846d0a7fc51a946bc10ae3f112ae3280a4fac79b7c8a363f897fffd9"
+    },
+    {
+      "name": "fg-callback-registration",
+      "lo": "0xe97b7",
+      "hi": "0xe97f1",
+      "instructions": 10,
+      "sha256": "3a7bf203ea62144c7ee3c985e0dba0592a90e256c022f371a81a160f6125e4ff"
+    },
+    {
+      "name": "fg-capacity-feedback-window",
+      "lo": "0xf7dc0",
+      "hi": "0xf7e20",
+      "instructions": 18,
+      "sha256": "cb04f0fbcac99ceed25236f2ba56b9078bfccc2d0cefaf437d993f38519fa581"
+    },
+    {
+      "name": "nr-create",
+      "lo": "0x157ef8",
+      "hi": "0x157f33",
+      "instructions": 12,
+      "sha256": "4c3d894305786fa0ca8969d24abbf6a6863584471299880a000e9be16b2ab3f4"
+    },
+    {
+      "name": "nr-copy-encode",
+      "lo": "0x1582e2",
+      "hi": "0x158807",
+      "instructions": 243,
+      "sha256": "8b8536722d4ab44e2a295534af68c1d3d0ab8aef4cba3a234423858b529b84dc"
+    },
+    {
+      "name": "nr-parameters",
+      "lo": "0x15887c",
+      "hi": "0x158c0c",
+      "instructions": 214,
+      "sha256": "0da0618772b50297081093502331812dca7c28804f65aeb2f21a27fed385d48a"
+    },
+    {
+      "name": "nr-evaluate",
+      "lo": "0x158c0c",
+      "hi": "0x158c5b",
+      "instructions": 21,
+      "sha256": "1d67049624471774cba3efb4f7a823e45f46a43c19422c1855f639dbd68503fb"
+    },
+    {
+      "name": "nr-result-decode",
+      "lo": "0x158dc7",
+      "hi": "0x158e90",
+      "instructions": 43,
+      "sha256": "d4a67ea649bdd18ffd0e5ae249a14a328f1280dbe0844200c3bf8fecf698f8a3"
+    },
+    {
+      "name": "nr-feature-reset",
+      "lo": "0x1569b0",
+      "hi": "0x156a32",
+      "instructions": 34,
+      "sha256": "834b60cf7ca34948a604eb928f061ccf3e3b13a2ea08bd7c8a284ce6ddcba093"
+    },
+    {
+      "name": "nr-work-hysteresis",
+      "lo": "0x15706d",
+      "hi": "0x157137",
+      "instructions": 41,
+      "sha256": "cb3bc440ff08068b7ac2e2029bfe9823b4a3d4c5671dc955dfa423bd4b055312"
+    },
+    {
+      "name": "nr-created-identity",
+      "lo": "0x157f86",
+      "hi": "0x157fcd",
+      "instructions": 14,
+      "sha256": "67fb6c12778858aa57ce46459da086a3844eee95cc7ad3989146e759e2420c7b"
+    },
+    {
+      "name": "nr-reset-outcome",
+      "lo": "0x158e90",
+      "hi": "0x158e9e",
+      "instructions": 4,
+      "sha256": "f41f0c05a660fd83528eb8e1aece513d65c2c0bbc0e806075242b9a9b61354ad"
+    },
+    {
+      "name": "nr-warp-failure-fallback",
+      "lo": "0x158f27",
+      "hi": "0x158fe8",
+      "instructions": 31,
+      "sha256": "cd39e2f03d7788167a33991e34e5090e522cb1c33d099773f9e287174e4fa42d"
+    },
+    {
+      "name": "nr-warp-fallback-call",
+      "lo": "0x1593b3",
+      "hi": "0x15941b",
+      "instructions": 22,
+      "sha256": "9fbe7a4d1232bcd753ccfaace01887f2a2e054fd7f7e31132afbcc8f0f58af17"
+    },
+    {
+      "name": "nr-payload-select",
+      "lo": "0x357315",
+      "hi": "0x357373",
+      "instructions": 26,
+      "sha256": "439d3aeb0157ce593dbf4f7d87dc943d2bc9dc948c9f1bf3e2a1381bbd074afc"
+    },
+    {
+      "name": "nr-payload-load-wrapper",
+      "lo": "0x35a650",
+      "hi": "0x35a677",
+      "instructions": 11,
+      "sha256": "9606120634a8699123d5d795a721f16513487b3d8c2af272b6056e536f5098b7"
+    },
+    {
+      "name": "nr-payload-load-call",
+      "lo": "0x357494",
+      "hi": "0x3574c0",
+      "instructions": 12,
+      "sha256": "ad0b1ddf9e0f18c1a32f836145167a2c9ca800d89114bea84b779d9cc5111c06"
+    },
+    {
+      "name": "nr-payload-loaded-identity",
+      "lo": "0x357517",
+      "hi": "0x35757f",
+      "instructions": 21,
+      "sha256": "621dafc47214a54f9d9768d62b030aba9c758ff11ece35ad3458e6b3ebbf63d9"
+    },
+    {
+      "name": "nr-payload-export-resolve",
+      "lo": "0x35757f",
+      "hi": "0x3575e8",
+      "instructions": 21,
+      "sha256": "f9460066a060f7f1e6a491b62e430b4657bd1fffeb0ca47ae225dc67b99bd38c"
+    },
+    {
+      "name": "nr-payload-api-commit",
+      "lo": "0x357f2f",
+      "hi": "0x357f87",
+      "instructions": 19,
+      "sha256": "0e6b5b92d627770a7bc939eb5a88a7e19464072f8a96d5b15ee79d40f02d97f3"
+    },
+    {
+      "name": "nr-payload-api-accessor",
+      "lo": "0x3553a0",
+      "hi": "0x3553b2",
+      "instructions": 5,
+      "sha256": "8780725389d9ceae27cc1b0bb5806713e2d6268d0986c1069919a18e16917614"
+    },
+    {
+      "name": "nr-payload-init-call",
+      "lo": "0x151ec2",
+      "hi": "0x151f09",
+      "instructions": 13,
+      "sha256": "4f76782a65c01ce1d88d4f6b54f4de24770bec1a18d6fcb7251a63d420d6ae04"
+    },
+    {
+      "name": "nr-payload-evaluate-table-caller",
+      "lo": "0x15225a",
+      "hi": "0x1522ca",
+      "instructions": 24,
+      "sha256": "43d1d444c0d8e5ed51502b151c88dd17fbf5ed1871cb4499d5bc04f24da5e573"
+    },
+    {
+      "name": "nr-parameter-constructor",
+      "lo": "0x142604",
+      "hi": "0x142649",
+      "instructions": 12,
+      "sha256": "d8136abfc62271824a3f4d7358a3393802c028bb5fe0e2626979ce67b3908d75"
+    },
+    {
+      "name": "nr-parameter-setters",
+      "lo": "0x15a650",
+      "hi": "0x15a6cd",
+      "instructions": 54,
+      "sha256": "305c8bb4674a4f1b5590ff9ba0f4be744b98c36035f0cf3bc138137e2acbaa5e"
+    },
+    {
+      "name": "nr-parameter-readers",
+      "lo": "0x14c920",
+      "hi": "0x14ce3c",
+      "instructions": 380,
+      "sha256": "65ea8b59eb8d8e44506be944a867343393e0e9f74ada6d6eb7bd0990249b7643"
+    },
+    {
+      "name": "nr-parameter-clear",
+      "lo": "0x1566c0",
+      "hi": "0x1566ff",
+      "instructions": 17,
+      "sha256": "cf52c4c8a258c399939893189370db70fcfaa6c01efa234629d926997419e299"
+    },
+    {
+      "name": "sr-generic-prepare",
+      "lo": "0x35d9fd",
+      "hi": "0x35e1e9",
+      "instructions": 441,
+      "sha256": "83a64a100d6286b8576eac0152295a706d61224e21ec87a6544fe4366272cb25"
+    },
+    {
+      "name": "sr-generic-api-wrappers",
+      "lo": "0x35e340",
+      "hi": "0x35e39d",
+      "instructions": 41,
+      "sha256": "a2d98cff293ded07fc19494d38d8c6b175a520fe7d4b67edf869bb8142981a52"
+    },
+    {
+      "name": "numeric-parameter-store",
+      "lo": "0x14f1d0",
+      "hi": "0x14f2ac",
+      "instructions": 56,
+      "sha256": "394b3bcff98f2f8b739aa675186052a5cd3a28145f5699661251e79b723b94f1"
+    },
+    {
+      "name": "pointer-parameter-store",
+      "lo": "0x14f550",
+      "hi": "0x14f62a",
+      "instructions": 57,
+      "sha256": "480b51bfa8dcda496fad13de0b5c55d044c4efa42801f7c50a58d19835871c06"
+    },
+    {
+      "name": "nr-parameter-find-or-insert",
+      "lo": "0x1419a0",
+      "hi": "0x141b4a",
+      "instructions": 117,
+      "sha256": "6a4ba8957054569eec3e98af902bf8574730d543a34b27ea44d0977d1981b0b7"
+    },
+    {
+      "name": "nr-feature-release-owner",
+      "lo": "0x157c77",
+      "hi": "0x157d0d",
+      "instructions": 35,
+      "sha256": "2c2998415f66a4711b57e2f8210617252cca07e34a2663dbb378e0945698479a"
+    },
+    {
+      "name": "nr-feature-handle-commit",
+      "lo": "0x157f33",
+      "hi": "0x157f86",
+      "instructions": 20,
+      "sha256": "5ceb25eddf1e6b9941dea3554603cb71509f987f7c18f0bf3cba4cea45765f89"
+    },
+    {
+      "name": "nr-feature-release-callback",
+      "lo": "0x15dad0",
+      "hi": "0x15db04",
+      "instructions": 18,
+      "sha256": "7c44509c1afa916b54b47af36bd8412a7d38cd0bf8fa8415092cf6a855dd74dc"
+    },
+    {
+      "name": "nr-feature-held-interface-copy",
+      "lo": "0xcb70",
+      "hi": "0xcbb4",
+      "instructions": 25,
+      "sha256": "6bd053de53ed412d42042a11c6744675688252592a7e0a3802ae3752f66eb243"
+    },
+    {
+      "name": "nr-device-get-from-child",
+      "lo": "0x15140f",
+      "hi": "0x151453",
+      "instructions": 16,
+      "sha256": "e5334a0658f72630f4b13b741b9ea584b983f368b1725373cd6ef8632a3df5de"
+    },
+    {
+      "name": "nr-device-admission-reject",
+      "lo": "0x152458",
+      "hi": "0x15247b",
+      "instructions": 10,
+      "sha256": "8dca18cb960c6a2dea9ebb77f7e79b62a335fb7aba7234751f32eafa776d97df"
+    },
+    {
+      "name": "nr-device-output-address",
+      "lo": "0x92d0",
+      "hi": "0x92f8",
+      "instructions": 14,
+      "sha256": "29d1391289bd5797fbc13c12e49b2fc4658038ff8f971c45ce430a04fe7c96f6"
+    },
+    {
+      "name": "nr-device-runtime-hold",
+      "lo": "0x1518f0",
+      "hi": "0x15192b",
+      "instructions": 17,
+      "sha256": "b3e8e894f84e4ae81803ffee943056708ab76afebbdb4cb995f369f63e22636c"
+    },
+    {
+      "name": "nr-runtime-destructor",
+      "lo": "0x143430",
+      "hi": "0x14369e",
+      "instructions": 180,
+      "sha256": "aaf6c3049fdcf1272a0283ce4f44dc2fa768a368e76c106251d587fd60070ec7"
+    },
+    {
+      "name": "nr-shutdown-export-required",
+      "lo": "0x357640",
+      "hi": "0x35764b",
+      "instructions": 2,
+      "sha256": "016a9d775a0e5b81d9e3386e524b80152baabc25cc7372bb80de385b57f01256"
+    },
+    {
+      "name": "nr-payload-state-cleanup-registration",
+      "lo": "0x35a479",
+      "hi": "0x35a4b6",
+      "instructions": 13,
+      "sha256": "fae06a334004caf5850bdcab5fcc33e0f1fecc4bef53f38c63696db235be0ca6"
+    },
+    {
+      "name": "nr-payload-state-exit-cleanup",
+      "lo": "0x539bc0",
+      "hi": "0x539c43",
+      "instructions": 28,
+      "sha256": "6279a8a5206a585357134a6d7745385f25bb0e815de8a66456477e65438b3260"
+    },
+    {
+      "name": "nr-cleanup-narrow-buffer",
+      "lo": "0xc6c0",
+      "hi": "0xc725",
+      "instructions": 28,
+      "sha256": "da886f86ee75b5bb2164245eafc4dfd3e9c433a5bce4fc1948fefb83aee57554"
+    },
+    {
+      "name": "nr-cleanup-pointer-buffer",
+      "lo": "0xc7b0",
+      "hi": "0xc818",
+      "instructions": 31,
+      "sha256": "55c90769892a4008ef6b588590ab0c5cf2f9318832c7d21e4e0a09994afa98bf"
+    },
+    {
+      "name": "nr-cleanup-wide-buffer",
+      "lo": "0x18200",
+      "hi": "0x1826f",
+      "instructions": 29,
+      "sha256": "72cec60c622cec8b7d672199bb5720c2de22a151d091278512a4fc5a36cf1ef3"
+    },
+    {
+      "name": "nr-cleanup-config-records",
+      "lo": "0x35ae70",
+      "hi": "0x35af26",
+      "instructions": 49,
+      "sha256": "deb4fd70f937def20d03821d0df180ace7655d4dd53a6838774cd364d6b5e85d"
+    },
+    {
+      "name": "nr-cleanup-free-thunk-1",
+      "lo": "0x4e76f0",
+      "hi": "0x4e76f5",
+      "instructions": 1,
+      "sha256": "998c394d05435fe36dd13e4c831814becf144e4a8316c72165c16609174613e6"
+    },
+    {
+      "name": "nr-cleanup-free-thunk-2",
+      "lo": "0x4e80a0",
+      "hi": "0x4e80a5",
+      "instructions": 1,
+      "sha256": "9bc3d3317924fa7004a5c1a65d6fbb42a606db212a1067cb577e1d627b152c4a"
+    },
+    {
+      "name": "nr-cleanup-free-thunk-3",
+      "lo": "0x4f7de0",
+      "hi": "0x4f7de5",
+      "instructions": 1,
+      "sha256": "b418a72ae919b8ab9b3d57af6ab0b0121d4ee6bc4f980c95e3e3039427b06b67"
+    },
+    {
+      "name": "nr-cleanup-heap-free",
+      "lo": "0x50b6c0",
+      "hi": "0x50b6fc",
+      "instructions": 19,
+      "sha256": "12bc5412bc5a0e6c45d4cd485def1666723f6659f3ace57802f065e010e8a8ad"
+    },
+    {
+      "name": "nr-payload-table-context-capture",
+      "lo": "0x155019",
+      "hi": "0x15503d",
+      "instructions": 6,
+      "sha256": "d5ec926824fc19496c052947fb737418d851ca6eb729d4d1b2ba993ef59f5457"
+    },
+    {
+      "name": "nr-payload-context-evaluate",
+      "lo": "0x145c8b",
+      "hi": "0x145cae",
+      "instructions": 10,
+      "sha256": "c98a27b07a6b55c9fd4d469485a51157691def83be765d9c1b8de17bab8e79b8"
+    },
+    {
+      "name": "nr-payload-missing-export-unload",
+      "lo": "0x358122",
+      "hi": "0x35812b",
+      "instructions": 2,
+      "sha256": "d7d09f00a052d6a6567b6313194931422ce5ffbdf33a31e3d0ef6e8fc16b43f2"
+    },
+    {
+      "name": "ngx-shutdown-descriptor",
+      "lo": "0x93356",
+      "hi": "0x9337a",
+      "instructions": 6,
+      "sha256": "4fdd2afa571f786b5e9354830275d347ac65a8d0ecd503855aeb2ab4ef66eba7"
+    },
+    {
+      "name": "ngx-shutdown-resolve-slots",
+      "lo": "0x93421",
+      "hi": "0x9344e",
+      "instructions": 14,
+      "sha256": "c9bbacb2af2c1f097e8fc2799acbec18057beb511b0d3ba9faf6b5a2b8f45cd4"
+    },
+    {
+      "name": "ngx-shutdown-wrapper",
+      "lo": "0xffa00",
+      "hi": "0xffa4f",
+      "instructions": 21,
+      "sha256": "d58619662c322e188afe07b658e5beeb424e045d447409fe86b0972904bac7dd"
+    },
+    {
+      "name": "ngx-shutdown-postprocess",
+      "lo": "0xff8f0",
+      "hi": "0xff9bd",
+      "instructions": 43,
+      "sha256": "c44be0bb982e641a643136e4760242c86f6f3793c70ddd8d36393676c2d03ff0"
+    },
+    {
+      "name": "ngx-shutdown-pair-registration",
+      "lo": "0x936d2",
+      "hi": "0x93753",
+      "instructions": 27,
+      "sha256": "c505f4b89bef5f6349e0a294e889daa6fe231ff7bcb6760d217319400c24ca32"
+    },
+    {
+      "name": "ngx-shutdown-target-diagnostic",
+      "lo": "0x10af75",
+      "hi": "0x10b028",
+      "instructions": 40,
+      "sha256": "bfb525200b2d26368e9341ad90a525e4d8dd6c4471afd28290569a2c36246721"
+    },
+    {
+      "name": "ngx-shutdown-transaction-result",
+      "lo": "0x10b044",
+      "hi": "0x10b08d",
+      "instructions": 19,
+      "sha256": "e4729256331cde5f2f022253a3211821f22f3b08ce02195cb567d9783cc403da"
+    },
+    {
+      "name": "ngx-shutdown-clear-slots",
+      "lo": "0x10b0c0",
+      "hi": "0x10b0ed",
+      "instructions": 7,
+      "sha256": "d28608394ba8f060cac06168ea57fe592253b074d12197dd807d0c4ddee0e63a"
+    },
+    {
+      "name": "ngx-hook-transaction",
+      "lo": "0x196a0",
+      "hi": "0x19ac6",
+      "instructions": 276,
+      "sha256": "bdfe01147bd744d74d031eb7dc836781451b80b6e8ac166d160c46baa0142f60"
+    },
+    {
+      "name": "ngx-hook-begin-owner",
+      "lo": "0x425320",
+      "hi": "0x425390",
+      "instructions": 23,
+      "sha256": "4878028fb49b7191e573d17a5963853382c65270011e5a7b9271229444e43149"
+    },
+    {
+      "name": "ngx-hook-protection-prepare",
+      "lo": "0x424870",
+      "hi": "0x4248c6",
+      "instructions": 22,
+      "sha256": "767c7efde8cb19bfeebf457c83332329711c68b5feac24f27260fc18053bbac8"
+    },
+    {
+      "name": "ngx-hook-abort-owner-gate",
+      "lo": "0x4251d0",
+      "hi": "0x4251eb",
+      "instructions": 6,
+      "sha256": "ea6780ea9a7d2620907d0a5bd5f9859db06aaa14e0fe33817bc9d99052f9a097"
+    },
+    {
+      "name": "ngx-hook-commit-owner-gate",
+      "lo": "0x425390",
+      "hi": "0x4253fb",
+      "instructions": 20,
+      "sha256": "04ef1a7f89b217c68d9da2f6e0b903553cea994f57a4e6c5525b874f50e2bc2f"
+    },
+    {
+      "name": "ngx-hook-target-normalizer-wrapper",
+      "lo": "0x424f50",
+      "hi": "0x424f72",
+      "instructions": 8,
+      "sha256": "a9865130fcae155eb35f47227c9bb0a673026906850d10fd6492a46f1c6480f5"
+    },
+    {
+      "name": "ngx-hook-attach-wrapper",
+      "lo": "0x4248d0",
+      "hi": "0x424901",
+      "instructions": 11,
+      "sha256": "8a050cbefb478f5311042f05c2400eb33c577ba15b2f37e3ae5e2ef70bd8009f"
+    },
+    {
+      "name": "ngx-hook-thread-id-thunk",
+      "lo": "0x4de981",
+      "hi": "0x4de987",
+      "instructions": 1,
+      "sha256": "c18f21d5bce57f430816674839dbc13cb503c1406bab66593c0bcb9ea2d640b2"
+    },
+    {
+      "name": "ngx-hook-protect-thunk",
+      "lo": "0x4de9a5",
+      "hi": "0x4de9ab",
+      "instructions": 1,
+      "sha256": "1a6261b34bf166cb0a966d082bcbb21b96f899b9d162dd1f93917a55173a3b7c"
+    },
+    {
+      "name": "ngx-hook-last-error-thunk",
+      "lo": "0x4de96f",
+      "hi": "0x4de975",
+      "instructions": 1,
+      "sha256": "efdde6e435cf3dfdc995fc641c242aeab114f0d6849e65579876bc336b4a3857"
+    },
+    {
+      "name": "ngx-hook-thread-admission",
+      "lo": "0x1b700",
+      "hi": "0x1b95d",
+      "instructions": 156,
+      "sha256": "e7316433c0753f289232704e22d9d01d95aba53e5ec9cfca58acb762169e9592"
+    },
+    {
+      "name": "ngx-hook-snapshot-thunk",
+      "lo": "0x4de98d",
+      "hi": "0x4de993",
+      "instructions": 1,
+      "sha256": "a4ce90aef3c744611c98a6946af09dc737f6a3338ac4ce5193b51885dbebb29a"
+    },
+    {
+      "name": "ngx-hook-thread-first-thunk",
+      "lo": "0x4de993",
+      "hi": "0x4de999",
+      "instructions": 1,
+      "sha256": "60a8232d881545589d641d8d01bbe93763b4da7a7dbda14d425dc4f07710daa6"
+    },
+    {
+      "name": "ngx-hook-thread-next-thunk",
+      "lo": "0x4de999",
+      "hi": "0x4de99f",
+      "instructions": 1,
+      "sha256": "db7eab39c6b9d74651aaa7fdb2170d21a31edd8da9d152dd079929c2745f4602"
+    },
+    {
+      "name": "dx11-completion-create",
+      "lo": "0xec820",
+      "hi": "0xecb25",
+      "instructions": 203,
+      "sha256": "1e0baf55fc4e2e2b5507bd0164426ec893413c289a78a2453492c4e71c502262"
+    },
+    {
+      "name": "dx11-completion-destroy",
+      "lo": "0x851d0",
+      "hi": "0x85248",
+      "instructions": 36,
+      "sha256": "485fc3a1ebc96a452e8d4745072c1e01367c14154e2962bab3d17d104ba479c3"
+    },
+    {
+      "name": "dx11-completion-poll",
+      "lo": "0xdd5b0",
+      "hi": "0xdd61f",
+      "instructions": 31,
+      "sha256": "47407c06f08d911b2407eccb7e745ee0815a843bfd68ecffbe267539ee66dab6"
+    },
+    {
+      "name": "dx11-completion-end",
+      "lo": "0xa9a00",
+      "hi": "0xa9a24",
+      "instructions": 11,
+      "sha256": "df8f719013bd86ab25449ce782fcb915cbb7fb7b69210d36ffe2474b7cbda5bb"
+    },
+    {
+      "name": "dx11-completion-cached",
+      "lo": "0x9c1e0",
+      "hi": "0x9c1e5",
+      "instructions": 2,
+      "sha256": "990bc3f51a038ed11cddcc0b6675bf119851b5532b1236a0ded49b1075bc286b"
+    },
+    {
+      "name": "nr-payload-import-slot-lookup",
+      "lo": "0x355750",
+      "hi": "0x3557f1",
+      "instructions": 60,
+      "sha256": "c4b571edc730a415c967437fb03e3347ebd280b60af485decff1b993a9d77288"
+    },
+    {
+      "name": "nr-payload-import-resolve",
+      "lo": "0x3575e8",
+      "hi": "0x35765d",
+      "instructions": 24,
+      "sha256": "dac3cc53f51889835d58ccb664538d803815516a0b1d1868236941dfccfee3e7"
+    },
+    {
+      "name": "nr-payload-module-name-replacement",
+      "lo": "0x356c30",
+      "hi": "0x356d03",
+      "instructions": 52,
+      "sha256": "fbd36c272b8c78b46285daa676728159380252198a0ccc58d82284e19da83d2a"
+    },
+    {
+      "name": "nr-payload-module-name-install",
+      "lo": "0x357c95",
+      "hi": "0x357cd1",
+      "instructions": 12,
+      "sha256": "fc27ae7c16e943f6793480affc433f9e674867d026e1a1545439a5db11a8471c"
+    },
+    {
+      "name": "nr-payload-after-name-install",
+      "lo": "0x357ed0",
+      "hi": "0x357f2f",
+      "instructions": 21,
+      "sha256": "6bef61e83ff73c5a0f6baca7d42ee4afc3a84bb7750fbb2788c2229ed347b5e2"
+    },
+    {
+      "name": "nr-payload-protected-write",
+      "lo": "0x35ab30",
+      "hi": "0x35abcf",
+      "instructions": 45,
+      "sha256": "fcb7c7b892f4e761cd9d5053163652c0580e5c21cc3e054fb5d1655f37809443"
+    },
+    {
+      "name": "nr-payload-own-module-reference",
+      "lo": "0x35a680",
+      "hi": "0x35a6ae",
+      "instructions": 9,
+      "sha256": "1499e5986e0334323bc629ff7a5f2480eb77444a7a631f951069fc55abddf0d9"
+    },
+    {
+      "name": "nr-payload-loader-state",
+      "lo": "0x356fac",
+      "hi": "0x356fb4",
+      "instructions": 2,
+      "sha256": "6418497605c13a57756cffea1b3e48d726506a5206def7d3cbe412d6c7894a9d"
+    },
+    {
+      "name": "nr-feature-format-reset-gate",
+      "lo": "0x15703b",
+      "hi": "0x15706d",
+      "instructions": 11,
+      "sha256": "3f3b26868bc3031a100e2b1f41697f2f171d8822880a06e8476b30cec919fa79"
+    },
+    {
+      "name": "nr-feature-reuse-gate",
+      "lo": "0x157bdf",
+      "hi": "0x157c31",
+      "instructions": 17,
+      "sha256": "90a3fd07e7dd827cd78e23439d4d7dc747e965f96c4c6aac6af290fd1f827ffe"
+    },
+    {
+      "name": "nr-feature-creation-prepare",
+      "lo": "0x157c31",
+      "hi": "0x157c77",
+      "instructions": 15,
+      "sha256": "a9ee0ef42ff7cd6618b840251d1638afdb1545d96495c23a5c03a71d1b68a173"
+    },
+    {
+      "name": "nr-feature-common-parameters",
+      "lo": "0x15bdf0",
+      "hi": "0x15bf09",
+      "instructions": 63,
+      "sha256": "831fa3f3dbfd61fd3ea6c660145080bdf4e9688a3f7db8b84b7aabc0b4a5d87f"
+    },
+    {
+      "name": "nr-feature-local-scaling-callback",
+      "lo": "0x15a240",
+      "hi": "0x15a272",
+      "instructions": 13,
+      "sha256": "afeb6a1239ba65c5b8daf1fbba28dbec8668acefe5caa6f3e7d5f86bf559f122"
+    },
+    {
+      "name": "fg-ffx-configure-hudless",
+      "lo": "0x827a",
+      "hi": "0x840c",
+      "instructions": 80,
+      "sha256": "ed5b60feb40f4c214947f03496534c4c251a01f88c502f0e6e1ce98756de49ba"
+    },
+    {
+      "name": "fg-ffx-prepare-admission",
+      "lo": "0x84b1",
+      "hi": "0x86dd",
+      "instructions": 110,
+      "sha256": "4749507198cf3ee49cc4e4e31255ee6f233b68601593e0f392d3c099cdfd028e"
+    },
+    {
+      "name": "fg-ffx-prepare-guide-tags",
+      "lo": "0x87d4",
+      "hi": "0x88ac",
+      "instructions": 50,
+      "sha256": "7395a9a72d95c18f3aa15be2a189b8b4349402c20d14a0111471218940e6b8b5"
+    },
+    {
+      "name": "fg-frame-slot-exact-key",
+      "lo": "0x1000c",
+      "hi": "0x1005a",
+      "instructions": 16,
+      "sha256": "ab36fd5490d1c615b3dcbf22e8cce256c49d7c63a15f3cc5bab0a8bef0238aba"
+    },
+    {
+      "name": "fg-frame-slot-exact-return",
+      "lo": "0x1035a",
+      "hi": "0x1036d",
+      "instructions": 4,
+      "sha256": "32eb53cf7b39beb01edf6dddeb60d6aa6cfdf1c0b35c5778534dea75e16addf2"
+    },
+    {
+      "name": "fg-sl-tag-build-and-submit",
+      "lo": "0x15b0d",
+      "hi": "0x15c96",
+      "instructions": 94,
+      "sha256": "c3298452eebe2f9fe44324312cba05b4fdb963d71545edcb954e76ae89d98eb8"
+    },
+    {
+      "name": "fg-sl-resource-admission",
+      "lo": "0x16050",
+      "hi": "0x16143",
+      "instructions": 71,
+      "sha256": "903173670bf01389c4c7e8d6f5d0912e9ab461a354d4ec6335d66b7374bbdbb8"
+    },
+    {
+      "name": "fg-sl-tag-export-resolve",
+      "lo": "0x10bbe",
+      "hi": "0x10bd8",
+      "instructions": 4,
+      "sha256": "a2bf7fbaa40103457682498f146e99240ec765a828ebd9a14e068e9ff8cd046c"
+    },
+    {
+      "name": "fg-sl-export-module-check",
+      "lo": "0x12d60",
+      "hi": "0x12dbd",
+      "instructions": 27,
+      "sha256": "a6dcd2598a5b7e0133d1ff0714240edfc472a8a09423cd3f57df1b248332e8c4"
+    }
+  ],
+  "shaders": [],
+  "tools": {
+    "python": "3.12.12",
+    "pefile": "2024.8.26",
+    "capstone": "5.0.7",
+    "fxc": null
+  },
+  "instruction_assertions": 573,
+  "parameter_key_assertions": 8,
+  "literal_assertions": 1,
+  "fg_input_fence_instruction_assertions": 97,
+  "fg_input_fence_import_assertions": 4,
+  "fg_input_fence_function_assertions": 2,
+  "fg_input_fence_api_slot_assertions": 2,
+  "fg_input_fence_path_assertions": 12,
+  "nr_device_holder_guid_assertions": 1,
+  "nr_device_holder_api_slot_assertions": 3,
+  "nr_device_holder_function_assertions": 5,
+  "nr_shutdown_scope_import_assertions": 3,
+  "nr_shutdown_scope_function_assertions": 14,
+  "nr_shutdown_cleanup_window_assertions": 8,
+  "nr_shutdown_cleanup_edge_assertions": 13,
+  "nr_shutdown_cleanup_thunk_assertions": 3,
+  "nr_shutdown_cleanup_import_call_assertions": 2,
+  "nr_shutdown_cleanup_instruction_assertions": 68,
+  "nr_shutdown_cleanup_unknown_helpers": 2,
+  "ngx_shutdown_interposition_literal_assertions": 3,
+  "ngx_shutdown_interposition_import_assertions": 3,
+  "ngx_shutdown_interposition_function_assertions": 4,
+  "ngx_shutdown_interposition_section_assertions": 1,
+  "ngx_hook_transaction_stage_assertions": 13,
+  "ngx_hook_transaction_import_assertions": 12,
+  "ngx_hook_transaction_thunk_assertions": 6,
+  "ngx_hook_transaction_function_assertions": 8,
+  "ngx_hook_transaction_flag_assertions": 3,
+  "payload_export_name_assertions": 5,
+  "payload_identity_row_assertions": 2,
+  "parameter_vtable_assertions": 17,
+  "parameter_rtti_assertions": 3,
+  "feature_owner_vtable_assertions": 2,
+  "completion_vtable_assertions": 4,
+  "completion_rtti_assertions": 3,
+  "completion_import_assertions": 4,
+  "completion_api_slot_assertions": 7,
+  "completion_query_flag_assertions": 1,
+  "payload_import_name_assertions": 2,
+  "payload_import_write_api_assertions": 5,
+  "nr_creation_key_assertions": 11,
+  "nr_creation_literal_assertions": 2,
+  "fg_resource_guid_assertions": 4,
+  "fg_resource_export_assertions": 1,
+  "fg_resource_api_slot_assertions": 2,
+  "fg_resource_enum_assertions": 8,
+  "sdk_reference_hashes": {
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_struct.h": "f4285f0a83e91c2737a57efd456d47c43bd98d62717e594dd311c1be8cfb94ae",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_dlss_g.h": "075bc65a5d30a59e158d3c1ea4dff34f8335bc16486c31b33394e9270ee59e8c",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_consts.h": "5928b7b1b8365f723a909461ad111b5f902069ee99bc942a7137ac4489f11fe4",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\nvngx_dlss_sdk\\nvsdk_ngx_params.h": "4d5ef282bca94d56629fa31f80d1d66961cbab53b31d272aeb7cf9a9e0ee5cd4",
+    "C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\um\\libloaderapi.h": "8f48062aa6d707bf8c63d8fb3e6956f331217be7309d38ac523951af51cb3224",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_core_types.h": "9c578208feead2e1c8aac32151baf7bc9f07c6867de3bc84f4813daad5a4d80f",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_core_api.h": "227ce30af8b64b932ce3a37f07e53b07c9c4b5d814b52829fca9199ced05201b",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\FidelityFX-SDK\\ffx-api\\include\\ffx_api\\ffx_framegeneration.h": "344936dccf49267d4421d1d74dc6db617d0a83c5a9f5991841325e812a38f127",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\FidelityFX-SDK\\ffx-api\\include\\ffx_api\\ffx_api_types.h": "dee2782813d22047c068e0fb27d1347324f8ce79d280a4672848b3b294cb12fe",
+    "C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\um\\d3d12.h": "82eb33195558e43cee6a254fb48c076d65fb55209be2eb6878573585aa7ae5c8",
+    "C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\um\\d3d11.h": "b2c0caa561cc1f422f31c44ca38c861c43a8fa135ccef476ee2f3e47dca99e2d"
+  },
+  "files": {
+    "camera-literals.json": "c07587ab649730e6dd73587f67c4e77ed516b3e24fe2befb496da2cf4194f619",
+    "dx11-completion-cached.json": "6c73bd5effed5147946c2afc8683ada85d3618b5b43431879090b3f8800e8450",
+    "dx11-completion-contract.json": "8edae94b6affee053e499b51fe30be02e22c143f1dd2e0dfc8b9a47569bdb666",
+    "dx11-completion-create.json": "f44b28d4e173c6409533a9bd738d456b2f07ef3ac8b92b0c7b857d30d9d6cae1",
+    "dx11-completion-destroy.json": "745c2373b40d31194ef37d57c846a44f879eb176b6dc33522f8881e056260ec2",
+    "dx11-completion-end.json": "cde4dee28f25f7934353b474297636a2ad5aeb1875b4c75b687a38f692a0c711",
+    "dx11-completion-poll.json": "b4bb0a5ef0ad23151748f9e164c771dccef1758f5f35ba6b72c1472492e80f62",
+    "fg-callback-registration.json": "932d4734317a4ca09d1acf4cef9d879f3380b171c43d01708aeec8816e131171",
+    "fg-capacity-feedback-window.json": "92b73ca9f68f182d5b5c3f9a5c619004833a521bf572894d773e08a91276bd17",
+    "fg-ffx-configure-hudless.json": "4150274ae452c27a41016effdf6305a1667198a571f6b8168114f65044959067",
+    "fg-ffx-prepare-admission.json": "eba9e3954a0fd45c0b36a8cb21ccf6020d5c2b11abcae6cd208ca6793ac39e7f",
+    "fg-ffx-prepare-guide-tags.json": "a89ea3a577d0d0a436cd9f98dbc638190dc178e31f943d8130b0a833edd4cf35",
+    "fg-frame-slot-exact-key.json": "d8bab41c2ad5bff5c0a85624ea56355ec225dc24026fb837d9f04a118d9fda71",
+    "fg-frame-slot-exact-return.json": "02beae4472905df5581af45f9dcef175b719e90869ff0bbb4d2399c8d182edc7",
+    "fg-input-fence-contract.json": "8087c5c57e0c3ab327e224332ed1312d4855136bc0430507a2ba0b0447b5eb74",
+    "fg-options.json": "65e56108380d8e2e78ed0deb23c2f80796ec0a2d2b6b67f6d887c628e52a47c8",
+    "fg-post-present.json": "08db444f9a3dfd063508916c7cdb58870afb054642dadd850f6f9b0fd9c5063e",
+    "fg-request-callback.json": "38ece030dc61cfa395be0f4d007c840db79ccc2517ba54872f718b58e1990826",
+    "fg-resource-tag-contract.json": "4ff0c03e9a832618dfc5f36c390d15058bbf2c2cc7b335e1c4113d81887c1789",
+    "fg-sl-export-module-check.json": "c1f68eee2e299c8fd55ca8484f67fe701d516ccf601da74cf04f977ec443d73e",
+    "fg-sl-resource-admission.json": "6aa0c5a6e261c40f3aef3950e323b30982ae5e457df6d1a1a72d70ebdc51f634",
+    "fg-sl-tag-build-and-submit.json": "2842ac54debf215d514cdc2be9d42d877b7b4e188217effcbcaeffcda241fb5c",
+    "fg-sl-tag-export-resolve.json": "5b6d7328d45c03e1a81e35cac0b249c30a4f73f33509810a20dd2d944f149e64",
+    "fg-state-callback.json": "81471b99b48dcf0130b5cf184fb0cd117dea172889e2884ce04d2c4ad19f1e7b",
+    "fg-state-telemetry.json": "d83cfdda25b426b456df32b6cbffc535729bbf98d49f6ecd194560861e819894",
+    "ngx-hook-abort-owner-gate.json": "795c776bb90ccc6d2a8ebbbbc2143cfde8a0d7bced071761a291cd3445d05843",
+    "ngx-hook-attach-wrapper.json": "247601999b993238b476c1643fc18ec6d5fc91338c4db55bc94e257b491883ce",
+    "ngx-hook-begin-owner.json": "f4379164674da547532354cb5da32546db215862a153ee92b10d4fe16d33572b",
+    "ngx-hook-commit-owner-gate.json": "0827d7cdc165f41ff60850785c34417e918f2e24f9a36ead6c2f6fac4bc1ee1a",
+    "ngx-hook-last-error-thunk.json": "fe319d0e008c7e1caa55afe930444fcbb139648ee44ab6da3ac3d450d75e86ec",
+    "ngx-hook-protect-thunk.json": "186f047c4b69cf8d027265c29230263a091a08bb5b3eed887a47550453aaa18e",
+    "ngx-hook-protection-prepare.json": "573ca22229e341b40a899bc1d5f3139e51bb2899a03b508eb32d6f461c13c8f1",
+    "ngx-hook-snapshot-thunk.json": "b1d08b2e281f61a9d902068b81a0c1cba12f9e3f3fe49e687900f06ae117dc58",
+    "ngx-hook-target-normalizer-wrapper.json": "ec28354c9147a11dc3efd37366fbab327fe65ad4e80aad13874134be7186b2e7",
+    "ngx-hook-thread-admission.json": "eeaf628a6ebab057644d236d2f21973e0df279f936257c236eafbb67af8f7ec9",
+    "ngx-hook-thread-first-thunk.json": "d280ed6523cbeedb35be91fc62873e04d339e7fdd47f3c0ee07c2e9b9d069b86",
+    "ngx-hook-thread-id-thunk.json": "f74d0cfaf71b91b3d80520be37c0749be57147a82f9f71e1d2c5df037b19d9f1",
+    "ngx-hook-thread-next-thunk.json": "5637eab5721a7c5564b953f3b7a012ce3b9b206c7fc23637364ba0a753b4f82c",
+    "ngx-hook-transaction-contract.json": "354a8cb8ae8fd0c439e495e014b40601d4c9328747d8a1c4ba9de0ac882a8202",
+    "ngx-hook-transaction.json": "e7b9ccc0e87d789aba9b2c4b40b681f3833598503d4b1171a61cff5a44cefbc0",
+    "ngx-shutdown-clear-slots.json": "af3fd99ebca8c9f9abb7a2eb2eab5581fb75adab3ff58a6bfe9c7ecd063d22a7",
+    "ngx-shutdown-descriptor.json": "2ed767cc35c1db2978f29a603d86041b2e3d698ad662348b7fd02b138fa47fb0",
+    "ngx-shutdown-interposition-contract.json": "e86a3042bcb289ce35accfdb1402c8d8827bcc42425c9f306322255b91241bd1",
+    "ngx-shutdown-pair-registration.json": "2a58e57fc34207f47523d81ecb2be0b6f108da669573d8b76f3ab38a5e8bc461",
+    "ngx-shutdown-postprocess.json": "e0e3a3de040bfb629ccd8f96d0f70479b7849505414e8b96a63f3dd0d0d4a2dd",
+    "ngx-shutdown-resolve-slots.json": "1f377db75188c8ff2d69788318ecb4cf20c890045e22c05079f78341571b711c",
+    "ngx-shutdown-target-diagnostic.json": "7d4db554c6d02e08b3588d7b07803f995c5ce7d6a4e33d09fd5c23a3e00d2701",
+    "ngx-shutdown-transaction-result.json": "4f746d6c323ccd28df32917d848f5e907dbd594a69a2c783a07b163270e20417",
+    "ngx-shutdown-wrapper.json": "60795f7df0c0a49e02a38dde72233e4407f2cf723fff43ff59d9f495f68f11fc",
+    "nr-cleanup-config-records.json": "3b2217ffaa013fa5a6f4afdd3ccff2a58cdd7ba8102e070d2622d7b4e9556255",
+    "nr-cleanup-free-thunk-1.json": "02d3b47b3436e250c2177f21278076bfcc34a7284b064ae55a8fc638bcaec884",
+    "nr-cleanup-free-thunk-2.json": "68f1be7f352356dbe03e56e89fada8b2b05ed7841f5aaba85851f0e39f1b3425",
+    "nr-cleanup-free-thunk-3.json": "d26eb17f096a83d710ea002aa7885cd22231af729a3e1897d99150e1b7809a65",
+    "nr-cleanup-heap-free.json": "5e7c7df45a47010fe92d43929525696bb4c1c610fdd77d22e355b87573885ba7",
+    "nr-cleanup-narrow-buffer.json": "dfc4455cfb29c794b9b946940b89749d9c7a10de289eebc5bb34763eb3517e3d",
+    "nr-cleanup-pointer-buffer.json": "696c97c0cf217a039b01c8447054bf42605090d5b751e36fa9f4f1e954411932",
+    "nr-cleanup-wide-buffer.json": "5a7dbb23f7c0bb7b886d964bc621391c3ca081f5c0f2bdb5ad5b7e9c9a85fd54",
+    "nr-copy-encode.json": "703f83de58127f886b7268c8cc8b9977fbc6645bdfe691e4e4a666cd025f9d9d",
+    "nr-create.json": "b51ec5c1f3d1b3e6c1d8c584210f7c817d1fb831c6c6bec168564fd4486f9b47",
+    "nr-created-identity.json": "19bc3e44df39bd0440450c8db39980fac634a6bcd98e3595df01ea93abddff51",
+    "nr-creation-contract.json": "9b85693ff1bde36a7211b28238e2e88ba79cc64b4f0ba9262843f302349a061e",
+    "nr-device-admission-reject.json": "cfdd06820e4e78bf6b207568d5725230bfc57c6d82376429af0d385ff87a5d2a",
+    "nr-device-get-from-child.json": "d360060cb18c2b85c9700e639813274b9e96d313d3f465a4eb0b4e1602a75193",
+    "nr-device-holder-contract.json": "184decc344ad3bd774ba72be46ae6a38fca17feb300e4e771313f50f3aeef84c",
+    "nr-device-output-address.json": "1560e7261b40e2389b9ace3c021abad23196f51a934347057766382fe127cc12",
+    "nr-device-runtime-hold.json": "a68d24431120fddafe9be49ec8e2ad1dea4352a80e82fd89f82871ea9bbbb182",
+    "nr-evaluate.json": "6457a59482a11c520403205cdbf6254372a512ad13fcc4933aba5334db87029a",
+    "nr-feature-common-parameters.json": "b4f99029b4cb14d4be7872f5c6142d2d41aee6894344e633306a0f0afca11e23",
+    "nr-feature-creation-prepare.json": "431b8e71999815db7f13270ede4355792ec93604d7715d7a515eab39c1a07be1",
+    "nr-feature-format-reset-gate.json": "54d534afcf520114f73279b8c96522e0c1d4cd315c2b1e9c75e71d8f244af65b",
+    "nr-feature-handle-commit.json": "c57c301a97601093997afacab0d7ccf73dcf4cb44a0b578c8c23b0a264137d25",
+    "nr-feature-held-interface-copy.json": "65cd32641530065322d7ffef19205cf003935e8eac630c9ec71058ddb9e8d025",
+    "nr-feature-local-scaling-callback.json": "e644723046bad9c7f33dc6d36344afa020de98f52776c304354467c6afa37598",
+    "nr-feature-release-callback.json": "4bc7cc52cf21e3db442537164a9fad69bfe48afa7a9f19b96f22e8fd69a22cbe",
+    "nr-feature-release-owner.json": "790b952cbe27cf722066ac5d5fe305771fe3537f375b2a237fb39c501e3ef988",
+    "nr-feature-reset.json": "c7118d9bc48c722fdda0d974a546d0970b99693bdaf99d7624ac3e9d7fb11168",
+    "nr-feature-reuse-gate.json": "9254ff24c887f2907cb67433bc974f416745c0c28dfcc87b8a253f8e64bec179",
+    "nr-parameter-clear.json": "83b1e0bed8d233c27a2a2c81100fd850eaf9194a4b8b2d5c5764346fc51db481",
+    "nr-parameter-constructor.json": "df42220e4b8e9c407aedd258ee294d09b9b9f439d7e9a7c52017320ad920625d",
+    "nr-parameter-find-or-insert.json": "9056fca85a74fc1397c0ce4ebef550e4aecfc89afedc490c5a89a695c5f99b77",
+    "nr-parameter-readers.json": "135353624596b701cece4fadcb0c62a94f5c9c9048deffaf8e8556c61bcc597d",
+    "nr-parameter-setters.json": "fdf87dfd915133fdbdfde621afe86f91a0a543cfcbbfbb29ecea5270610b818d",
+    "nr-parameters.json": "4152773f3dae82a0c59fc0ed7973201c8e959c1766f1dc576681fb620720d8c5",
+    "nr-payload-after-name-install.json": "0d39ba92bb39eee7068a6997ce0e64692e5ff093252595686aa74b7f9eddb889",
+    "nr-payload-api-accessor.json": "0a4bab0c5ebf2eea5089dde49ae2de0c94e7721b75226d3a7df0f5b5ad540d81",
+    "nr-payload-api-commit.json": "e1c3393c5d99341a91248dc8194096e0a7e0a34a33c27a7434876d173d9eb0f2",
+    "nr-payload-api-tables.json": "95027b222f16d84c347a8dbbecbf0db4cfbf87adcc419c2ee24abd2bd405a193",
+    "nr-payload-context-evaluate.json": "ac88f62631bc929bcf798e36bab1af62142bb3912ebae69e4c4e2a5d439361fd",
+    "nr-payload-evaluate-table-caller.json": "c1f7e8ef8c659e1fd040fda160bbfc1d4ea9474ff38a0bb24cf72ee17bb8a8b5",
+    "nr-payload-export-resolve.json": "f087c042e35e041bf49b84e83a2fbf132562edb8660b0a9e19319cfed568fbcd",
+    "nr-payload-import-contract.json": "c3d00ca96a79862d4e85c0ea06e77140bdb1471d92177e64af5e99d98d4cd65f",
+    "nr-payload-import-resolve.json": "bfccbfc962a10269a12bb4194b20ce929cd123abbb3a2fcbe7d42eb8443b11c6",
+    "nr-payload-import-slot-lookup.json": "fff5e29f77cd7c6870530c704670dface9d761366094cf3c93261689515db092",
+    "nr-payload-init-call.json": "7f3a1f2b446fe7507efecda5e29889878f5f3346cd316fc01421aecbf4ab0bce",
+    "nr-payload-load-call.json": "4e23e9767a06f5352ed3437ce84fe52a308e9ec979a16a5b9b7e5adc8771c96d",
+    "nr-payload-load-wrapper.json": "3f31d827d75243e9f4009d6200787ed57c3db9bb0d70ad55fe9d518f6562b30d",
+    "nr-payload-loaded-identity.json": "d864e16d4cfe5d093b7a0c97b8f8e64dd558e691e0e3a38685eda7834c5da7c0",
+    "nr-payload-loader-state.json": "9391578c444c889a6f712f6e44eaff8c51947d2fdb122ae5daceb7e410772f96",
+    "nr-payload-missing-export-unload.json": "2b5747f35fc6e8540c6915628e53fe6914056c32e965445db957a63d7234072d",
+    "nr-payload-module-name-install.json": "9b615e7269fd28bb739a98af7300f20b8ad38de89bb1e7152cf07f73e2ce236e",
+    "nr-payload-module-name-replacement.json": "0a72e1e1f3804c971ea426cf5e76bb8d10a5183de9f94ec03881b3687149f3ec",
+    "nr-payload-own-module-reference.json": "c37f112976fc8e203f26aacc03132bfb587a9d58ccbde3a52129cbc51511f05d",
+    "nr-payload-protected-write.json": "f4fea3f8653e5b0d170381d1c80db283178ef3d2ec615ef1a2be846628d26dc5",
+    "nr-payload-select.json": "5eb594cfa98609cc9b7c636ca7a85b3318d8f45377b55cc382a21d7519c6f28c",
+    "nr-payload-state-cleanup-registration.json": "c165a4b2c40b961081e454504cb0c4803253ad64d7edbb1ca1b1c8c57c4bafcc",
+    "nr-payload-state-exit-cleanup.json": "9f1cf5b71c053076acc28171bb83021f81cd9c76b5f78d0343d4a03bae52928f",
+    "nr-payload-table-context-capture.json": "7e15fb241de47f81d36da07674182ab37716681fe0cc2082bdec53bba43fb574",
+    "nr-reset-outcome.json": "b97a5ee09250006ebc58f32b64167da96cfed0df6bea54d27c5d11ad95a0ea5e",
+    "nr-result-decode.json": "06616f57a32268aacfefdc43ff64e568a3f25073b9e1203647aef29faa790a04",
+    "nr-runtime-destructor.json": "8ebe2d83374b1592146d7eab695723fabcf84e6d78024aa16cd53277c99510a2",
+    "nr-shutdown-export-required.json": "aa4d3707442c2ec00cdcc5612d3737aacc66dcd33c95d2b44503eb1b590e0b36",
+    "nr-shutdown-scope-contract.json": "5fd995f3f672b46386091581b17a0569f12374820081c53812817fb3d9d9d090",
+    "nr-warp-failure-fallback.json": "5e8a1a0650ceaaf25b5c9855a5cb7bee59394207f4d275addae56bfeb76fc33f",
+    "nr-warp-fallback-call.json": "79d94fd56d15b63ac685b60a6a7601012e04bbaa97640d71c79649739f825c82",
+    "nr-work-hysteresis.json": "24a1890d343f3e38edd9fed36a70c65ac34e7deb0ca68550633c080bbde5ad7f",
+    "numeric-parameter-store.json": "3d6cc4e09ec66e637c56f1711244c9e4de7412fa5cad16b11490de23dec2b35a",
+    "pointer-parameter-store.json": "5eb9d368d159c7a51009636c5c1d603af49b69314d25b5fd8f5a6102d745a01c",
+    "runtime-anchors.json": "18239faf1455efd9eb5c920f1dc0999d6eb84edf1cfda5e372022f39a5bc573a",
+    "sr-generic-api-wrappers.json": "04dde2365bca9154277e47e9aa9586bab9812eeecaf6b485448f669ee37bc9f1",
+    "sr-generic-parameters.json": "db9ca387b0229e9491c7dda1e1077f898cafa0d990a56a62082288978c31fad8",
+    "sr-generic-prepare.json": "3dc6c65512e30e4c80fe678bb26b11a1a07498c3dbfa69a73feb4bc01b21a2ca"
+  }
+}

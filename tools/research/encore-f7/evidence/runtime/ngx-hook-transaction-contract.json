@@ -1,0 +1,319 @@
+{
+  "stages": [
+    {
+      "rva": "0x540488",
+      "name": "refused-context",
+      "bytes": "726566757365642d636f6e7465787400"
+    },
+    {
+      "rva": "0x540508",
+      "name": "begin",
+      "bytes": "626567696e00"
+    },
+    {
+      "rva": "0x540518",
+      "name": "duplicate-target",
+      "bytes": "6475706c69636174652d74617267657400"
+    },
+    {
+      "rva": "0x540510",
+      "name": "target",
+      "bytes": "74617267657400"
+    },
+    {
+      "rva": "0x540530",
+      "name": "replacement-owner",
+      "bytes": "7265706c6163656d656e742d6f776e657200"
+    },
+    {
+      "rva": "0x540548",
+      "name": "precondition",
+      "bytes": "707265636f6e646974696f6e00"
+    },
+    {
+      "rva": "0x540558",
+      "name": "attach",
+      "bytes": "61747461636800"
+    },
+    {
+      "rva": "0x540560",
+      "name": "commit",
+      "bytes": "636f6d6d697400"
+    },
+    {
+      "rva": "0x540498",
+      "name": "snapshot",
+      "bytes": "736e617073686f7400"
+    },
+    {
+      "rva": "0x5404c8",
+      "name": "enumerate-thread",
+      "bytes": "656e756d65726174652d74687265616400"
+    },
+    {
+      "rva": "0x5404b8",
+      "name": "open-thread",
+      "bytes": "6f70656e2d74687265616400"
+    },
+    {
+      "rva": "0x5404e0",
+      "name": "update-thread",
+      "bytes": "7570646174652d74687265616400"
+    },
+    {
+      "rva": "0x5404f0",
+      "name": "update-exited-thread",
+      "bytes": "7570646174652d6578697465642d74687265616400"
+    }
+  ],
+  "public_loader_flags": {
+    "GET_MODULE_HANDLE_EX_FLAG_PIN": 1,
+    "GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT": 2,
+    "GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS": 4
+  },
+  "function_records": [
+    {
+      "name": "transaction_caller",
+      "begin": "0x196a0",
+      "end": "0x19ac6",
+      "unwind": "0xd04ea0"
+    },
+    {
+      "name": "begin_helper",
+      "begin": "0x425320",
+      "end": "0x425390",
+      "unwind": "0xd030c8"
+    },
+    {
+      "name": "protection_prepare",
+      "begin": "0x424870",
+      "end": "0x4248c6",
+      "unwind": "0xd030c8"
+    },
+    {
+      "name": "abort_helper_owner_prefix",
+      "begin": "0x4251d0",
+      "end": "0x425315",
+      "unwind": "0xd07d38"
+    },
+    {
+      "name": "commit_helper_owner_prefix",
+      "begin": "0x425390",
+      "end": "0x425827",
+      "unwind": "0xd4a0f4"
+    },
+    {
+      "name": "target_identity_wrapper",
+      "begin": "0x424f50",
+      "end": "0x424f72",
+      "unwind": "0xd4a124"
+    },
+    {
+      "name": "attach_wrapper",
+      "begin": "0x4248d0",
+      "end": "0x424901",
+      "unwind": "0xd4a10c"
+    },
+    {
+      "name": "thread_admission",
+      "begin": "0x1b700",
+      "end": "0x1b95d",
+      "unwind": "0xd04e54"
+    }
+  ],
+  "thunks": [
+    {
+      "rva": "0x4de981",
+      "iat_rva": "0x53b3d0",
+      "bytes": "ff2549ca0500"
+    },
+    {
+      "rva": "0x4de9a5",
+      "iat_rva": "0x53b498",
+      "bytes": "ff25edca0500"
+    },
+    {
+      "rva": "0x4de96f",
+      "iat_rva": "0x53b348",
+      "bytes": "ff25d3c90500"
+    },
+    {
+      "rva": "0x4de98d",
+      "iat_rva": "0x53b3f8",
+      "bytes": "ff2565ca0500"
+    },
+    {
+      "rva": "0x4de993",
+      "iat_rva": "0x53b400",
+      "bytes": "ff2567ca0500"
+    },
+    {
+      "rva": "0x4de999",
+      "iat_rva": "0x53b408",
+      "bytes": "ff2569ca0500"
+    }
+  ],
+  "imports": [
+    {
+      "iat_rva": "0x53b3a0",
+      "dll": "KERNEL32.dll",
+      "name": "GetModuleHandleExW"
+    },
+    {
+      "iat_rva": "0x53b340",
+      "dll": "KERNEL32.dll",
+      "name": "CloseHandle"
+    },
+    {
+      "iat_rva": "0x53b348",
+      "dll": "KERNEL32.dll",
+      "name": "GetLastError"
+    },
+    {
+      "iat_rva": "0x53b3d0",
+      "dll": "KERNEL32.dll",
+      "name": "GetCurrentThreadId"
+    },
+    {
+      "iat_rva": "0x53b498",
+      "dll": "KERNEL32.dll",
+      "name": "VirtualProtect"
+    },
+    {
+      "iat_rva": "0x53b3f8",
+      "dll": "KERNEL32.dll",
+      "name": "CreateToolhelp32Snapshot"
+    },
+    {
+      "iat_rva": "0x53b400",
+      "dll": "KERNEL32.dll",
+      "name": "Thread32First"
+    },
+    {
+      "iat_rva": "0x53b408",
+      "dll": "KERNEL32.dll",
+      "name": "Thread32Next"
+    },
+    {
+      "iat_rva": "0x53b3d8",
+      "dll": "KERNEL32.dll",
+      "name": "OpenThread"
+    },
+    {
+      "iat_rva": "0x53b3c0",
+      "dll": "KERNEL32.dll",
+      "name": "GetCurrentProcessId"
+    },
+    {
+      "iat_rva": "0x53b3c8",
+      "dll": "KERNEL32.dll",
+      "name": "GetCurrentThread"
+    },
+    {
+      "iat_rva": "0x53b360",
+      "dll": "KERNEL32.dll",
+      "name": "WaitForSingleObject"
+    }
+  ],
+  "result_fields_observed": {
+    "0x0": "stage-name pointer",
+    "0x8": "raw32 error/result",
+    "0x10": "item index",
+    "0x18": "thread id",
+    "0x1c": "thread-exit observation byte",
+    "0x20": "failed pointer-slot address"
+  },
+  "cpu_owner": {
+    "thread_id_slot_rva": "0x1665150",
+    "pending_error_slot_rva": "0x1665154",
+    "acquire_cas_rva": "0x42534a",
+    "abort_owner_compare_rva": "0x4251d9",
+    "commit_owner_compare_rva": "0x4253d0",
+    "is_gpu_fence": false
+  },
+  "begin_failure": {
+    "caller_call_rva": "0x19749",
+    "nonzero_branch_rva": "0x19753",
+    "return_copy_target_rva": "0x1998a",
+    "protection_call_rva": "0x42537a",
+    "protection_error_read_rva": "0x4248b6",
+    "error_store_rva": "0x42537f",
+    "error_return_read_rva": "0x425385",
+    "may_follow_cpu_owner_acquisition": true,
+    "direct_owner_clear_seen_after_acquisition_in_begin": false,
+    "outer_nonzero_path_calls_abort": false,
+    "no_state_mutation_or_clean_retry_guaranteed": false,
+    "runtime_failure_reproduced": false
+  },
+  "target_validation": {
+    "identity_helper_rva": "0x424f50",
+    "duplicate_branch_rva": "0x197cb",
+    "duplicate_error": "0xd",
+    "invalid_target_error": "0x57",
+    "identity_is_com_or_resource_authority": false
+  },
+  "wrapper_module_pin_attempt": {
+    "call_rva": "0x19831",
+    "flags": 5,
+    "flag_names": [
+      "GET_MODULE_HANDLE_EX_FLAG_PIN",
+      "GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS"
+    ],
+    "target_member_offset": "0x8",
+    "target": "pair wrapper address, not original entry or selected NR payload",
+    "failure_target_rva": "0x199a8",
+    "actual_module_pin_proven": false,
+    "nr_payload_module_identity_proven": false
+  },
+  "later_steps": {
+    "thread_helper_call_rva": "0x1986c",
+    "thread_helper_rva": "0x1b700",
+    "precondition_call_rva": "0x19883",
+    "abort_call_rvas": [
+      "0x198a3",
+      "0x19985"
+    ],
+    "attach_call_rva": "0x19a2b",
+    "commit_call_rva": "0x19a6c",
+    "failed_slot_compare_rva": "0x19aa6",
+    "close_thread_handle_rva": "0x198b8"
+  },
+  "thread_admission": {
+    "snapshot_flags": 4,
+    "entry_bytes": "0x1c",
+    "remote_access_mask": "0x10001a",
+    "same_process_filter_rva": "0x1b7ae",
+    "skip_current_thread_compare_rva": "0x1b7bf",
+    "open_call_rva": "0x1b7cb",
+    "open_error_skip_value": "0x57",
+    "open_error_compare_rva": "0x1b8c1",
+    "record_bytes": 16,
+    "record_handle_offset": "0x0",
+    "record_thread_id_offset": "0x8",
+    "snapshot_close_rva": "0x1b850",
+    "update_helper_rva": "0x425830",
+    "remote_update_call_rva": "0x1b889",
+    "remote_error_store_rva": "0x1b88e",
+    "failed_update_wait_rva": "0x1b8f0",
+    "wait_timeout": 0,
+    "exit_flag_store_rva": "0x1b8fb",
+    "wait0_clears_update_error": false,
+    "exit_flag_is_gpu_completion": false,
+    "current_pseudo_handle_rva": "0x1b927",
+    "current_update_call_rva": "0x1b930",
+    "current_pseudo_handle_stored_in_vector": false,
+    "update_helper_fully_recovered": false
+  },
+  "target_executed": false,
+  "payload_executed": false,
+  "gpu_tested": false,
+  "private_helper_abi_authenticated": false,
+  "backend_helpers_fully_recovered": false,
+  "complete_thread_coverage_proven": false,
+  "exception_cleanup_proven": false,
+  "runtime_installation_proven": false,
+  "complete_rollback_proven": false,
+  "resource_retirement_proven": false,
+  "safe_unload_proven": false,
+  "scope": "Fixed-target normal CPU control flow, public Win32 flag values and partial backend owner gates; no runtime reproduction, universal Detours contract or GPU certificate"
+}

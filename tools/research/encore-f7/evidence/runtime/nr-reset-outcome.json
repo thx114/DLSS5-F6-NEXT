@@ -1,0 +1,30 @@
+[
+  {
+    "rva": "0x158e90",
+    "bytes": "81fe0000d0ba",
+    "mnemonic": "cmp",
+    "operands": "esi, 0xbad00000",
+    "data_refs": []
+  },
+  {
+    "rva": "0x158e96",
+    "bytes": "0f94c0",
+    "mnemonic": "sete",
+    "operands": "al",
+    "data_refs": []
+  },
+  {
+    "rva": "0x158e99",
+    "bytes": "8803",
+    "mnemonic": "mov",
+    "operands": "byte ptr [rbx], al",
+    "data_refs": []
+  },
+  {
+    "rva": "0x158e9b",
+    "bytes": "418806",
+    "mnemonic": "mov",
+    "operands": "byte ptr [r14], al",
+    "data_refs": []
+  }
+]

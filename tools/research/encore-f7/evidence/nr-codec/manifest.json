@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "profile": "nr-codec",
+  "target": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\research\\rtx-encore-v2.0.1\\extracted\\rtx-encore.dll",
+  "sha256": "06a7fd63ee0f0e95574f3869d70c3c9ae4aaf326ba53ff8c864064410a5f1217",
+  "image_base": "0x180000000",
+  "method": "bounded fresh static decode",
+  "target_executed": false,
+  "camera_authority": false,
+  "code": [
+    {
+      "name": "nr-pso-initializer",
+      "lo": "0x149af0",
+      "hi": "0x149e29",
+      "instructions": 190,
+      "sha256": "a9f44f65ce75ba04c95533980636772e35b06e4936cd7144cf14507ab3d5e628"
+    },
+    {
+      "name": "nr-output-extent",
+      "lo": "0x156c53",
+      "hi": "0x156ca3",
+      "instructions": 24,
+      "sha256": "755981ef421fdf9f303d247abf16a9fabd9cc061e91d9e02003b825a9c25157a"
+    },
+    {
+      "name": "nr-root-bind",
+      "lo": "0x144fd0",
+      "hi": "0x145113",
+      "instructions": 81,
+      "sha256": "e03544f5c7b2b0f7437b3349432609eed7b9e805651a7c0b9e161c0f3a8488d1"
+    },
+    {
+      "name": "nr-exposure-decode-slot",
+      "lo": "0x157a2e",
+      "hi": "0x157a4b",
+      "instructions": 5,
+      "sha256": "8d2e0e4e83432e3c1337313428ee601253172d633229f1ea77bb678045ad7091"
+    }
+  ],
+  "shaders": [
+    {
+      "name": "nr-encode",
+      "rva": "0x57f800",
+      "size": 27520,
+      "table_rva": "0x586380",
+      "code_ref": null,
+      "size_ref": null,
+      "sha256": "373adcf72e8a08c24cbfe1a6bbd9cbe0c8ecf1cbd375220d28b716cbd5908ac3",
+      "tokens": 937
+    },
+    {
+      "name": "nr-decode",
+      "rva": "0x586390",
+      "size": 12680,
+      "table_rva": "0x589518",
+      "code_ref": null,
+      "size_ref": null,
+      "sha256": "0542f709bb38c5d5ca16cbc5e31ca1c2ca238b3892b74ac8024b94071b58b483",
+      "tokens": 425
+    },
+    {
+      "name": "nr-encode-exposure",
+      "rva": "0x589530",
+      "size": 27952,
+      "table_rva": "0x590260",
+      "code_ref": null,
+      "size_ref": null,
+      "sha256": "f06853ed08591d21189a6972f22944cd065c6e244fa04db4155d2bb8d6e01458",
+      "tokens": 952
+    },
+    {
+      "name": "nr-decode-exposure",
+      "rva": "0x590270",
+      "size": 13108,
+      "table_rva": "0x5935a8",
+      "code_ref": null,
+      "size_ref": null,
+      "sha256": "d7c7d4a436446e1474c3fd0d78879c6ab6c475b09b078145a0c05e6f4108ed13",
+      "tokens": 440
+    }
+  ],
+  "tools": {
+    "python": "3.12.12",
+    "pefile": "2024.8.26",
+    "capstone": "5.0.7",
+    "fxc": "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64\\fxc.exe"
+  },
+  "bytecode_table_assertions": 4,
+  "sdk_reference_hashes": {
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_struct.h": "f4285f0a83e91c2737a57efd456d47c43bd98d62717e594dd311c1be8cfb94ae",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_dlss_g.h": "075bc65a5d30a59e158d3c1ea4dff34f8335bc16486c31b33394e9270ee59e8c",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_consts.h": "5928b7b1b8365f723a909461ad111b5f902069ee99bc942a7137ac4489f11fe4"
+  },
+  "files": {
+    "camera-literals.json": "c07587ab649730e6dd73587f67c4e77ed516b3e24fe2befb496da2cf4194f619",
+    "nr-decode-exposure.asm.txt": "e26cdad3a236dd4dc81530b98d744c409a771baadc8fa190f47380953e999849",
+    "nr-decode-exposure.tokens.json": "a1c83ffd982ddc89ee80f2e2d5e8ab818e5b442523d08de5bb332848d14e5575",
+    "nr-decode.asm.txt": "d6556c9cbe329fdad303a11c68035c35ab37c17373deb1fd174ee6de0eea4b18",
+    "nr-decode.tokens.json": "2973646d2089e426f948e6537cf2b510c2640ec497ffc89db6dde633b20029d8",
+    "nr-encode-exposure.asm.txt": "2f4c68eda38fd1307d6c2f0f6b029c8109535e1809f10f1a7392dc16a596c883",
+    "nr-encode-exposure.tokens.json": "bba5d2391c3956e3d59c8d2e547f6ce41f731cbbf2293870207613233596164a",
+    "nr-encode.asm.txt": "e613be4b6b0b3196e953084ce141f21de7b50ce85383ae322f4982c03b62de2c",
+    "nr-encode.tokens.json": "1524d90cbb8ad81d10a437a565958124e2742dfedf88e28fce3dcd2f8f5b2869",
+    "nr-exposure-decode-slot.json": "3dad17ffe5e0461efc17d19ae80dd4741eee4fa7c0ab5225712cdbc6e0a83c2f",
+    "nr-output-extent.json": "dff59cff06a0bc60ee9218a2966e40d41cad8d0d6aeda4c7268aa35a84e20223",
+    "nr-pso-initializer.json": "07f8a200e4596f83b20858066005ecb956e032b7b5d09bfc7b73e36c636b57de",
+    "nr-root-bind.json": "6638eed2f57d4acb7c7dc6ead1288adaea3e7ffc94ab7588065a52ba0a966189"
+  }
+}

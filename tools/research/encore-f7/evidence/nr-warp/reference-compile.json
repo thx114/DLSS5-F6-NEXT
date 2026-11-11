@@ -1,0 +1,24 @@
+{
+  "source": "nr_guides_reference.hlsl",
+  "source_sha256": "8f0869ea92c886a134c6c161365f5d3beb6ad36f138db38d67fb54427fa82b48",
+  "includes": {
+    "nr_warp_reference.hlsli": "2dec475467f97cfa6d53d3f4b4d47ca7a26d3914154c66a6537eab4dd4296a42"
+  },
+  "compiler": "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64\\fxc.exe",
+  "compiler_sha256": "799a0eb81b4368902515d9c83f40da7f41bb4e2064d2e87f12506b8667c45c0c",
+  "target": "cs_5_1",
+  "flags": [
+    "/Ges",
+    "/WX",
+    "/O3"
+  ],
+  "gpu_tested": false,
+  "entrypoints": [
+    {
+      "entry": "GuidesReference",
+      "file": "reference-GuidesReference.dxbc",
+      "sha256": "3f1c2af781cab206fe0a598300288e43bfa4baf63314bbeaa58002b03e469e3b",
+      "compiler_exit": 0
+    }
+  ]
+}

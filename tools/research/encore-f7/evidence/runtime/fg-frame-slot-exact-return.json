@@ -1,0 +1,30 @@
+[
+  {
+    "rva": "0x1035a",
+    "bytes": "4c39bc1f68030000",
+    "mnemonic": "cmp",
+    "operands": "qword ptr [rdi + rbx + 0x368], r15",
+    "data_refs": []
+  },
+  {
+    "rva": "0x10362",
+    "bytes": "7409",
+    "mnemonic": "je",
+    "operands": "0x18001036d",
+    "data_refs": []
+  },
+  {
+    "rva": "0x10364",
+    "bytes": "488d8648030000",
+    "mnemonic": "lea",
+    "operands": "rax, [rsi + 0x348]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x1036b",
+    "bytes": "eb11",
+    "mnemonic": "jmp",
+    "operands": "0x18001037e",
+    "data_refs": []
+  }
+]

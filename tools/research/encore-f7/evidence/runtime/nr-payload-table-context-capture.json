@@ -1,0 +1,44 @@
+[
+  {
+    "rva": "0x155019",
+    "bytes": "4c89ad10010000",
+    "mnemonic": "mov",
+    "operands": "qword ptr [rbp + 0x110], r13",
+    "data_refs": []
+  },
+  {
+    "rva": "0x155020",
+    "bytes": "488d45d0",
+    "mnemonic": "lea",
+    "operands": "rax, [rbp - 0x30]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x155024",
+    "bytes": "48898518010000",
+    "mnemonic": "mov",
+    "operands": "qword ptr [rbp + 0x118], rax",
+    "data_refs": []
+  },
+  {
+    "rva": "0x15502b",
+    "bytes": "4c89b520010000",
+    "mnemonic": "mov",
+    "operands": "qword ptr [rbp + 0x120], r14",
+    "data_refs": []
+  },
+  {
+    "rva": "0x155032",
+    "bytes": "488d45b8",
+    "mnemonic": "lea",
+    "operands": "rax, [rbp - 0x48]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x155036",
+    "bytes": "48898528010000",
+    "mnemonic": "mov",
+    "operands": "qword ptr [rbp + 0x128], rax",
+    "data_refs": []
+  }
+]

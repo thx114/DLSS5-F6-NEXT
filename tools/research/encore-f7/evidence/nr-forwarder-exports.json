@@ -1,0 +1,447 @@
+{
+  "schema_version": 1,
+  "input": {
+    "path": "D:\\DATA\\Documents\\ChatGPT\\DLSS F5 NEXT\\audit\\migrated-evidence-20261018\\StarRail_24028_20261017_analysis\\package_v0.2_1\\extracted\\DLSS F5\\OptiScaler\\nvngx.dll_dlssnr.dll",
+    "sha256": "201eb85a47d481da6965abd309685788a70d35b2a6ce21a7fa9fff744e544658",
+    "bytes": 152064
+  },
+  "analyzer": {
+    "pefile_path": "D:\\APPS\\conda\\Lib\\site-packages\\pefile.py",
+    "pefile_sha256": "0d0eb68f0f169182613dc64b3ab50b20855508c1c1d2faafe8fccf23edb6a345",
+    "pefile_version": "2024.8.26",
+    "dependency_mode": "pefile-file"
+  },
+  "historical_table_label": null,
+  "architecture": {
+    "machine": 34404,
+    "machine_name": "AMD64",
+    "optional_header_magic": 523,
+    "format": "PE32+",
+    "is_dll": true,
+    "size_of_image": 172032
+  },
+  "export_table": {
+    "present": true,
+    "rva": 138832,
+    "size": 936,
+    "declared_functions": 28,
+    "declared_names": 28
+  },
+  "named_exports": [
+    {
+      "name": "dlssnr_call_create",
+      "name_hex": "646c73736e725f63616c6c5f637265617465",
+      "ordinal": 1,
+      "rva": 10912,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 7840,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_call_error",
+      "name_hex": "646c73736e725f63616c6c5f6572726f72",
+      "ordinal": 2,
+      "rva": 6000,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 2928,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_call_evaluate_v2",
+      "name_hex": "646c73736e725f63616c6c5f6576616c756174655f7632",
+      "ordinal": 3,
+      "rva": 12384,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 9312,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_call_last_create",
+      "name_hex": "646c73736e725f63616c6c5f6c6173745f637265617465",
+      "ordinal": 4,
+      "rva": 150916,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "invalid",
+      "invalid_reason": "RVA is not backed by section file bytes",
+      "file_offset": null,
+      "in_executable_section": false
+    },
+    {
+      "name": "dlssnr_call_last_init",
+      "name_hex": "646c73736e725f63616c6c5f6c6173745f696e6974",
+      "ordinal": 5,
+      "rva": 150924,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "invalid",
+      "invalid_reason": "RVA is not backed by section file bytes",
+      "file_offset": null,
+      "in_executable_section": false
+    },
+    {
+      "name": "dlssnr_call_probe_float",
+      "name_hex": "646c73736e725f63616c6c5f70726f62655f666c6f6174",
+      "ordinal": 6,
+      "rva": 5968,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 2896,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_call_release",
+      "name_hex": "646c73736e725f63616c6c5f72656c65617365",
+      "ordinal": 7,
+      "rva": 14544,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 11472,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_call_set_extras",
+      "name_hex": "646c73736e725f63616c6c5f7365745f657874726173",
+      "ordinal": 8,
+      "rva": 14144,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 11072,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_call_set_float_slot",
+      "name_hex": "646c73736e725f63616c6c5f7365745f666c6f61745f736c6f74",
+      "ordinal": 9,
+      "rva": 5952,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 2880,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_d3d11_create",
+      "name_hex": "646c73736e725f64336431315f637265617465",
+      "ordinal": 10,
+      "rva": 8176,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 5104,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_d3d11_init",
+      "name_hex": "646c73736e725f64336431315f696e6974",
+      "ordinal": 11,
+      "rva": 7488,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 4416,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_d3d11_last_create",
+      "name_hex": "646c73736e725f64336431315f6c6173745f637265617465",
+      "ordinal": 12,
+      "rva": 151032,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "invalid",
+      "invalid_reason": "RVA is not backed by section file bytes",
+      "file_offset": null,
+      "in_executable_section": false
+    },
+    {
+      "name": "dlssnr_d3d11_last_init",
+      "name_hex": "646c73736e725f64336431315f6c6173745f696e6974",
+      "ordinal": 13,
+      "rva": 151040,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "invalid",
+      "invalid_reason": "RVA is not backed by section file bytes",
+      "file_offset": null,
+      "in_executable_section": false
+    },
+    {
+      "name": "dlssnr_d3d11_probe",
+      "name_hex": "646c73736e725f64336431315f70726f6265",
+      "ordinal": 14,
+      "rva": 7392,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 4320,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_d3d11_release",
+      "name_hex": "646c73736e725f64336431315f72656c65617365",
+      "ordinal": 15,
+      "rva": 8752,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 5680,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_d3d11_requirements",
+      "name_hex": "646c73736e725f64336431315f726571756972656d656e7473",
+      "ordinal": 16,
+      "rva": 7104,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 4032,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_last_ratio_result",
+      "name_hex": "646c73736e725f6c6173745f726174696f5f726573756c74",
+      "ordinal": 17,
+      "rva": 151036,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "invalid",
+      "invalid_reason": "RVA is not backed by section file bytes",
+      "file_offset": null,
+      "in_executable_section": false
+    },
+    {
+      "name": "dlssnr_last_ratio_stage",
+      "name_hex": "646c73736e725f6c6173745f726174696f5f7374616765",
+      "ordinal": 18,
+      "rva": 150920,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "invalid",
+      "invalid_reason": "RVA is not backed by section file bytes",
+      "file_offset": null,
+      "in_executable_section": false
+    },
+    {
+      "name": "dlssnr_query_scaling_ratio",
+      "name_hex": "646c73736e725f71756572795f7363616c696e675f726174696f",
+      "ordinal": 19,
+      "rva": 6320,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 3248,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_vk_create",
+      "name_hex": "646c73736e725f766b5f637265617465",
+      "ordinal": 20,
+      "rva": 9200,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 6128,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_vk_evaluate_v2",
+      "name_hex": "646c73736e725f766b5f6576616c756174655f7632",
+      "ordinal": 21,
+      "rva": 9776,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 6704,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_vk_forget",
+      "name_hex": "646c73736e725f766b5f666f72676574",
+      "ordinal": 22,
+      "rva": 9184,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 6112,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_vk_init",
+      "name_hex": "646c73736e725f766b5f696e6974",
+      "ordinal": 23,
+      "rva": 8896,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 5824,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_vk_last_create",
+      "name_hex": "646c73736e725f766b5f6c6173745f637265617465",
+      "ordinal": 24,
+      "rva": 150912,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "invalid",
+      "invalid_reason": "RVA is not backed by section file bytes",
+      "file_offset": null,
+      "in_executable_section": false
+    },
+    {
+      "name": "dlssnr_vk_last_init",
+      "name_hex": "646c73736e725f766b5f6c6173745f696e6974",
+      "ordinal": 25,
+      "rva": 151044,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "invalid",
+      "invalid_reason": "RVA is not backed by section file bytes",
+      "file_offset": null,
+      "in_executable_section": false
+    },
+    {
+      "name": "dlssnr_vk_probe",
+      "name_hex": "646c73736e725f766b5f70726f6265",
+      "ordinal": 26,
+      "rva": 8800,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 5728,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_vk_release",
+      "name_hex": "646c73736e725f766b5f72656c65617365",
+      "ordinal": 27,
+      "rva": 10864,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 7792,
+      "in_executable_section": true
+    },
+    {
+      "name": "dlssnr_vk_shutdown",
+      "name_hex": "646c73736e725f766b5f73687574646f776e",
+      "ordinal": 28,
+      "rva": 9104,
+      "forwarder": null,
+      "forwarder_hex": null,
+      "status": "direct-present",
+      "invalid_reason": null,
+      "file_offset": 6032,
+      "in_executable_section": true
+    }
+  ],
+  "required_exports": {
+    "NVSDK_NGX_D3D12_Init_Ext": {
+      "name": "NVSDK_NGX_D3D12_Init_Ext",
+      "ordinal": null,
+      "rva": null,
+      "forwarder": null,
+      "status": "missing"
+    },
+    "NVSDK_NGX_D3D12_CreateFeature": {
+      "name": "NVSDK_NGX_D3D12_CreateFeature",
+      "ordinal": null,
+      "rva": null,
+      "forwarder": null,
+      "status": "missing"
+    },
+    "NVSDK_NGX_D3D12_EvaluateFeature": {
+      "name": "NVSDK_NGX_D3D12_EvaluateFeature",
+      "ordinal": null,
+      "rva": null,
+      "forwarder": null,
+      "status": "missing"
+    },
+    "NVSDK_NGX_D3D12_ReleaseFeature": {
+      "name": "NVSDK_NGX_D3D12_ReleaseFeature",
+      "ordinal": null,
+      "rva": null,
+      "forwarder": null,
+      "status": "missing"
+    },
+    "NVSDK_NGX_D3D12_Shutdown1": {
+      "name": "NVSDK_NGX_D3D12_Shutdown1",
+      "ordinal": null,
+      "rva": null,
+      "forwarder": null,
+      "status": "missing"
+    }
+  },
+  "optional_exports": {
+    "NVSDK_NGX_D3D12_AllocateParameters": {
+      "name": "NVSDK_NGX_D3D12_AllocateParameters",
+      "ordinal": null,
+      "rva": null,
+      "forwarder": null,
+      "status": "missing"
+    },
+    "NVSDK_NGX_D3D12_GetCapabilityParameters": {
+      "name": "NVSDK_NGX_D3D12_GetCapabilityParameters",
+      "ordinal": null,
+      "rva": null,
+      "forwarder": null,
+      "status": "missing"
+    },
+    "NVSDK_NGX_D3D12_DestroyParameters": {
+      "name": "NVSDK_NGX_D3D12_DestroyParameters",
+      "ordinal": null,
+      "rva": null,
+      "forwarder": null,
+      "status": "missing"
+    },
+    "NVSDK_NGX_D3D12_GetScratchBufferSize": {
+      "name": "NVSDK_NGX_D3D12_GetScratchBufferSize",
+      "ordinal": null,
+      "rva": null,
+      "forwarder": null,
+      "status": "missing"
+    }
+  },
+  "pefile_warnings": [],
+  "target_executed": false,
+  "gpu_tested": false,
+  "abi_authenticated": false,
+  "support_proven": false,
+  "support": "UNKNOWN",
+  "limitations": [
+    "Export presence and executable-section membership do not authenticate functions or ABI.",
+    "Forwarders are recorded without resolving or executing their targets.",
+    "Historical table labels are hash row matches, not authenticity or version proof.",
+    "Missing optional exports and unknown hashes do not establish lack of support."
+  ]
+}

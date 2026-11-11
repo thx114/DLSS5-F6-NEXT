@@ -1,0 +1,11 @@
+[
+  {
+    "rva": "0x4de96f",
+    "bytes": "ff25d3c90500",
+    "mnemonic": "jmp",
+    "operands": "qword ptr [rip + 0x5c9d3]",
+    "data_refs": [
+      "0x53b348"
+    ]
+  }
+]

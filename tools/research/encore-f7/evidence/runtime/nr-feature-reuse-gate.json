@@ -1,0 +1,121 @@
+[
+  {
+    "rva": "0x157bdf",
+    "bytes": "498d86f8010000",
+    "mnemonic": "lea",
+    "operands": "rax, [r14 + 0x1f8]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157be6",
+    "bytes": "4983be5801000000",
+    "mnemonic": "cmp",
+    "operands": "qword ptr [r14 + 0x158], 0",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157bee",
+    "bytes": "7441",
+    "mnemonic": "je",
+    "operands": "0x180157c31",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157bf0",
+    "bytes": "8b4580",
+    "mnemonic": "mov",
+    "operands": "eax, dword ptr [rbp - 0x80]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157bf3",
+    "bytes": "41398670010000",
+    "mnemonic": "cmp",
+    "operands": "dword ptr [r14 + 0x170], eax",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157bfa",
+    "bytes": "7518",
+    "mnemonic": "jne",
+    "operands": "0x180157c14",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157bfc",
+    "bytes": "8b4584",
+    "mnemonic": "mov",
+    "operands": "eax, dword ptr [rbp - 0x7c]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157bff",
+    "bytes": "41398674010000",
+    "mnemonic": "cmp",
+    "operands": "dword ptr [r14 + 0x174], eax",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c06",
+    "bytes": "750c",
+    "mnemonic": "jne",
+    "operands": "0x180157c14",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c08",
+    "bytes": "8b4598",
+    "mnemonic": "mov",
+    "operands": "eax, dword ptr [rbp - 0x68]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c0b",
+    "bytes": "41398678010000",
+    "mnemonic": "cmp",
+    "operands": "dword ptr [r14 + 0x178], eax",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c12",
+    "bytes": "7408",
+    "mnemonic": "je",
+    "operands": "0x180157c1c",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c14",
+    "bytes": "498bce",
+    "mnemonic": "mov",
+    "operands": "rcx, r14",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c17",
+    "bytes": "e894edffff",
+    "mnemonic": "call",
+    "operands": "0x1801569b0",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c1c",
+    "bytes": "498d86f8010000",
+    "mnemonic": "lea",
+    "operands": "rax, [r14 + 0x1f8]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c23",
+    "bytes": "4983be5801000000",
+    "mnemonic": "cmp",
+    "operands": "qword ptr [r14 + 0x158], 0",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c2b",
+    "bytes": "0f8539040000",
+    "mnemonic": "jne",
+    "operands": "0x18015806a",
+    "data_refs": []
+  }
+]

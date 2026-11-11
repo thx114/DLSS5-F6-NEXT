@@ -1,0 +1,46 @@
+[
+  {
+    "rva": "0x4251d0",
+    "bytes": "4883ec68",
+    "mnemonic": "sub",
+    "operands": "rsp, 0x68",
+    "data_refs": []
+  },
+  {
+    "rva": "0x4251d4",
+    "bytes": "e8a8970b00",
+    "mnemonic": "call",
+    "operands": "0x1804de981",
+    "data_refs": []
+  },
+  {
+    "rva": "0x4251d9",
+    "bytes": "390571ff2301",
+    "mnemonic": "cmp",
+    "operands": "dword ptr [rip + 0x123ff71], eax",
+    "data_refs": [
+      "0x1665150"
+    ]
+  },
+  {
+    "rva": "0x4251df",
+    "bytes": "740a",
+    "mnemonic": "je",
+    "operands": "0x1804251eb",
+    "data_refs": []
+  },
+  {
+    "rva": "0x4251e1",
+    "bytes": "b8dd100000",
+    "mnemonic": "mov",
+    "operands": "eax, 0x10dd",
+    "data_refs": []
+  },
+  {
+    "rva": "0x4251e6",
+    "bytes": "e925010000",
+    "mnemonic": "jmp",
+    "operands": "0x180425310",
+    "data_refs": []
+  }
+]

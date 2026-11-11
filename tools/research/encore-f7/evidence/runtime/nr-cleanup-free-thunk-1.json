@@ -1,0 +1,9 @@
+[
+  {
+    "rva": "0x4e76f0",
+    "bytes": "e9ab090000",
+    "mnemonic": "jmp",
+    "operands": "0x1804e80a0",
+    "data_refs": []
+  }
+]

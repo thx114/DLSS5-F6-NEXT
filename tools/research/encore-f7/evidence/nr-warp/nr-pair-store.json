@@ -1,0 +1,44 @@
+[
+  {
+    "rva": "0x157432",
+    "bytes": "0f1045f8",
+    "mnemonic": "movups",
+    "operands": "xmm0, xmmword ptr [rbp - 8]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157436",
+    "bytes": "410f118618010000",
+    "mnemonic": "movups",
+    "operands": "xmmword ptr [r14 + 0x118], xmm0",
+    "data_refs": []
+  },
+  {
+    "rva": "0x15743e",
+    "bytes": "0f104d08",
+    "mnemonic": "movups",
+    "operands": "xmm1, xmmword ptr [rbp + 8]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157442",
+    "bytes": "410f118e28010000",
+    "mnemonic": "movups",
+    "operands": "xmmword ptr [r14 + 0x128], xmm1",
+    "data_refs": []
+  },
+  {
+    "rva": "0x15744a",
+    "bytes": "0f104518",
+    "mnemonic": "movups",
+    "operands": "xmm0, xmmword ptr [rbp + 0x18]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x15744e",
+    "bytes": "410f118638010000",
+    "mnemonic": "movups",
+    "operands": "xmmword ptr [r14 + 0x138], xmm0",
+    "data_refs": []
+  }
+]

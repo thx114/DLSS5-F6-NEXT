@@ -1,0 +1,71 @@
+{
+  "schema": "f7.genshin-candidate-session.v2",
+  "startedUtc": "2026-11-07T02:50:31.0973348Z",
+  "failure": "Game returned nonzero exitCode=1; termination=exited-after-cli-stop.; incomplete or unexpected runtime input changes.",
+  "pid": 21516,
+  "creationFileTime": 134384934332617839,
+  "launcherExit": 0,
+  "exited": true,
+  "exitCode": 1,
+  "actualModule": [
+    {
+      "diskSha256": "DCC4CD920E202A26CB7CED19C15DB172D73398F5852A369380F837984CCE1B6A",
+      "mappedFullShaKnown": false,
+      "path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\runtime\\OptiScaler.dll",
+      "bytes": 5304320,
+      "base": 140737306689536
+    }
+  ],
+  "gameFGProof": false,
+  "cameraAuthority": false,
+  "runtimeInputsStable": false,
+  "observationCompleted": true,
+  "stopRequested": true,
+  "termination": "exited-after-cli-stop",
+  "displayCreateFailure": false,
+  "postSessionInventoryComplete": true,
+  "performanceInputsStable": false,
+  "completed": false,
+  "allowInteractiveConfig": false,
+  "postLaunchProcessState": {
+    "Pid": 21516,
+    "State": "Running",
+    "Error": 0,
+    "CreationFileTime": 134384934332617839,
+    "ExitCode": 259,
+    "WaitResult": 258
+  },
+  "activationFailure": "Launcher CLI activate-3 failed; inspect retained receipt.",
+  "activationClickFailure": "Launcher CLI activation-click-3 failed; inspect retained receipt.",
+  "activated": false,
+  "finalProcessState": {
+    "Pid": 21516,
+    "State": "Exited",
+    "Error": 0,
+    "CreationFileTime": 134384934332617839,
+    "ExitCode": 1,
+    "WaitResult": 0
+  },
+  "runtimeInputsAfter": {
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\runtime\\OptiScaler.dll": "DCC4CD920E202A26CB7CED19C15DB172D73398F5852A369380F837984CCE1B6A",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\runtime\\OptiScaler.ini": "F3BD971E3AB679AA7D057794FDFE5586DF298D51941BC0873D20561CD051B070",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\runtime\\Streamline\\nvngx_dlss.dll": "3975567B8943C53ACCE397F2B72380092F84F162D00B0D2C7D08A1025C563983",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\runtime\\Streamline\\nvngx_dlssg.dll": "FF6E90EB78B827927DFF5B4ECC6B1C870C2E9BCA29ED9F48C7D348CC9E170B82",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\runtime\\Streamline\\sl.common.dll": "38EEA3B4209AFC455636EA372B5933D65FCC13BECEC6C84D101DCFC4D8648F75",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\runtime\\Streamline\\sl.dlss_g.dll": "3ED9538DF724993BEA8A050195A6A78B9C8C8A566D5B05ADE477AAB3C390E90F",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\runtime\\Streamline\\sl.interposer.dll": "27B2190057994C0B287C2C5716953BF1586F6499AC12FBBB2092B9AAF8396570",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\runtime\\Streamline\\sl.pcl.dll": "5698C38E722318681F215C9FE68E45B9BEDD51378ACC699D8EEE26E961E57770",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\runtime\\Streamline\\sl.reflex.dll": "443577E869352436FF7EC8F4D9C90418D3E95368436CE219261E0F4F07A38122"
+  },
+  "changedInputs": [
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\runtime\\OptiScaler.ini"
+  ],
+  "configurationChanged": true,
+  "unexpectedChangedInputs": [
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\runtime\\OptiScaler.ini"
+  ],
+  "configSnapshotPath": null,
+  "configSnapshotSha256": null,
+  "inventoryErrors": [],
+  "finishedUtc": "2026-11-07T02:55:43.6372614Z"
+}

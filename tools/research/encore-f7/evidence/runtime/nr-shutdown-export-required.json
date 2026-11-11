@@ -1,0 +1,16 @@
+[
+  {
+    "rva": "0x357640",
+    "bytes": "48837db000",
+    "mnemonic": "cmp",
+    "operands": "qword ptr [rbp - 0x50], 0",
+    "data_refs": []
+  },
+  {
+    "rva": "0x357645",
+    "bytes": "0f84d70a0000",
+    "mnemonic": "je",
+    "operands": "0x180358122",
+    "data_refs": []
+  }
+]

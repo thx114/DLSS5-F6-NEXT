@@ -1,0 +1,141 @@
+{
+  "schema": "f7.isolated-baseline.v1",
+  "mode": "sr-display",
+  "startupMode": "fg",
+  "runtime": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\runtime",
+  "launcher": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\launcher-input\\source-owned-map\\src\\HoYoShadeHub\\bin\\x64\\Release\\net10.0-windows10.0.26100.0\\win-x64\\F6Launcher.exe",
+  "launcherManifest": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\launcher-input\\candidate.json",
+  "launcherManifestSha256": "4DF7F061B139E7BD51D5119DCC7A83D07171A62D861629DD157DA380B29A9AFE",
+  "sourceManifest": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\manual-genshin\\ui-fix-20261106T1538170869407Z\\manual-test.json",
+  "sourceIniSha256": "95CDD61930AD74D04710C1C34634A68A49ED6C0C4EEF5423A55605F96A0C6C0F",
+  "sourceIniRebound": true,
+  "sourceManifestSha256": "88332790296669E27F0992E0920BA965113F84113A4EFBE48E5A1DD9D7A902D8",
+  "runtimeInputPolicy": "all-files-except-log",
+  "gameExe": "D:/APPS/miHoYo Launcher/games/Genshin Impact Game/YuanShen.exe",
+  "gameExeSha256": "8B014F64B5DC12FBC476E0C362B053ABFDD7A1378CD282E4AD81057621DBD6B5",
+  "dllSha256": "5EFA2E863018726CA7CE3F36B5153CBF9AC7A92247F059B520F5B6CEC2702FFC",
+  "buildId": "79CDAAB75E6E33AFB322A66228ABE27568AF87C5A0DAEB13FF925EB097EBF674",
+  "changes": [
+    {
+      "section": "SR",
+      "key": "Enabled",
+      "value": "true"
+    },
+    {
+      "section": "FG",
+      "key": "Enabled",
+      "value": "true"
+    },
+    {
+      "section": "FG",
+      "key": "InterpolationCount",
+      "value": "2"
+    },
+    {
+      "section": "Diagnostics",
+      "key": "GpuTiming",
+      "value": "true"
+    },
+    {
+      "section": "Diagnostics",
+      "key": "HookCpuTiming",
+      "value": "true"
+    },
+    {
+      "section": "Diagnostics",
+      "key": "DlssResetTrace",
+      "value": "false"
+    },
+    {
+      "section": "SR",
+      "key": "DlssFeaturePath",
+      "value": "Streamline/nvngx_dlss.dll"
+    },
+    {
+      "section": "Experiments",
+      "key": "ApproximateFgConstants",
+      "value": "true"
+    },
+    {
+      "section": "Experiments",
+      "key": "FixedTupleBaseTags",
+      "value": "true"
+    },
+    {
+      "section": "Experiments",
+      "key": "GenshinCenteredJitter",
+      "value": "false"
+    },
+    {
+      "section": "SR",
+      "key": "ModelPreset",
+      "value": "13"
+    },
+    {
+      "section": "Upscalers",
+      "key": "Dx11Upscaler",
+      "value": "dlss"
+    },
+    {
+      "section": "Upscalers",
+      "key": "Dx12Upscaler",
+      "value": "dlss"
+    },
+    {
+      "section": "Bridge",
+      "key": "Sharpness",
+      "value": "0.4"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\runtime\\OptiScaler.dll",
+      "sha256": "5EFA2E863018726CA7CE3F36B5153CBF9AC7A92247F059B520F5B6CEC2702FFC"
+    },
+    {
+      "path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\runtime\\OptiScaler.ini",
+      "sha256": "8386B6A6155A3357D39A3A9CA0A05520080020E6F1ED2CA9815D03D6B9176316"
+    },
+    {
+      "path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\runtime\\Streamline\\nvngx_dlss.dll",
+      "sha256": "3975567B8943C53ACCE397F2B72380092F84F162D00B0D2C7D08A1025C563983"
+    },
+    {
+      "path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\runtime\\Streamline\\nvngx_dlssg.dll",
+      "sha256": "FF6E90EB78B827927DFF5B4ECC6B1C870C2E9BCA29ED9F48C7D348CC9E170B82"
+    },
+    {
+      "path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\runtime\\Streamline\\sl.common.dll",
+      "sha256": "38EEA3B4209AFC455636EA372B5933D65FCC13BECEC6C84D101DCFC4D8648F75"
+    },
+    {
+      "path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\runtime\\Streamline\\sl.dlss_g.dll",
+      "sha256": "3ED9538DF724993BEA8A050195A6A78B9C8C8A566D5B05ADE477AAB3C390E90F"
+    },
+    {
+      "path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\runtime\\Streamline\\sl.interposer.dll",
+      "sha256": "27B2190057994C0B287C2C5716953BF1586F6499AC12FBBB2092B9AAF8396570"
+    },
+    {
+      "path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\runtime\\Streamline\\sl.pcl.dll",
+      "sha256": "5698C38E722318681F215C9FE68E45B9BEDD51378ACC699D8EEE26E961E57770"
+    },
+    {
+      "path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\fg2-ownedmap-hookcpu-20261107T0427\\runtime\\Streamline\\sl.reflex.dll",
+      "sha256": "443577E869352436FF7EC8F4D9C90418D3E95368436CE219261E0F4F07A38122"
+    }
+  ],
+  "originalRuntimeModified": false,
+  "gameStarted": false,
+  "diagnosticWorkloadActive": true,
+  "hookCpuTimingRequested": true,
+  "dlssResetTraceRequested": false,
+  "dlssResetTraceDelaySeconds": null,
+  "dlssResetTraceWindowSeconds": null,
+  "focusedSrChainRequested": false,
+  "isolatedSrModelRequest": "M",
+  "isolatedSrBackendRequest": "dlss",
+  "experimentalFg2xRequested": true,
+  "requestedTotalMultiplier": 2,
+  "isolatedSharpnessRequest": 0.4
+}

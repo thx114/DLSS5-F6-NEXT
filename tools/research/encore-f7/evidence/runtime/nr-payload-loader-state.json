@@ -1,0 +1,16 @@
+[
+  {
+    "rva": "0x356fac",
+    "bytes": "e89f340000",
+    "mnemonic": "call",
+    "operands": "0x18035a450",
+    "data_refs": []
+  },
+  {
+    "rva": "0x356fb1",
+    "bytes": "488bf0",
+    "mnemonic": "mov",
+    "operands": "rsi, rax",
+    "data_refs": []
+  }
+]

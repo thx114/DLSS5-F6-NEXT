@@ -1,0 +1,87 @@
+{
+  "device_guid": {
+    "rva": "0x53ce20",
+    "bytes": "f1199818b61d574bbe541821339b85f7",
+    "name": "ID3D12Device"
+  },
+  "public_device_child_slots": [
+    {
+      "method": "AddRef",
+      "slot": 1,
+      "byte_offset": "0x8"
+    },
+    {
+      "method": "Release",
+      "slot": 2,
+      "byte_offset": "0x10"
+    },
+    {
+      "method": "GetDevice",
+      "slot": 7,
+      "byte_offset": "0x38"
+    }
+  ],
+  "function_records": [
+    {
+      "name": "output_address_helper",
+      "begin": "0x92d0",
+      "end": "0x92f8",
+      "unwind": "0xd03a14"
+    },
+    {
+      "name": "device_admission_caller",
+      "begin": "0x151020",
+      "end": "0x15255e",
+      "unwind": "0xd19dc4"
+    },
+    {
+      "name": "feature_create_evaluate_caller",
+      "begin": "0x156ac0",
+      "end": "0x159a3f",
+      "unwind": "0xd197c4"
+    },
+    {
+      "name": "feature_release_callback",
+      "begin": "0x15dad0",
+      "end": "0x15db04",
+      "unwind": "0xd1a014"
+    },
+    {
+      "name": "runtime_destructor",
+      "begin": "0x143430",
+      "end": "0x14369e",
+      "unwind": "0xd19570"
+    }
+  ],
+  "device_acquisition": {
+    "call_rva": "0x151436",
+    "output_slot": "rsp+0x70",
+    "expected_device_compare_rva": "0x15144a"
+  },
+  "runtime_device_hold": {
+    "field": "runtime+0x90",
+    "store_rva": "0x151918",
+    "addref_rva": "0x15190d",
+    "old_release_rva": "0x151927"
+  },
+  "feature_device_hold": {
+    "field": "holder+0x10",
+    "copy_call_rva": "0x157cd9",
+    "release_feature_rva": "0x15dae2",
+    "release_device_rva": "0x15dafa"
+  },
+  "runtime_drop_order": {
+    "feature_holder_field": "runtime+0x168",
+    "conditional_feature_callback_rva": "0x1434eb",
+    "device_field": "runtime+0x90",
+    "device_release_rva": "0x143645"
+  },
+  "target_executed": false,
+  "payload_executed": false,
+  "gpu_tested": false,
+  "resource_retirement_proven": false,
+  "module_lifetime_proven": false,
+  "shutdown_contract_proven": false,
+  "complete_session_lifetime_proven": false,
+  "scope": "Fixed-target CPU device references and conditional holder destruction only; no GPU or session retirement certificate"
+}

@@ -1,0 +1,116 @@
+[
+  {
+    "rva": "0x15140f",
+    "bytes": "4d8b7e20",
+    "mnemonic": "mov",
+    "operands": "r15, qword ptr [r14 + 0x20]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x151413",
+    "bytes": "4c897dc0",
+    "mnemonic": "mov",
+    "operands": "qword ptr [rbp - 0x40], r15",
+    "data_refs": []
+  },
+  {
+    "rva": "0x151417",
+    "bytes": "4c896c2470",
+    "mnemonic": "mov",
+    "operands": "qword ptr [rsp + 0x70], r13",
+    "data_refs": []
+  },
+  {
+    "rva": "0x15141c",
+    "bytes": "498b1f",
+    "mnemonic": "mov",
+    "operands": "rbx, qword ptr [r15]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x15141f",
+    "bytes": "488d4c2470",
+    "mnemonic": "lea",
+    "operands": "rcx, [rsp + 0x70]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x151424",
+    "bytes": "e8a77eebff",
+    "mnemonic": "call",
+    "operands": "0x1800092d0",
+    "data_refs": []
+  },
+  {
+    "rva": "0x151429",
+    "bytes": "4c8bc0",
+    "mnemonic": "mov",
+    "operands": "r8, rax",
+    "data_refs": []
+  },
+  {
+    "rva": "0x15142c",
+    "bytes": "488d15edb93e00",
+    "mnemonic": "lea",
+    "operands": "rdx, [rip + 0x3eb9ed]",
+    "data_refs": [
+      "0x53ce20"
+    ]
+  },
+  {
+    "rva": "0x151433",
+    "bytes": "498bcf",
+    "mnemonic": "mov",
+    "operands": "rcx, r15",
+    "data_refs": []
+  },
+  {
+    "rva": "0x151436",
+    "bytes": "ff5338",
+    "mnemonic": "call",
+    "operands": "qword ptr [rbx + 0x38]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x151439",
+    "bytes": "85c0",
+    "mnemonic": "test",
+    "operands": "eax, eax",
+    "data_refs": []
+  },
+  {
+    "rva": "0x15143b",
+    "bytes": "0f8817100000",
+    "mnemonic": "js",
+    "operands": "0x180152458",
+    "data_refs": []
+  },
+  {
+    "rva": "0x151441",
+    "bytes": "498b5610",
+    "mnemonic": "mov",
+    "operands": "rdx, qword ptr [r14 + 0x10]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x151445",
+    "bytes": "488b4c2470",
+    "mnemonic": "mov",
+    "operands": "rcx, qword ptr [rsp + 0x70]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x15144a",
+    "bytes": "483bca",
+    "mnemonic": "cmp",
+    "operands": "rcx, rdx",
+    "data_refs": []
+  },
+  {
+    "rva": "0x15144d",
+    "bytes": "0f850a100000",
+    "mnemonic": "jne",
+    "operands": "0x18015245d",
+    "data_refs": []
+  }
+]

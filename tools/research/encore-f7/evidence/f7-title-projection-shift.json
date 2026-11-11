@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "method": "offline caller-supplied numerical hypotheses",
+  "projection": {
+    "previous_ndc_center": [
+      -0.0010579226072877645,
+      0.0014660363085567951
+    ],
+    "current_ndc_center": [
+      -0.0008951376075856388,
+      0.00100311532150954
+    ],
+    "principal_delta_ndc": [
+      0.0001627849997021258,
+      -0.00046292098704725504
+    ],
+    "nonoffset_max_abs": 0.0,
+    "nonoffset_max_abs_exact_ratio": [
+      0,
+      1
+    ],
+    "nonoffset_exactly_equal": true,
+    "nonoffset_max_abs_underflowed": false,
+    "coefficient_comparison": "exact ratios of supplied binary64 inputs",
+    "nonoffset_tolerance": 0.0,
+    "offset_only_candidate": true,
+    "caller_common_raster_size": null,
+    "principal_delta_raster_pixels": null,
+    "raster_convention": "D3D top-left, x right, y down",
+    "offset_cause": "UNKNOWN",
+    "common_view_basis_authenticated": false,
+    "camera_authority": false,
+    "jitter_semantics_authenticated": false
+  },
+  "caller_sdk_jitter_previous": null,
+  "caller_sdk_jitter_current": null,
+  "caller_sdk_delta_pixels": null,
+  "raw_candidates": null,
+  "raw_candidates_compared_to_caller_sdk_values": null,
+  "raw_candidates_compared_to_D3D_raster_delta": null,
+  "SDK_sign_relative_to_raster": "UNKNOWN",
+  "fixed_bias_identifiable_from_deltas": false,
+  "preferred_formula": null,
+  "apply_formula": false,
+  "camera_authority": false,
+  "source_authenticated": false,
+  "frame_authenticated": false,
+  "history_authenticated": false,
+  "target_executed": false,
+  "gpu_tested": false,
+  "input_cbs": [
+    {
+      "path": "C:\\Users\\thx11\\AppData\\Local\\Temp\\F7-isolated-tests\\scene-cb-motion-reviewed-20261106T193038\\raw-input\\camera-input-40288-929910133393-0\\capture-1.vs-cb2.bin",
+      "bytes": 560,
+      "sha256": "9baa33e1bf6326140533e8e517e0c1c183b01ded30f33544160ebcc4dd645d81"
+    },
+    {
+      "path": "C:\\Users\\thx11\\AppData\\Local\\Temp\\F7-isolated-tests\\scene-cb-motion-reviewed-20261106T193038\\raw-input\\camera-input-40288-929910133393-0\\capture-2.vs-cb2.bin",
+      "bytes": 560,
+      "sha256": "e67c41dd5fa53b23aee43f7ee849519fecf08a28c3ba723ceaddef2d1bbc304e"
+    }
+  ],
+  "resource_offset": 80,
+  "assumed_storage": "row-major",
+  "assumed_vectors": "row",
+  "offset_domain": "absolute bytes in entire resource; Context1 range not reinterpreted"
+}

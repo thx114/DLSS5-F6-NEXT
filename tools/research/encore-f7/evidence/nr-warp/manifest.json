@@ -1,0 +1,167 @@
+{
+  "schema": 1,
+  "profile": "nr-warp",
+  "target": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\research\\rtx-encore-v2.0.1\\extracted\\rtx-encore.dll",
+  "sha256": "06a7fd63ee0f0e95574f3869d70c3c9ae4aaf326ba53ff8c864064410a5f1217",
+  "image_base": "0x180000000",
+  "method": "bounded fresh static decode",
+  "target_executed": false,
+  "camera_authority": false,
+  "code": [
+    {
+      "name": "nr-guide-pso",
+      "lo": "0x14f87f",
+      "hi": "0x14f8da",
+      "instructions": 22,
+      "sha256": "0f57aab7f2bdd7315c4b184e9e7915381d5f6892ab61412d9259db2e41308f13"
+    },
+    {
+      "name": "nr-guide-root-dispatch",
+      "lo": "0x1530b0",
+      "hi": "0x1531b2",
+      "instructions": 70,
+      "sha256": "0c5ae7576573aca1d19f08ea7be9d87c5b6bc8424a1ec5bb299a2c047796281c"
+    },
+    {
+      "name": "nr-guide-constants",
+      "lo": "0x158609",
+      "hi": "0x1587a7",
+      "instructions": 71,
+      "sha256": "8f7478f03353ccff086f4143a59564a442fca7b4d7003c1f938cec6f80934362"
+    },
+    {
+      "name": "nr-native-curve",
+      "lo": "0x14beb0",
+      "hi": "0x14bf57",
+      "instructions": 41,
+      "sha256": "f5f208b89f83f6e8d28264a11072fb8eee29722782a9a0e6adeb78bf66e0a182"
+    },
+    {
+      "name": "nr-axis-packing-gmax",
+      "lo": "0x14e6d0",
+      "hi": "0x14eb0e",
+      "instructions": 230,
+      "sha256": "bd7ef663dd129528dd769e6186500750a16607ecd17d59f60345089dc90b4743"
+    },
+    {
+      "name": "nr-pair-eligibility",
+      "lo": "0x14efc0",
+      "hi": "0x14f198",
+      "instructions": 107,
+      "sha256": "e2ebb7830cbeebe1037e022907f87aa8a3190a75ae769c6a1a06ff8e7e0b2a12"
+    },
+    {
+      "name": "nr-pair-call-copy",
+      "lo": "0x156d97",
+      "hi": "0x156dba",
+      "instructions": 8,
+      "sha256": "6cddf2df43ae94eb69f9ebd2b2109790f0f4616664fd13bbb54f326b2894f2ab"
+    },
+    {
+      "name": "nr-pair-store",
+      "lo": "0x157432",
+      "hi": "0x157456",
+      "instructions": 6,
+      "sha256": "1e2a698486f5683f9a7cc56ac5fcd0b7b09d112cb80d959bf100eb40bed4d284"
+    },
+    {
+      "name": "nr-work-extent",
+      "lo": "0x15d660",
+      "hi": "0x15d78f",
+      "instructions": 78,
+      "sha256": "d022223899ecdb54a7cd522026c4b6f3fd1183d59f141485568dcfe9a454b59f"
+    },
+    {
+      "name": "nr-warp-work-extent",
+      "lo": "0x156f0d",
+      "hi": "0x156fba",
+      "instructions": 48,
+      "sha256": "c04ef153234d99d1321bbd5cf8236a3011a932edc4ee7711aa29fbb9eb81d175"
+    },
+    {
+      "name": "nr-grid-cost",
+      "lo": "0x14b4b0",
+      "hi": "0x14b641",
+      "instructions": 147,
+      "sha256": "61b41f5d015217946b64c503368073cdb83d1351b26a23bfd4d59dfffe712def"
+    },
+    {
+      "name": "nr-grid-search",
+      "lo": "0x14f320",
+      "hi": "0x14f4ee",
+      "instructions": 136,
+      "sha256": "9f725f77d15a1f937b29ec2649ead0b9d140c22775ef23402ff09a0c725bde08"
+    },
+    {
+      "name": "nr-native-round",
+      "lo": "0x4ffe60",
+      "hi": "0x4ffec6",
+      "instructions": 28,
+      "sha256": "5ca5475765c504ac8051f2b6a2be660778d32bcc1d5d1c427ecc3fca0e88aa0a"
+    },
+    {
+      "name": "nr-round-bits",
+      "lo": "0x504060",
+      "hi": "0x5040c4",
+      "instructions": 22,
+      "sha256": "aa8bb21c78776274b9cf958f54703bfa25508ab2c41b7944c57a65edcffb6e0a"
+    },
+    {
+      "name": "nr-round-classify",
+      "lo": "0x50d390",
+      "hi": "0x50d3ec",
+      "instructions": 24,
+      "sha256": "68ad799b53b9135034ab577ad98f901e41bf72e1ad117f22dc8a698611b9f8a2"
+    }
+  ],
+  "shaders": [
+    {
+      "name": "nr-guides",
+      "rva": "0x594390",
+      "size": 20296,
+      "table_rva": null,
+      "code_ref": "0x14f897",
+      "size_ref": "0x14f8a2",
+      "sha256": "e35a2f7096a7d29887404d932d28da514eac48e91fd7ad18bafca6345a5aae7e",
+      "tokens": 694
+    }
+  ],
+  "tools": {
+    "python": "3.12.12",
+    "pefile": "2024.8.26",
+    "capstone": "5.0.7",
+    "fxc": "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64\\fxc.exe"
+  },
+  "instruction_assertions": 42,
+  "bytecode_native_binding_assertions": 1,
+  "literal_assertions": 13,
+  "preset_table_assertions": 3,
+  "sdk_reference_hashes": {
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_struct.h": "f4285f0a83e91c2737a57efd456d47c43bd98d62717e594dd311c1be8cfb94ae",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_dlss_g.h": "075bc65a5d30a59e158d3c1ea4dff34f8335bc16486c31b33394e9270ee59e8c",
+    "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\external\\streamline\\sl_consts.h": "5928b7b1b8365f723a909461ad111b5f902069ee99bc942a7137ac4489f11fe4"
+  },
+  "files": {
+    "camera-literals.json": "c07587ab649730e6dd73587f67c4e77ed516b3e24fe2befb496da2cf4194f619",
+    "native-warp-literals.json": "e5bcfb0d9e268a8cb2c86305e0d5442c2d82a267f6046f16646dcf1e5b3d357e",
+    "native-warp-presets.json": "2a827deb9caa5697aee2d9a32828b94f1e107dfa434499c1eadfa06904a3743c",
+    "nr-axis-packing-gmax.json": "a7b25fc8fd17e14787135875d6e9aa54b4c67f686d8185e7aa6c1eee1e918249",
+    "nr-grid-cost.json": "3ba2089415c4ec711bbb973161f88d56b0f6403300e60dc46d2e109e625d9ddd",
+    "nr-grid-search.json": "b5ec4c00e63c5978d4cc6c3bf896c225081b81957c6d57b16d53975d940616f8",
+    "nr-guide-constants.json": "b4c1c6af536a915e9b7a13151cbbe3f898e86639df4d4e803650dd21c3b8c2bd",
+    "nr-guide-pso.json": "e5f690a9e2e067d5716861aed617c3dfd6a7477efd1be6222f2d037782c55683",
+    "nr-guide-root-dispatch.json": "f67b29789c917b43cd5e0bc8863cb699032caf29146f83f066bfb7c762088627",
+    "nr-guides.asm.txt": "1256722146bc68af9aff7f9c50131aa556206f142c37d200ae243d8d0df2dad8",
+    "nr-guides.tokens.json": "88c09e00e03fb0064356a932b807c09447ecd2fdc17022ff97d30c7ac57c387e",
+    "nr-native-curve.json": "4db4b29b1ddeb757e41f60091040f1efd0d06f792c4fcaea870a52ca9d38ab39",
+    "nr-native-round.json": "c781ba5a4d2c140c465bac0ce815332cba8b8f12d9028677fae789c8fbc390e1",
+    "nr-pair-call-copy.json": "baee5688006ce3a9cb6ded12b4f3b10b91326f37d051a9ffbe1a02cef0334ebd",
+    "nr-pair-eligibility.json": "0fe1b3c33c2a830c2f717c851812e5c94995fa9bba794d8cb271b0358b75313c",
+    "nr-pair-store.json": "30c50b5e37a11e697ad4324ae5737405e8921626cf5011c7f745122fbcde6002",
+    "nr-round-bits.json": "2b2cfaeda36d2836e62014346ddd68a0e2a6abc2e540496dc6ff48d836ef71ab",
+    "nr-round-classify.json": "ca99af998e2e5bc83a733ec9c56912275347aa2aae79dfbb0e6c03cee7d1ee12",
+    "nr-warp-work-extent.json": "2b48b37a7286bdb17ab0486546f921f0e20f30046b77dd814dc8a0f6ce3d0d8b",
+    "nr-work-extent.json": "81b099c682a09c8e66467bcc67bd27d1c0397155014bcfcf0deb973c1059f669",
+    "warp-anchors.json": "85bce3c51d91bc4de17c8d8c643a2421b48c5ed4e55ae36c4b5c49e7d39c7091"
+  }
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "rva": "0x9c1e0",
+    "bytes": "0fb64125",
+    "mnemonic": "movzx",
+    "operands": "eax, byte ptr [rcx + 0x25]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x9c1e4",
+    "bytes": "c3",
+    "mnemonic": "ret",
+    "operands": "",
+    "data_refs": []
+  }
+]

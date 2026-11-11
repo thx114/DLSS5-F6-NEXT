@@ -1,0 +1,17 @@
+#pragma once
+
+// Configured from the eight source/header inputs, not a runtime attestation.
+// Same-compiler virtual dispatch does not prove an external payload ABI.
+namespace encore_research::build_inputs
+{
+inline constexpr char storeSha256[] = "@SHA256_STORE@";
+inline constexpr char consumerCppSha256[] = "@SHA256_CONSUMER_CPP@";
+inline constexpr char consumerHeaderSha256[] = "@SHA256_CONSUMER_H@";
+inline constexpr char testsSha256[] = "@SHA256_TESTS@";
+inline constexpr char cmakeSha256[] = "@SHA256_CMAKE@";
+inline constexpr char templateSha256[] = "@SHA256_TEMPLATE@";
+inline constexpr char ngxParamsSha256[] = "@SHA256_NGX_PARAMS@";
+inline constexpr char ngxDefsSha256[] = "@SHA256_NGX_DEFS@";
+inline constexpr char compilerId[] = "@CMAKE_CXX_COMPILER_ID@";
+inline constexpr char compilerVersion[] = "@CMAKE_CXX_COMPILER_VERSION@";
+} // namespace encore_research::build_inputs

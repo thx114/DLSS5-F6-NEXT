@@ -1,0 +1,148 @@
+{
+  "literals": [
+    {
+      "rva": "0x55b208",
+      "text": "NVSDK_NGX_D3D12_Shutdown1",
+      "encoding": "ascii",
+      "bytes": "4e5653444b5f4e47585f44334431325f53687574646f776e3100"
+    },
+    {
+      "rva": "0x559c10",
+      "text": "shutdown api=D3D12 device=%p result=0x%08X registryInvalidated=%u",
+      "encoding": "utf-16-le",
+      "bytes": "730068007500740064006f0077006e0020006100700069003d004400330044003100320020006400650076006900630065003d0025007000200072006500730075006c0074003d0030007800250030003800580020007200650067006900730074007200790049006e00760061006c006900640061007400650064003d00250075000000"
+    },
+    {
+      "rva": "0x55b560",
+      "text": "[NR NGX target] index=%zu export=%S entry=%p core-rva=0x%llX",
+      "encoding": "utf-16-le",
+      "bytes": "5b004e00520020004e004700580020007400610072006700650074005d00200069006e006400650078003d0025007a00750020006500780070006f00720074003d0025005300200065006e007400720079003d0025007000200063006f00720065002d007200760061003d003000780025006c006c0058000000"
+    }
+  ],
+  "function_records": [
+    {
+      "name": "descriptor_and_resolver",
+      "begin": "0x932f0",
+      "end": "0x939d7",
+      "unwind": "0xd0c564"
+    },
+    {
+      "name": "forwarding_wrapper",
+      "begin": "0xffa00",
+      "end": "0xffa4f",
+      "unwind": "0xd0300c"
+    },
+    {
+      "name": "postprocess",
+      "begin": "0xff8f0",
+      "end": "0xff9bd",
+      "unwind": "0xd0af84"
+    },
+    {
+      "name": "registration_consumer",
+      "begin": "0x109dd0",
+      "end": "0x10b465",
+      "unwind": "0xd0c814"
+    }
+  ],
+  "imports": [
+    {
+      "iat_rva": "0x53b3a8",
+      "dll": "KERNEL32.dll",
+      "name": "GetProcAddress"
+    },
+    {
+      "iat_rva": "0x53b560",
+      "dll": "KERNEL32.dll",
+      "name": "AcquireSRWLockExclusive"
+    },
+    {
+      "iat_rva": "0x53b550",
+      "dll": "KERNEL32.dll",
+      "name": "ReleaseSRWLockExclusive"
+    }
+  ],
+  "descriptor": {
+    "name_store_rva": "0x9335d",
+    "pointer_slot_store_rva": "0x93369",
+    "wrapper_store_rva": "0x93375",
+    "wrapper_rva": "0xffa00"
+  },
+  "registration_pair": {
+    "slot_pointer_load_rva": "0x936d2",
+    "null_check_rva": "0x936d7",
+    "conditional_rejection_clear_rva": "0x936e9",
+    "wrapper_store_rva": "0x93742",
+    "slot_pointer_store_rva": "0x93746",
+    "slot_pointer_member_offset": "0x0",
+    "wrapper_member_offset": "0x8",
+    "bytes": 16
+  },
+  "target_diagnostic": {
+    "resolver_call_rva": "0x10afa8",
+    "pair_slot_pointer_load_rva": "0x10afe6",
+    "entry_value_dereference_rva": "0x10afea",
+    "entry_value_stack_store_rva": "0x10aff8",
+    "export_name_load_rva": "0x10b002",
+    "format_call_rva": "0x10b017",
+    "following_callback_rva": "0x10b023",
+    "is_installation_proof": false
+  },
+  "transaction_caller": {
+    "empty_pair_list_branch_rva": "0x10b04c",
+    "helper_call_rva": "0x10b072",
+    "helper_rva": "0x196a0",
+    "returned_field_read_rva": "0x10b077",
+    "returned_field_offset": "0x8",
+    "zero_branch_rva": "0x10b07e",
+    "zero_target_rva": "0x10b1d7",
+    "clear_target_rva": "0x10b0c0",
+    "helper_abi_authenticated": false
+  },
+  "clear_writer": {
+    "zero_register_setup_rva": "0x10af75",
+    "value_register": "R15",
+    "slot_write_rva": "0x10b0e6",
+    "proves_runtime_zero_value": false,
+    "is_gpu_retirement": false
+  },
+  "forwarding_slot": {
+    "rva": "0x14795a8",
+    "section": ".data",
+    "section_rva": "0xd66000",
+    "section_virtual_size": "0x900e74",
+    "section_raw_size": "0x22200",
+    "file_backed": false,
+    "raw_pointer_bytes": null,
+    "runtime_value": "unknown",
+    "resolver_write_rva": "0x93442",
+    "wrapper_read_rva": "0xffa2a"
+  },
+  "wrapper_flow": {
+    "saved_input_register": "RCX",
+    "forwarded_call_rva": "0xffa34",
+    "postprocess_call_rva": "0xffa3d",
+    "saved_result_register": "EBX",
+    "result_restore_rva": "0xffa42"
+  },
+  "postprocess": {
+    "enabled_flag_rva": "0x1478838",
+    "result_compare_rva": "0xff911",
+    "result_literal": 1,
+    "conditional_block_bytes": "0xc00",
+    "diagnostic_limit": "0x400",
+    "diagnostic_call_rva": "0xff9a7"
+  },
+  "direct_nr_shutdown_slot_rva": "0x1663ef0",
+  "target_executed": false,
+  "payload_executed": false,
+  "gpu_tested": false,
+  "original_pointer_runtime_target_authenticated": false,
+  "installed_trampoline_authenticated": false,
+  "nr_payload_shutdown_caller_proven": false,
+  "shutdown_abi_authenticated": false,
+  "transitive_postprocess_effects_authenticated": false,
+  "resource_retirement_proven": false,
+  "registry_invalidation_is_gpu_retirement": false,
+  "scope": "Fixed NGX descriptor, slot-address pair, diagnostic dereference, caller branches and wrapper/postprocess; no installation, direct NR shutdown or safe-unload certificate"
+}

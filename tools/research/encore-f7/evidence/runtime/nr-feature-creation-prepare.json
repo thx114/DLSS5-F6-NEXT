@@ -1,0 +1,109 @@
+[
+  {
+    "rva": "0x157c31",
+    "bytes": "488bc8",
+    "mnemonic": "mov",
+    "operands": "rcx, rax",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c34",
+    "bytes": "e887eaffff",
+    "mnemonic": "call",
+    "operands": "0x1801566c0",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c39",
+    "bytes": "4c8b4dd0",
+    "mnemonic": "mov",
+    "operands": "r9, qword ptr [rbp - 0x30]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c3d",
+    "bytes": "448b4584",
+    "mnemonic": "mov",
+    "operands": "r8d, dword ptr [rbp - 0x7c]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c41",
+    "bytes": "8b5580",
+    "mnemonic": "mov",
+    "operands": "edx, dword ptr [rbp - 0x80]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c44",
+    "bytes": "498d8ef8010000",
+    "mnemonic": "lea",
+    "operands": "rcx, [r14 + 0x1f8]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c4b",
+    "bytes": "e8a0410000",
+    "mnemonic": "call",
+    "operands": "0x18015bdf0",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c50",
+    "bytes": "8b8518060000",
+    "mnemonic": "mov",
+    "operands": "eax, dword ptr [rbp + 0x618]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c56",
+    "bytes": "83e0be",
+    "mnemonic": "and",
+    "operands": "eax, 0xffffffbe",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c59",
+    "bytes": "660f6ef0",
+    "mnemonic": "movd",
+    "operands": "xmm6, eax",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c5d",
+    "bytes": "f30fe6f6",
+    "mnemonic": "cvtdq2pd",
+    "operands": "xmm6, xmm6",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c61",
+    "bytes": "0f28d6",
+    "mnemonic": "movaps",
+    "operands": "xmm2, xmm6",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c64",
+    "bytes": "488d15752f4000",
+    "mnemonic": "lea",
+    "operands": "rdx, [rip + 0x402f75]",
+    "data_refs": [
+      "0x55abe0"
+    ]
+  },
+  {
+    "rva": "0x157c6b",
+    "bytes": "498d8ef8010000",
+    "mnemonic": "lea",
+    "operands": "rcx, [r14 + 0x1f8]",
+    "data_refs": []
+  },
+  {
+    "rva": "0x157c72",
+    "bytes": "e85975ffff",
+    "mnemonic": "call",
+    "operands": "0x18014f1d0",
+    "data_refs": []
+  }
+]

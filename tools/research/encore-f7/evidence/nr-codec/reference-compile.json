@@ -1,0 +1,28 @@
+{
+  "source": "nr_codec_rect_reference.hlsl",
+  "source_sha256": "0140e99414bcfcec5cfac2cc089051977da810eadb9990845daae31abbdabfe7",
+  "includes": {},
+  "compiler": "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64\\fxc.exe",
+  "compiler_sha256": "799a0eb81b4368902515d9c83f40da7f41bb4e2064d2e87f12506b8667c45c0c",
+  "target": "cs_5_1",
+  "flags": [
+    "/Ges",
+    "/WX",
+    "/O3"
+  ],
+  "gpu_tested": false,
+  "entrypoints": [
+    {
+      "entry": "EncodeReference",
+      "file": "reference-EncodeReference.dxbc",
+      "sha256": "66d94cc68f5e5ef0b5ac6cd5401528a3e53cca46030680443f33417c85cd0164",
+      "compiler_exit": 0
+    },
+    {
+      "entry": "DecodeReference",
+      "file": "reference-DecodeReference.dxbc",
+      "sha256": "2f4f083205055c30037bc5eeb7723001f955f218089639eed9021d7d6979d477",
+      "compiler_exit": 0
+    }
+  ]
+}

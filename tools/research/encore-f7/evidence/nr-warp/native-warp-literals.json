@@ -1,0 +1,93 @@
+[
+  {
+    "name": "falloff-scale",
+    "rva": "0x59c420",
+    "bytes": "000000000000403f",
+    "value": 0.00048828125,
+    "format": "<d"
+  },
+  {
+    "name": "edge-scale",
+    "rva": "0x59c428",
+    "bytes": "000000000000803f",
+    "value": 0.0078125,
+    "format": "<d"
+  },
+  {
+    "name": "max-area-ratio",
+    "rva": "0x59c430",
+    "bytes": "666666666666ee3f",
+    "value": 0.95,
+    "format": "<d"
+  },
+  {
+    "name": "edge-quantization",
+    "rva": "0x59c440",
+    "bytes": "0000000000006040",
+    "value": 128.0,
+    "format": "<d"
+  },
+  {
+    "name": "falloff-quantization",
+    "rva": "0x59c448",
+    "bytes": "000000000000a040",
+    "value": 2048.0,
+    "format": "<d"
+  },
+  {
+    "name": "inner-quantization",
+    "rva": "0x59c450",
+    "bytes": "0000000000feaf40",
+    "value": 4095.0,
+    "format": "<d"
+  },
+  {
+    "name": "min-work-scale",
+    "rva": "0x59c41c",
+    "bytes": "c3f5a83e",
+    "value": 0.33000001311302185,
+    "format": "<f"
+  },
+  {
+    "name": "round-max-signed32",
+    "rva": "0xce9468",
+    "bytes": "0000c0ffffffdf41",
+    "value": 2147483647.0,
+    "format": "<d"
+  },
+  {
+    "name": "round-min-signed32",
+    "rva": "0xce9470",
+    "bytes": "000000000000e0c1",
+    "value": -2147483648.0,
+    "format": "<d"
+  },
+  {
+    "name": "derivative-three",
+    "rva": "0x59c438",
+    "bytes": "0000000000000840",
+    "value": 3.0,
+    "format": "<d"
+  },
+  {
+    "name": "min-edge-scale",
+    "rva": "0x59c418",
+    "bytes": "0000803e",
+    "value": 0.25,
+    "format": "<f"
+  },
+  {
+    "name": "clamp-min-edge-scale",
+    "rva": "0x57f56c",
+    "bytes": "0000803e",
+    "value": 0.25,
+    "format": "<f"
+  },
+  {
+    "name": "clamp-max-edge-scale",
+    "rva": "0x57f570",
+    "bytes": "0000803f",
+    "value": 1.0,
+    "format": "<f"
+  }
+]

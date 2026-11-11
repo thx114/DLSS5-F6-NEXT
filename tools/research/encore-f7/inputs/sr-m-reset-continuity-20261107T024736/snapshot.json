@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "captured_utc": "2026-11-07T03:20:58.985228+00:00",
+  "pid": 21516,
+  "creation_filetime": "134384934332617839",
+  "pid_present_before_copy": false,
+  "files": [
+    {
+      "source_path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\session\\F7.log",
+      "file": "F7.log",
+      "bytes": 496388,
+      "sha256": "8dc6730fab8f080ce13e04ecc0aff5888b8d887a9e03858302b2d10c5f70ee74",
+      "mtime_ns": 1794020133514303800
+    },
+    {
+      "source_path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\session\\result.json",
+      "file": "result.json",
+      "bytes": 4244,
+      "sha256": "2420fded60aa6a8f98dec831d8e6e2bb7c8a8cde9225233abd27e86600db4b1d",
+      "mtime_ns": 1794020143639074500
+    },
+    {
+      "source_path": "D:\\CODE\\DLSS5_NEXT-workers\\f7-clean-rewrite\\build\\performance-genshin\\sr-m-reset-continuity-20261107T024736\\stage.json",
+      "file": "stage.json",
+      "bytes": 5837,
+      "sha256": "db7d27db2d77ef58f2bf129241891c354d63aa59a99c365929a979184528b0c3",
+      "mtime_ns": 1794019657871992400
+    }
+  ],
+  "source_runtime_inputs_stable": false,
+  "source_performance_inputs_stable": false,
+  "source_session_completed": false,
+  "performance_baseline": false,
+  "loaded_memory_identity_proven": false,
+  "gpu_completion_proven": false
+}
