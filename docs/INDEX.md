@@ -2,15 +2,19 @@
 
 ## 当前入口
 
+- [完整F6交接](../../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)：当前产品、精确身份、构建／测试与未完成项。
+- [外部参考仓库](REFERENCE-REPOSITORIES.md)：本地位置、固定版本、已参考／待参考功能。
+- [Bridge/GIMI审阅](UPSTREAM-BRIDGE-REVIEW.md)：固定上游机制与限制。
+- [共享逆向研究](../tools/research/encore-f7/README.md)：Encore／历史NR离线参考和测试。
 - [CURRENT-STATE.md](CURRENT-STATE.md)：实际整理结果、构建验证、旧根位置与后续问题。
 - [README](../README.md)：项目目录与构建命令。
-- [AGENTS](../AGENTS.md)：当前协作规则，DS/sol 分工及产品边界。
+- [AGENTS](../AGENTS.md)：当前协作规则，用户最新模型要求及产品边界。
 - [构建入口](../build.ps1)：Release x64；输出和日志收在 `build/`。
 - [Look shader 工具说明](../tools/shaders/README.md)：从既有 recipe 迁入后的调用方法和验证范围。
 - [许可与署名](../Licenses/README.md)、[主许可证](../LICENSE)。
 - [CLI 导航](../CLI.md)：启动器历史接口说明，不代表本轮已运行游戏。
 
-## 本次整理记录
+## 迁移基线整理记录（2026-11-04）
 
 初始审计是删除前快照，执行记录说明最终取舍；不能用初始“候选”清单代替实际删除结果。
 
