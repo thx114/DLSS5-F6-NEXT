@@ -1,8 +1,11 @@
 #include "pch.h"
+#include <runtime/F6InputPolicy.h>
+#include <runtime/SourcePresent.h>
 #include <framegen/FinalOutputEndpoint.h>
 #include <integration/HoYoShade.h>
 #include <optional>
 #include <hooks/FG_Hooks.h>
+#include <hooks/Streamline_Hooks.h>
 #include <genshin/GenshinLegacyCapture.h>
 #include <genshin/GenshinDx12Transport.h>
 #include <genshin/GenshinHookCpuTiming.h>
@@ -835,10 +838,47 @@ template<class F> static HRESULT CallGimiNativePresent(IDXGISwapChain* chain, UI
     return result;
 }
 
+namespace SourcePresent
+{
+static void ObserveState(IDXGISwapChain* chain, UINT syncInterval, UINT flags, bool log)
+{
+    const auto now = Util::MillisecondsNow();
+    const double delta = _lastFrameTime != 0 ? now - _lastFrameTime : 0.0;
+    _lastFrameTime = now;
+    State::Instance().presentFrameTime = delta;
+    if (State::Instance().currentFG == nullptr) State::Instance().lastFGFrameTime = delta;
+    if (log) LOG_DEBUG("SyncInterval: {}, Flags: {:X}, Frametime: {:0.3f} ms", syncInterval, flags, delta);
+    if (chain->GetDesc(&State::Instance().currentSwapchainDesc) != S_OK)
+        LOG_WARN("Can't get swapchain desc!");
+}
+static void TickFeature()
+{
+    if (auto* feature = State::Instance().currentFeature; feature != nullptr)
+    {
+        if (auto* fg = State::Instance().currentFG; fg != nullptr)
+            feature->TickFrozenCheck(fg->GetInterpolatedFrameCount());
+        else
+            feature->TickFrozenCheck();
+    }
+}
+static void AdvanceEpoch()
+{
+    ++_frameCounter;
+    State::Instance().frameCount = _frameCounter;
+}
+void ObserveProxySource(IDXGISwapChain* chain, unsigned syncInterval, unsigned flags)
+{
+    ObserveState(chain, syncInterval, flags, false);
+    TickFeature();
+    AdvanceEpoch();
+}
+}
+
 static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                             const DXGI_PRESENT_PARAMETERS* pPresentParameters, IUnknown* pDevice, HWND hWnd, bool isUWP,
                             std::uint64_t& genshinPresentIdentity, bool capturePolled = false, bool* actualCall = nullptr,
                             framegen::final_output::Endpoint* finalOutput = nullptr,
+                            bool providerOutput = false,
                             bool starRailProviderOutput = false,
                             const void* rawEndpoint = nullptr,
                             std::uintptr_t rawCreationQueueInput = 0)
@@ -905,7 +945,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // Real non-child, non-TEST Present owns settings, including nested children
     // and its menu callback. No boundary is introduced on the Vulkan path.
     std::optional<HoYoShade::RenderOwnerScope> hoYoSettingsOwner;
-    if (!(Flags & DXGI_PRESENT_TEST) && State::Instance().swapchainApi != Vulkan)
+    if (!providerOutput && !(Flags & DXGI_PRESENT_TEST) && State::Instance().swapchainApi != Vulkan)
         hoYoSettingsOwner.emplace();
 
     // This lock will delay/prevent release of buffers while present is ongoing. Not for a dxvk game on the Vulkan bridge:
@@ -930,36 +970,20 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     bool overlayOutputRoute = false, overlayNativeRoute = false, overlayOwner = false;
 
     auto willPresent = (Flags & DXGI_PRESENT_TEST) == 0;
+    // Generated/physical outputs own overlay and raw Present only. The source
+    // wrapper/FGPresent owns feature clocks, GPU timers and source consumers.
+    const bool sourcePresent = willPresent && !providerOutput;
+    SourcePresent::Scope sourceOwner(sourcePresent);
     // Diagnostic-only cadence, independent of native frame ownership; exclude TEST calls.
     static std::atomic<std::uint64_t> routinePresentLogFrames { 0 };
     const bool logRoutinePresent = willPresent &&
         routinePresentLogFrames.fetch_add(1, std::memory_order_relaxed) % 120 == 0;
     const bool nativeParentOwner = GenshinNativeParentFrame::OwnsNative(pSwapChain, pDevice);
-    const bool deferNativeEpoch = GenshinNativeParentFrame::OwnsPresent(pSwapChain, hWnd) ||
+    const bool deferNativeEpoch = providerOutput || GenshinNativeParentFrame::OwnsPresent(pSwapChain, hWnd) ||
         GenshinNativeParentFrame::IsChildOutput(pSwapChain, hWnd);
 
-    if (willPresent)
-    {
-        double ftDelta = 0.0;
-
-        auto now = Util::MillisecondsNow();
-
-        if (_lastFrameTime != 0)
-            ftDelta = now - _lastFrameTime;
-
-        _lastFrameTime = now;
-        State::Instance().presentFrameTime = ftDelta;
-
-        if (State::Instance().currentFG == nullptr)
-            State::Instance().lastFGFrameTime = ftDelta;
-
-        if (logRoutinePresent)
-            LOG_DEBUG("SyncInterval: {}, Flags: {:X}, Frametime: {:0.3f} ms", SyncInterval, Flags, ftDelta);
-
-        // Update swapchain info evey frame
-        if (pSwapChain->GetDesc(&State::Instance().currentSwapchainDesc) != S_OK)
-            LOG_WARN("Can't get swapchain desc!");
-    }
+    if (sourcePresent)
+        SourcePresent::ObserveState(pSwapChain, SyncInterval, Flags, logRoutinePresent);
 
     ID3D11Device* device = nullptr;
     ID3D12Device* device12 = nullptr;
@@ -979,7 +1003,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         _dx11Device = true;
         State::Instance().swapchainApi = DX11;
         State::Instance().currentD3D11Device = device;
-        if (willPresent && !capturePolled) GenshinLegacy::OnPresent(device);
+        if (F6InputPolicy::FsrBridgeEnabled && willPresent && !capturePolled) GenshinLegacy::OnPresent(device);
     }
     else if (pDevice->QueryInterface(IID_PPV_ARGS(&cq)) == S_OK)
     {
@@ -995,12 +1019,12 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         // Not on the Vulkan bridge (native/VkPresentBridge.h): this is XeFG's D3D12 swapchain for a Vulkan game, whose own
         // present sets swapchainApi to Vulkan. Writing D3D12 here made the menu flip between the two. The D3D12 queue and
         // device below are still captured: frame generation needs them.
-        if (State::Instance().swapchainInteropApi != SwapchainInteropApi::VkwDx12)
+        if (!providerOutput && State::Instance().swapchainInteropApi != SwapchainInteropApi::VkwDx12)
             State::Instance().swapchainApi = DX12;
 
         // Not while a Vulkan bridge's output is up or being let go of: this is XeFG's present on the bridge's private
         // queue, and the state's pointer to it is cleared on purpose when the output goes (native/VkPresentBridge.cpp)
-        if (State::Instance().currentCommandQueue == nullptr && !VkPresentBridge::OutputActive())
+        if (!providerOutput && State::Instance().currentCommandQueue == nullptr && !VkPresentBridge::OutputActive())
             State::Instance().currentCommandQueue = cq;
 
         if (cq->GetDevice(IID_PPV_ARGS(&device12)) == S_OK)
@@ -1012,8 +1036,11 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
             _dx12Device = true;
 
-            State::Instance().currentD3D12Device = device12;
-            D3D12Hooks::HookDevice(device12);
+            if (!providerOutput)
+            {
+                State::Instance().currentD3D12Device = device12;
+                D3D12Hooks::HookDevice(device12);
+            }
         }
     }
 
@@ -1022,29 +1049,24 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // and setFPSLimit resends the cap each time
     const bool vulkanGame = State::Instance().swapchainInteropApi == SwapchainInteropApi::VkwDx12;
     auto fg = State::Instance().currentFG;
-    static const bool starRailExecutable =
-        _wcsicmp(Util::ExePath().filename().c_str(), L"StarRail.exe") == 0;
-    // Creation-time provider/queue binding identifies this physical output
-    // independently of optional filter admission (which excludes FLIP_SEQUENTIAL).
-    // The source FGPresent updates the cap under continuity before entering
-    // the SDK; worker cap bookkeeping must not take that source-owned lock.
-    // This CPU identity grants no filter, GPU-resource or consumer authority.
-    const bool starRailOwnedOutput = willPresent && starRailExecutable && starRailProviderOutput && cq != nullptr &&
-        !State::Instance().externalFrameGeneration &&
-        State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
-        State::Instance().activeFgInput == FGInput::Upscaler && State::Instance().activeFgOutput == FGOutput::DLSSG;
-    if (!starRailOwnedOutput)
+    // FG output Reflex ownership begin
+    // Creation identity is immutable and independent of game, current mode and
+    // optional filter admission. Even an Off/retired SDK worker must not enter
+    // the source's continuity lock while that source waits inside SDK Present.
+    // FGPresent updates the cap once per source, after Dispatch and before SDK.
+    if (!providerOutput)
     {
         if (willPresent && fg != nullptr)
             ReflexHooks::update(fg->IsActive(), vulkanGame);
         else
             ReflexHooks::update(false, vulkanGame);
     }
+    // FG output Reflex ownership end
 
-    XellHooks::update();
+    if (!providerOutput) XellHooks::update();
 
     // Upscaler GPU time computation
-    if (willPresent && (fg == nullptr || !fg->IsActive() || fg->IsPaused()))
+    if (sourcePresent && (fg == nullptr || !fg->IsActive() || fg->IsPaused()))
     {
         if (auto currentFeature = State::Instance().currentFeature; currentFeature != nullptr)
         {
@@ -1120,7 +1142,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (observeTimerReads) GenshinTimerReadWindowForThread().Report();
             if (upscalerTimeOpt.has_value())
             {
-                static const bool genshinTiming=GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
+                static const bool genshinTiming=(F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()));
                 if(genshinTiming){static ULONGLONG nextReport=0;const auto tick=GetTickCount64();
                     if(tick>=nextReport){nextReport=tick+500;std::string details;
                         for(const auto& item:State::Instance().detailedGpuTimes)details+=std::format(" {}={:.4f}ms",item.name,item.time);
@@ -1140,7 +1162,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
 
     // Fallback when FGPresent is not hooked for V-sync
-    if (willPresent && Config::Instance()->ForceVsync.has_value())
+    if (sourcePresent && Config::Instance()->ForceVsync.has_value())
     {
         LOG_DEBUG("ForceVsync: {}, VsyncInterval: {}, SCAllowTearing: {}, realExclusiveFullscreen: {}",
                   Config::Instance()->ForceVsync.value(), Config::Instance()->VsyncInterval.value_or_default(),
@@ -1187,8 +1209,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             // Count a completed Present; retain the deferred NR evaluation guard.
             if (willPresent && !deferNativeEpoch)
             {
-                _frameCounter++;
-                State::Instance().frameCount = _frameCounter;
+                SourcePresent::AdvanceEpoch();
             }
 
             LOG_TRACE("3 {}", (UINT) presentResult);
@@ -1214,18 +1235,12 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return presentResult;
     }
 
-    if (willPresent)
+    if (sourcePresent)
     {
         // Tick feature to let it know if it's frozen
         if(nativeParentOwner || cq)
             GenshinTransport::FinishPendingOutput(device,GenshinTransport::OutputFlushReason::Consumer);
-        if (auto currentFeature = State::Instance().currentFeature; currentFeature != nullptr)
-        {
-            if (auto currentFg = State::Instance().currentFG; currentFg != nullptr)
-                currentFeature->TickFrozenCheck(currentFg->GetInterpolatedFrameCount());
-            else
-                currentFeature->TickFrozenCheck();
-        }
+        SourcePresent::TickFeature();
 
         // Before the finished-picture pass, which composes from what the virtual upscaler's call captured this frame.
         if (cq && device12 && NativeMotionDx12::OnPresent(pSwapChain, cq, device12) != HoYoShade::ConsumerAccess::Safe)
@@ -1334,8 +1349,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     #endif
 
             if (!deferNativeEpoch) {
-                _frameCounter++;
-                State::Instance().frameCount = _frameCounter;
+                SourcePresent::AdvanceEpoch();
             }
         }
 
@@ -1346,7 +1360,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         IUnknown* lowLatencyDevice = nullptr;
 
         // (A D3D11 game behind OptiScaler's D3D12 bridge is covered in Dx11wDx12SC::Present, the game's own present.)
-        if (willPresent && State::Instance().swapchainInteropApi == SwapchainInteropApi::None)
+        if (sourcePresent && State::Instance().swapchainInteropApi == SwapchainInteropApi::None)
         {
             if (isD3D11)
                 lowLatencyDevice = device;
@@ -1357,10 +1371,10 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 native::lowlatency::OnPresentBegin(lowLatencyDevice);
         }
 
-        if (isD3D11 && willPresent && !genshinPresentIdentity)
+        if (F6InputPolicy::FsrBridgeEnabled && isD3D11 && willPresent && !genshinPresentIdentity)
             genshinPresentIdentity=GenshinLegacy::ResolveNativeSwapchainIdentity(pSwapChain);
-        if (isD3D11 && willPresent) GenshinLegacy::ObserveNativePresentTarget(pSwapChain,genshinPresentIdentity);
-        const auto genshinPresentTicket=isD3D11 && willPresent
+        if (F6InputPolicy::FsrBridgeEnabled && isD3D11 && willPresent) GenshinLegacy::ObserveNativePresentTarget(pSwapChain,genshinPresentIdentity);
+        const auto genshinPresentTicket=F6InputPolicy::FsrBridgeEnabled && isD3D11 && willPresent
             ? GenshinLegacy::BeginNativePresent(device,genshinPresentIdentity,Flags,pPresentParameters!=nullptr)
             : GenshinLegacy::Presentation::Ticket{};
         // A caller-declared full update already guarantees a coherent target. Once
@@ -1479,7 +1493,7 @@ GenshinNativeParentFrame::GenshinNativeParentFrame(IDXGISwapChain* native, IDXGI
       identity_(identity), thread_(GetCurrentThreadId())
 {
     if (current_ || !native_ || !device_ || !parentHwnd_ ||
-        !GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()))return;
+        !(F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())))return;
     // The wrapper owns this actual native chain even after a failed child
     // factory, route change, window destruction or unsupported child topology.
     active_=true;current_=this;
@@ -1536,18 +1550,18 @@ bool GenshinNativeParentFrame::IsChildOutput(IDXGISwapChain* sc, HWND hwnd) noex
     // Streamline can issue physical/generated output on another thread, outside
     // the parent's TLS scope. Such output is not another native game picture.
     // Recognize only our retained, still-owned child and its actual descriptor.
-    return sc && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) &&
+    return sc && (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())) &&
         GenshinVisibleChild::IsPhysicalOutput(sc,hwnd);
 }
 bool GenshinNativeParentFrame::IsRetainedChildWindow(HWND hwnd) noexcept
 {
-    return GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) &&
+    return (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())) &&
         GenshinVisibleChild::IsRetainedChild(hwnd) && GenshinVisibleChild::IsOwnedChild(hwnd);
 }
 void GenshinNativeParentFrame::PublishColorSpace(IDXGISwapChain* sc,DXGI_COLOR_SPACE_TYPE space)
 {
     if(sc && State::Instance().currentRealSwapchain==sc &&
-       GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())) {
+       (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()))) {
         UpdateOutputColorSpace(space);
         DlssNr::FinishedPictureColorSpace(sc,space);
     }
@@ -1578,11 +1592,16 @@ GenshinNativeParentFrame::~GenshinNativeParentFrame()
 }
 
 WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* pDevice, HWND hWnd, UINT flags,
-                                               bool isUWP, bool isComposition)
-    : _real(real), _device(pDevice), _handle(hWnd), _refcount(1), _uwp(isUWP), _composition(isComposition)
+                                               bool isUWP, bool isComposition, std::optional<UINT> applicationFlags)
+    : SwapchainHookBoundary(OperationsFor<WrappedIDXGISwapChain4>()),
+      _real(real), _device(pDevice), _handle(hWnd), _refcount(1), _uwp(isUWP), _composition(isComposition)
 {
     _id = ++scCount;
     _lastFlags = flags;
+    _frameLatencyFlags.requestedKnown = applicationFlags.has_value();
+    _frameLatencyFlags.requested = applicationFlags.value_or(0);
+    if (applicationFlags) StreamlineHooks::RecordFrameLatencyApplicationFlags(_real,*applicationFlags);
+    _RefreshFrameLatencyFlags();
 
     _real->QueryInterface(IID_PPV_ARGS(&_real1));
     if (_real1 != nullptr)
@@ -1605,8 +1624,11 @@ WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* p
 
     CheckForHdrOutput();
     FGHooks::RegisterMenuOutput(_real, _device, _handle);
-    _starRailProviderOutput = IsStarRailProcess() &&
-        framegen::final_output::CaptureProviderOutputBinding(_real, _device);
+    _providerOutput = framegen::final_output::CaptureProviderOutputBinding(_real, _device);
+    _starRailProviderOutput = IsStarRailProcess() && _providerOutput;
+    if (_providerOutput)
+        LOG_INFO("F6 DLSSG physical output bound: swapchain={:X} creationQueue={:X} reflexOwner=source sourceBookkeeping=false",
+                 (size_t)_real, (size_t)_device);
     if (_starRailProviderOutput) _finalRawCreationQueueInput = reinterpret_cast<std::uintptr_t>(_device);
     _finalOutput = framegen::final_output::Endpoint::Capture(_real, _device);
     HoYoShade::RegisterDirectChain(_real, this); // R061 exact resize coverage, CPU metadata only
@@ -1847,11 +1869,11 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
 
     if ((Flags & DXGI_PRESENT_TEST) == 0)
     {
-        result = LocalPresent(_real, SyncInterval, Flags, nullptr, _device, _handle, _uwp, _genshinPresentIdentity, false, nullptr, _finalOutput.get(), _starRailProviderOutput,
+        result = LocalPresent(_real, SyncInterval, Flags, nullptr, _device, _handle, _uwp, _genshinPresentIdentity, false, nullptr, _finalOutput.get(), _providerOutput, _starRailProviderOutput,
                               _starRailProviderOutput ? this : nullptr, _finalRawCreationQueueInput);
 
         // When Reflex can't be used to limit (and Optical F5Low's low latency does not keep the cap), sleep in present
-        if (!State::Instance().reflexLimitsFps && !native::lowlatency::OwnsFrameCap() &&
+        if (!_providerOutput && !State::Instance().reflexLimitsFps && !native::lowlatency::OwnsFrameCap() &&
             State::Instance().activeFgOutput == FGOutput::NoFG &&
             !IdentifyGpu::getPrimaryGpu().usesDxvk && !XellHooks::canLimit())
             FrameLimit::sleep(false);
@@ -1872,7 +1894,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetBuffer(UINT Buffer, REFIID 
     return result;
 }
 
-HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget)
+HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookSetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget)
 {
     LOG_DEBUG("Fullscreen: {}, pTarget: {:X}, Caller: {}", Fullscreen, (size_t) pTarget,
               Util::WhoIsTheCaller(_ReturnAddress()));
@@ -1926,14 +1948,14 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetFullscreenState(BOOL Fullsc
     return result;
 }
 
-HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetFullscreenState(BOOL* pFullscreen, IDXGIOutput** ppTarget)
+HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookGetFullscreenState(BOOL* pFullscreen, IDXGIOutput** ppTarget)
 {
     return _real->GetFullscreenState(pFullscreen, ppTarget);
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc) { return _real->GetDesc(pDesc); }
 
-HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
+HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
                                                                 DXGI_FORMAT NewFormat, UINT SwapChainFlags)
 {
     GenshinTransport::FinishPendingOutput(nullptr,GenshinTransport::OutputFlushReason::Resize);
@@ -2083,6 +2105,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers(UINT BufferCount
 
     directResize.Complete(result);
     finalResize.Complete(result);
+    _RefreshFrameLatencyFlags();
     if (result == DXGI_ERROR_DEVICE_REMOVED && State::Instance().currentD3D12Device != nullptr)
         Util::GetDeviceRemovedReason(State::Instance().currentD3D12Device);
 
@@ -2184,7 +2207,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers(UINT BufferCount
     return result;
 }
 
-HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters)
+HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters)
 {
     return _real->ResizeTarget(pNewTargetParameters);
 }
@@ -2248,11 +2271,11 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
 
     if ((Flags & DXGI_PRESENT_TEST) == 0)
     {
-        result = LocalPresent(_real1, SyncInterval, Flags, pPresentParameters, _device, _handle, _uwp, _genshinPresentIdentity, false, nullptr, _finalOutput.get(), _starRailProviderOutput,
+        result = LocalPresent(_real1, SyncInterval, Flags, pPresentParameters, _device, _handle, _uwp, _genshinPresentIdentity, false, nullptr, _finalOutput.get(), _providerOutput, _starRailProviderOutput,
                               _starRailProviderOutput ? this : nullptr, _finalRawCreationQueueInput);
 
         // When Reflex can't be used to limit (and Optical F5Low's low latency does not keep the cap), sleep in present
-        if (!State::Instance().reflexLimitsFps && !native::lowlatency::OwnsFrameCap() &&
+        if (!_providerOutput && !State::Instance().reflexLimitsFps && !native::lowlatency::OwnsFrameCap() &&
             State::Instance().activeFgOutput == FGOutput::NoFG &&
             !IdentifyGpu::getPrimaryGpu().usesDxvk && !XellHooks::canLimit())
             FrameLimit::sleep(false);
@@ -2376,7 +2399,24 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetMaximumFrameLatency(UINT* p
 
 HANDLE STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetFrameLatencyWaitableObject(void)
 {
-    return _real2->GetFrameLatencyWaitableObject();
+    const auto caller = StreamlineHooks::FrameLatencyCaller(_ReturnAddress());
+    const bool sdkLoaded = StreamlineHooks::DlssgPluginLoaded();
+    framegen::latency::Flags flags;
+    { std::lock_guard lock(_frameLatencyMutex);flags=_frameLatencyFlags; }
+    const auto target = framegen::latency::Select(flags, caller, sdkLoaded,
+        _real2 != nullptr, false, true);
+    StreamlineHooks::ReportFrameLatencyAccess(this, flags, caller, sdkLoaded, target);
+    if (target == framegen::latency::Target::None) return nullptr;
+    return _real2 ? _real2->GetFrameLatencyWaitableObject() : nullptr;
+}
+
+void WrappedIDXGISwapChain4::_RefreshFrameLatencyFlags()
+{
+    DXGI_SWAP_CHAIN_DESC desc {};
+    const bool nativeKnown=_real && SUCCEEDED(_real->GetDesc(&desc));
+    std::lock_guard lock(_frameLatencyMutex);
+    _frameLatencyFlags.nativeKnown = nativeKnown;
+    _frameLatencyFlags.effectiveNative = nativeKnown ? desc.Flags : 0;
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetMatrixTransform(const DXGI_MATRIX_3X2_F* pMatrix)
@@ -2396,13 +2436,13 @@ UINT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetCurrentBackBufferIndex(void)
     return index;
 }
 
-HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace,
+HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookCheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace,
                                                                          UINT* pColorSpaceSupport)
 {
     return _real3->CheckColorSpaceSupport(ColorSpace, pColorSpaceSupport);
 }
 
-HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace)
+HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookSetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace)
 {
     auto result = _real3->SetColorSpace1(ColorSpace);
     if (SUCCEEDED(result) && _finalOutput) _finalOutput->SetColorSpace(ColorSpace);
@@ -2497,9 +2537,11 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
 
     if (ppPresentQueue != nullptr && *ppPresentQueue != nullptr)
     {
-        auto state = &State::Instance();
-        state->currentCommandQueue = (ID3D12CommandQueue*) *ppPresentQueue;
-        _device = state->currentCommandQueue;
+        _device = *ppPresentQueue;
+        // A physical output may change its own presenting queue without
+        // becoming the producer of shared SR/NR/FG inputs.
+        if (!_providerOutput)
+            WithDx12::AdoptSwapchainQueue((ID3D12CommandQueue*)_device);
         FGHooks::RegisterMenuOutput(_real, _device, _handle);
     }
 
@@ -2647,6 +2689,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
 
     directResize.Complete(result);
     finalResize.Complete(result, BufferCount, pCreationNodeMask, ppPresentQueue, true);
+    _RefreshFrameLatencyFlags();
     if (result == DXGI_ERROR_DEVICE_REMOVED && State::Instance().currentD3D12Device != nullptr)
         Util::GetDeviceRemovedReason(State::Instance().currentD3D12Device);
 
@@ -2746,7 +2789,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
 }
 
 //
-HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetHDRMetaData(DXGI_HDR_METADATA_TYPE Type, UINT Size,
+HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookSetHDRMetaData(DXGI_HDR_METADATA_TYPE Type, UINT Size,
                                                                  void* pMetaData)
 {
     return _real4->SetHDRMetaData(Type, Size, pMetaData);

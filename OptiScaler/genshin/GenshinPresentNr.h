@@ -33,6 +33,7 @@ inline uintptr_t Identity(IUnknown* object) noexcept {
         ? reinterpret_cast<uintptr_t>(identity.Get()):0;
 }
 struct Source {
+    enum class Transfer : uint8_t { Copy, NativeOverlay };
     uintptr_t device=0,context=0,privateOutput=0,selectedOutput=0;
     uint64_t deviceEpoch=0,ownerEpoch=0,configEpoch=0,instance=0,generation=0,sourceFrame=0;
     uint32_t thread=0,width=0,height=0,selectedSubresource=0;
@@ -45,6 +46,9 @@ struct Source {
     // Observation-only tail: preserve all existing aggregate/order and route
     // gates. Missing telemetry cannot reject stable SR or motion-only NR.
     uint64_t attempt=0;
+    // Source identity and display-grid geometry survive a reviewed pointwise
+    // colour operation; this does not claim byte equality with privateOutput.
+    Transfer transfer=Transfer::Copy;
     bool NoticeKeyMatches() const noexcept {
         return progress.Known() && attempt && progress.ownerEpoch==ownerEpoch && progress.context==context &&
             progress.session.deviceEpoch==deviceEpoch && progress.session.controlsEpoch==configEpoch &&
@@ -53,7 +57,8 @@ struct Source {
     }
     bool Known() const noexcept {
         return device && context && privateOutput && selectedOutput && deviceEpoch && ownerEpoch && configEpoch &&
-            instance && generation && thread && width && height && submitSerial && copyOrderedSerial;
+            instance && generation && thread && width && height && submitSerial && copyOrderedSerial &&
+            (transfer==Transfer::Copy || transfer==Transfer::NativeOverlay);
     }
 };
 // The private successful SR receipt can survive native draws for guarded paired
@@ -65,13 +70,13 @@ class SelectedContentAuthority final {
 public:
     void Revoke() noexcept {copied_={};}
     void NativeAccumulate(uint64_t draw) noexcept {Revoke();nativeDraw_=draw;}
-    // Call only after an actual guarded SR/paired copy into the exact selected
+    // Call only after an actual guarded SR/paired copy or reviewed colour transfer into the exact selected
     // subresource. Poll/readiness, CPU params and Scene observation cannot renew.
     void Copied(const Source& source) noexcept {copied_=source.Known()?source:Source{};}
     bool Matches(const Source& source) const noexcept {
         const auto& a=copied_;const auto& b=source;
         return a.Known() && b.Known() && a.device==b.device && a.context==b.context &&
-            a.privateOutput==b.privateOutput && a.selectedOutput==b.selectedOutput &&
+            a.privateOutput==b.privateOutput && a.selectedOutput==b.selectedOutput && a.transfer==b.transfer &&
             a.deviceEpoch==b.deviceEpoch && a.ownerEpoch==b.ownerEpoch && a.configEpoch==b.configEpoch &&
             a.instance==b.instance && a.generation==b.generation && a.sourceFrame==b.sourceFrame &&
             a.thread==b.thread && a.width==b.width && a.height==b.height &&
@@ -152,7 +157,7 @@ class PictureCadence final {
     static bool Same(const Source& a,const Source& b) noexcept {
         return a.Known() && b.Known() && a.device==b.device && a.context==b.context &&
             a.deviceEpoch==b.deviceEpoch && a.ownerEpoch==b.ownerEpoch && a.configEpoch==b.configEpoch &&
-            a.instance==b.instance && a.generation==b.generation && a.privateOutput==b.privateOutput &&
+            a.instance==b.instance && a.generation==b.generation && a.privateOutput==b.privateOutput && a.transfer==b.transfer &&
             a.selectedOutput==b.selectedOutput && a.selectedSubresource==b.selectedSubresource && a.thread==b.thread &&
             a.submitSerial==b.submitSerial && a.copyOrderedSerial==b.copyOrderedSerial;
     }
@@ -742,7 +747,7 @@ public:
            GetCurrentThreadId()!=ticket.source.thread || consumerReached || consumerRan || completionFence || completionValue)return false;
         const auto& c=*capability;const auto& a=c.source_;const auto& b=ticket.source;
         const bool sameSource=a.Known() && b.Known() && a.device==b.device && a.context==b.context &&
-            a.privateOutput==b.privateOutput && a.selectedOutput==b.selectedOutput &&
+            a.privateOutput==b.privateOutput && a.selectedOutput==b.selectedOutput && a.transfer==b.transfer &&
             a.deviceEpoch==b.deviceEpoch && a.ownerEpoch==b.ownerEpoch && a.configEpoch==b.configEpoch &&
             a.instance==b.instance && a.generation==b.generation && a.sourceFrame==b.sourceFrame && a.thread==b.thread &&
             a.width==b.width && a.height==b.height && a.selectedSubresource==b.selectedSubresource &&
@@ -836,9 +841,12 @@ public:
             input.depthLease->MatchesReader(input.depth[0],input.ready.fence,input.ready.value);
         if(depth) {
             const auto dd=input.depth[0]->GetDesc();Microsoft::WRL::ComPtr<ID3D12Device> depthDevice;
+            const auto mappedLease=std::dynamic_pointer_cast<GenshinTransport::PreparedDepthLease>(depthLease);
+            const bool directMapped=!nativeDepth && dd.Format==DXGI_FORMAT_R32G32B32A32_FLOAT && mappedLease &&
+                mappedLease->MatchesDirectMappedReader(input.depth[0],input.ready.fence,input.ready.value);
             depth=dd.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && dd.DepthOrArraySize==1 && dd.MipLevels==1 &&
                 dd.SampleDesc.Count==1 && !dd.SampleDesc.Quality &&
-                dd.Format==(nativeDepth?DXGI_FORMAT_R32_FLOAT:DXGI_FORMAT_R32G32B32A32_TYPELESS) &&
+                (dd.Format==(nativeDepth?DXGI_FORMAT_R32_FLOAT:DXGI_FORMAT_R32G32B32A32_TYPELESS) || directMapped) &&
                 dd.Width==depthWidth && dd.Height==depthHeight &&
                 SUCCEEDED(input.depth[0]->GetDevice(IID_PPV_ARGS(&depthDevice))) && Identity(depthDevice.Get())==Identity(device);
         }

@@ -6,6 +6,7 @@
 #include <new>
 #include <d3d12.h>
 #include <wrl/client.h>
+#include <runtime/GuideSourceMetadata.h>
 
 namespace GenshinPresentNr { class ReturnedPicture; }
 
@@ -49,6 +50,8 @@ struct FinishedPictureOutcome
     uint64_t endpointSerial = 0, owner = 0, device = 0, producerQueue = 0;
     uint32_t thread = 0;
     bool bridgeEndpoint = false;
+    // Correlation/veto only. Never completion or permission to retire a texture.
+    GuideSourceMetadata::Ptr source;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence; // actual slot completion owner, never a cast of fenceValue
 
     // Only the real Bridge endpoint forwards this wrapper-issued original

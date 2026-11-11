@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "GenshinCpuStageTiming.h"
+#include <runtime/F6InputPolicy.h>
 // R533: optional, bounded x64 Windows native provenance. No game/depth facts.
 // References and the supported trust boundary are in REPORT.md. Unsupported
 // loader rewriting, prologues, foreign edits or capacity exhaustion refuse.
@@ -324,7 +325,7 @@ public:
                     return OpenReject("dynamic-locator-ordinary-relocation",at);
         }
         const auto offset=config.Size>=offAt+4?Read<DWORD>(lc+offAt):0;
-        const auto section=config.Size>=secAt+2?Read<WORD>(lc+secAt):0;
+        const auto section=config.Size>=secAt+2?Read<WORD>(lc+secAt):WORD{0};
         if(!offset && !section)return true;
         if(!offset || !section || config.Size<secAt+2 || section>sectionCount)
             return OpenReject("dynamic-section-offset-pair",config.VirtualAddress+offAt,offset,section);
@@ -3710,6 +3711,7 @@ struct SetupObservation {
 };
 // Fresh unpublished drafts may retry; no revoked or published ledger is reset.
 inline bool Setup(HMODULE module,SetupObservation* observation=nullptr)noexcept {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return false;
     using namespace detail;LiveLedgerScope live;
     const auto outcome=[&](bool ready,const char* predicate){
         if(observation){observation->predicate=predicate;observation->state=store.initialized.load();
@@ -3784,6 +3786,7 @@ inline bool Setup(HMODULE module,SetupObservation* observation=nullptr)noexcept 
 }
 inline void ScheduleSetup(HMODULE module)noexcept;
 inline void ResumeSetup()noexcept {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     using namespace detail;
     if(!deferredSetupModule.load() || startupInstallScopes.load() || setupRunning.load() ||
        store.busy.test(std::memory_order_acquire) || store.initialized.load()==2 || Revoked())return;
@@ -3794,6 +3797,7 @@ inline void ResumeSetup()noexcept {
     },nullptr,nullptr)){setupScheduled.store(false);detail::Revoke("setup-worker-submit");}
 }
 inline void ScheduleSetup(HMODULE module)noexcept {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     detail::LiveLedgerScope live;
     if(!module || detail::Revoked() || detail::store.initialized.load()==2)return;
     HMODULE runtime=nullptr,self=nullptr;
@@ -3843,6 +3847,7 @@ inline LONG PrepareOptionalOwnEntry(PVOID hook,OwnEntryPreflight& prepared)noexc
     candidate.hook=hook;prepared=candidate;return NO_ERROR;
 }
 inline LONG Begin(InstallRequirement requirement=InstallRequirement::Mandatory)noexcept {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return DetourTransactionBegin();
     using namespace detail;LiveLedgerScope live;
     if(pending.held)return ERROR_INVALID_OPERATION;
     if(Revoked())return DetourTransactionBegin();
@@ -3880,6 +3885,8 @@ inline LONG Attach(PVOID* original,PVOID hook,PVOID* executed=nullptr,PVOID* mir
                    const detail::IndependentInputMethod* input=nullptr,
                    const OwnEntryPreflight* preparedOwnEntry=nullptr,
                    const detail::FactoryPredecessor* predecessor=nullptr)noexcept {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled)
+        return DetourAttachEx(original,hook,observedTrampoline,observedTarget,observedDetour);
     using namespace detail;LiveLedgerScope live;
     if(preparedOwnEntry && (!pending.held || !pending.optional || Revoked()))return ERROR_INVALID_OPERATION;
     if(!pending.held || Revoked()){
@@ -4019,6 +4026,7 @@ inline LONG Attach(PVOID* original,Function* hook,
                   nullptr,nullptr,nullptr,caller);
 }
 inline void EndTransaction(bool committed)noexcept {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     using namespace detail;LiveLedgerScope live;if(!pending.held)return;
     // An optional transaction is separate from the already committed Bridge.
     // Detours reports an all-or-nothing rollback on failure/abort. Do not publish

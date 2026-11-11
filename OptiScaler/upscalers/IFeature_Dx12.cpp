@@ -11,6 +11,7 @@
 #include <integration/HoYoShade.h>
 #include <native/VirtualUpscalerDriver.h>
 #include <genshin/GenshinSrReceipt.h>
+#include <runtime/F6InputPolicy.h>
 #include <genshin/GenshinCpuStageTiming.h>
 
 namespace GenshinSrRecordingCpu
@@ -43,7 +44,8 @@ int64_t Tick() noexcept
 }
 Scope::Scope(const void* feature, Stage stage, bool enabled) noexcept : feature_(feature), stage_(stage)
 {
-    if (!GENSHIN_CPU_STAGE_TIMING_ENABLED || !enabled || !feature || static_cast<unsigned>(stage) >= static_cast<unsigned>(Stage::Count))
+    if (!F6InputPolicy::FsrBridgeEnabled || !GENSHIN_CPU_STAGE_TIMING_ENABLED || !enabled || !feature ||
+        static_cast<unsigned>(stage) >= static_cast<unsigned>(Stage::Count))
         return;
     const auto savedError = GetLastError();
     if (!window.frequency)
@@ -454,7 +456,7 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
         GenshinSrReceipt::Scope* scope=nullptr;bool complete=false;
         ~OutputGridPipeline(){if(scope)scope->EndOutputPipeline(complete);}
     } outputGridPipeline;
-    if(auto* scope=GenshinSrReceipt::active){
+    if(auto* scope=F6InputPolicy::FsrBridgeEnabled ? GenshinSrReceipt::active : nullptr){
         // RCAS preserves pixel coordinates and extent. Scaling/magnification
         // have no admitted output-grid contract in this implementation.
         if(scope->BeginOutputPipeline(InCommandList,InParameters,currentTarget,paramOutput,

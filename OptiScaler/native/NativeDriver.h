@@ -91,6 +91,7 @@ class NativeDriver
 
     const char* _tag;
     const char* _readyNote;
+    NativeProducerCpuTiming::Recorder _cpuTiming;
 
     std::unique_ptr<NativeProducer> _producer;
 

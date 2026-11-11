@@ -5,6 +5,7 @@
 #include <Config.h>
 #include <State.h>
 #include <Util.h>
+#include <runtime/ManagedIni.h>
 #include <misc/IdentifyGpu.h>
 #include <proxies/Ntdll_Proxy.h>
 
@@ -145,12 +146,28 @@ void TrySetup()
     }
     s_status.DllFound = true;
 
-    // Generate and write companion dlssg_sm86.ini beside the DLL
+    // Merge managed keys into the companion INI; preserve other runtime settings.
     auto iniPath = dllPath.parent_path() / L"dlssg_sm86.ini";
     try
     {
         std::filesystem::create_directories(iniPath.parent_path());
-        std::ofstream iniFile(iniPath, std::ios::out | std::ios::trunc);
+        std::string existing, merged;
+        if (std::filesystem::exists(iniPath))
+        {
+            std::ifstream input(iniPath, std::ios::binary | std::ios::ate);
+            if (!input.is_open()) throw std::runtime_error("Cannot read existing sm86 configuration");
+            const auto length = input.tellg();
+            if (length < 0) throw std::runtime_error("Cannot measure existing sm86 configuration");
+            existing.resize(static_cast<size_t>(length));
+            input.seekg(0, std::ios::beg);
+            input.read(existing.data(), static_cast<std::streamsize>(existing.size()));
+            if (!input || input.gcount() != static_cast<std::streamsize>(existing.size()) ||
+                input.peek() != std::char_traits<char>::eof() || input.bad())
+                throw std::runtime_error("Cannot finish reading sm86 configuration");
+        }
+        if (!FramePipeline::MergeManagedIni(existing, GenerateIniContent(), merged))
+            throw std::runtime_error("Cannot merge sm86 configuration");
+        std::ofstream iniFile(iniPath, std::ios::out | std::ios::trunc | std::ios::binary);
         if (!iniFile.is_open())
         {
             s_status.IniWritten = false;
@@ -158,7 +175,7 @@ void TrySetup()
             LOG_ERROR("AmpereMfgLoader: Failed to open {} for writing", wstring_to_string(iniPath.wstring()));
             return;
         }
-        iniFile << GenerateIniContent();
+        iniFile << merged;
         iniFile.close();
         if (!iniFile)
             throw std::runtime_error("Could not finish writing dlssg_sm86.ini");

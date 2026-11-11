@@ -79,7 +79,7 @@ ID3D12CommandQueue* Dx11WithDx12::GetD3D12CommandQueue() { return Dx12CommandQue
 
 void Dx11WithDx12::ReleaseSharedResource(D3D11_TEXTURE2D_RESOURCE_C* resource)
 {
-    if (resource == nullptr)
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire) || resource == nullptr)
         return;
 
     SAFE_RELEASE(resource->Dx12Resource);
@@ -107,6 +107,7 @@ void Dx11WithDx12::ReleaseSharedResource(D3D11_TEXTURE2D_RESOURCE_C* resource)
 
 void Dx11WithDx12::ReleaseSyncResourcesLocked()
 {
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire)) return;
     SAFE_RELEASE(Dx11FenceTextureCopy);
     SAFE_RELEASE(Dx12FenceTextureCopy);
 
@@ -130,6 +131,7 @@ void Dx11WithDx12::ReleaseSyncResources()
 
 bool Dx11WithDx12::EnsureSyncResourcesLocked()
 {
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire)) return false;
     if (Dx11Device == nullptr || Dx11DeviceContext == nullptr)
     {
         LOG_ERROR("Dx11WithDx12 sync called without resolved D3D11 device/context");
@@ -237,20 +239,34 @@ bool Dx11WithDx12::SyncDx11ToDx12()
     return true;
 }
 
-bool Dx11WithDx12::SyncDx12ToDx11()
+bool Dx11WithDx12::SyncDx12ToDx11(ID3D12CommandQueue* completedReaderQueue)
 {
     std::lock_guard<std::mutex> lock(SyncMutex);
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire) ||
+        !TextureCopyFenceValue || TextureCopyFenceValue >= UINT64_MAX-1) return false;
 
-    if (!EnsureSyncResourcesLocked())
-        return false;
+    if (completedReaderQueue)
+    {
+        // The borrowed read already belongs to this existing shared-fence
+        // domain. Never re-resolve State or recreate its fence after Execute.
+        Microsoft::WRL::ComPtr<IUnknown> expected, actual;
+        if (!Dx11DeviceContext || !Dx11FenceTextureCopy || !Dx12FenceTextureCopy ||
+            SyncDx11Device != Dx11Device || SyncDx12Device != Dx12Device || !SyncDx12CommandQueue ||
+            FAILED(completedReaderQueue->QueryInterface(IID_PPV_ARGS(&expected))) ||
+            FAILED(SyncDx12CommandQueue->QueryInterface(IID_PPV_ARGS(&actual))) || expected != actual)
+            return false;
+    }
+    else if (!EnsureSyncResourcesLocked()) return false;
 
     const auto fenceValue = TextureCopyFenceValue++;
 
-    auto result = Dx12CommandQueue->Signal(Dx12FenceTextureCopy, fenceValue);
+    auto* signalQueue = completedReaderQueue ? completedReaderQueue : Dx12CommandQueue;
+    auto result = signalQueue->Signal(Dx12FenceTextureCopy, fenceValue);
     if (result != S_OK)
     {
         LOG_ERROR("Dx11WithDx12 Dx12 signal failed for fence {}: {:X}", fenceValue, (UINT) result);
-        ReleaseSyncResourcesLocked();
+        if (completedReaderQueue) BlockFgGuideWrites();
+        else ReleaseSyncResourcesLocked();
         return false;
     }
 
@@ -258,7 +274,8 @@ bool Dx11WithDx12::SyncDx12ToDx11()
     if (result != S_OK)
     {
         LOG_ERROR("Dx11WithDx12 Dx11 wait failed for fence {}: {:X}", fenceValue, (UINT) result);
-        ReleaseSyncResourcesLocked();
+        if (completedReaderQueue) BlockFgGuideWrites();
+        else ReleaseSyncResourcesLocked();
         return false;
     }
 
@@ -267,6 +284,7 @@ bool Dx11WithDx12::SyncDx12ToDx11()
 
 void Dx11WithDx12::ResetUpscalerResourceCache(bool releaseSyncResources)
 {
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire)) return;
     ReleaseSharedResource(&UpscalerResourceCache.Color);
     ReleaseSharedResource(&UpscalerResourceCache.Mv);
     ReleaseSharedResource(&UpscalerResourceCache.Depth);
@@ -375,7 +393,8 @@ void Dx11WithDx12::Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Conte
 bool Dx11WithDx12::CopyTextureFrom11To12(ID3D11Resource* InResource, D3D11_TEXTURE2D_RESOURCE_C* OutResource,
                                          bool InCopy, bool InDepth, bool InDontUseNTShared)
 {
-    if (InResource == nullptr || OutResource == nullptr || Dx11Device == nullptr || Dx11DeviceContext == nullptr)
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire) ||
+        InResource == nullptr || OutResource == nullptr || Dx11Device == nullptr || Dx11DeviceContext == nullptr)
         return false;
 
     ID3D11Texture2D* originalTexture = nullptr;
@@ -827,7 +846,7 @@ bool PrepareCachedResource(const char* name, const NVSDK_NGX_Parameter* paramete
         if (required)
             LOG_ERROR("{} D3D11 resource is missing", name);
         else
-            LOG_DEBUG("{} D3D11 resource is missing", name);
+            LOG_TRACE("{} optional D3D11 resource is missing", name);
 
         return !required;
     }
@@ -845,6 +864,7 @@ Dx11WithDx12::PrepareResourcesResult Dx11WithDx12::PrepareUpscalerResources(cons
 {
     PrepareResourcesResult result = {};
 
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire)) return result;
     if (parameters == nullptr)
     {
         LOG_ERROR("PrepareUpscalerResources called with null parameters");

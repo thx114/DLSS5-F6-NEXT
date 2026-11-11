@@ -1,4 +1,5 @@
 #pragma once
+#include <wrapped/SwapchainHookBoundary.h>
 
 #include "SysUtils.h"
 #include <OwnedMutex.h>
@@ -9,6 +10,9 @@
 
 #include <atomic>
 #include <cstdint>
+#include <framegen/FrameLatencyOwnership.h>
+#include <optional>
+#include <mutex>
 namespace GenshinPresentNr { struct Ticket; }
 namespace framegen::final_output { class Endpoint; }
 #include <memory>
@@ -48,11 +52,11 @@ public:
 
 #define USE_LOCAL_MUTEX
 
-class DECLSPEC_UUID("3af622a3-82d0-49cd-994f-cce05122c222") WrappedIDXGISwapChain4 final : public IDXGISwapChain4
+class DECLSPEC_UUID("3af622a3-82d0-49cd-994f-cce05122c222") WrappedIDXGISwapChain4 final : public SwapchainHookBoundary
 {
   public:
     WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* pDevice, HWND hWnd, UINT flags, bool isUWP,
-                          bool isComposition = false);
+                          bool isComposition = false, std::optional<UINT> applicationFlags = std::nullopt);
     virtual ~WrappedIDXGISwapChain4();
 
     // implement IUnknown
@@ -72,12 +76,12 @@ class DECLSPEC_UUID("3af622a3-82d0-49cd-994f-cce05122c222") WrappedIDXGISwapChai
     // implement IDXGISwapChain
     HRESULT STDMETHODCALLTYPE Present(UINT SyncInterval, UINT Flags) override;
     HRESULT STDMETHODCALLTYPE GetBuffer(UINT Buffer, REFIID riid, void** ppSurface) override;
-    HRESULT STDMETHODCALLTYPE SetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget) override;
-    HRESULT STDMETHODCALLTYPE GetFullscreenState(BOOL* pFullscreen, IDXGIOutput** ppTarget) override;
+    HRESULT STDMETHODCALLTYPE HookSetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget);
+    HRESULT STDMETHODCALLTYPE HookGetFullscreenState(BOOL* pFullscreen, IDXGIOutput** ppTarget);
     HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc) override;
-    HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat,
-                                            UINT SwapChainFlags) override;
-    HRESULT STDMETHODCALLTYPE ResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters) override;
+    HRESULT STDMETHODCALLTYPE HookResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat,
+                                            UINT SwapChainFlags);
+    HRESULT STDMETHODCALLTYPE HookResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters);
     HRESULT STDMETHODCALLTYPE GetContainingOutput(IDXGIOutput** ppOutput) override;
     HRESULT STDMETHODCALLTYPE GetFrameStatistics(DXGI_FRAME_STATISTICS* pStats) override;
     HRESULT STDMETHODCALLTYPE GetLastPresentCount(UINT* pLastPresentCount) override;
@@ -107,19 +111,23 @@ class DECLSPEC_UUID("3af622a3-82d0-49cd-994f-cce05122c222") WrappedIDXGISwapChai
 
     // implement IDXGISwapChain3
     UINT STDMETHODCALLTYPE GetCurrentBackBufferIndex(void) override;
-    HRESULT STDMETHODCALLTYPE CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace,
-                                                     UINT* pColorSpaceSupport) override;
-    HRESULT STDMETHODCALLTYPE SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace) override;
+    HRESULT STDMETHODCALLTYPE HookCheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace,
+                                                     UINT* pColorSpaceSupport);
+    HRESULT STDMETHODCALLTYPE HookSetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace);
     HRESULT STDMETHODCALLTYPE ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format,
                                              UINT SwapChainFlags, const UINT* pCreationNodeMask,
                                              IUnknown* const* ppPresentQueue) override;
 
     // implement IDXGISwapChain4
-    HRESULT STDMETHODCALLTYPE SetHDRMetaData(DXGI_HDR_METADATA_TYPE Type, UINT Size, void* pMetaData) override;
+    HRESULT STDMETHODCALLTYPE HookSetHDRMetaData(DXGI_HDR_METADATA_TYPE Type, UINT Size, void* pMetaData);
 
   private:
+    framegen::latency::Flags _frameLatencyFlags;
+    std::mutex _frameLatencyMutex;
+    void _RefreshFrameLatencyFlags();
     std::uint64_t _genshinPresentIdentity = 0;
     std::unique_ptr<framegen::final_output::Endpoint> _finalOutput;
+    bool _providerOutput = false; // Immutable creation identity; source Present owns Reflex updates.
     bool _starRailProviderOutput = false; // Immutable CPU identity; never filter/GPU consumer authority.
     std::uintptr_t _finalRawCreationQueueInput = 0; // Creation address only; never dereferenced or rebound.
     IDXGISwapChain* _real = nullptr;

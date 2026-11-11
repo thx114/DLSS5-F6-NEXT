@@ -117,6 +117,16 @@ public:
     bool Halted() const { return halted_; }
     size_t Tracked() const { return outstanding_.size(); }
     bool Watches(ID3D12CommandList* list) const { return open_.find(list) != open_.end(); }
+    // Poll the exact list without collecting/copying the entire registry. A true
+    // result only permits its owner to attempt Reset; it does not close tokens.
+    bool CanResetRecording(ID3D12CommandList* list) const
+    {
+        if (!list) return false;
+        for (const auto& use : outstanding_)
+            if (use->listOwner.Get() == list &&
+                (use->quarantined || (use->submitted && !use->GpuComplete()))) return false;
+        return true;
+    }
     Use Recording(ID3D12Device* device, ID3D12CommandList* list)
     {
         Collect();

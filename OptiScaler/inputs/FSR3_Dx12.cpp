@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <runtime/F6InputPolicy.h>
 #include "FSR3_Dx12.h"
 
 #include "Config.h"
@@ -652,6 +653,7 @@ static Fsr3::FfxErrorCode hk_ffxFsr3GetInterfaceDX12(Fsr3::FfxInterface* backend
 
 void HookFSR3ExeInputs()
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     LOG_INFO("Trying to hook FSR3 methods");
 
     DetourTransactionBegin();
@@ -829,6 +831,7 @@ void HookFSR3ExeInputs()
 
 void HookFSR3Inputs(HMODULE module)
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     LOG_INFO("Trying to hook FSR3 methods");
 
     if (module != nullptr)
@@ -919,6 +922,7 @@ void HookFSR3Inputs(HMODULE module)
 
 void HookFSR3Dx12Inputs(HMODULE module)
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     LOG_INFO("Trying to hook FSR3 methods");
 
     return;

@@ -9,6 +9,13 @@
 
 enum DlssNrDetailReuseMode : uint32_t
 {
+    // Independent full-model feedback; no interval/cohort or donor semantics.
+    // t0 proxy, t1 fresh, t2 original residual/age, t3 birth RGB/last-frame Z,
+    // t4 actual current motion, t5 raw current depth -> u0 displayed answer,
+    // u1 original residual/age, u2 birth RGB/current canonical far-zero Z.
+    // Optional t6/u3 carry an independent filtered NR residual/mean lag.
+    DlssNrDetailReuse_FeedbackResolve = 24,
+    DlssNrDetailReuse_FeedbackInspect = 25, // demand-only, same inputs, u0 visualization; no u1/u2 writes
     // DX12 t3 retained scene MV, t4 scene depth, t5 optional picture MV,
     // t2 optional picture distrust -> u0 work-pixel scene MV / far-zero Z / support,
     // u1 canonical raw DeviceZ for model. No picture-depth authority is manufactured.
@@ -70,7 +77,7 @@ struct alignas(256) DlssNrDetailReuseConstants
     float MvScaleX; // the game's scale: raw vectors -> pixels of the motion subrect
     float MvScaleY;
     float DepthTolerance; // relative depth outside the saved 2x2 range still trusted fully; trust is gone at twice it
-    float ClipGamma;      // half-width of the colour box around the current 3x3 mean, in standard deviations
+    float ClipGamma;      // legacy sigma box; mode24: absolute raw/birth colour tolerance
     float ClipFalloff;    // distance outside the box, in standard deviations, over which trust fades to zero
     float SigmaFloor;     // smallest standard deviation used (proxy units), so flat areas do not reject on noise
     float Steady;         // full frames: how far the new detail is pulled toward the moved previous detail (0..1)
@@ -83,7 +90,7 @@ struct alignas(256) DlssNrDetailReuseConstants
     uint32_t ReplaceCurve;
     // A moved sample is distrusted where the current vectors at the place it came from differ from this pixel's own by
     // more than this share of (its length + 1), in working-size pixels: something else moves there now. 0 is off.
-    float MotionReject;
+    float MotionReject; // mode24: adjustable centre-field curvature limit in working pixels
     // Steady: a difference between the full frame and the moved detail smaller than this (proxy units; about one 8-bit step) is
     // taken as none, so rounding does not show the two apart. 0 is off.
     float SteadyDeadZone;
@@ -115,11 +122,35 @@ struct alignas(256) DlssNrDetailReuseConstants
     uint32_t SceneGuideFlags; // Prepare only: 1 depth row flip, 2 motion row flip, 4 vector-Y negate, 8 final flow present
     uint32_t ScenePictureWidth;
     uint32_t ScenePictureHeight;
+    // DX12-only HLSL extension. Do not append these to VK_MODE's Params.
+    float FeedbackDeltaSeconds;    // Actual time since the published history frame; finite and >= 0.
+    float FeedbackDurationSeconds; // Exponential decay time; zero means fresh only.
+    float FeedbackMaxAgeSeconds;   // Per-pixel ancestry lifetime; mixing fresh never renews it.
+    float FeedbackStrength;        // History weight cap, clamped to [0,1].
+    uint32_t FeedbackHistoryValid; // Zero must bypass all previous/guide resource reads.
+    // preSR: actual published previous jitter minus current jitter in work UV.
+    // postSR: zero. Guide phases above remain independent; no second Y transform.
+    float FeedbackRasterOffsetUvX;
+    float FeedbackRasterOffsetUvY;
+    float FeedbackStabilitySeconds; // Residual filter time constant, 0 disables.
+    float FeedbackStabilityFloor;   // Minimum guide confidence, explicit user control.
+    float FeedbackStabilityClamp;   // Maximum correction per channel in model-proxy units.
+
 };
 static_assert(offsetof(DlssNrDetailReuseConstants, TemporalMode) == 104);
 static_assert(offsetof(DlssNrDetailReuseConstants, MinimumColourTrust) == 136);
 static_assert(offsetof(DlssNrDetailReuseConstants, TemporalContent) == 180);
 static_assert(offsetof(DlssNrDetailReuseConstants, SceneGuideFlags) == 184);
+static_assert(offsetof(DlssNrDetailReuseConstants, FeedbackDeltaSeconds) == 196);
+static_assert(offsetof(DlssNrDetailReuseConstants, FeedbackDurationSeconds) == 200);
+static_assert(offsetof(DlssNrDetailReuseConstants, FeedbackMaxAgeSeconds) == 204);
+static_assert(offsetof(DlssNrDetailReuseConstants, FeedbackStrength) == 208);
+static_assert(offsetof(DlssNrDetailReuseConstants, FeedbackHistoryValid) == 212);
+static_assert(offsetof(DlssNrDetailReuseConstants, FeedbackRasterOffsetUvX) == 216);
+static_assert(offsetof(DlssNrDetailReuseConstants, FeedbackRasterOffsetUvY) == 220);
+static_assert(offsetof(DlssNrDetailReuseConstants, FeedbackStabilitySeconds) == 224);
+static_assert(offsetof(DlssNrDetailReuseConstants, FeedbackStabilityFloor) == 228);
+static_assert(offsetof(DlssNrDetailReuseConstants, FeedbackStabilityClamp) == 232);
 static_assert(sizeof(DlssNrDetailReuseConstants) == 256);
 
 // The defaults behind the DetailReuse* config entries of the same name. These were starting values, never

@@ -36,10 +36,14 @@ ProviderRetirement TryRetireProvider(const std::shared_ptr<Provider>&, IDXGISwap
 class CreationScope final
 {
     std::shared_ptr<Provider> previous, activity;
+    inline static thread_local unsigned depth = 0;
 public:
     explicit CreationScope(const std::shared_ptr<Provider>&) noexcept;
     ~CreationScope();
     CreationScope(const CreationScope&) = delete;
+    // Suppression only: SDK factory callbacks must not become source queues,
+    // even when endpoint admission fails. No GPU/resource authority.
+    static bool Active() noexcept { return depth != 0; }
 };
 // Observe the real source before its natural Present, without suppressing it.
 // Cross-API source/output runtimes remain distinct and cannot borrow a ticket

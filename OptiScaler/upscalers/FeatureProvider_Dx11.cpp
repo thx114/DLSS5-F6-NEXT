@@ -7,6 +7,7 @@
 #include "Config.h"
 
 #include "NVNGX_Parameter.h"
+#include "FeatureTransition.h"
 
 #include "upscalers/dlss/DLSSFeature_Dx11.h"
 #include "upscalers/dlss/DLSSFeature_Dx11On12.h"
@@ -151,13 +152,18 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
     // Rebuild requests have no exposure-only provenance here. Preserve unknown or
     // mixed requests, including required size/device/backend rebuilds. Reject
     // unsupported exposure toggles at the menu before writing config instead.
-    contextData->changeBackendCounter++;
+    const auto phase = FeatureTransition::Advance(contextData->changeBackendCounter);
+    if (phase == FeatureTransition::Phase::Invalid)
+    {
+        LOG_ERROR("Invalid upscaler rebuild phase: {}", contextData->changeBackendCounter);
+        return false;
+    }
     FeatureLifecycleTrace lifecycle(contextData->changeBackendCounter == 1 ? "DX11 ChangeFeature retire" :
         contextData->changeBackendCounter == 2 ? "DX11 ChangeFeature construct" : "DX11 ChangeFeature initialize",
         handleId);
 
     // first release everything
-    if (contextData->changeBackendCounter == 1)
+    if (phase == FeatureTransition::Phase::Retire)
     {
         if (!native::OpticalFgNrEnabled() && state.currentFG != nullptr && state.activeFgInput == FGInput::Upscaler)
         {
@@ -169,48 +175,24 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
         {
             LOG_INFO("changing backend to {0}", UpscalerDisplayName(state.newBackend));
 
-            auto* dc = contextData->feature.get();
-            // Use given params if using DLSS passthrough
-            //
-            // DLSS_on12 belongs here for the same reason the other two do: it is DLSS underneath, and
-            // it wants the game's own parameter block rather than a synthetic one. Without it a
-            // mid-session switch -- from the menu, on a resolution change, or through the auto-exposure
-            // re-init -- rebuilt the feature from GetNGXParameters carrying only flags, resolutions and
-            // quality, which quietly replaced the game's render presets with the default. That made
-            // "pick dlss_12 in the menu" and "set dlss_12 in the ini" two different code paths, which
-            // is a poor thing to discover while testing a fix.
             const bool isPassthrough = state.newBackend == Upscaler::DLSSD || state.newBackend == Upscaler::DLSS ||
                                        state.newBackend == Upscaler::DLSS_on12;
-
-            // Retain a failed attempt's temporary table with its retiring feature.
-            // In particular, never take ownership of the game's parameter table.
-            auto retired = std::make_unique<ContextData<IFeature_Dx11>>();
-            retired->feature = std::move(contextData->feature);
-            retired->createParamsOwner = std::move(contextData->createParamsOwner);
-            contextData->createParams = nullptr;
-            if (isPassthrough)
-                contextData->BorrowCreateParams(parameters);
-            else
-                contextData->OwnCreateParams({ GetNGXParameters(API::DX11, false),
-                    [](NVSDK_NGX_Parameter* p) {
-                        delete static_cast<NVNGX_Parameters*>(p);
-                    } });
-            contextData->createParams->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, dc->GetFeatureFlags());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_Width, dc->RenderWidth());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_Height, dc->RenderHeight());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_OutWidth, dc->DisplayWidth());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_OutHeight, dc->DisplayHeight());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_PerfQualityValue, dc->PerfQualityValue());
+            auto retired = FeatureTransition::Prepare(*contextData, parameters, isPassthrough,
+                []() -> ContextData<IFeature_Dx11>::ParameterOwner {
+                    return { GetNGXParameters(API::DX11, false),
+                        [](NVSDK_NGX_Parameter* p) { delete static_cast<NVNGX_Parameters*>(p); } };
+                }, [](auto& table, auto& feature) { FeatureTransition::CopyRecipe(table, feature); });
+            if (!retired)
+            {
+                LOG_ERROR("Cannot prepare upscaler replacement; current feature retained");
+                contextData->changeBackendCounter = 0;
+                return false;
+            }
 
             State::Instance().currentFeature = nullptr;
-
+            // The feature destructor still owns its existing GPU drain contract.
+            // Its exact initialization table survives alongside it.
             Util::DelayedDestroy(std::move(retired));
-
-            // LOG_TRACE("sleeping before reset of current feature for 1000ms");
-            // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
-            // contextData->feature.reset();
-            // contextData->feature = nullptr;
         }
         else
         {
@@ -229,7 +211,7 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
         return true;
     }
 
-    if (contextData->changeBackendCounter == 2)
+    if (phase == FeatureTransition::Phase::Construct)
     {
         LOG_INFO("Creating new {} upscaler", UpscalerDisplayName(state.newBackend));
 
@@ -250,7 +232,7 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
         return true;
     }
 
-    if (contextData->changeBackendCounter == 3)
+    if (phase == FeatureTransition::Phase::Initialize)
     {
         // then init and continue
         auto initResult = contextData->feature->Init(device, devContext, contextData->createParams);

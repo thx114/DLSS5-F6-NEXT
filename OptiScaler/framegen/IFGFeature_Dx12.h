@@ -2,6 +2,8 @@
 #include "SysUtils.h"
 #include "IFGFeature.h"
 #include "FGHookRetirement.h"
+#include "FgPacingLease.h"
+#include "DlssgPacingLifetime.h"
 
 #include <upscalers/IFeature.h>
 
@@ -88,6 +90,10 @@ class IFGFeature_Dx12 : public virtual IFGFeature
     // State::currentCommandQueue: that follows every swapchain created, including the one frame generation makes.
     ID3D12CommandQueue* GameCommandQueue() const { return _gameCommandQueue; }
     virtual FGExecutionGuard GuardExecution(FGExecutionScope) { return {}; }
+    // Queried while guarded, BEFORE the source's original token request.
+    // Concrete providers close admission before Off/free/shutdown and return
+    // pending while !Idle(); never wait for a lease while holding continuity.
+    virtual std::shared_ptr<framegen::DlssgPacingLifetime> PacingLifetime() { return {}; }
     virtual bool CanSubmitInputs() { return true; }
     virtual bool CompletePendingTeardown() { return true; }
     virtual bool PrepareForSwapchainChange(bool terminal = false) { return true; }

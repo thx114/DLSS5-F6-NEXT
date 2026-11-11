@@ -1,4 +1,5 @@
 #pragma once
+#include <wrapped/SwapchainHookBoundary.h>
 
 #include "SysUtils.h"
 #include <Config.h>
@@ -9,6 +10,9 @@
 
 #include <native/MsaaPictureDx11.h>
 #include "GenshinVisibleChild.h"
+#include "Dx11InteropSwapchainPolicy.h"
+#include <framegen/FrameLatencyOwnership.h>
+#include <optional>
 
 #include <atomic>
 #include <vector>
@@ -18,12 +22,12 @@ namespace GenshinBridgeFg { class ColorImport; }
 
 using Microsoft::WRL::ComPtr;
 
-class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : public IDXGISwapChain4
+class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : public SwapchainHookBoundary
 {
   public:
     Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Device* pDevice, HWND hWnd, UINT flags,
                   std::unique_ptr<GenshinVisibleChild> visibleChild = {}, bool nativeParentRoute = false,
-                  bool sourceFrameLatencyOwner = false);
+                  bool sourceFrameLatencyOwner = false, std::optional<UINT> applicationFlags = std::nullopt);
     virtual ~Dx11wDx12SC();
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override;
@@ -39,12 +43,12 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
 
     HRESULT STDMETHODCALLTYPE Present(UINT SyncInterval, UINT Flags) override;
     HRESULT STDMETHODCALLTYPE GetBuffer(UINT Buffer, REFIID riid, void** ppSurface) override;
-    HRESULT STDMETHODCALLTYPE SetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget) override;
-    HRESULT STDMETHODCALLTYPE GetFullscreenState(BOOL* pFullscreen, IDXGIOutput** ppTarget) override;
+    HRESULT STDMETHODCALLTYPE HookSetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget);
+    HRESULT STDMETHODCALLTYPE HookGetFullscreenState(BOOL* pFullscreen, IDXGIOutput** ppTarget);
     HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc) override;
-    HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat,
-                                            UINT SwapChainFlags) override;
-    HRESULT STDMETHODCALLTYPE ResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters) override;
+    HRESULT STDMETHODCALLTYPE HookResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat,
+                                            UINT SwapChainFlags);
+    HRESULT STDMETHODCALLTYPE HookResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters);
     HRESULT STDMETHODCALLTYPE GetContainingOutput(IDXGIOutput** ppOutput) override;
     HRESULT STDMETHODCALLTYPE GetFrameStatistics(DXGI_FRAME_STATISTICS* pStats) override;
     HRESULT STDMETHODCALLTYPE GetLastPresentCount(UINT* pLastPresentCount) override;
@@ -71,16 +75,19 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     HRESULT STDMETHODCALLTYPE GetMatrixTransform(DXGI_MATRIX_3X2_F* pMatrix) override;
 
     UINT STDMETHODCALLTYPE GetCurrentBackBufferIndex(void) override;
-    HRESULT STDMETHODCALLTYPE CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace,
-                                                     UINT* pColorSpaceSupport) override;
-    HRESULT STDMETHODCALLTYPE SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace) override;
+    HRESULT STDMETHODCALLTYPE HookCheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace,
+                                                     UINT* pColorSpaceSupport);
+    HRESULT STDMETHODCALLTYPE HookSetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace);
     HRESULT STDMETHODCALLTYPE ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format,
                                              UINT SwapChainFlags, const UINT* pCreationNodeMask,
                                              IUnknown* const* ppPresentQueue) override;
 
-    HRESULT STDMETHODCALLTYPE SetHDRMetaData(DXGI_HDR_METADATA_TYPE Type, UINT Size, void* pMetaData) override;
+    HRESULT STDMETHODCALLTYPE HookSetHDRMetaData(DXGI_HDR_METADATA_TYPE Type, UINT Size, void* pMetaData);
 
   private:
+    framegen::latency::Flags _frameLatencyFlags;
+    std::mutex _frameLatencyMutex;
+    void _RefreshFrameLatencyFlags();
     struct NativeCall final {
         Dx11wDx12SC& owner;
         explicit NativeCall(Dx11wDx12SC& value):owner(value){owner.AddRef();}
@@ -158,9 +165,44 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     bool _InitInteropObjects();
     bool _CanReuseReturnedSnapshot() const;
     bool _RequestSharedBackBuffer(UINT index, bool reuseReturnedSnapshot = true);
-    bool _CopyDx11BackBufferToShared(UINT index);
+    // Interop slot admission begin
+    // One call-local proof that the previous reader of this exact shared slot
+    // retired. It never grants source/provider authority or survives a copy.
+    class CopySlotAdmission final
+    {
+        const void* owner_ = nullptr;
+        const void* ring_ = nullptr;
+        ID3D12Fence* fence_ = nullptr;
+        ID3D12CommandAllocator* allocator_ = nullptr;
+        UINT slot_ = 0;
+        UINT64 pending_ = 0;
+
+      public:
+        CopySlotAdmission() = default;
+        CopySlotAdmission(const CopySlotAdmission&) = delete;
+        CopySlotAdmission& operator=(const CopySlotAdmission&) = delete;
+        void Clear() noexcept { owner_ = ring_ = nullptr; fence_ = nullptr; allocator_ = nullptr; }
+        void Record(const void* owner, const void* ring, ID3D12Fence* fence,
+                    ID3D12CommandAllocator* allocator, UINT slot, UINT64 pending) noexcept
+        {
+            owner_ = owner; ring_ = ring; fence_ = fence; allocator_ = allocator;
+            slot_ = slot; pending_ = pending;
+        }
+        bool Consume(const void* owner, const void* ring, ID3D12Fence* fence,
+                     ID3D12CommandAllocator* allocator, UINT slot, UINT64 pending) noexcept
+        {
+            const bool matches = owner && ring && fence && allocator && pending != UINT64_MAX &&
+                owner_ == owner && ring_ == ring && fence_ == fence && allocator_ == allocator &&
+                slot_ == slot && pending_ == pending;
+            Clear(); // A mismatch also revokes the proof; never fall back to a late wait.
+            return matches;
+        }
+    };
+    // Interop slot admission end
+    bool _CopyDx11BackBufferToShared(UINT index, CopySlotAdmission& admission);
     bool _WaitDx11ThenDx12();
-    bool _CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index);
+    bool _CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index, CopySlotAdmission& admission,
+                                        ID3D12Resource** copiedColour=nullptr);
     // Copies native input's processed picture (NativeMotionDx11::OnFGPresent) over the FG back buffer this same
     // Present already put the raw one into, when that option is on. A no-op, not a failure, when it is off or there
     // is nothing to apply this frame; never fails the surrounding Present.
@@ -171,6 +213,9 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     bool _EnsureNativeInputCopyRing();
     bool _WaitForCopyQueueIdle();
     bool _WaitForCopyAllocator(UINT slot, std::vector<UINT64>& fenceValues);
+    void _ReportCopyFenceFault(const char* phase,UINT slot,UINT64 target,UINT64 completed,DWORD waitResult) noexcept;
+    std::atomic<bool> _copyFenceFaultReported{false},_copyDeviceFaultReported{false};
+    bool _WaitForCopyAllocator(UINT slot, std::vector<UINT64>& fenceValues, CopySlotAdmission& admission);
     void _ReleaseInteropBackBuffers();
     bool _ReleaseInteropObjects();
     void _RefreshCachedSwapchainDesc();
@@ -185,6 +230,7 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     IDXGISwapChain4* _real4 = nullptr;
 
     IDXGISwapChain4* _fgSwapChain = nullptr;
+    Dx11InteropSwapchain::ResizeStatus _fgResizeStatus;
 
     int _id = 0;
     LONG _refcount = 1;
@@ -214,7 +260,7 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     UINT64 _lastInteropCopyFenceValue = 0;
 
     std::vector<UINT64> _copyAllocatorFenceValues;
-    // R868-B: submitted StarRail color work without a valid completion receipt
+    // Submitted interop color work without a valid completion receipt
     // retains the real wrapper/rings; no later idle/resize/Release may clear it.
     std::atomic<bool> _sourceCopyUncertain { false };
     HANDLE _copyFenceEvent = nullptr;

@@ -1,4 +1,5 @@
 #pragma once
+#include <runtime/GuideCapture.h>
 
 #include "PassLimits.h"
 #include "FinishedPictureOutcome.h"
@@ -8,6 +9,7 @@
 #include <vector>
 #include <wrl/client.h>
 #include <genshin/GenshinPresentNr.h>
+#include <runtime/GuideSourceMetadata.h>
 
 #include <shaders/dlssnr/DlssNr_Common.h>
 #include <shaders/dlssnr/DlssNr_Spatial.h>
@@ -48,6 +50,13 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
                           ID3D12CommandQueue* timingQueue = nullptr, bool rayReconstruction = false,
                           unsigned long long submissionEpoch = 0);
 
+// Fixed Genshin route: actual source Present -> NR -> detail retention -> FG.
+// Persisted placement options cannot enable a second NR writer for this game.
+bool UsesGenshinPresentPipeline();
+uint64_t BeginGenshinPresentSource();
+void CompleteGenshinPresentSource(uint64_t attempt, GuideSourceMetadata::Ptr metadata,
+                                 const void* dx11Output, bool succeeded);
+
 // Source identity comes from this live call, never State's Present-thread globals.
 // Virtual sources use their driver context and successful feature-creation generation, not an NGX handle.
 struct UpscaleSource
@@ -58,8 +67,18 @@ struct UpscaleSource
     // Retained create-time facts, never inferred from missing evaluate parameters.
     unsigned featureFlags = 0;
     bool featureFlagsKnown = false;
+    // Effective extent selected for this live Evaluate by the actual provider.
+    unsigned renderWidth = 0, renderHeight = 0;
+    bool renderExtentKnown = false;
+    // Immutable facts read at this actual Evaluate boundary. Diagnostic Store
+    // snapshots never populate this; it confers no source/queue/fence authority.
+    GuideSourceMetadata::Ptr rawMetadata;
 
-    bool operator==(const UpscaleSource&) const = default;
+    bool operator==(const UpscaleSource& other) const {
+        return ngxHandle==other.ngxHandle && virtualContext==other.virtualContext &&
+            virtualGeneration==other.virtualGeneration && featureFlags==other.featureFlags &&
+            featureFlagsKnown==other.featureFlagsKnown;
+    }
 };
 
 // Ordinary ZZZ NGX source-call receipt. Begin precedes the existing before-SR capture;
@@ -111,7 +130,15 @@ void RetryAfterFailure();
 std::string FinishedPictureStatus();
 bool WaitForFinishedPicture();
 void FinishedPictureResetCommandList(ID3D12CommandList* cmd);
-void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
+// The caller owns this list/allocator and has drained its actual submission
+// queue. Poll all remaining NR executions, then really Reset and close the old
+// executable generation before its owner destroys it. Failure retains owners.
+HRESULT RetireFinishedPictureRecording(ID3D12GraphicsCommandList* cmd, ID3D12CommandAllocator* allocator);
+void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists,
+                              const GuideCapture::ExecutionReceipt& receipt = {});
+// Diagnostic lifetime only: mark exact recordings before entering real Execute.
+GuideCapture::ExecutionReceipt FinishedPictureSubmitting(ID3D12CommandQueue* queue, UINT count,
+                                                         ID3D12CommandList* const* lists);
 uint64_t FinishedPictureSubmissionCallbacks() noexcept;
 FinishedPictureOutcome ApplyToFinishedPicture(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue);
 // Explicit DX11 bridge seam: translated NSR guides on the bridge's DIRECT list/queue,
@@ -124,7 +151,8 @@ void FinishedPictureDx11BridgeOutputHandoff(ID3D12CommandQueue* queue, ID3D12Gra
 // orderedProducerQueue is covered by the wrapper's successful DX11->copy->present wait chain.
 FinishedPictureOutcome ApplyToFinishedPictureDx11Bridge(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue,
                                      ID3D12CommandQueue* orderedProducerQueue,
-                                     const GenshinPresentNr::ReturnedPicture* nativeReturned = nullptr);
+                                     const GenshinPresentNr::ReturnedPicture* nativeReturned = nullptr,
+                                     GuideSourceMetadata::Ptr selectedSource = {});
 
 // Finished Picture while the game's own frame generation runs: the edit is applied to the
 // DLSSG.HUDLess/Backbuffer inputs at the DLSS-G evaluate, preserving HUD and parameter
@@ -335,6 +363,9 @@ struct DetailReuseInfo
     // unrelated to cadence.Full(), submission, GPU completion or displayed frames.
     unsigned long long modelCalls = 0, modelFailures = 0;
     bool modelCallCountsKnown = false; // unavailable on an unobserved/stale route
+    // Current independent-history observation domain; never admission evidence.
+    uint64_t feedbackSource = 0, feedbackConfiguration = 0, feedbackOwner = 0;
+    bool feedbackHistoryUsable = false;
 };
 DetailReuseInfo DetailReuseStatus();
 

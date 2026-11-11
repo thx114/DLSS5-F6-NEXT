@@ -62,6 +62,17 @@ inline void Fill(DlssNrConstants& params, const DlssNr::LayerLook::Profile& prof
     params.LookHalo = profile.values[14];
     params.LookHaloBrightSide = profile.values[15];
 }
+
+// Mode 14 consumes the SAME proxy contract as encode/resolve. Copy from this
+// frame's encode constants, never infer it from the game name or swapchain.
+// InputEncoding and exposure belong to the outer game<->proxy boundary: Look
+// operates in normalized light and must not apply those conversions twice.
+inline void FillWorkingDomain(DlssNrConstants& params, const DlssNrConstants& encode)
+{
+    params.Passthrough = encode.Passthrough;
+    params.ReversibleMode = encode.ReversibleMode;
+}
+
 template<class Configuration>
 void FillFinal(DlssNrConstants& params, const Configuration& config, bool independentLookConsumed)
 {

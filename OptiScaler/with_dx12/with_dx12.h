@@ -62,6 +62,9 @@ class WithDx12
     static bool PrepareD3D12ForD3D11(ID3D11Device* InDx11Device,
                                      D3D_FEATURE_LEVEL InFeatureLevel = D3D_FEATURE_LEVEL_11_0);
 
+    // SDK-created physical output keeps its own queue in FinalOutputEndpoint.
+    static void AdoptSwapchainQueue(ID3D12CommandQueue* queue);
+
     static void SetD3D12Objects(ID3D12Device* InDevice, ID3D12CommandQueue* InCommandQueue,
                                 D3D12_COMMAND_LIST_TYPE InCommandListType = D3D12_COMMAND_LIST_TYPE_DIRECT);
 

@@ -8,6 +8,7 @@
 #include "proxies/NVNGX_Proxy.h"
 #include "dlssnr/DlssNr.h"
 #include "dlssnr/DlssNr_ExposureScan.h"
+#include <runtime/GuideDiagnostics.h>
 #include <upscalers/dlss/DLSSFeature_Dx12.h>
 #include <shaders/output_scaling/OS_Dx12.h>
 
@@ -1181,25 +1182,27 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
     // Prepare upscaling inputs
     auto* nativeGuideOwner=dynamic_cast<DLSSG_Dx12*>(state.currentFG);
     const auto fgSource=UpscalerInputsDx12::UpscaleStart(InCmdList, InParameters, feature);
+    const auto colourSource=nativeGuideOwner && state.currentFG==nativeGuideOwner ?
+        nativeGuideOwner->CurrentUpscalerColourSource() : DLSSG_Dx12::UpscalerColourSourcePtr{};
     FSR3FG::SetUpscalerInputs(InCmdList, InParameters, feature);
 
     // Evaluate the feature
     bool evalSuccess = false;
     {
-        // Resource tracking
-        UpscalerInputsDx12::UpscaleEnd(InCmdList, InParameters, feature);
-
         ScopedSkipHeapCapture skip {};
         evalSuccess = feature->Evaluate(InCmdList, InParameters);
     }
+    ID3D12Resource* actualOutput=nullptr;
     if (fgSource)
     {
-        ID3D12Resource* actualOutput=nullptr;
         if (InParameters->Get(NVSDK_NGX_Parameter_Output,&actualOutput)!=NVSDK_NGX_Result_Success)
             InParameters->Get(NVSDK_NGX_Parameter_Output,(void**)&actualOutput);
         if (auto* fg=dynamic_cast<DLSSG_Dx12*>(state.currentFG); fg && fg==nativeGuideOwner && fg->TracksNativeGuides())
             fg->CompleteNativeGuideSource(InCmdList,fgSource,actualOutput,evalSuccess);
     }
+    // Capture the current successful write, never the contents preceding SR.
+    // CompleteNativeGuideSource first certifies this exact selected transaction.
+    UpscalerInputsDx12::UpscaleEnd(InCmdList, InParameters, feature,evalSuccess,colourSource,actualOutput);
 
     if (!evalSuccess)
     {
@@ -1246,6 +1249,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     const auto tracked = HandleToFeature.Read(handleId);
     const auto feature = tracked.feature;
     DlssNr::UpscaleSource nrSource { handleId };
+    nrSource.virtualContext = InParameters;
+    nrSource.virtualGeneration = tracked.generation;
     if (tracked.flags) { nrSource.featureFlags = unsigned(*tracked.flags); nrSource.featureFlagsKnown = true; }
     bool nrUpscale = feature == NVSDK_NGX_Feature_SuperSampling || feature == NVSDK_NGX_Feature_RayReconstruction;
     bool rayReconstruction = feature == NVSDK_NGX_Feature_RayReconstruction;
@@ -1263,6 +1268,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
         }
         rayReconstruction |= it->second.feature->GetUpscalerType() == Upscaler::DLSSD;
     }
+    GuideDiagnostics::EvaluationScope evaluateObservation(FrameTrace::Api::D3D12, handleId,
+        reinterpret_cast<uint64_t>(InCmdList), nrUpscale);
     if (!tracked.feature && !nrUpscale)
         LOG_DEBUG("DLSS-NR: skipping untracked NGX handle {}; original evaluate is preserved", handleId);
     LOG_DEBUG("DLSS-NR route: handle {}, NGX feature {}, upscaler {}, RR {}", handleId,
@@ -1335,10 +1342,12 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
             if (result == NVSDK_NGX_Result_Success && nrUpscale)
                 DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, rayReconstruction);
 
+            evaluateObservation.Result(result);
             return result;
         }
 
         LOG_DEBUG("Native DLSS EvaluateFeature not available for handle {}", handleId);
+        evaluateObservation.Result(NVSDK_NGX_Result_FAIL_FeatureNotFound);
         return NVSDK_NGX_Result_FAIL_FeatureNotFound;
     }
 
@@ -1346,7 +1355,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     if (State::Instance().activeFgNvngx != FGNvngxReplacement::None && handleId >= NVNGX_PROVIDER_ID_OFFSET)
     {
         LOG_DEBUG("Passthrough to DLSSG Replacement's EvaluateFeature for handle {}", handleId);
-        return Nvngx_FG::D3D12_EvaluateFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
+        const auto result = Nvngx_FG::D3D12_EvaluateFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
+        evaluateObservation.Result(result);
+        return result;
     }
 
     if (lastDlssgCameraNear.has_value())
@@ -1369,6 +1380,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     if (optiResult == NVSDK_NGX_Result_Success && nrUpscale)
         DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, rayReconstruction);
 
+    evaluateObservation.Result(optiResult);
     return optiResult;
 }
 

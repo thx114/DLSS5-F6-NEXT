@@ -2,6 +2,7 @@
 #include "IFGFeature_Dx12.h"
 #include <State.h>
 #include <Config.h>
+#include "GuideOrientation.h"
 
 #include <magic_enum.hpp>
 
@@ -336,8 +337,11 @@ bool IFGFeature_Dx12::FlipResource(Dx12Resource* resource)
             return false;
         }
 
+        const auto orientation = framegen::ResolveGuideOrientation(*Config::Instance());
+        const bool velocity = type == FG_ResourceType::Velocity;
         auto result = flip->get()->Dispatch((ID3D12GraphicsCommandList*) cmdList, resource->resource, flipOutput,
-                                            resource->width, resource->height, true);
+            resource->width, resource->height, velocity,
+            velocity ? orientation.motionFlipY : orientation.depthFlipY, orientation.motionYInverted);
 
         if (result)
         {

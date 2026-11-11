@@ -28,6 +28,9 @@ $counts = [ordered]@{
     ZzzNgxRouteLogLines = 0; ZzzSelectedCreateLogLines = 0; ZzzSelectedEvaluateLogLines = 0
     GenshinSdkClosureLogLines = 0; GenshinStreamOutputLogLines = 0; GenshinOwnerOutputLogLines = 0
     GenshinOwnerShownLogLines = 0; GenshinPhysicalRefusalLogLines = 0
+    FgCapabilityLogLines = 0; FgConfigurationLogLines = 0
+    GenshinVisibilityLogLines = 0; GenshinPresentCpuLogLines = 0
+    GenshinProducerProgressLogLines = 0; GenshinProducerComparisonLogLines = 0
 }
 $nr = [Collections.Generic.List[object]]::new()
 $fg = [Collections.Generic.List[object]]::new()
@@ -38,13 +41,19 @@ $genshinSdk = [Collections.Generic.List[object]]::new()
 $genshinOutput = [Collections.Generic.List[object]]::new()
 $genshinOwner = [Collections.Generic.List[object]]::new()
 $genshinRefusal = [Collections.Generic.List[object]]::new()
+$fgCapability = [Collections.Generic.List[object]]::new()
+$fgConfiguration = [Collections.Generic.List[object]]::new()
+$genshinVisibility = [Collections.Generic.List[object]]::new()
+$genshinPresentCpu = [Collections.Generic.List[object]]::new()
+$genshinProducerProgress = [Collections.Generic.List[object]]::new()
+$genshinProducerComparison = [Collections.Generic.List[object]]::new()
 $versions = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $observedPids = [Collections.Generic.HashSet[int]]::new()
 
 function Read-Fields([string]$Line) {
     $fields = [ordered]@{}
     foreach ($match in [regex]::Matches($Line, '(\w+)=([^\s]+)')) {
-        $fields[$match.Groups[1].Value] = $match.Groups[2].Value
+        $fields[$match.Groups[1].Value] = $match.Groups[2].Value.TrimEnd(';')
     }
     return $fields
 }
@@ -97,6 +106,24 @@ try {
         if ($line.Contains('F6 physical-output refusal:')) {
             ++$counts.GenshinPhysicalRefusalLogLines; Save-Sample $genshinRefusal $lineNumber $line
         }
+        if ($line.Contains('F6 FG capability:')) {
+            ++$counts.FgCapabilityLogLines; Save-Sample $fgCapability $lineNumber $line
+        }
+        if ($line.Contains('F6 FG configuration:')) {
+            ++$counts.FgConfigurationLogLines; Save-Sample $fgConfiguration $lineNumber $line
+        }
+        if ($line.Contains('R846 FG visibility-boundary:')) {
+            ++$counts.GenshinVisibilityLogLines; Save-Sample $genshinVisibility $lineNumber $line
+        }
+        if ($line.Contains('R082 Present CPU window:')) {
+            ++$counts.GenshinPresentCpuLogLines; Save-Sample $genshinPresentCpu $lineNumber $line
+        }
+        if ($line.Contains('Genshin producer progress:')) {
+            ++$counts.GenshinProducerProgressLogLines; Save-Sample $genshinProducerProgress $lineNumber $line
+        }
+        if ($line.Contains('Genshin producer comparison:')) {
+            ++$counts.GenshinProducerComparisonLogLines; Save-Sample $genshinProducerComparison $lineNumber $line
+        }
         if ($line.Contains('DLSS-NR GPU evidence completed scope=')) {
             ++$counts.GpuCompletedLogLines; Save-Sample $gpu $lineNumber $line
         }
@@ -141,13 +168,19 @@ $result = [ordered]@{
     Counters = $counts; RetainedRowsCapPerKind = $SampleLimit; RetainedRows = 'last rows only'
     RetainedRowCounts = @{ NrCadence = $nr.Count; FgTaggedDepth = $fg.Count; ZzzSourceSdk = $zzz.Count; GpuCompleted = $gpu.Count
         ZzzNgxRoute = $zzzNgx.Count; GenshinSdkClosure = $genshinSdk.Count; GenshinStreamOutput = $genshinOutput.Count
-        GenshinOwnerOutput = $genshinOwner.Count; GenshinPhysicalRefusal = $genshinRefusal.Count }
+        GenshinOwnerOutput = $genshinOwner.Count; GenshinPhysicalRefusal = $genshinRefusal.Count
+        FgCapability = $fgCapability.Count; FgConfiguration = $fgConfiguration.Count
+        GenshinVisibility = $genshinVisibility.Count; GenshinPresentCpu = $genshinPresentCpu.Count
+        GenshinProducerProgress = $genshinProducerProgress.Count; GenshinProducerComparison = $genshinProducerComparison.Count }
     NrCadence = @($nr); FgTaggedDepth = @($fg); ZzzSourceSdk = @($zzz)
     GpuCompleted = @($gpu); GpuFenceChecks = $gpuChecks
     ZzzNgxRoute = @($zzzNgx); GenshinSdkClosure = @($genshinSdk); GenshinStreamOutput = @($genshinOutput)
     GenshinOwnerOutput = @($genshinOwner); GenshinPhysicalRefusal = @($genshinRefusal)
+    FgCapability = @($fgCapability); FgConfiguration = @($fgConfiguration)
+    GenshinVisibility = @($genshinVisibility); GenshinPresentCpu = @($genshinPresentCpu)
+    GenshinProducerProgress = @($genshinProducerProgress); GenshinProducerComparison = @($genshinProducerComparison)
     IndependentlyVerified = @{ SelectedSr = $false; GpuObjectOwnership = $false; GeneratedPixels = $false; TemporalDetail = $false; NetPerformance = $false }
-    Boundary = 'Recorded calls and fence fields only; Matching log-line counts are not total calls or successes; only retained detail rows are capped. SDK input acceptance, physical output completion, window reveal and generated pixels are separate. NR history may be queue-ordered and GPU-pending. GPU intervals are inclusive and cannot be added or treated as whole-game performance. Temporal detail, skipped-model reuse benefit and net performance require separate validation.'
+    Boundary = 'Recorded calls and fence fields only; Matching log-line counts are not total calls or successes; only retained detail rows are capped. Requested/accepted FG configuration and raw SDK capability do not prove generated output or scanout. Present CPU windows and child-call wall time are not display FPS or GPU duration. SDK input acceptance, physical output completion, window reveal and generated pixels are separate. NR history may be queue-ordered and GPU-pending. GPU intervals are inclusive and cannot be added or treated as whole-game performance. Temporal detail, skipped-model reuse benefit and net performance require separate validation.'
 }
 $json = $result | ConvertTo-Json -Depth 8
 if ($Output) { [IO.File]::WriteAllText([IO.Path]::GetFullPath($Output), $json, [Text.UTF8Encoding]::new($false)) }

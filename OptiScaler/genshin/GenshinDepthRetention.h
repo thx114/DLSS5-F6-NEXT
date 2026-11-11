@@ -61,9 +61,14 @@ inline Registry* Store()noexcept {
 }
 struct Lease {
     Microsoft::WRL::ComPtr<IUnknown> object;
+    // Keep this exact interface alive, including implementations with tear-off
+    // interfaces. The canonical IUnknown remains the registry identity; this
+    // single retained interface is only a token-lifetime fast-path witness.
+    Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
     Registry* registry=nullptr;Entry* entry=nullptr;uint64_t size=0;bool payload=false,source=false,ordinary=false;
     ~Lease()noexcept {
         // The retained allocation is released while its charge is still live.
+        buffer.Reset();
         object.Reset();
         if(source){sourceBytes.fetch_sub(size,std::memory_order_relaxed);
             if(ordinary)ordinarySourceBytes.fetch_sub(size,std::memory_order_relaxed);
@@ -77,7 +82,7 @@ struct Lease {
     }
 };
 inline std::shared_ptr<const Lease> Acquire(const void* identity,uint64_t size,bool payload,
-    Microsoft::WRL::ComPtr<IUnknown> object={})noexcept {
+    Microsoft::WRL::ComPtr<IUnknown> object={},Microsoft::WRL::ComPtr<ID3D11Buffer> buffer={})noexcept {
     GenshinCpuStageTiming::Scope cpuCost(GenshinCpuStageTiming::Stage::Retention);
     try{
         auto* registry=Store();if(!registry || !identity || !size) {++refused;return {};}
@@ -98,7 +103,7 @@ inline std::shared_ptr<const Lease> Acquire(const void* identity,uint64_t size,b
         auto& used=payload?payloadBytes:bytes;const auto budget=payload?PayloadBudget:BufferBudget;
         const auto current=used.load(std::memory_order_relaxed);
         if(size>budget || current>budget-size){++bytesRefused;++refused;return {};}
-        candidate=std::make_shared<Lease>();candidate->object=std::move(object);
+        candidate=std::make_shared<Lease>();candidate->object=std::move(object);candidate->buffer=std::move(buffer);
         candidate->registry=registry;candidate->size=size;candidate->payload=payload;
         auto* free=payload?registry->payloads.Insert(identity):registry->buffers.Insert(identity);
         free->bytes=size;free->lease=candidate;candidate->entry=free;
@@ -116,7 +121,10 @@ inline Token Buffer(ID3D11Buffer* buffer)noexcept {
     if(!buffer)return {};
     Microsoft::WRL::ComPtr<IUnknown> identity;D3D11_BUFFER_DESC desc{};buffer->GetDesc(&desc);
     if(FAILED(buffer->QueryInterface(IID_PPV_ARGS(&identity))) || !identity){++detail::refused;return {};}
-    const auto* key=identity.Get();return detail::Acquire(key,desc.ByteWidth,false,std::move(identity));
+    // Acquire receives owned references so neither admission nor rejection
+    // invokes interface AddRef/Release while holding the registry mutex.
+    Microsoft::WRL::ComPtr<ID3D11Buffer> exact=buffer;
+    const auto* key=identity.Get();return detail::Acquire(key,desc.ByteWidth,false,std::move(identity),std::move(exact));
 }
 inline Token Payload(const void* identity,uint64_t bytes)noexcept {return detail::Acquire(identity,bytes,true);}
 // One lease per immutable source allocation, shared by its actual owners.
@@ -151,6 +159,10 @@ template<size_t N> struct Buffers {
     std::array<Token,N> tokens{};size_t count=0;
     bool Add(ID3D11Buffer* buffer)noexcept {
         if(!buffer)return true;
+        // No address cache survives its owning token. Unknown interface aliases
+        // still require canonical admission, even when this set is already full.
+        // The null check also covers tokens in a default-moved-from set.
+        for(size_t i=0;i<count;++i)if(tokens[i] && tokens[i]->buffer.Get()==buffer)return true;
         auto token=Buffer(buffer);if(!token)return false;
         for(size_t i=0;i<count;++i)if(tokens[i]==token)return true;
         if(count==N){++detail::refused;return false;}

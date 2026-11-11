@@ -2,6 +2,7 @@
 #pragma once
 
 #include "GenshinFgTicket.h"
+#include <runtime/F6InputPolicy.h>
 #include <ui_mask/DrawUiMask.h>
 #include <dlssnr/FinishedPictureOutcome.h>
 #include <genshin/GenshinPresentNr.h>
@@ -79,6 +80,7 @@ inline Key MakeKey(const GenshinPresentNr::Ticket& t) noexcept {
 }
 // R723: expose the first policy refusal without changing any admission gate.
 inline const char* RequestRefusal() {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return "FsrBridgeDisabled";
     const auto& s=State::Instance();const auto& c=*Config::Instance();
     if(s.isShuttingDown)return "ShuttingDown";
     if(!GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()))return "NotGenshinExecutable";
@@ -839,8 +841,9 @@ class PresentScope final {
 public:
     PresentScope(IDXGISwapChain* nativeSwapchain,ID3D11DeviceContext* nativeContext,IDXGISwapChain4* sc,
                  IFGFeature_Dx12* provider,ID3D12Device* device,ID3D12CommandQueue* copyQueue)
-        :swapchain_(sc),nativeSwapchain_(nativeSwapchain),nativeContext_(nativeContext),device_(device),copyQueue_(copyQueue),
+        :swapchain_(F6InputPolicy::FsrBridgeEnabled ? sc : nullptr),nativeSwapchain_(F6InputPolicy::FsrBridgeEnabled ? nativeSwapchain : nullptr),nativeContext_(F6InputPolicy::FsrBridgeEnabled ? nativeContext : nullptr),device_(F6InputPolicy::FsrBridgeEnabled ? device : nullptr),copyQueue_(F6InputPolicy::FsrBridgeEnabled ? copyQueue : nullptr),
          stateFrame_(State::Instance().frameCount),thread_(GetCurrentThreadId()) {
+        if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
         previous_=current_;
         if(!Requested() || previous_ || !nativeSwapchain || !nativeContext || !sc || !device || !copyQueue)return;
         provider_=dynamic_cast<DLSSG_Dx12*>(provider);
@@ -855,6 +858,7 @@ public:
         auto& p=Storage();std::lock_guard lock(p.mutex);CollectLocked(p);
     }
     ~PresentScope(){
+        if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
         try {
         // No provider/COM/fence query: retain the reached stages even when a
         // wrapper fallback never enters Prepare/Dispatch or Presented.

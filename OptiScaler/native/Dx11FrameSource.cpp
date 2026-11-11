@@ -1,9 +1,11 @@
 #include "pch.h"
+#include <runtime/F6InputPolicy.h>
 #include <integration/HoYoShade.h>
 #include <integration/HoYoShadeNaturalAssociation.h>
 #include <native/OpticalFgNrPolicy.h>
 
 #include "Dx11FrameSource.h"
+#include <runtime/NativeProducerCpuTiming.h>
 #include <ui_mask/DrawUiMask.h>
 #include "BridgeDepthReader.h"
 #include <genshin/GenshinPresentNr.h>
@@ -23,7 +25,7 @@ namespace
 {
 bool RequireExactSharedOwner()
 {
-    static const bool selected = GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
+    static const bool selected = (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()));
     return selected;
 }
 ColorSpace ToColorSpace(DXGI_COLOR_SPACE_TYPE type)
@@ -39,6 +41,75 @@ ColorSpace ToColorSpace(DXGI_COLOR_SPACE_TYPE type)
     }
 }
 } // namespace
+
+void Dx11FrameSource::StampDelivery(DeliveryObservation::Boundary boundary) noexcept
+{
+    if (_delivery.capturing && _deliveryThread == GetCurrentThreadId())
+        _delivery.ticks[boundary] = NativeProducerCpuTiming::Qpc();
+}
+
+void Dx11FrameSource::ReportDeliveryObservation()
+{
+    const auto now = GetTickCount64();
+    if (!_delivery.active || (_deliveryLastReport && now - _deliveryLastReport < 1000)) return;
+    const auto& d = _delivery;
+    const auto frequency = NativeProducerCpuTiming::QpcFrequency();
+    const auto elapsed = [&](DeliveryObservation::Boundary from, DeliveryObservation::Boundary to) {
+        return frequency && d.ticks[from] > 0 && d.ticks[to] >= d.ticks[from]
+            ? double(d.ticks[to] - d.ticks[from]) * 1000.0 / double(frequency) : -1.0;
+    };
+    const auto sharedNow = d.sharedFence ? d.sharedFence->GetCompletedValue() : UINT64_MAX;
+    const auto doneNow = d.doneFence ? d.doneFence->GetCompletedValue() : UINT64_MAX;
+    LOG_INFO("Native DX11 delivery: pid={} tid={} frame={} generation={} source_frame={} present_epoch={} picture_serial={} "
+        "context={:X} queue={:X} picture={:X} backbuffer={:X} acquired={} returned={} copy_back={} processed={} uncertain={} "
+        "previous_shared_use={} shared_fence={:X} previous_copy={} shared_before={} ready={} shared_after_upload={} "
+        "done_fence={:X} done_value={} done_on_return={} return_value={} copy_value={} shared_after_copy={} "
+        "shared_observed_later={} done_observed_later={} qpc_hz={} begin_qpc={} acquire_qpc={} return_qpc={} end_qpc={} "
+        "acquire_ms={:.4f} setup_previous_order_ms={:.4f} upload_copy_ms={:.4f} depth_ms={:.4f} mask_ms={:.4f} "
+        "upload_signal_ms={:.4f} upload_flush_ms={:.4f} run_gap_ms={:.4f} return_signal_ms={:.4f} "
+        "return_wait_ms={:.4f} copyback_ms={:.4f} copy_signal_ms={:.4f} copy_flush_ms={:.4f} "
+        "cpu_wall_inclusive=true missing_ms=-1 removed_or_absent_fence=UINT64_MAX "
+        "observed_qpc={} completion_time=UNKNOWN gpu_wait_duration=UNKNOWN observation_only=true no_added_wait=true",
+        GetCurrentProcessId(), _deliveryThread, d.frame, d.generation, d.sourceFrame, d.presentEpoch, d.pictureSerial,
+        d.context, d.queue, d.picture, d.backbuffer, d.acquired, d.returned, d.copyBack, d.processed, d.uncertain,
+        d.previousSharedUse, reinterpret_cast<uintptr_t>(d.sharedFence.Get()), d.previousCopy, d.sharedBefore,
+        d.ready, d.sharedAfterUpload, reinterpret_cast<uintptr_t>(d.doneFence.Get()), d.doneValue, d.doneOnReturn,
+        d.returnValue, d.copyValue, d.sharedAfterCopy, sharedNow, doneNow, frequency,
+        d.ticks[DeliveryObservation::Begin], d.ticks[DeliveryObservation::Acquired],
+        d.ticks[DeliveryObservation::Returned], d.ticks[DeliveryObservation::End],
+        elapsed(DeliveryObservation::Begin, DeliveryObservation::Acquired),
+        elapsed(DeliveryObservation::Begin, DeliveryObservation::PreviousOrder),
+        elapsed(DeliveryObservation::PreviousOrder, DeliveryObservation::UploadCopy),
+        elapsed(DeliveryObservation::UploadCopy, DeliveryObservation::Depth),
+        elapsed(DeliveryObservation::Depth, DeliveryObservation::Mask),
+        elapsed(DeliveryObservation::Mask, DeliveryObservation::UploadSignal),
+        elapsed(DeliveryObservation::UploadSignal, DeliveryObservation::UploadFlush),
+        elapsed(DeliveryObservation::Acquired, DeliveryObservation::Returned),
+        elapsed(DeliveryObservation::Returned, DeliveryObservation::ReturnSignal),
+        elapsed(DeliveryObservation::ReturnSignal, DeliveryObservation::ReturnWait),
+        elapsed(DeliveryObservation::ReturnWait, DeliveryObservation::Copyback),
+        elapsed(DeliveryObservation::Copyback, DeliveryObservation::CopySignal),
+        elapsed(DeliveryObservation::CopySignal, DeliveryObservation::CopyFlush), NativeProducerCpuTiming::Qpc());
+    _deliveryLastReport = now;
+    _delivery = {};
+}
+
+void Dx11FrameSource::BeginDeliveryObservation(bool presented)
+{
+    const auto thread = GetCurrentThreadId();
+    if (!_deliveryThread) _deliveryThread = thread;
+    if (_deliveryThread != thread) return;
+    _delivery.capturing = false;
+    ReportDeliveryObservation(); // outside the next sampled Acquire interval
+    const auto now = GetTickCount64();
+    if (!presented || _delivery.active || (_deliveryLastSample && now - _deliveryLastSample < 1000)) return;
+    _deliveryLastSample = now;
+    _delivery.active = _delivery.capturing = true;
+    _delivery.previousSharedUse = _sharedInUse;
+    _delivery.copyBack = _copyBack;
+    _delivery.previousCopy = _copybackCompletion;
+    StampDelivery(DeliveryObservation::Begin);
+}
 
 void Dx11FrameSource::SetPresent(IDXGISwapChain* swapChain, ID3D11Device* device11, bool copyBack)
 {
@@ -132,10 +203,27 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
         ~CaptureReference() { if (!ready) buffer.Reset(); }
     } capture{_backBuffer};
 
+    // A failed sampled Return can quarantine this source. Preserve its final
+    // observation even when no later input is eligible for sampling.
+    if (_deliveryThread == GetCurrentThreadId() && (_quarantined || !_delivery.capturing)) {
+        if (_quarantined && _delivery.active) {
+            StampDelivery(DeliveryObservation::End);
+            _delivery.uncertain=true;
+            _delivery.capturing=false;
+        }
+        ReportDeliveryObservation();
+    }
     if (_quarantined || _swapChain == nullptr || _device11 == nullptr)
         return AcquireStatus::Unavailable;
 
     auto* presented=GenshinPresentNr::Scope::Current();
+    BeginDeliveryObservation(presented != nullptr);
+    if (_delivery.capturing && _deliveryThread == GetCurrentThreadId()) {
+        _delivery.generation=presented->ticket.source.generation;
+        _delivery.sourceFrame=presented->ticket.source.sourceFrame;
+        _delivery.presentEpoch=presented->ticket.presentEpoch;
+        _delivery.pictureSerial=presented->ticket.pictureSerial;
+    }
     const bool colorStage = _copyBack && (HoYoShade::Selected(HoYoShade::Stage::BeforeNr) ||
         HoYoShade::Selected(HoYoShade::Stage::FinalOutput));
     const bool gameUpscaler = !presented && !native::OpticalFgNrEnabled() && GenericDepthDx11::GameCallsUpscaler();
@@ -144,6 +232,13 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
 
     if (!EnsureDevices(_device11))
         return AcquireStatus::Unavailable;
+    if (_delivery.capturing && _deliveryThread == GetCurrentThreadId()) {
+        _delivery.sharedFence=_fence.Fence12();
+        _delivery.previousCopy=_copybackCompletion;
+        _delivery.sharedBefore=_fence.Fence12()->GetCompletedValue();
+        _delivery.context=reinterpret_cast<uintptr_t>(_context11.Get());
+        _delivery.queue=reinterpret_cast<uintptr_t>(_queue12.Get());
+    }
 
     UINT backbufferIndex=0;
     Microsoft::WRL::ComPtr<IDXGISwapChain3> indexed;
@@ -202,6 +297,11 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
         _sharedInUse = false;
     }
 
+    StampDelivery(DeliveryObservation::PreviousOrder);
+    if (_delivery.capturing && _deliveryThread == GetCurrentThreadId()) {
+        _delivery.picture=reinterpret_cast<uintptr_t>(_picture.Res12());
+        _delivery.backbuffer=reinterpret_cast<uintptr_t>(_backBuffer.Get());
+    }
     if (!multisampled)
     {
         _context11->CopyResource(_picture.Tex11(), _backBuffer.Get());
@@ -237,6 +337,7 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
         }
     }
 
+    StampDelivery(DeliveryObservation::UploadCopy);
     // Present NR measures the final picture itself. Raw scene depth is not
     // silently promoted to postprocessing/HUD depth authority.
     auto depthSnap = GenericDepthDx11::BestSnapshot();
@@ -289,6 +390,7 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
     const char* bridgeDepthStage = !presented ? "not-presented" : !bridgeTicketDepth ? "ticket-depth-mismatch" :
         !bridgeDepth.lease ? "mapped-lease-missing" : "mapped-receipt-not-known";
     bool nativeDepthReady=false;
+    ID3D12Resource* mappedDepthResource=nullptr;
     if(bridgeReceiptKnown) {
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;Microsoft::WRL::ComPtr<ID3D11Device> bridgeDevice;
         D3D11_TEXTURE2D_DESC depthDesc{};
@@ -300,28 +402,34 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
             depthDesc.SampleDesc.Count==1 && !depthDesc.SampleDesc.Quality;
         bridgeDepthStage="source-descriptor-or-owner";
         if(sourceMatches) {
-            bool haveTexture=_depth.Matches(bridgeDepth.width,bridgeDepth.height,DXGI_FORMAT_R32G32B32A32_TYPELESS);
-            if(!haveTexture) {
-                // First allocation cannot retire an old depth resource. A pending
-                // picture completion is unrelated and must not starve this path.
-                // Replacing an existing depth still requires its original fence gate.
-                const bool canReplace=!_depth.Tex11() || CanReleaseShared();
-                bridgeDepthStage="previous-shared-use-pending";
-                if(canReplace) {
-                    haveTexture=_depth.Create(_device11,bridgeDepth.width,bridgeDepth.height,
-                        DXGI_FORMAT_R32G32B32A32_TYPELESS,D3D11_BIND_SHADER_RESOURCE);
-                    bridgeDepthStage=haveTexture?"shared-created":"shared-create-failed";
-                }
+            const auto mappedLease=std::dynamic_pointer_cast<GenshinTransport::PreparedDepthLease>(bridgeDepth.lease);
+            const auto direct=mappedLease?mappedLease->DirectMappedRead(_device12.Get(),bridgeDepth.source.Get()):nullptr;
+            if(direct && depthReader.Begin(bridgeDepth.lease,bridgeDepth.source.Get(),direct,_fence.Fence12(),signalValue)) {
+                mappedDepthResource=direct;depthReady=true;bridgeDepthStage="mapped-read-order-bound";
             }
-            if(haveTexture) {
-                bridgeDepthStage="shared-open-failed";
-                if(_depth.Open(_device12.Get(), RequireExactSharedOwner())) {
-                    bridgeDepthStage="lease-not-ready";
-                    if(bridgeDepth.lease->Ready()) {
-                        bridgeDepthStage="reader-refused";
-                        if(depthReader.Begin(bridgeDepth.lease,_depth.Tex11(),_depth.Res12(),_fence.Fence12(),signalValue)) {
-                            _context11->CopyResource(_depth.Tex11(),bridgeDepth.source.Get());
-                            depthReady=true;bridgeDepthStage="copy-ordered";
+            if(!depthReady) {
+                bool haveTexture=_depth.Matches(bridgeDepth.width,bridgeDepth.height,DXGI_FORMAT_R32G32B32A32_TYPELESS);
+                if(!haveTexture) {
+                    // Replacing an existing depth still requires its original
+                    // fence gate. A direct import never overwrites that object.
+                    const bool canReplace=!_depth.Tex11() || CanReleaseShared();
+                    bridgeDepthStage="previous-shared-use-pending";
+                    if(canReplace) {
+                        haveTexture=_depth.Create(_device11,bridgeDepth.width,bridgeDepth.height,
+                            DXGI_FORMAT_R32G32B32A32_TYPELESS,D3D11_BIND_SHADER_RESOURCE);
+                        bridgeDepthStage=haveTexture?"shared-created":"shared-create-failed";
+                    }
+                }
+                if(haveTexture) {
+                    bridgeDepthStage="shared-open-failed";
+                    if(_depth.Open(_device12.Get(), RequireExactSharedOwner())) {
+                        bridgeDepthStage="lease-not-ready";
+                        if(bridgeDepth.lease->Ready()) {
+                            bridgeDepthStage="reader-refused";
+                            if(depthReader.Begin(bridgeDepth.lease,_depth.Tex11(),_depth.Res12(),_fence.Fence12(),signalValue)) {
+                                _context11->CopyResource(_depth.Tex11(),bridgeDepth.source.Get());
+                                mappedDepthResource=_depth.Res12();depthReady=true;bridgeDepthStage="copy-ordered";
+                            }
                         }
                     }
                 }
@@ -357,12 +465,20 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
     }
     // Mask commands were recorded at THIS Present, after all selected UI.
     // This upload signal/Flush orders them, not the earlier SR producer fence.
+    StampDelivery(DeliveryObservation::Depth);
     auto uiMask=DrawUiMask::Acquire(_context11.Get(),_backBuffer.Get(),_device12.Get());
+    StampDelivery(DeliveryObservation::Mask);
     if(FAILED(_context4->Signal(_fence.Fence11(), signalValue))) {
         _quarantined=true;_uncertainBackBuffer=_backBuffer;
         _error="D3D11 picture-ready signal failed";return AcquireStatus::Unavailable;
     }
+    StampDelivery(DeliveryObservation::UploadSignal);
     _context11->Flush();
+    StampDelivery(DeliveryObservation::UploadFlush);
+    if (_delivery.capturing && _deliveryThread == GetCurrentThreadId()) {
+        _delivery.ready=signalValue;
+        _delivery.sharedAfterUpload=_fence.Fence12()->GetCompletedValue();
+    }
     GenshinTransport::ObserveOutputFlush(_context11.Get());
     depthReader.InputReady();
 
@@ -410,14 +526,14 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
     }
 
     if(depthReady && !nativeDepthReady && presented && presented->ticket.DepthMatches()) {
-        input.depth[0]=_depth.Res12();input.depthView=DXGI_FORMAT_R32G32B32A32_FLOAT;input.depthValidityPaired=true;
+        input.depth[0]=mappedDepthResource;input.depthView=DXGI_FORMAT_R32G32B32A32_FLOAT;input.depthValidityPaired=true;
         input.depthWidth=bridgeDepth.width;input.depthHeight=bridgeDepth.height;
         input.depthReversed=bridgeDepth.convention==GenshinGuides::DepthConvention::DeviceZReversed;
         input.depthGeneration=bridgeDepth.generation;input.depthSourceFrame=bridgeDepth.sourceFrame;
         input.depthPictureSerial=bridgeDepth.pictureSerial;input.depthEpoch=bridgeDepth.epoch;
         input.depthOriginX=bridgeDepth.originX;input.depthOriginY=bridgeDepth.originY;
         input.depthYFlip=bridgeDepth.yFlip;input.depthCoverage=bridgeDepth.coverage;
-        input.depthProducerReady=bridgeDepth.producerReady;input.depthResource=_depth.Res12();input.depthLease=bridgeDepth.lease;
+        input.depthProducerReady=bridgeDepth.producerReady;input.depthResource=mappedDepthResource;input.depthLease=bridgeDepth.lease;
         input.depthCount=1;
         input.depthCoordinates=DepthCoordinates::Picture; // Executed ResolveDepth, including its per-pixel validity.
         input.preparedDepthSource=bridgeDepth.preparedPacket?bridgeDepth.preparedPacket->Source():nullptr;
@@ -524,12 +640,37 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
         }
     }
     if(auto* r=GenshinPresentNrTrace::Current())r->sourceReady=true;
+    if (_delivery.capturing && _deliveryThread == GetCurrentThreadId()) {
+        _delivery.frame=input.frame;
+        _delivery.acquired=true;
+        StampDelivery(DeliveryObservation::Acquired);
+    }
     capture.ready=true;
     return AcquireStatus::Ready;
 }
 
 void Dx11FrameSource::Return(const FrameInput& input, const FrameOutput& output)
 {
+    if (_delivery.capturing && _deliveryThread == GetCurrentThreadId() &&
+        _delivery.acquired && _delivery.frame==input.frame) {
+        StampDelivery(DeliveryObservation::Returned);
+        _delivery.returned=true;
+        _delivery.processed=output.processed;
+        _delivery.uncertain=output.uncertain;
+        _delivery.doneFence=output.done.fence;
+        _delivery.doneValue=output.done.value;
+        _delivery.doneOnReturn=output.done.fence?output.done.fence->GetCompletedValue():UINT64_MAX;
+    } else if (_deliveryThread == GetCurrentThreadId()) _delivery.capturing=false;
+    struct DeliveryExit {
+        Dx11FrameSource& source;
+        const bool sampled;
+        ~DeliveryExit() {
+            if (!sampled) return;
+            source._delivery.uncertain |= source._quarantined;
+            source.StampDelivery(DeliveryObservation::End);
+            source._delivery.capturing=false;
+        }
+    } deliveryExit{*this, _delivery.capturing && _deliveryThread == GetCurrentThreadId()};
     if (output.uncertain) {
         _quarantined = true; _uncertainBackBuffer = _backBuffer; return;
     }
@@ -561,7 +702,12 @@ void Dx11FrameSource::Return(const FrameInput& input, const FrameOutput& output)
     if (output.done.fence != nullptr && _queue12 != nullptr)
     {
         const uint64_t doneValue = _fence.Next();
-        if(FAILED(_queue12->Signal(_fence.Fence12(), doneValue)) || FAILED(_context4->Wait(_fence.Fence11(), doneValue))) {
+        const auto signalHr=_queue12->Signal(_fence.Fence12(), doneValue);
+        StampDelivery(DeliveryObservation::ReturnSignal);
+        if (_delivery.capturing && _deliveryThread == GetCurrentThreadId()) _delivery.returnValue=doneValue;
+        const auto waitHr=SUCCEEDED(signalHr)?_context4->Wait(_fence.Fence11(), doneValue):signalHr;
+        StampDelivery(DeliveryObservation::ReturnWait);
+        if(FAILED(signalHr) || FAILED(waitHr)) {
             _quarantined=true;_uncertainBackBuffer=_backBuffer;
             _error="D3D12 picture-return ordering failed";_backBuffer.Reset();return;
         }
@@ -602,12 +748,19 @@ void Dx11FrameSource::Return(const FrameInput& input, const FrameOutput& output)
     // or NativeProducer D3D12 fence cannot retire this later D3D11 texture read.
     // Optional FG snapshot still belongs to the same existing return signal.
     if(presented)presented->StageReturnedSnapshot(_device11,_context11.Get(),_picture.Tex11());
+    StampDelivery(DeliveryObservation::Copyback);
     const auto copied=_fence.Next();
     if(FAILED(_context4->Signal(_fence.Fence11(),copied))) {
         _quarantined=true;_uncertainBackBuffer=_backBuffer;
         _error="D3D11 copyback completion signal failed";_backBuffer.Reset();return;
     }
+    StampDelivery(DeliveryObservation::CopySignal);
     _copybackCompletion=copied;_context11->Flush();
+    StampDelivery(DeliveryObservation::CopyFlush);
+    if (_delivery.capturing && _deliveryThread == GetCurrentThreadId()) {
+        _delivery.copyValue=copied;
+        _delivery.sharedAfterCopy=_fence.Fence12()->GetCompletedValue();
+    }
     GenshinTransport::ObserveOutputFlush(_context11.Get());
     if(presented) {
         if(auto* r=GenshinPresentNrTrace::Current()){r->copySignal=true;r->copyFence=reinterpret_cast<uintptr_t>(_fence.Fence11());r->copyValue=copied;}

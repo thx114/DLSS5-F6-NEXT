@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "GenshinFsrProfiles.h"
 #include "CaptureOnlyBridge.h"
 #include "GenshinFamilySkip.h"
 #include <atomic>
@@ -147,7 +148,7 @@ public:
         if(contextDevice.Get()!=source.device){receipt_.reason=Reason::WrongOwner;return false;}
         source.context->PSGetShader(&next->shaderLease_,nullptr,nullptr);
         const auto shader=Family::Read(source.device,next->shaderLease_.Get(),owner.deviceEpoch);
-        if(!shader.Known() || shader.hash!=fsr2_family_takeover::k_accumulate_hash ||
+        if(!shader.Known() || !GenshinFsrProfiles::Accumulate(shader.hash) ||
             shader.hash!=source.shaderHash || shader.identity!=source.shaderIdentity || shader.deviceEpoch!=source.shaderDeviceEpoch)
         {receipt_.reason=Reason::InvalidSource;return false;}
         for(unsigned i=0;i<3;++i)

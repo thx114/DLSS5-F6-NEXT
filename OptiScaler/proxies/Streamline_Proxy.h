@@ -501,7 +501,11 @@ class StreamlineProxy
     static PFN_slUpgradeInterface UpgradeInterface() { return _slUpgradeInterface; }
     static PFN_slGetNativeInterface GetNativeInterface() { return _slGetNativeInterface; }
     static PFN_slGetFeatureFunction GetFeatureFunction() { return _slGetFeatureFunction; }
-    static PFN_slGetNewFrameToken GetNewFrameToken() { return _slGetNewFrameToken; }
+    static PFN_slGetNewFrameToken RawGetNewFrameToken() { return _slGetNewFrameToken; }
+    static sl::Result GetFrameToken(sl::FrameToken*& token,const uint32_t* frame) {
+        return StreamlineHooks::GetDlssgFrameToken(_slGetNewFrameToken,token,frame);
+    }
+    static PFN_slGetNewFrameToken GetNewFrameToken() { return _slGetNewFrameToken ? &GetFrameToken : nullptr; }
     static PFN_slSetD3DDevice SetD3DDevice() { return &SetD3DDeviceAndBind; }
     static PFN_CreateDxgiFactory CreateDxgiFactory() { return _slCreateDxgiFactory; }
     static PFN_CreateDxgiFactory1 CreateDxgiFactory1() { return _slCreateDxgiFactory1; }

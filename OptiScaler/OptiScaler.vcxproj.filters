@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Header Files">
@@ -27,6 +27,110 @@
     <Filter Include="Other">
       <UniqueIdentifier>{3ee7ea7b-4d96-4a1f-aa88-8dd4c5d506ee}</UniqueIdentifier>
     </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="runtime\InputObservation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\GuideDiagnostics.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\NrPresentationSource.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\NrPresentationOutput.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shaders\dlssnr\DlssNr_GenshinPresentation.inl"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\GuideSourceMetadata.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\GuideSourceMetadataNgx.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\GuideCapture.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shaders\preview\GuidePreviewShader.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\GuidePreview.inl"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\GuideCalibration.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\GuideCalibrationImages.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\GuideCalibrationRuntime.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="menu\GuideDiagnosticsMenu.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shaders\dlssnr\GuideMetadata.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shaders\dlssnr\DlssNr_GuideObservation.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\Dx11RasterBindings.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\FsrHookHudMetrics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\StarRailResidencyPolicy.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\OutputRevealHandoff.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\ProducerProgress.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\NrResident.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\ObservedSetting.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="genshin\GenshinInputObservation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="genshin\GenshinDrawAdmission.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="genshin\GenshinFsrPassObservation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\ManagedIni.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\CpuSnapshotBytes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\CpuIndexBounds.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\CpuChangedByteRanges.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\Dx11SharedRead.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\MappedResourceJournal.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\dlssnr\DlssNr_FrameInfo.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\dlssnr\DlssNr_DetailHistory.inl">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\dlssnr\DlssNr_DetailHistoryPolicy.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\dlssnr\DlssNr_HistoryDebug.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\dlssnr\DlssNr_EvaluateGuides.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\dlssnr\precompile\dlssnr_detail_history.hlsli">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\GpuWorkDomain.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="runtime\FenceCompletion.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="upscalers\FeatureTransition.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="inputs\FG\UpscalerFrameParameters.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="framegen\dlssg\DlssgOptionsPolicy.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\dlssnr\SceneGuideContract.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Config.h">
@@ -425,6 +529,9 @@
     <ClInclude Include="framegen\IFGFeature_Dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="framegen\GuideOrientation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="hudfix\Hudfix_Dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -579,6 +686,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\resource_flip\RF_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\resource_flip\RF_Region.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\resource_flip\precompiled\RF_Shader.h">
@@ -1325,6 +1435,9 @@
     <ClCompile Include="menu\menu_common.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="runtime\GuideCapture.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="runtime\GuideCalibrationRuntime.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="menu\GuideDiagnosticsMenu.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="menu\NextgenUi.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

@@ -1,15 +1,22 @@
 #pragma once
 
 #include <framegen/IFGFeature_Dx12.h>
+#include <framegen/DlssgStateSample.h>
 #include "DlssgInputContinuity.h"
+#include "DlssgOptionsPolicy.h"
 #include "ZzzFrameScope.h"
+#include "FgColourJoin.h"
+#include <dlssnr/FinishedPictureOutcome.h>
 #include <framegen/FinalOutputEndpoint.h>
 #include <inputs/FG/GenshinFgTicket.h>
 #include <mutex>
 #include <atomic>
 #include <memory>
+#include <utility>
 #include <vector>
 #include <shaders/depth_scale/DS_Dx12.h>
+#include <runtime/GuideDiagnostics.h>
+#include <runtime/GuideSourceMetadata.h>
 
 #include <proxies/Streamline_Proxy.h>
 
@@ -22,6 +29,45 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     struct GenshinFenceOwner;
     std::shared_ptr<framegen::final_output::Provider> _finalOutputProvider;
   public:
+    // Minted only alongside accepted guides. The snapshot is copied once from
+    // that source; SDK/provider counters never replace its Evaluate ordinal.
+    class UpscalerColourSource final
+    {
+        friend class DLSSG_Dx12;
+        const dlssg::colour::Source key;
+        const dlssg::InputOwner owner;
+        const GuideDiagnostics::Snapshot snapshot;
+        const D3D12_RESOURCE_DESC outputDescription;
+        const uintptr_t list;
+        const bool bridge;
+        UpscalerColourSource(dlssg::colour::Source k, dlssg::InputOwner o,
+            const GuideDiagnostics::Snapshot& s, D3D12_RESOURCE_DESC d, uintptr_t l, bool b)
+            : key(k), owner(o), snapshot(s), outputDescription(d), list(l), bridge(b) {}
+      public:
+        ~UpscalerColourSource() = default;
+        UINT64 Frame() const noexcept { return key.frame; }
+        GuideSourceMetadata::Ptr SourceMetadata() const noexcept { return snapshot.rawSource; }
+    };
+    using UpscalerColourSourcePtr = std::shared_ptr<const UpscalerColourSource>;
+    class UpscalerFinalColour final
+    {
+        friend class DLSSG_Dx12;
+        const UpscalerColourSourcePtr source;
+        const dlssg::colour::Endpoint endpoint;
+        const dlssg::colour::Route route;
+        const dlssg::colour::Mutation mutation;
+        const UINT backbufferIndex;
+        const D3D12_RESOURCE_DESC description;
+        // Identity/order only; not a new GPU-completion or pixel certificate.
+        const UINT64 nrSubmission, nrFenceValue, copyFenceValue;
+        UpscalerFinalColour(UpscalerColourSourcePtr s, dlssg::colour::Endpoint e,
+            dlssg::colour::Route r, dlssg::colour::Mutation m, UINT index, D3D12_RESOURCE_DESC desc,
+            UINT64 submission, UINT64 fenceValue, UINT64 copyValue)
+            : source(std::move(s)), endpoint(e), route(r), mutation(m), backbufferIndex(index), description(desc),
+              nrSubmission(submission), nrFenceValue(fenceValue), copyFenceValue(copyValue) {}
+      public:
+        ~UpscalerFinalColour() = default;
+    };
     // R727: only authenticated Capture may mint this immutable guide contract.
     // FG donor rows include the SDK-specific Y reflection. XY values are
     // current->previous picture pixels, normalized by the sealed constants.
@@ -149,6 +195,8 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     // Every own provider option/state call and guide stamp shares this lock. It is acquired
     // before resource locks; no code holding it acquires IFGFeature::Mutex.
     std::recursive_mutex _inputContinuityMutex;
+    std::shared_ptr<framegen::DlssgPacingLifetime> _pacingLifetime =
+        std::make_shared<framegen::DlssgPacingLifetime>();
     dlssg::InputContinuity<BUFFER_COUNT> _inputContinuity;
     uint64_t _inputOwnerEpoch = 1;
     // Successful SDK input tags, never GPU-completion or pixel receipts. Borrowed
@@ -162,6 +210,42 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         UINT64 frame=0, generation=0, nativeSerial=0;
         bool accepted=false, flipped=false;
     } _guideTags[BUFFER_COUNT][2];
+    // Passive per-source observations. These never participate in admission or
+    // retirement; the retained fence is the actual guide producer's timeline.
+    struct GuideObservation
+    {
+        GuideDiagnostics::Snapshot snapshot;
+        Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+        UINT64 value=0,frame=0,sourceTick=0;
+        bool submitted=false,completed=false;
+    } _guideObservations[BUFFER_COUNT], _guidePendingCompletions[BUFFER_COUNT];
+    // Original shared inputs survive recorded/uncertain reads and cache changes.
+    // Replaced only after this UI slot passed its real fence and recording Reset.
+    Microsoft::WRL::ComPtr<ID3D12Resource> _dx11GuideInputs[BUFFER_COUNT][2];
+    bool _dx11GuideBorrowed[BUFFER_COUNT] {};
+    UINT64 _dx11GuideSealedFrame[BUFFER_COUNT] {};
+    UpscalerColourSourcePtr _upscalerColourSources[BUFFER_COUNT];
+    bool _upscalerColourSucceeded[BUFFER_COUNT]{};
+    std::shared_ptr<const UpscalerFinalColour> _upscalerFinalColours[BUFFER_COUNT];
+    struct PendingUpscalerHudless
+    {
+        UpscalerColourSourcePtr source;
+        Dx12Resource input{}; // Hudfix retains its real capture allocation.
+    } _upscalerPendingHudless[BUFFER_COUNT];
+    UpscalerColourSourcePtr _upscalerHudlessCapture;
+    const Dx12Resource* _upscalerColourPublication=nullptr;
+    UINT64 _upscalerColourSerial=0;
+    bool UpscalerColourCurrent(const UpscalerColourSourcePtr& source) const;
+    UINT64 _guideUiTagFrame[BUFFER_COUNT]{}, _guideUiTagGeneration[BUFFER_COUNT]{};
+    dlssg::InputOwner _guideObservationOwner{};
+    uint64_t _guideObservationConfiguration=0, _guideObservationFeature=0;
+    void PublishGuideObservation(int slot, GuideDiagnostics::Stage stage, const char* reason) noexcept;
+    void PollGuideObservations() noexcept;
+    void ObserveGuideSubmission(UINT slot, ID3D12Fence* fence, UINT64 value) noexcept;
+    void RequestGuideHooks();
+    bool _guideHooksRequested=false;
+    bool TryOpenGuidePreviewRecording(UINT slot) noexcept;
+    void CaptureAcceptedGuides(UINT slot) noexcept;
     // Real per-provider/slot scale owners, released only after the existing
     // host drain plus SDK free, or deliberately retained by terminal quarantine.
     std::unique_ptr<DS_Dx12> _guideDepthScale[BUFFER_COUNT];
@@ -197,7 +281,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         bool dispatched=false, presented=false;
     } _nativeGuideUses[BUFFER_COUNT];
     std::atomic<bool> _nativeGuideTracking{false};
-    bool _nativeGuideFailed=false, _nativeGuideHooksRequested=false;
+    bool _nativeGuideFailed=false;
     UINT64 _nativeGuideSubmissions=0, _nativeGuideSerial=0;
     dlssg::NativeSource _nativeGuideDispatch {};
     bool BuildGuideConstants(int slot, sl::Constants& constants, bool includeCamera);
@@ -214,40 +298,37 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     sl::DLSSGOptions _lastRunningOptions {};
     dlssg::InputOwner _runningInputOwner {};
     bool _haveRunningOptions = false;
-    // R954: CPU option acknowledgements only, under the existing continuity lock.
-    // Scope contains values/generations, never borrowed resources, SDK tokens or extensions.
-    struct StarRailOptionsScope
-    {
-        UINT64 ownerEpoch=0, sourceGeneration=0;
-        uint32_t viewport=0, width=0, height=0, displayWidth=0, displayHeight=0;
-        uint32_t guideFlags=0, consumers=0, providerCap=0, forceReflex=0;
-        DXGI_COLOR_SPACE_TYPE colorSpace=DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-        uint32_t transfer=0, primaries=0, range=0, colorModel=0;
-        bool colorSpaceValid=false, flip=false, depthScale=false;
-        bool operator==(const StarRailOptionsScope&) const = default;
-    } _starRailOptionsScope;
-    template<typename Options> struct StarRailOptionsCache
-    {
-        Options options {};
-        UINT64 sourceFrame=0;
-        bool valid=false;
-    };
-    StarRailOptionsCache<sl::DLSSGOptions> _starRailDlssgOptions;
-    StarRailOptionsCache<sl::ReflexOptions> _starRailReflexOptions;
-    bool _starRailOptionsScopeValid=false;
-    // Reject publication across recursive SDK callbacks/lifecycle changes.
-    UINT64 _starRailOptionsSerial=0;
-    void InvalidateStarRailOptions();
-    void PrepareStarRailOptionsCache(int index);
+    // Shared by every self-owned input path. F5-DS chooses EveryDispatch;
+    // frame admission, guide ownership and GPU retirement stay in their adapters.
+    dlssg::options::ConfigurationState _dispatchOptions;
+    dlssg::options::Acknowledgement<sl::DLSSGOptions> _dlssgOptionsAck;
+    dlssg::options::Acknowledgement<sl::ReflexOptions> _reflexOptionsAck;
+    dlssg::options::GenerationState _generationState;
+    UINT64 _providerOptionsLifecycle=1, _optionsTelemetryCalls=0;
+    bool _providerStateQueryActive=false, _dispatchActive=false;
+    dlssg::options::ProviderOwner CurrentProviderOwner() const;
+    dlssg::options::Scope CurrentDispatchScope(int index) const;
+    void InvalidateDispatchOptions();
+    void InvalidateProviderCapabilities();
+    sl::Result QueryProviderState(sl::DLSSGState& state,
+        framegen::DlssgStateQueryReason reason=framegen::DlssgStateQueryReason::Provider);
+    void RefreshProviderCapabilities();
     template<typename Options, typename Submit>
-    sl::Result SetStarRailDispatchOptions(StarRailOptionsCache<Options>& cache,
-        const Options& options, UINT64 sourceFrame, bool force, Submit&& submit, bool* submitted=nullptr);
+    dlssg::options::Submission SetDispatchOptions(dlssg::options::Acknowledgement<Options>& cache,
+        const dlssg::options::Scope& scope, int index, const Options& options,
+        UINT64 sourceFrame, bool force, Submit&& submit);
+    template<typename Options, typename Submit>
+    dlssg::options::Submission SetReleaseOptions(const Options& options, Submit&& submit);
     // SDK Reflex mode ownership is independent of logical FG and GPU retirement.
     // Running includes an attempted enable: a rejected call leaves SDK state unknown.
-    enum class GenshinReflexOwnership { None, Running, ReleasePending };
-    GenshinReflexOwnership _genshinReflexOwnership = GenshinReflexOwnership::None;
-    bool _genshinReflexOffReported = false;
-    void RetryGenshinReflexOff(); // Caller holds the existing continuity lock.
+    enum class ReflexOwnership { None, Running, ReleasePending };
+    ReflexOwnership _reflexOwnership = ReflexOwnership::None;
+    bool _reflexOffReported = false;
+    void RetryReflexOff(); // Caller holds the existing continuity lock.
+    bool _deactivationRequested = false, _unretainedOffPending = false;
+    dlssg::options::ProviderOwner _deactivationOwner {};
+    UINT64 _deactivationInputEpoch = 0;
+    void RetryUnretainedProviderOff();
     bool _managedRetained = false;
     bool _continuityOwner = false;
     bool _ownerChanging = false;
@@ -316,6 +397,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     // Source pause, SDK suppression and final GPU retirement are independent.
     // Protected by continuity. No cached token/resource gets a new lifetime.
     bool _starRailRuntimeOwner = false, _starRailGapOffAccepted = false;
+    bool _starRailGapSuppressing = false; // Prevent reentrant On during the Off/null-tag transaction.
     bool _starRailDispatchPending = false;
     UINT64 _starRailDispatchFrame = 0, _starRailDispatchGeneration = 0;
     // Issued only by the actual guarded source callback, never a Reflex/SDK marker.
@@ -323,6 +405,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     dlssg::InputOwner _starRailDispatchOwner {};
     bool IsStarRailContinuousOwner() const;
     bool IsStarRailF5DsOwner() const;
+    bool ForceStarRailFgResident() const;
     int SelectStarRailF5DsFrame(UINT64& frame);
     // SDK callback cannot take the source lock while Present waits on that SDK.
     // Adopt this real observed ID only at the next guarded source entry.
@@ -397,6 +480,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     ID3D12GraphicsCommandList* GetSCCommandList(int index = -1) override final;
     FGExecutionGuard GuardExecution(FGExecutionScope scope) override final;
     bool CanSubmitInputs() override final;
+    std::shared_ptr<framegen::DlssgPacingLifetime> PacingLifetime() override final;
     enum class StarRailPresent { Proceed, NativeFallback, Failed };
     // Early call chooses independent current-picture NR. Final admission consumes
     // one real Dispatch; F5-DS's counter-qualified gap sends Off+retain.
@@ -446,8 +530,24 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     bool SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsCommandList* list,
         const NVSDK_NGX_Parameter* parameters,
         ID3D12Resource* depth, ID3D12Resource* motion, UINT width, UINT height, UINT mvWidth, UINT mvHeight,
-        D3D12_RESOURCE_STATES depthState, D3D12_RESOURCE_STATES motionState);
+        D3D12_RESOURCE_STATES depthState, D3D12_RESOURCE_STATES motionState,
+        uintptr_t evaluatedOutput=0);
+    // Called in the same Inputs guard after the actual shared-cache pair.
+    bool SealDx11GuideInputs(bool tagsAccepted, ID3D12CommandQueue* sourceQueue);
+    UpscalerColourSourcePtr CurrentUpscalerColourSource();
+    void CaptureUpscalerHudless(const UpscalerColourSourcePtr& source,
+        ID3D12GraphicsCommandList* list, ID3D12Resource* output, D3D12_RESOURCE_STATES state);
+    // Called on the real source Present stack after the actual NR endpoint.
+    // The DX11 route additionally supplies the exact successful interop copy.
+    void JoinUpscalerFinalColour(const UpscalerColourSourcePtr& source, IDXGISwapChain* swapchain,
+        ID3D12CommandQueue* queue, const DlssNr::FinishedPictureOutcome& outcome,
+        ID3D12Resource* copiedColour=nullptr, ID3D12Fence* copyFence=nullptr, UINT64 copyValue=0);
     void RejectUpscalerGuideSource(const char* stage);
+    // Called inside the existing Inputs guard with the actual Evaluate/cache
+    // ordinal. The provider/SDK ordinal is stored separately, never relabelled.
+    void ObserveUpscalerGuideSource(IFeature* feature, const NVSDK_NGX_Parameter* parameters,
+        UINT64 sourceFrame, const GuideDiagnostics::Resource& colour = {},
+        std::shared_ptr<const GuideSourceMetadata::Descriptor> rawSource = {});
     // Existing native Execute/Reset hooks only; no alternate producer or queue.
     bool TracksNativeGuides() const noexcept { return _nativeGuideTracking.load(std::memory_order_acquire); }
     void NativeGuidesSubmitting(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
@@ -464,6 +564,8 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
 
     DLSSG_Dx12() : IFGFeature_Dx12(), IFGFeature()
     {
+        _maxInterpolationCount = 0; // No capability until this provider's GetState succeeds.
+        _framesToInterpolate = 0; // No acknowledged configuration yet.
         if (StreamlineProxy::Module() == nullptr)
             StreamlineProxy::LoadStreamline();
 

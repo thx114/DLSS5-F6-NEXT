@@ -26,8 +26,8 @@ std::shared_ptr<const NativeReference> NativeReference::Observe(ID3D11DeviceCont
         };
         if(!context || reinterpret_cast<uintptr_t>(context)!=frame.context || frame.thread!=GetCurrentThreadId() ||
            GenshinLegacy::NativeMrt::Validate(frame)!=GenshinLegacy::NativeMrt::Reason::Ready ||
-           frame.shader!=0x78057A29AF6C2D99ull || !frame.nrProfile ||
-           !frame.nrProfile->Matches(frame.deviceEpoch,frame.shaderIdentity))return refuse(1);
+           !GenshinFsrProfiles::Accumulate(frame.shader) || !frame.nrProfile ||
+           !frame.nrProfile->MatchesShader(frame.deviceEpoch,frame.shaderIdentity,frame.shader))return refuse(1);
         Microsoft::WRL::ComPtr<ID3D11Device> device;context->GetDevice(&device);
         const auto shader=GenshinLegacy::Family::Current(context,device.Get(),frame.deviceEpoch);
         if(shader.identity!=frame.shaderIdentity || !shader.nrProfile)return refuse(2);
@@ -125,7 +125,7 @@ std::shared_ptr<const Receipt> Receipt::Observe(ID3D11DeviceContext* context,con
         // Create-time SHA+size capability plus the completed native transaction.
         // This is a bounded numerical NR domain, not a scene-light/transfer claim.
         const auto& c=observed->controls;
-        if(observed->nrProfile && observed->nrProfile->Matches(deviceEpoch,observed->shaderIdentity) &&
+        if(observed->nrProfile && observed->nrProfile->MatchesShader(deviceEpoch,observed->shaderIdentity,observed->shader) &&
            !c.depthFlipY && !c.motionFlipY && !c.motionJittered && c.positiveMotionScale && c.motionScale==1.0f &&
            !c.jitterDelay && c.jitterMode==3 && c.clampJitterHalf && !p.motionJittered && !p.hdr &&
            p.positiveMotionScale && p.motionScale==1.0f &&
@@ -159,7 +159,7 @@ GenshinGameMotion::Reference Receipt::GameMotionReferenceForPresent()const noexc
     if(!grid || !depthFrame_ || !depthFrame_->gameMotionReference ||
        retired_.load(std::memory_order_acquire) || GetCurrentThreadId()!=facts_.owner.thread)return result;
     const auto& f=*depthFrame_;const auto& native=*f.gameMotionReference;const auto& c=f.controls;
-    if(f.shader!=0x78057A29AF6C2D99ull || !f.nrProfile || !f.nrProfile->Matches(f.deviceEpoch,f.shaderIdentity) ||
+    if(!GenshinFsrProfiles::Accumulate(f.shader) || !f.nrProfile || !f.nrProfile->MatchesShader(f.deviceEpoch,f.shaderIdentity,f.shader) ||
        native.context_!=f.context || native.buffer_!=f.constantBuffer || native.shader_!=f.shaderIdentity ||
        native.instance_!=f.instance || native.generation_!=f.generation || native.sourceFrame_!=f.frame ||
        native.deviceEpoch_!=f.deviceEpoch || native.configEpoch_!=f.configEpoch ||
@@ -269,8 +269,8 @@ std::shared_ptr<const PreparedDepthSource> Receipt::PreparedSourceForPresent()co
         // Same accepted native producer/camera contract already used by FG.
         // No motion pair, game-motion readiness, FG switch or world-VS oracle.
         if(GenshinLegacy::NativeMrt::Validate(f)!=GenshinLegacy::NativeMrt::Reason::Ready ||
-           f.shader!=GenshinLegacy::NativeMrt::AccumulateShader || !f.nrProfile ||
-           !f.nrProfile->Matches(f.deviceEpoch,f.shaderIdentity) || !grid ||
+           !GenshinFsrProfiles::Accumulate(f.shader) || !f.nrProfile ||
+           !f.nrProfile->MatchesShader(f.deviceEpoch,f.shaderIdentity,f.shader) || !grid ||
            c.depthFlipY || c.jitterDelay || c.jitterMode!=3 || !c.clampJitterHalf ||
            depthParameters_.originX || depthParameters_.originY ||
            grid->renderWidth!=f.renderWidth || grid->renderHeight!=f.renderHeight ||

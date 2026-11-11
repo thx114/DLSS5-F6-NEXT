@@ -277,8 +277,8 @@ bool StoreReturned(ID3D11Device* creator,ID3D11Device* returnedOwner,ID3D11Pixel
     // Only the exact NR profile consumes the SHA digest. Ordinary bridge
     // shaders retain their actual object/device/epoch/FNV/size record without
     // opening BCrypt and digesting unrelated world shaders on creation.
-    if(record.bytes==GenshinNr::ShaderProfile::Bytes && record.hash==GenshinNr::ShaderProfile::Fnv &&
-        !ByteDigest(bytes,size,record.digest))return false;
+    if(GenshinFsrProfiles::Find(record.hash) &&
+        GenshinFsrProfiles::Find(record.hash)->bytes==record.bytes && !ByteDigest(bytes,size,record.digest))return false;
     StoredShader previous;UINT previousSize=sizeof(previous);
     const auto hr=shader->GetPrivateData(ShaderKey,&previousSize,&previous);
     if(hr!=DXGI_ERROR_NOT_FOUND) {
@@ -304,7 +304,11 @@ bool Owned(ID3D11DeviceContext* context,ID3D11Device* device,uint64_t epoch,
        m.currentDepth>1 || m.excludedDepth ||
        (m.getterDepth && (!getterLeaf || m.getterDepth!=1)) ||
        (m.readDepth && (!readLeaf || m.readDepth!=1)) ||
-       PsState::DrawScope::ReentrantForMetrics()) {++m.frame.detail.excluded;return false;}
+       PsState::DrawScope::ReentrantForMetrics()) {
+        GenshinHookCpuTiming::ConfirmFsrHudRoot(false);++m.frame.detail.excluded;return false;
+    }
+    // Device-only Read annotations cannot admit a hook with an unknown context.
+    if(context)GenshinHookCpuTiming::ConfirmFsrHudRoot(true);
     return true;
 }
 void Sample(Reading& out,uint64_t ticks) noexcept {++out.samples;out.ticks+=ticks;if(ticks>out.max)out.max=ticks;}
@@ -381,7 +385,10 @@ uint64_t Draw(const void* owner,ID3D11DeviceContext* context,ID3D11Device* devic
     auto& m=cacheMetrics;
     if(!MetricsFrameCurrent())return 0;
     if(owner!=m.owner || context!=m.context || device!=m.device ||
-       deviceEpoch!=m.deviceEpoch || configEpoch!=m.configEpoch){m.invalid=true;return 0;}
+       deviceEpoch!=m.deviceEpoch || configEpoch!=m.configEpoch){
+        GenshinHookCpuTiming::InvalidateFsrHudOwner();m.invalid=true;return 0;
+    }
+    GenshinHookCpuTiming::ConfirmFsrHudRoot(true);
     return m.frameId;
 }
 void BindingResult(uint64_t frame,Consumer consumer,bool hit,unsigned availability)noexcept {
@@ -394,14 +401,18 @@ void BindingResult(uint64_t frame,Consumer consumer,bool hit,unsigned availabili
 }
 void Revoke()noexcept {
     cacheMetricsRevision.fetch_add(1,std::memory_order_acq_rel);
+    GenshinHookCpuTiming::InvalidateFsrHudOwner();
     cacheMetrics.armed=false;cacheMetrics.invalid=true;
     // Exceptional lifecycle publication only; an ordinary draw never publishes.
     GenshinHookCpuTiming::PublishShaderCache({});
 }
 void Controls(uint64_t configEpoch,bool enabled)noexcept {
-    // ObserveConfig can run on a draw. Only invalidate TLS here; the existing
-    // Present publishes the change (or the old snapshot ages out after 2s).
-    if(cacheMetrics.armed && (!enabled || configEpoch!=cacheMetrics.configEpoch))cacheMetrics.invalid=true;
+    // ObserveConfig can run on a draw. Invalidate cache TLS and the HUD's
+    // generation only; payload publication remains at the existing Present.
+    if(cacheMetrics.armed && (!enabled || configEpoch!=cacheMetrics.configEpoch)){
+        if(!cacheMetrics.invalid)GenshinHookCpuTiming::InvalidateFsrHudOwner();
+        cacheMetrics.invalid=true;
+    }
 }
 }
 void CreationOwner::PresentShaderCacheMetrics(ID3D11DeviceContext* context,ID3D11Device* device,
@@ -432,6 +443,7 @@ void CreationOwner::PresentShaderCacheMetrics(ID3D11DeviceContext* context,ID3D1
         m.device==device && m.deviceEpoch==deviceEpoch && m.configEpoch==configEpoch &&
         m.ownerEpoch==ownerEpoch && m.bindingToken==token && m.revision==revision && m.timingEpoch==epoch && m.timing==timing;
     if(!boundary){
+        if(m.armed || GenshinHookCpuTiming::fsrHudLocal.Generation())GenshinHookCpuTiming::InvalidateFsrHudOwner();
         const bool changed=m.armed;m.armed=false;m.invalid=false;m.frame={};m.window={};
         if(changed || now-m.lastPublishMs>=1000){
             CacheView view{};view.values[CacheView::EndMs]=now;
@@ -442,6 +454,7 @@ void CreationOwner::PresentShaderCacheMetrics(ID3D11DeviceContext* context,ID3D1
     }
     if(!complete){
         // First/partial/changed owner frame cannot enter a per-frame denominator.
+        GenshinHookCpuTiming::BeginFsrHudOwner();
         m.owner=this;m.context=context;m.device=device;m.deviceEpoch=deviceEpoch;m.configEpoch=configEpoch;
         m.ownerEpoch=ownerEpoch;m.bindingToken=token;m.revision=revision;m.timingEpoch=epoch;m.timing=timing;
         m.armed=true;m.invalid=false;m.readSequence=0;m.beginMs=now;m.window={};m.windowClockFailed=false;
@@ -475,8 +488,14 @@ void CreationOwner::PresentShaderCacheMetrics(ID3D11DeviceContext* context,ID3D1
             if(revision!=cacheMetricsRevision.load(std::memory_order_acquire) ||
                epoch!=GenshinHookCpuTiming::monitorEpoch.load(std::memory_order_acquire) ||
                timing!=GenshinHookCpuTiming::Enabled()){
-                m.armed=false;GenshinHookCpuTiming::PublishShaderCache({});return;
+                m.armed=false;GenshinHookCpuTiming::InvalidateFsrHudOwner();GenshinHookCpuTiming::PublishShaderCache({});return;
             }
+            GenshinHookCpuTiming::PublishFsrHudWindow(view);
+            // A split/raced HUD observation stays unknown for this window.
+            // Rebaseline its next window without changing the debug/cache gate.
+            if(!GenshinHookCpuTiming::fsrHudLocal.Generation() ||
+               GenshinHookCpuTiming::fsrHudLocal.Generation()!=GenshinHookCpuTiming::fsrHudGeneration.load(std::memory_order_acquire))
+                GenshinHookCpuTiming::BeginFsrHudOwner();
             GenshinHookCpuTiming::PublishShaderCache(view);m.lastPublishMs=now;
             m.window={};m.beginMs=now;m.windowClockFailed=false;
         }
@@ -541,6 +560,37 @@ bool CreationOwner::RecordReturned(ID3D11Device* creator,ID3D11PixelShader* shad
     if(current!=binding)return false;
     binding->returnedOwner=actual;return true;
 }
+namespace {
+// Shared exact record authentication, also used by the independent probe.
+// Probes need scalar classification only and never allocate an NR profile.
+Shader ReadRecord(ID3D11Device* device,ID3D11PixelShader* shader,uint64_t deviceEpoch,
+                  ReadObservation& observed,bool& profileMatch,Microsoft::WRL::ComPtr<ID3D11Device>& actual)noexcept {
+    observed={};observed.shader=reinterpret_cast<uintptr_t>(shader);profileMatch=false;
+    const auto finish=[&](ReadState state,Shader result=Shader{}) {
+        observed.state=state;return result;
+    };
+    if(!device || !shader || !deviceEpoch)return finish(ReadState::MissingOwner);
+    ShaderCacheMetrics::ApiCall(ShaderCacheMetrics::Api::ShaderDevice,nullptr,device,deviceEpoch);shader->GetDevice(&actual);
+    observed.actualDevice=reinterpret_cast<uintptr_t>(actual.Get());
+    if(!actual)return finish(ReadState::WrongShaderDevice);
+    StoredShader record;UINT size=sizeof(record);
+    observed.privateDataResult=shader->GetPrivateData(ShaderKey,&size,&record);
+    if(FAILED(observed.privateDataResult))return finish(actual.Get()==device?ReadState::MissingRecord:ReadState::WrongShaderDevice);
+    if(!Valid(record,size))return finish(ReadState::InvalidRecord);
+    // The exact object must have been returned to this creator, and still report
+    // the recorded owning device. A creator/child relation never aliases another
+    // object, resource, context or trust domain. The epoch is checked independently.
+    if(record.creator!=reinterpret_cast<uintptr_t>(device) || record.returnedOwner!=observed.actualDevice ||
+       record.shaderObject!=reinterpret_cast<uintptr_t>(shader))
+        return finish(ReadState::WrongShaderDevice);
+    observed.recordedEpoch=record.deviceEpoch;
+    if(record.deviceEpoch!=deviceEpoch)return finish(ReadState::WrongEpoch);
+    if(actual.Get()!=device && !ReturnedBindingCurrent(record))return finish(ReadState::WrongShaderDevice);
+    Shader result{record.hash,record.bytes,record.deviceEpoch,record.identity};
+    profileMatch=GenshinFsrProfiles::Authenticate(record.hash,static_cast<size_t>(record.bytes),record.digest)!=nullptr;
+    return finish(ReadState::Ready,std::move(result));
+}
+}
 Shader Read(ID3D11Device* device,ID3D11PixelShader* shader,uint64_t deviceEpoch)noexcept
 {
     return Read(device,shader,deviceEpoch,nullptr);
@@ -562,27 +612,13 @@ Shader Read(ID3D11Device* device,ID3D11PixelShader* shader,uint64_t deviceEpoch,
     }
     metric.Fallback();
     Microsoft::WRL::ComPtr<ID3D11Device> actual;
-    ShaderCacheMetrics::ApiCall(ShaderCacheMetrics::Api::ShaderDevice,nullptr,device,deviceEpoch);shader->GetDevice(&actual);
-    observed.actualDevice=reinterpret_cast<uintptr_t>(actual.Get());
-    if(!actual)return finish(ReadState::WrongShaderDevice);
-    StoredShader record;UINT size=sizeof(record);
-    observed.privateDataResult=shader->GetPrivateData(ShaderKey,&size,&record);
-    if(FAILED(observed.privateDataResult))return finish(actual.Get()==device?ReadState::MissingRecord:ReadState::WrongShaderDevice);
-    if(!Valid(record,size))return finish(ReadState::InvalidRecord);
-    // The exact object must have been returned to this creator, and still report
-    // the recorded owning device. A creator/child relation never aliases another
-    // object, resource, context or trust domain. The epoch is checked independently.
-    if(record.creator!=reinterpret_cast<uintptr_t>(device) || record.returnedOwner!=observed.actualDevice ||
-       record.shaderObject!=reinterpret_cast<uintptr_t>(shader))
-        return finish(ReadState::WrongShaderDevice);
-    observed.recordedEpoch=record.deviceEpoch;
-    if(record.deviceEpoch!=deviceEpoch)return finish(ReadState::WrongEpoch);
-    if(actual.Get()!=device && !ReturnedBindingCurrent(record))return finish(ReadState::WrongShaderDevice);
-    Shader result{record.hash,record.bytes,record.deviceEpoch,record.identity};
-    if(record.bytes==GenshinNr::ShaderProfile::Bytes && record.hash==GenshinNr::ShaderProfile::Fnv &&
-       record.digest==GenshinNr::ShaderProfile::Digest) {
+    bool profileMatch=false;
+    auto result=ReadRecord(device,shader,deviceEpoch,observed,profileMatch,actual);
+    if(!result.Known()){if(observation)*observation=observed;return result;}
+    // Keep construction inside this exact friend-authorized entry point.
+    if(profileMatch){
         try {result.nrProfile=std::shared_ptr<const GenshinNr::ShaderProfile>(
-            new GenshinNr::ShaderProfile(record.deviceEpoch,record.identity));}
+            new GenshinNr::ShaderProfile(result.deviceEpoch,result.identity,result.hash));}
         catch(...){return finish(ReadState::ProfileUnavailable);}
     }
     observed.state=ReadState::Ready;
@@ -604,7 +640,9 @@ Shader Current(ID3D11DeviceContext* context,ID3D11Device* device,uint64_t device
     if(!context || !device || !deviceEpoch)return refuse(ReadState::MissingOwner);
     Shader cached;
     {ShaderCacheMetrics::PartScope part(ShaderCacheMetrics::Part::TryBinding);
-        if(PsState::DrawScope::TryCurrent(context,device,deviceEpoch,observation,cached)){currentMetric.cost.Hit();return cached;}}
+        if(PsState::DrawScope::TryCurrent(context,device,deviceEpoch,observation,cached)){
+            if(observation)observation->bindingCached=true;
+            currentMetric.cost.Hit();return cached;}}
     // A miss is still a real getter read, never counted as a binding hit.
     const auto bindingTicket=PsState::DrawScope::BeginRead(context,device,deviceEpoch);
     Microsoft::WRL::ComPtr<ID3D11Device> actual;
@@ -622,4 +660,90 @@ Shader Current(ID3D11DeviceContext* context,ID3D11Device* device,uint64_t device
         PsState::DrawScope::RememberReturned(bindingTicket,context,device,deviceEpoch,shader.Get(),fact);}
     return fact;
 }
+Shader CompareCurrent(ID3D11DeviceContext* context,ID3D11Device* device,uint64_t deviceEpoch,
+                      ReadObservation& observation,CurrentComparison& comparison)noexcept
+{
+    auto& c=comparison;c={};observation={};
+    if(!context || !device || !deviceEpoch){observation.state=ReadState::MissingOwner;return {};}
+    const auto before=PublicPsBinding::ReadDispatch(context);
+    const auto domain=PsState::current.load(std::memory_order_acquire);
+    c.sequenceBefore=PsState::DrawScope::BeginRead(context,device,deviceEpoch);
+    const auto cached=Current(context,device,deviceEpoch,&c.cached);
+    Microsoft::WRL::ComPtr<ID3D11Device> actualDevice;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> pixel;
+    context->GetDevice(&actualDevice);
+    Shader actual;bool profileMatch=false;Microsoft::WRL::ComPtr<ID3D11Device> shaderDevice;
+    if(actualDevice.Get()==device){
+        context->PSGetShader(&pixel,nullptr,nullptr);
+        if(pixel)actual=ReadRecord(device,pixel.Get(),deviceEpoch,c.actual,profileMatch,shaderDevice);
+        else {c.actual.state=ReadState::NoPixelShader;c.actual.actualDevice=reinterpret_cast<uintptr_t>(device);}
+    }else {c.actual.state=ReadState::WrongContextDevice;c.actual.actualDevice=reinterpret_cast<uintptr_t>(actualDevice.Get());}
+    const auto after=PublicPsBinding::ReadDispatch(context);
+    c.sequenceAfter=PsState::DrawScope::BeginRead(context,device,deviceEpoch);
+    for(size_t i=0;i<before.size();++i){
+        c.dispatchBefore[i]=reinterpret_cast<uintptr_t>(before[i]);
+        c.dispatchAfter[i]=reinterpret_cast<uintptr_t>(after[i]);
+    }
+    c.cachedHash=cached.hash;c.cachedIdentity=cached.identity;c.cachedBytes=cached.bytes;
+    c.actualHash=actual.hash;c.actualIdentity=actual.identity;c.actualBytes=actual.bytes;
+    // No cache proof is invented when a domain was absent. A normal fallback
+    // can still compare the same object's metadata, but never indict binding.
+    c.stable=before==after && actualDevice.Get()==device && !PsState::DrawScope::ReentrantForMetrics() &&
+        ((!domain && !c.cached.bindingCached && !PsState::current.load(std::memory_order_acquire)) ||
+         (domain && domain==PsState::current.load(std::memory_order_acquire) &&
+          c.sequenceBefore && c.sequenceBefore!=UINT64_MAX && c.sequenceAfter==c.sequenceBefore &&
+          !domain->inFlight.load(std::memory_order_acquire) && !domain->retired.load(std::memory_order_acquire) &&
+          !domain->foreignThread.load(std::memory_order_acquire)));
+    // Our own concurrent re-mark/collision is not evidence of false metadata.
+    // Require the exact cached publication still current before indicting it.
+    if(c.cached.metadataCached && c.cached.shader==c.actual.shader){
+        std::lock_guard lock(bindingMutex);
+        const auto binding=activeBinding.lock();
+        if(!binding || binding->creator.Get()!=device || binding->epoch!=deviceEpoch)c.stable=false;
+        else {const auto& slot=binding->metadata[MetadataIndex(pixel.Get())];
+            if(slot.writers || slot.generation!=c.cached.metadataGeneration || slot.value.shader.Get()!=pixel.Get())c.stable=false;}
+    }
+    // Profile authority includes the independently read digest, not only its
+    // hash/size/identity scalars. A changed digest must revoke a cached profile
+    // even when those scalars still match the same object and record epoch.
+    const bool cachedProfile=static_cast<bool>(cached.nrProfile);
+    const bool profileMismatch=cachedProfile!=profileMatch ||
+        (cachedProfile && !cached.nrProfile->Matches(actual.deviceEpoch,actual.identity));
+    c.mismatch=c.cached.shader!=c.actual.shader || cached.hash!=actual.hash || cached.identity!=actual.identity ||
+        cached.bytes!=actual.bytes || c.cached.state!=c.actual.state || c.cached.actualDevice!=c.actual.actualDevice ||
+        c.cached.recordedEpoch!=c.actual.recordedEpoch || profileMismatch;
+    observation=c.actual;
+    if(!c.stable){observation.state=ReadState::UnstableComparison;return {};}
+    const bool metadataWrong=c.cached.metadataCached && c.cached.shader==c.actual.shader && c.mismatch;
+    if((c.cached.bindingCached && c.mismatch) || metadataWrong){
+        // Refuse the optional missed-mutation chain, not merely this ticket.
+        // A fresh getter below never becomes authority for another invocation.
+        if(metadataWrong){MetadataMutation invalidate(pixel.Get());}
+        PsState::RefusePublicCoverage();c.coverageRefused=true;
+    }
+    if(c.mismatch && profileMatch){
+        // Scalar comparison never creates a profile. A confirmed correction to
+        // the actual NR shader needs the SAME full Read as normal consumers,
+        // otherwise NativeFrame/returned-draw profile presence would disagree.
+        // This bounded correction is the only added allocation-capable path.
+        const auto correctionSequence=domain?domain->sequence.load(std::memory_order_acquire):0;
+        ReadObservation correctedObservation;
+        auto corrected=Read(device,pixel.Get(),deviceEpoch,&correctedObservation);
+        Microsoft::WRL::ComPtr<ID3D11PixelShader> finalPixel;
+        context->PSGetShader(&finalPixel,nullptr,nullptr);
+        if(finalPixel.Get()!=pixel.Get() || PublicPsBinding::ReadDispatch(context)!=after ||
+           (domain && (domain->sequence.load(std::memory_order_acquire)!=correctionSequence ||
+                       domain->inFlight.load(std::memory_order_acquire) || domain->foreignThread.load(std::memory_order_acquire))) ||
+           corrected.hash!=actual.hash || corrected.bytes!=actual.bytes || corrected.deviceEpoch!=actual.deviceEpoch ||
+           corrected.identity!=actual.identity || !corrected.nrProfile ||
+           !corrected.nrProfile->Matches(actual.deviceEpoch,actual.identity)){
+            c.stable=false;observation.state=ReadState::UnstableComparison;return {};
+        }
+        observation=correctedObservation;return corrected;
+    }
+    // Only a completely matching result can reuse the original profile, and
+    // only inside this invocation. Other corrected classifications are fresh.
+    return !c.mismatch?cached:actual;
+}
+
 }

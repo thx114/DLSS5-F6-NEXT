@@ -97,9 +97,16 @@ struct Result
     uint64_t instance = 0, epoch = 0, generation = 0;
     uintptr_t outputIdentity = 0;
     bool stateRestored = true, pendingLease = false;
-    // The recording wait timed out before Lease::Begin. No provider submission
+    // The recording slot is pending before Lease::Begin. No provider submission
     // or lifecycle pending count exists for this native-replayed invocation.
-    bool unsubmittedRecordingTimeout = false;
+    bool unsubmittedRecordingPending = false;
+    // Classification only, after the caller authenticated this invocation.
+    // Never reinterpret a leased submission, queued output or provider failure.
+    void NoteUnsubmittedRecordingPending(bool invocationLive, bool leaseCreated) noexcept {
+        if(invocationLive && !leaseCreated && reason==Reason::Pending &&
+           disposition==Disposition::RunNative && stateRestored && !pendingLease)
+            unsubmittedRecordingPending=true;
+    }
     // Unsupported initial exposure was refused before provider registration,
     // CreateFeature or submission. It is not a failed backend epoch.
     bool unsubmittedManualExposure = false;

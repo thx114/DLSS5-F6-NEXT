@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <runtime/ReflexQueueTiming.h>
 #include "Reflex_Hooks.h"
 #include <Config.h>
 #include <Util.h>
@@ -1004,6 +1005,10 @@ bool ReflexHooks::updateTimingData(TimingReportSnapshot& snapshot)
 
         report.frameId = frameReport.frameID;
         report.estimated = _timingEstimated.load(std::memory_order_relaxed);
+        if (const auto queue = ReflexQueueTiming::Split(report.frameId, report.estimated,
+            frameReport.osRenderQueueStartTime, frameReport.osRenderQueueEndTime,
+            frameReport.gpuRenderStartTime, frameReport.gpuRenderEndTime))
+            report.beforeGpuQueueMs = queue->beforeGpuMs;
         // The current D3D SDK declares this field; the Vulkan report does not.
         // Never interpret reserved bytes or fakenvapi's synthetic GPU durations.
         if constexpr (requires { frameReport.gpuActiveRenderTimeUs; })

@@ -15,11 +15,12 @@
 // frames next to each other differ less.
 //
 // Separate from dlssnr.hlsl so the shared shader and every ordinary pass stay as they are. It reuses that shader's
-// root signature and descriptor table (t0..t5, u0..u1, b0, s0 = linear clamp) through
+// root signature and descriptor table (t0..t5, u0..u2, b0, s0 = linear clamp) through
 // DlssNr_Dx12::DispatchDetailReuse. On Vulkan (VK_MODE) it has its own pass and descriptor set layout,
 // DlssNrDetailReuse_Vk, one binding per register: 0 b0, 1-5 t0-t4, 6-7 u0-u1, 8 s0, 9 t5. The storage images carry no
 // fixed format (what they write varies by mode), which needs shaderStorageImageWriteWithoutFormat; they are never read.
-// Modes and bindings: DlssNr_DetailReuseConstants.h.
+// DX12 mode 24 also writes u2 birth fingerprint/depth; Vulkan retains its
+// existing two-output ABI. Modes and bindings: DlssNr_DetailReuseConstants.h.
 //
 // Replace modes (replaceCurve != 0): there the answer IS the picture, decoded through the curve's inverse (Neutwo or the
 // hybrid, dlssnr_replace_curve.hlsli), whose slope runs away near white. A saved change -- a difference of proxy values,
@@ -98,6 +99,16 @@ cbuffer Params : register(b0)
     uint sceneGuideFlags;
     uint scenePictureWidth;
     uint scenePictureHeight;
+    float feedbackDeltaSeconds;
+    float feedbackDurationSeconds;
+    float feedbackMaxAgeSeconds;
+    float feedbackStrength;
+    uint feedbackHistoryValid;
+    float feedbackRasterOffsetUvX;
+    float feedbackRasterOffsetUvY;
+    float feedbackStabilitySeconds;
+    float feedbackStabilityFloor;
+    float feedbackStabilityClamp;
 #endif
 };
 
@@ -117,6 +128,13 @@ DR_BINDING(5) Texture2D<float4> t4 : register(t4);
 DR_BINDING(9) Texture2D<float4> t5 : register(t5);
 DR_BINDING(6) DR_ANY_FORMAT RWTexture2D<float4> u0 : register(u0);
 DR_BINDING(7) DR_ANY_FORMAT RWTexture2D<float4> u1 : register(u1);
+#ifndef VK_MODE
+// Independent history commits all three outputs in one dispatch. Legacy and
+// Vulkan modes retain their two-output contract.
+RWTexture2D<float4> u2 : register(u2);
+Texture2D<float4> t6 : register(t6); // independent filtered NR residual / mean lag
+RWTexture2D<float4> u3 : register(u3);
+#endif
 DR_BINDING(8) SamplerState gLinear : register(s0);
 
 bool Finite3(float3 v) { return all(isfinite(v)); }
@@ -169,6 +187,23 @@ float2 WorkUv(uint2 p) { return (float2(p) + 0.5) / WorkSize(); }
 // not valid depth data in that case (DispatchDetailReuse stands t0 in for any null guide so every descriptor
 // slot stays bound), so nothing below may read them for trust.
 bool HasDepth() { return depthWidth != 0 && depthHeight != 0; }
+
+// Only the authenticated DX12 native-depth feedback opts into strict surface
+// support. Legacy interval reuse, Vulkan and picture-flow keep their contracts.
+bool NativeSurfaceHistory()
+{
+#ifndef VK_MODE
+    return temporalMode == 1u;
+#else
+    return false;
+#endif
+}
+
+bool SameHistorySurface(float a, float b)
+{
+    return isfinite(a) && isfinite(b) && a >= 0.0 && b >= 0.0 &&
+        abs(a - b) / max(max(a, b), 1e-6) <= depthTolerance;
+}
 
 // A distinct DX12 source-chain storage contract. Never a Vulkan/native-depth permission.
 bool PictureFlowRoute()
@@ -299,6 +334,34 @@ float MotionTrust(float2 previousUv, float2 raw)
 }
 
 #ifndef VK_MODE
+// Residuals share an exact proxy/exposure contract. Compare adjacent raw
+// input structure without the light-edit pow/log decode. Constant offsets
+// cancel, but a displaced thin edge cannot acquire a new correspondence.
+float NativeResidualStructureTrust(float2 currentUv, float2 previousUv)
+{
+    float3 deltaMean = 0.0, deltaSquare = 0.0;
+    float3 nowMean = 0.0, nowSquare = 0.0, beforeMean = 0.0, beforeSquare = 0.0;
+    const int2 offsets[5] = { int2(0, 0), int2(-1, 0), int2(1, 0), int2(0, -1), int2(0, 1) };
+    [unroll] for (int i = 0; i < 5; ++i)
+    {
+        const float2 offset = float2(offsets[i]) / WorkSize();
+        const float3 now = t0.SampleLevel(gLinear, currentUv + offset, 0).rgb;
+        const float3 before = t2.SampleLevel(gLinear, previousUv + offset, 0).rgb;
+        if (!Finite3(now) || !Finite3(before)) return 0.0;
+        const float3 delta = now - before;
+        deltaMean += delta; deltaSquare += delta * delta;
+        nowMean += now; nowSquare += now * now;
+        beforeMean += before; beforeSquare += before * before;
+    }
+    deltaMean *= 0.2; nowMean *= 0.2; beforeMean *= 0.2;
+    const float3 error = sqrt(max(deltaSquare * 0.2 - deltaMean * deltaMean, 0.0));
+    const float3 contrast = sqrt(max((nowSquare + beforeSquare) * 0.1 -
+        (nowMean * nowMean + beforeMean * beforeMean) * 0.5, 0.0));
+    const float3 allowance = max(sigmaFloor, 1e-5) + 0.25 * contrast;
+    const float3 reject = smoothstep(allowance, 3.0 * allowance, error);
+    return 1.0 - max(reject.r, max(reject.g, reject.b));
+}
+
 float3 FeedbackLight(float3 proxy)
 {
     return replaceCurve != 0u ? ReplaceDecode(proxy) : SrgbToLinear(proxy);
@@ -366,7 +429,8 @@ float4 MovedFrom(float2 currentUv, float2 previousUv, float2 raw, float depthNow
     {
         const int2 corner = int2(i & 1, i >> 1);
         const float2 axis = float2(corner.x != 0 ? f.x : 1.0 - f.x, corner.y != 0 ? f.y : 1.0 - f.y);
-        if (axis.x * axis.y < 1e-3)
+        const float weight = axis.x * axis.y;
+        if (weight <= 0.0 || (!NativeSurfaceHistory() && weight < 1e-3))
             continue;
         const int2 texel = clamp(base + corner, int2(0, 0), int2(work) - 1);
         const float4 d = t1.Load(int3(texel, 0));
@@ -376,6 +440,11 @@ float4 MovedFrom(float2 currentUv, float2 previousUv, float2 raw, float depthNow
         detailLo = ok ? min(detailLo, d.rgb) : detailLo;
         detailHi = ok ? max(detailHi, d.rgb) : detailHi;
         const bool realDepth = ok && (temporalMode == 0u || savedDepth >= 0.0);
+        // A depth interval spanning foreground and background is not a surface.
+        // Hardware bilinear reads every nonzero tap: reject the entire native
+        // footprint before it can mix a different surface's detail or colour.
+        if (NativeSurfaceHistory() && (!realDepth || !SameHistorySurface(savedDepth, depthNow)))
+            return 0.0;
         missingSavedDepth = missingSavedDepth || !realDepth;
         hasSavedRealDepth = hasSavedRealDepth || realDepth;
         depthLo = realDepth ? min(depthLo, savedDepth) : depthLo;
@@ -447,6 +516,7 @@ float4 MovedFrom(float2 currentUv, float2 previousUv, float2 raw, float depthNow
     const float3 excess = max(abs(saved - mean) - clipGamma * sigma, 0.0) / sigma;
     float colourTrust = 1.0 - saturate(max(excess.x, max(excess.y, excess.z)) / max(clipFalloff, 1e-3));
 #ifndef VK_MODE
+    // Light-edit feedback matches decoded structure rather than absolute colour.
     [branch] if (DetailContent()) colourTrust = FeedbackStructureTrust(currentUv, previousUv);
 #endif
 
@@ -454,6 +524,16 @@ float4 MovedFrom(float2 currentUv, float2 previousUv, float2 raw, float depthNow
         return 0.0;
     const float motionTrust = MotionTrust(previousUv, raw);
     byMotion = 1.0 - motionTrust;
+#ifndef VK_MODE
+    // A variance box contains both sides of a thin edge and cannot establish
+    // correspondence. Native residuals also require matching raw input structure.
+    // Reject already-invalid candidates before paying the structural sampling cost.
+    [branch] if (NativeSurfaceHistory() && !DetailContent())
+    {
+        if (depthTrust <= 0.0 || colourTrust <= 0.0 || motionTrust <= 0.0) return 0.0;
+        colourTrust = min(colourTrust, NativeResidualStructureTrust(currentUv, previousUv));
+    }
+#endif
     float reliability = saturate(depthTrust * colourTrust * motionTrust);
     if (temporalMode != 0u)
     {
@@ -586,14 +666,19 @@ float4 MovedDetailCandidate(uint2 p, out float3 source, out float byMotion)
     const float4 own = MovedFrom(uv, uv + UvDisplacement(ownRaw), ownRaw, ownDepth, mean, sigma, ownSource, ownByMotion);
     source = ownSource;
     byMotion = ownByMotion;
-    if (all(closest == centre))
+    if (all(closest == centre) || (NativeSurfaceHistory() && own.a >= 1.0) ||
+        (NativeSurfaceHistory() && !SameHistorySurface(closestDepth, ownDepth)))
         return own;
     const float2 closestUv = uv + float2(closest - centre) / float2(depthSize);
     const float2 nearRaw = RawMotion(closestUv);
+    if (NativeSurfaceHistory() && all(nearRaw == ownRaw)) return own;
     const float4 near =
-        MovedFrom(uv, uv + UvDisplacement(nearRaw), nearRaw, closestDepth, mean, sigma, nearSource, nearByMotion);
-    // On a tie the closer surface's motion wins, so edges move with the foreground.
-    if (near.a >= own.a)
+        MovedFrom(uv, uv + UvDisplacement(nearRaw), nearRaw,
+            NativeSurfaceHistory() ? ownDepth : closestDepth, mean, sigma, nearSource, nearByMotion);
+    // Native history always validates the recipient's own surface and retains
+    // its own motion on ties. A neighbour never lends its depth as authority.
+    // Preserve the legacy foreground-dilation tie convention.
+    if (near.a > own.a || (!NativeSurfaceHistory() && near.a >= own.a))
     {
         source = nearSource;
         byMotion = nearByMotion;
@@ -1186,6 +1271,10 @@ void Compose(uint2 q)
     u0[q] = float4(composed, 0.0, 0.0);
 }
 
+#ifndef VK_MODE
+#include "dlssnr_detail_history.hlsli"
+#endif
+
 [numthreads(8, 8, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
@@ -1223,6 +1312,10 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
     else if (mode == 4)
         Steady(p);
 #ifndef VK_MODE
+    else if (mode == 24)
+        DetailHistoryResolve(p);
+    else if (mode == 25)
+        DetailHistoryInspect(p);
     else if (mode == 16)
         PrepareSceneGuides(p);
     else if (mode == 11)

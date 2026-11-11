@@ -3,6 +3,7 @@
 #include <NVNGX_Parameter.h>
 #include <upscalers/IFeature_Dx12.h>
 #include <framegen/dlssg/DlssgInputContinuity.h>
+#include <framegen/dlssg/DLSSG_Dx12.h>
 
 class UpscalerInputsDx12
 {
@@ -15,5 +16,7 @@ class UpscalerInputsDx12
     static dlssg::NativeSource UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSDK_NGX_Parameter* InParameters,
                              IFeature_Dx12* feature);
     static void UpscaleEnd(ID3D12GraphicsCommandList* InCmdList, NVSDK_NGX_Parameter* InParameters,
-                           IFeature_Dx12* feature);
+                           IFeature_Dx12* feature, bool succeeded=true,
+                           const DLSSG_Dx12::UpscalerColourSourcePtr& colourSource={},
+                           ID3D12Resource* evaluatedOutput=nullptr);
 };

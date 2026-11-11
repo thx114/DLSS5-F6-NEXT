@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <runtime/F6InputPolicy.h>
 #include "integration/HoYoShade.h"
 #include <genshin/GenshinNativeQueryProvenance.h>
 #include "dllmain.h"
@@ -877,7 +878,7 @@ static void CheckWorkingMode()
             D3D11Hooks::Hook(d3d11Module);
         }
     };
-    const bool earlyGenshinFactories=GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) &&
+    const bool earlyGenshinFactories=F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) &&
         Config::Instance()->AcquireGenshinControls().Active();
     if(earlyGenshinFactories)installD3D11Factories();
 
@@ -2075,6 +2076,7 @@ static void ObserveGenshinImportFailure() noexcept
 
 static void PrepareGenshinNativeQuery()
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     auto* cfg = Config::Instance();
     if (!GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) ||
         !cfg->AcquireGenshinControls().Active() || !cfg->OverlayMenu.value_or_default())
@@ -2300,6 +2302,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         Kernel32Proxy::Init();
 
         State::Instance().activeFgInput = Config::Instance()->FGInput.value_or_default();
+        if constexpr (!F6InputPolicy::FsrBridgeEnabled)
+        {
+            auto& input = State::Instance().activeFgInput;
+            if (input == FGInput::FSRFG || input == FGInput::FSRFG30)
+                input = FGInput::Upscaler; // Effective route only; keep the saved profile intact.
+            LOG_INFO("F6 input route: direct DLSS upscaler; FSR bridges/discovery disabled");
+        }
         State::Instance().activeFgOutput = Config::Instance()->FGOutput.value_or_default();
         State::Instance().activeFgNvngx = Config::Instance()->FGNvngxReplacement.value_or_default();
 
@@ -2527,7 +2536,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             }
         }
 
-        if (Config::Instance()->EnableFsr2Inputs.value_or_default())
+        if (F6InputPolicy::FsrBridgeEnabled && Config::Instance()->EnableFsr2Inputs.value_or_default())
         {
             spdlog::info("");
 
@@ -2549,7 +2558,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             }
         }
 
-        if (Config::Instance()->EnableFsr3Inputs.value_or_default())
+        if (F6InputPolicy::FsrBridgeEnabled && Config::Instance()->EnableFsr3Inputs.value_or_default())
         {
             handle = GetDllNameWModule(&fsr3NamesW);
             if (handle != nullptr)
@@ -2563,7 +2572,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
         // HookFfxExeInputs();
 
-        if (State::Instance().activeFgInput == FGInput::FSRFG30)
+        if (F6InputPolicy::FsrBridgeEnabled && State::Instance().activeFgInput == FGInput::FSRFG30)
         {
             FSR3FG::HookFSR3FGInputs();
             FSR3FG::HookFSR3FGExeInputs();

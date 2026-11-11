@@ -10,6 +10,14 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# The official file is hard-linked into all three runtimes. A running game
+# therefore protects the same object even when it is not the selected profile.
+$activeGames = @(Get-CimInstance Win32_Process -Filter "Name='YuanShen.exe' OR Name='GenshinImpact.exe' OR Name='StarRail.exe' OR Name='ZenlessZoneZero.exe'" |
+    Where-Object { $_.ThreadCount -gt 0 -or $_.HandleCount -gt 0 })
+if ($activeGames.Count) {
+    $identities = ($activeGames | ForEach-Object { "$($_.Name) PID$($_.ProcessId)" }) -join ', '
+    throw "Candidate retained; active game protects the shared F6 DLL: $identities. No installed file was opened for writing."
+}
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 if (!$Artifact) { $Artifact = Join-Path $projectRoot 'build/out/OptiScaler.dll' }
 $artifactPath = (Get-Item -LiteralPath $Artifact -ErrorAction Stop).FullName

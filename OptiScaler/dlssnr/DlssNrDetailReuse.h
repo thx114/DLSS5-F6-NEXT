@@ -56,6 +56,37 @@ constexpr bool HistoryAnswerComplete(bool succeeded, bool reused, unsigned plann
     return succeeded && plannedPasses != 0 && (reused || completedPasses == plannedPasses);
 }
 
+// One-step MV must land on the previous observed input, not whichever older
+// capture most recently completed. Observe even calls that cannot record reuse
+// work while its GPU owner is busy. This is correspondence, never GPU proof.
+struct PreviousInput
+{
+    bool forward = false;
+    unsigned long long ordinal = 0;
+
+    constexpr bool Matches(unsigned long long published, unsigned long long current, bool sourceClock) const
+    {
+        return forward && published == ordinal && published < current &&
+            (!sourceClock || current - published == 1);
+    }
+};
+
+class InputContinuity
+{
+    bool observed = false;
+    unsigned long long last = 0;
+
+public:
+    PreviousInput Observe(unsigned long long current)
+    {
+        const PreviousInput previous { observed && current > last, last };
+        last = current;
+        observed = true;
+        return previous;
+    }
+    void Reset() { observed = false; last = 0; }
+};
+
 // What the caller knows about this frame.
 struct FrameFacts
 {

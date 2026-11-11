@@ -4,29 +4,33 @@ cbuffer Params : register(b0)
     uint height;
     uint offset;
     uint velocity;
+    uint rowFlip;
+    uint negateMotionY;
 };
 
-// Input texture
 Texture2D<float3> SourceTexture : register(t0);
-
-// Output texture
 RWTexture2D<float3> DestinationTexture : register(u0);
 
-// Compute shader thread group size
 [numthreads(16, 16, 1)]
 void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    if (dispatchThreadID.y < offset || dispatchThreadID.y > (height + offset))
+    uint inputWidth, inputHeight, outputWidth, outputHeight;
+    SourceTexture.GetDimensions(inputWidth, inputHeight);
+    DestinationTexture.GetDimensions(outputWidth, outputHeight);
+    // Reject the entire invalid region before unsigned subtraction/addition.
+    if (width == 0 || height == 0 || width > inputWidth || width > outputWidth ||
+        height > inputHeight || height > outputHeight)
+        return;
+    if (offset > inputHeight - height)
+        return;
+    if (dispatchThreadID.x >= width || dispatchThreadID.y >= height)
         return;
 
-    uint2 pixelCoord = uint2(dispatchThreadID.x, height - dispatchThreadID.y - offset);
-    
-    if (velocity == 0)
-    {
-        DestinationTexture[pixelCoord] = SourceTexture[dispatchThreadID.xy];
-        return;
-    }
-    
-    float3 srcColor = SourceTexture.Load(int3(dispatchThreadID.xy, 0));
-    DestinationTexture[pixelCoord] = float3(srcColor.r, -srcColor.g, 0);
+    uint2 source = uint2(dispatchThreadID.x, dispatchThreadID.y + offset);
+    uint2 destination = uint2(dispatchThreadID.x,
+                             rowFlip != 0 ? height - 1 - dispatchThreadID.y : dispatchThreadID.y);
+    float3 value = SourceTexture.Load(int3(source, 0));
+    if (velocity != 0)
+        value = float3(value.x, negateMotionY != 0 ? -value.y : value.y, 0);
+    DestinationTexture[destination] = value;
 }

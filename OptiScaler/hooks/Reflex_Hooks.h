@@ -113,6 +113,7 @@ class ReflexHooks
         std::optional<TimingEntry> timingData[TimingType::TimingTypeCOUNT] {};
         uint64_t frameId = 0;
         std::optional<uint32_t> gpuActiveRenderTimeUs;
+        std::optional<double> beforeGpuQueueMs; // actual nested endpoints, same report; absent is unknown
         // fakenvapi reports marker times only; its driver/queue/GPU placeholders are not measurements.
         bool estimated = false;
         // Same report frame, calibrated GPU endpoints; absent is unknown.

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "GenshinInputObservation.h"
 #include "GenshinDepthRetention.h"
+#include "../runtime/CpuSnapshotBytes.h"
+#include "../runtime/CpuChangedByteRanges.h"
+#include "../runtime/MappedResourceJournal.h"
 #include <d3d11_1.h>
 #include <algorithm>
 #include <wrl/client.h>
@@ -64,7 +68,7 @@ inline bool CpuCopy(void* out,const void* in,size_t size)noexcept {
 // and buffer copies; only proven fetch ranges may be materialized for replay.
 struct Storage {
     GenshinDepthRetention::Token charge;
-    std::shared_ptr<void> data;
+    FramePipeline::CpuSnapshotBytes data;
     UINT size=0;
 };
 struct Part {
@@ -90,7 +94,7 @@ struct Image {
         const auto first=std::lower_bound(parts.begin(),parts.end(),begin,[](const Part& p,UINT value){return p.end<=value;});
         for(auto it=first;it!=parts.end()&&it->begin<end;++it){const auto& p=*it;
             const auto b=(std::max)(begin,p.begin),e=(std::min)(end,p.end);
-            if(b<e)std::memcpy(out+b-begin,static_cast<const unsigned char*>(p.storage->data.get())+p.offset+b-p.begin,e-b);}
+            if(b<e)std::memcpy(out+(b-begin),static_cast<const unsigned char*>(p.storage->data.data())+(p.offset+(b-p.begin)),e-b);}
         return true;
     }
 };
@@ -191,8 +195,8 @@ inline std::shared_ptr<Storage> Allocate(UINT size,bool priority=false) {
     auto storage=std::make_shared<Storage>();storage->size=size;
     storage->charge=SourceCharge(uint64_t(size)+sizeof(Storage),priority);
     if(!storage->charge)return {};
-    storage->data=std::shared_ptr<void>(_aligned_malloc(size,16),_aligned_free);
-    return storage->data?storage:nullptr;
+    storage->data=FramePipeline::CpuSnapshotBytes(size,false);
+    return storage;
 }
 inline std::shared_ptr<Image> NewImage(const D3D11_BUFFER_DESC& d,size_t partCapacity) {
     if(partCapacity>Image::MaxParts)return {};
@@ -228,7 +232,7 @@ inline std::shared_ptr<Image> Freeze(const D3D11_BUFFER_DESC& d,const void* byte
     UINT begin=0,UINT end=UINT_MAX,const std::shared_ptr<const Image>& base={}) {
     if(end==UINT_MAX)end=d.ByteWidth;
     if(!Supported(d)||!bytes||begin>=end||end>d.ByteWidth)return {};
-    auto storage=Allocate(end-begin,Priority(d));if(!storage||!CpuCopy(storage->data.get(),bytes,end-begin))return {};
+    auto storage=Allocate(end-begin,Priority(d));if(!storage||!CpuCopy(storage->data.data(),bytes,end-begin))return {};
     return Splice(d,base,begin,end,{{storage,begin,end,0}});
 }
 inline bool SameDevice(ID3D11DeviceContext* context,ID3D11DeviceChild* resource)noexcept {
@@ -290,15 +294,18 @@ inline void LayoutCreated(ID3D11InputLayout* resource,const D3D11_INPUT_ELEMENT_
 inline std::shared_ptr<const Layout> ReadLayout(ID3D11InputLayout* resource)noexcept {
     auto h=Get(resource,LayoutKey);return h?h->layout:nullptr;
 }
-inline void Written(ID3D11Resource* resource,bool unmap=false)noexcept {
-    if(!enabled.load())return;if(!resource){Lost();return;}
-    if(resource==mapInvalidation)return;
-    try{auto r=Buffer(resource);if(!r)return;
-        std::unique_lock lock(r->mutex,std::try_to_lock);if(!lock.owns_lock()){Lost();return;}
-        if(unmap&&r->readContext)return; // exact read-only Unmap commits below
+// Return the same invalidated record to the mapping adapter; descriptor and
+// revision handling need not rediscover it through COM private data.
+inline std::shared_ptr<Record> Written(ID3D11Resource* resource,bool unmap=false)noexcept {
+    if(!enabled.load())return {};if(!resource){Lost();return {};}
+    if(resource==mapInvalidation)return {};
+    try{auto r=Buffer(resource);if(!r)return {};
+        std::unique_lock lock(r->mutex,std::try_to_lock);if(!lock.owns_lock()){Lost();return {};}
+        if(unmap&&r->readContext)return r; // exact read-only Unmap commits below
         r->image.reset();r->cause=Cause::Written;r->Next();
         if(!unmap){r->map=0;if(r->readContext)activeReadMapCount.fetch_sub(1);r->readContext=nullptr;r->readThread=0;}
-    }catch(...){Lost();}
+        return r;
+    }catch(...){Lost();return {};}
 }
 inline std::shared_ptr<const Image> Read(ID3D11Buffer* buffer,ReadStatus* status=nullptr)noexcept {
     ReadStatus observed;observed.attempted=true;observed.sourceEpoch=epoch.load();
@@ -322,7 +329,7 @@ inline std::shared_ptr<const Image> Read(ID3D11Buffer* buffer,ReadStatus* status
 // It is reusable only across that exact one revision increment; reentry, loss,
 // another writer or pending/mapped state prevents inheritance of old bytes.
 inline std::shared_ptr<const Image> Before(ID3D11DeviceContext* c,ID3D11Resource* resource)noexcept {
-    if(!enabled.load()||!resource)return {};
+    if(!enabled.load()||!GenshinLegacy::ReadNewInputObservationDemand().Requested()||!resource)return {};
     ComPtr<ID3D11Buffer> buffer;if(FAILED(resource->QueryInterface(IID_PPV_ARGS(&buffer)))||!SameDevice(c,buffer.Get()))return {};
     return Read(buffer.Get());
 }
@@ -374,7 +381,7 @@ inline Upload Publish(const std::shared_ptr<Record>& r,std::shared_ptr<Image> im
 inline Upload Update(ID3D11DeviceContext* context,ID3D11Resource* resource,UINT sub,
     const D3D11_BOX* box,const void* bytes,UINT flags=0,const std::shared_ptr<const Image>& before={})noexcept {
     Upload out;
-    if(!enabled.load()||sub||!SameDevice(context,resource)||
+    if(!enabled.load()||!GenshinLegacy::ReadNewInputObservationDemand().Requested()||sub||!SameDevice(context,resource)||
        (flags&~(D3D11_COPY_DISCARD|D3D11_COPY_NO_OVERWRITE))||
        flags==(D3D11_COPY_DISCARD|D3D11_COPY_NO_OVERWRITE))return out;
     try{
@@ -392,7 +399,7 @@ inline Upload Update(ID3D11DeviceContext* context,ID3D11Resource* resource,UINT 
 inline Upload Copy(ID3D11DeviceContext* context,ID3D11Resource* destination,ID3D11Resource* source,
     UINT sub,UINT x,UINT y,UINT z,UINT ss,const D3D11_BOX* box,UINT flags,
     const std::shared_ptr<const Image>& before,bool whole=false)noexcept {
-    Upload out;if(!enabled.load()||!destination||!source||sub||ss||y||z||
+    Upload out;if(!enabled.load()||!GenshinLegacy::ReadNewInputObservationDemand().Requested()||!destination||!source||sub||ss||y||z||
         !SameDevice(context,destination)||!SameDevice(context,source)||
         (flags&~(D3D11_COPY_DISCARD|D3D11_COPY_NO_OVERWRITE))||
         flags==(D3D11_COPY_DISCARD|D3D11_COPY_NO_OVERWRITE))return out;
@@ -427,9 +434,8 @@ struct Map {
     bool discard=false;
     void* driver=nullptr;UINT bytes=0;DWORD thread=0;uint64_t id=0,capturedEpoch=0;
 };
-struct Maps {std::mutex mutex;std::array<Map,32> values;};
+using Maps=FramePipeline::MappedResourceJournal<Map,32,FramePipeline::MapConflict::Resource>;
 inline Maps& ActiveMaps(){static Maps maps;return maps;}
-inline std::atomic<unsigned> activeMapCount{0};
 inline void Mapped(ID3D11DeviceContext* context,ID3D11Resource* resource,UINT sub,D3D11_MAP type,
     UINT flags,D3D11_MAPPED_SUBRESOURCE* mapped,HRESULT hr,const std::shared_ptr<const Image>& before={})noexcept {
     // Only a successful writable Map changes this source version. Failed Map
@@ -445,11 +451,19 @@ inline void Mapped(ID3D11DeviceContext* context,ID3D11Resource* resource,UINT su
             ++r->readSerial;r->readContext=context;r->readThread=GetCurrentThreadId();activeReadMapCount.fetch_add(1);
         }catch(...){ }return;
     }
-    Written(resource);
-    if(!SameDevice(context,resource)||!mapped||!mapped->pData||sub||
+    auto r=Written(resource);
+    // Stop new CPU shadows while retaining actual write invalidation and all
+    // previously-returned application pointers in ActiveMaps. Creation images
+    // stay observed: immutable geometry is needed by a future consumer.
+    if(!GenshinLegacy::ReadNewInputObservationDemand().Requested())return;
+    // Semantic CB mapping owns its own shadow. Its portable version was
+    // revoked above; there is no portable shadow to authorize for this resource.
+    if(r && r->desc.BindFlags==D3D11_BIND_CONSTANT_BUFFER)return;
+    if(!mapped||!mapped->pData||sub||
+       !SameDevice(context,resource)||
        (flags&~D3D11_MAP_FLAG_DO_NOT_WAIT))return;
     try{
-        auto r=Buffer(resource,true);if(!r||r->desc.BindFlags==D3D11_BIND_CONSTANT_BUFFER)return;
+        if(!r)r=Buffer(resource,true);if(!r||r->desc.BindFlags==D3D11_BIND_CONSTANT_BUFFER)return;
         const bool discard=type==D3D11_MAP_WRITE_DISCARD&&r->desc.Usage==D3D11_USAGE_DYNAMIC;
         const bool preserve=(type==D3D11_MAP_WRITE_NO_OVERWRITE&&r->desc.Usage==D3D11_USAGE_DYNAMIC)||
             ((type==D3D11_MAP_WRITE||type==D3D11_MAP_READ_WRITE)&&r->desc.Usage==D3D11_USAGE_STAGING);
@@ -464,16 +478,15 @@ inline void Mapped(ID3D11DeviceContext* context,ID3D11Resource* resource,UINT su
         next.context=context;next.resource=resource;next.record=r;next.driver=mapped->pData;
         next.bytes=r->desc.ByteWidth;next.thread=GetCurrentThreadId();next.capturedEpoch=epoch.load();
         next.discard=discard;next.before=std::move(base);next.shadow=Allocate(next.bytes);if(!next.shadow)return;
-        if(discard)std::memset(next.shadow->data.get(),0,next.bytes);
-        else if(!next.before->CopyTo(next.shadow->data.get(),0,next.bytes))return;
-        auto& maps=ActiveMaps();std::unique_lock mapLock(maps.mutex,std::try_to_lock);if(!mapLock.owns_lock())return;
-        for(const auto& m:maps.values)if(m.resource.Get()==resource&&m.shadow)return;
-        for(auto& m:maps.values)if(!m.shadow){
+        if(discard)std::memset(next.shadow->data.data(),0,next.bytes);
+        else if(!next.before->CopyTo(next.shadow->data.data(),0,next.bytes))return;
+        auto* data=next.shadow->data.data();
+        if(ActiveMaps().TryInsert({reinterpret_cast<uintptr_t>(context),reinterpret_cast<uintptr_t>(resource),sub},
+            std::move(next),[&]{
             std::lock_guard lock(r->mutex);
-            if(r->revision!=revision||r->map||r->readContext||r->pending||next.capturedEpoch!=epoch.load())return;
-            r->image.reset();r->cause=Cause::Mapped;r->map=next.id=r->Next();if(!next.id)return;
-            m=std::move(next);activeMapCount.fetch_add(1);mapped->pData=m.shadow->data.get();return;
-        }
+            if(r->revision!=revision||r->map||r->readContext||r->pending||next.capturedEpoch!=epoch.load())return false;
+            r->image.reset();r->cause=Cause::Mapped;r->map=next.id=r->Next();return next.id!=0;
+        }))mapped->pData=data;
     }catch(...){ }
 }
 // Take BEFORE original Unmap: driver writeback is mandatory even after loss,
@@ -492,17 +505,14 @@ struct Unmap {
     }
 };
 inline Unmap BeforeUnmap(ID3D11DeviceContext* context,ID3D11Resource* resource,UINT sub)noexcept {
-    Unmap out;if(!activeMapCount.load()&&!activeReadMapCount.load())return out;
+    Unmap out;if(!ActiveMaps().HasEntries()&&!activeReadMapCount.load())return out;
     try{
         if(activeReadMapCount.load()&&!sub)if(auto r=Buffer(resource)){
             std::lock_guard lock(r->mutex);
             if(r->readContext==context&&r->readThread==GetCurrentThreadId()){
                 out.readRecord=r;out.readContext=context;out.readThread=r->readThread;out.readSerial=r->readSerial;return out;}}
-        if(!activeMapCount.load())return out;
-        auto& maps=ActiveMaps();{
-            std::lock_guard lock(maps.mutex);
-            for(auto& m:maps.values)if(!sub&&m.shadow&&m.context.Get()==context&&m.resource.Get()==resource){out.map=std::move(m);m={};activeMapCount.fetch_sub(1);break;}
-        }
+        if(!ActiveMaps().HasEntries())return out;
+        out.map=ActiveMaps().Take({reinterpret_cast<uintptr_t>(context),reinterpret_cast<uintptr_t>(resource),sub});
         auto& m=out.map;if(!m.shadow)return out; // No extracted transaction owns a map id.
         // Own this exact id before optional metadata can allocate. Unwinding
         // revokes only our unfinished CPU receipt, never a newer/reentrant Map.
@@ -516,7 +526,7 @@ inline Unmap BeforeUnmap(ID3D11DeviceContext* context,ID3D11Resource* resource,U
             }
         } cleanup{m.record,m.id};
         std::shared_ptr<Image> image;
-        const auto* shadow=static_cast<const unsigned char*>(m.shadow->data.get());
+        const auto* shadow=static_cast<const unsigned char*>(m.shadow->data.data());
         if(m.discard){
             // DISCARD makes the entire allocation undefined. Our zero-initialized
             // shadow is actually written to the driver; no unwritten driver RAM
@@ -527,34 +537,20 @@ inline Unmap BeforeUnmap(ID3D11DeviceContext* context,ID3D11Resource* resource,U
             // NO_OVERWRITE must never write untouched bytes still in flight.
             // Compare CPU images and write ONLY changed runs, each a subset of
             // bytes the application actually changed during this exact Map.
-            std::array<Part,Image::MaxParts> changed{};size_t changedCount=0;UINT changedBytes=0;bool overflow=false;
             for(const auto& p:m.before->parts){
-                const auto* old=static_cast<const unsigned char*>(p.storage->data.get())+p.offset;
-                for(UINT i=p.begin;i<p.end;){
-                    if(shadow[i]==old[i-p.begin]){++i;continue;}const auto begin=i++;
-                    while(i<p.end&&shadow[i]!=old[i-p.begin])++i;
-                    std::memcpy(static_cast<unsigned char*>(m.driver)+begin,shadow+begin,i-begin);
-                    // Driver writeback is mandatory even after metadata capacity
-                    // exhaustion. Capacity/loss only rejects our optional image.
-                    if(changedCount<Image::MaxParts){changed[changedCount++]={{},begin,i,changedBytes};changedBytes+=i-begin;}
-                    else overflow=true;
-                }
+                const auto* old=static_cast<const unsigned char*>(p.storage->data.data())+p.offset;
+                FramePipeline::ForEachChangedByteRange(shadow+p.begin,old,p.end-p.begin,[&](size_t first,size_t last){
+                    const auto begin=p.begin+static_cast<UINT>(first),end=p.begin+static_cast<UINT>(last);
+                    std::memcpy(static_cast<unsigned char*>(m.driver)+begin,shadow+begin,end-begin);
+                });
             }
-            if(!overflow){
-                auto packed=changedBytes?Allocate(changedBytes):nullptr;
-                if(!changedBytes||packed){
-                    const auto capacity=(std::min)(Image::MaxParts,m.before->parts.size()+2*changedCount);
-                    auto updated=NewImage(m.record->desc,capacity);
-                    if(updated){UINT cursor=0;
-                        for(size_t i=0;i<changedCount;++i){auto& p=changed[i];Clip(updated->parts,*m.before,cursor,p.begin,cursor);
-                            if(updated->parts.size()==Image::MaxParts)throw std::bad_alloc();
-                            std::memcpy(static_cast<unsigned char*>(packed->data.get())+p.offset,shadow+p.begin,p.end-p.begin);
-                            p.storage=packed;updated->parts.push_back(p);cursor=p.end;}
-                        Clip(updated->parts,*m.before,cursor,m.bytes,cursor);
-                        if(updated->parts.size()<=Image::MaxParts)image=std::move(updated);
-                    }
-                }
-            }
+            // Preserving Map was admitted only with a complete CPU preimage,
+            // copied into this shadow before the pointer reached the caller.
+            // Unmap ends its mutable lifetime. Publish that already charged
+            // complete snapshot instead of packing/reallocating every changed
+            // fragment and repeatedly clipping the previous interval map.
+            // The driver still receives ONLY actual changed bytes above.
+            image=Splice(m.record->desc,{},0,m.bytes,{{m.shadow,0,m.bytes,0}});
         }
         std::lock_guard lock(m.record->mutex);
         if(m.record->map!=m.id)return out; // A newer map owns its own revision.

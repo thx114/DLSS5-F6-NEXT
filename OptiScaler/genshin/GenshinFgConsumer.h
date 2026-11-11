@@ -10,10 +10,12 @@ namespace GenshinFgConsumer
 inline bool NewWorkRequested() noexcept
 {
     const auto& cfg=*Config::Instance();
-    if(!cfg.FGEnabled.value_or_default())return false;
-    if(!cfg.FGOutput.has_value() || cfg.FGOutput.value_or_default()!=FGOutput::NoFG)return true;
-    if(!cfg.FGInput.has_value())return true;
-    const auto input=cfg.FGInput.value_or_default();
+    if(!cfg.FGEnabled.ObservedValue())return false;
+    const auto output=cfg.FGOutput.ReadObserved();
+    if(!output || *output!=FGOutput::NoFG)return true;
+    const auto selected=cfg.FGInput.ReadObserved();
+    if(!selected)return true;
+    const auto input=*selected;
     // A native input/replacement can use NoFG output to mean passthrough. Only
     // the explicit bridge/upscaler or fully-disabled input proves no new work.
     return input!=FGInput::Upscaler && input!=FGInput::NoFG;

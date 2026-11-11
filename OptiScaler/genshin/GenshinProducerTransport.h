@@ -541,6 +541,7 @@ inline bool NativeQueuedDepthLease::Ready() const noexcept {
 class PreparedDepthLease final : public native::BridgeDepthLease
 {
     friend class ProducerFrame;
+    friend class native::Dx11FrameSource;
     // Only OrderMappingRead can issue this private proof, before Resolve reads
     // the native source. A QueuedTransfer pointer alone cannot authorize NR.
     struct OrderedDepthRead {
@@ -636,7 +637,25 @@ class PreparedDepthLease final : public native::BridgeDepthLease
         return !slot->started && slot.use_count()==1;
     }
     std::shared_ptr<Reader> reader_;
+    static bool Same(IUnknown* a,IUnknown* b) noexcept {
+        Microsoft::WRL::ComPtr<IUnknown> x,y;
+        return a&&b&&SUCCEEDED(a->QueryInterface(IID_PPV_ARGS(&x)))&&
+            SUCCEEDED(b->QueryInterface(IID_PPV_ARGS(&y)))&&x&&x==y;
+    }
+    ID3D12Resource* DirectMappedRead(ID3D12Device* device,ID3D11Resource* source) noexcept {
+        if(!Ready()||reader_->started||!reader_->queuedRead||!reader_->queuedRead->isolatedOutput||
+           !Same(source,reader_->source.Get())||
+           !Same(source,reader_->queuedRead->isolatedOutput->Texture()))return nullptr;
+        return reader_->queuedRead->isolatedOutput->ReadResource(device);
+    }
 public:
+    bool MatchesDirectMappedReader(ID3D12Resource* resource,ID3D12Fence* fence,uint64_t value) const noexcept {
+        if(!MatchesReader(resource,fence,value)||!reader_->queuedRead||!reader_->queuedRead->isolatedOutput||
+           !Same(reader_->copy11.Get(),reader_->source.Get()))return false;
+        Microsoft::WRL::ComPtr<ID3D12Device> device;
+        return SUCCEEDED(resource->GetDevice(IID_PPV_ARGS(&device)))&&
+            reader_->queuedRead->isolatedOutput->ReadResource(device.Get())==resource;
+    }
     // Reclaim only already-retired real readers before mapping allocation.
     // Waiting until Create after Resolve can strand both bounded mapping slots.
     static void CollectRetained() {
@@ -1028,13 +1047,13 @@ inline GenshinFsr::PreparedResourceAdmission ProducerFrame::PreparedAdmission(ID
     return result;
 }
 
-// CPU observation of the current Genshin recording wait, on the same thread as
-// DispatchGenshinFsr2Dx11. A timeout is retryable only when no DX12 lease was
-// ever created; it never reclassifies an already-submitted provider failure.
-inline thread_local bool recordingWaitTimeout=false;
-inline void ClearRecordingWaitTimeout() noexcept {recordingWaitTimeout=false;}
-inline void NoteRecordingWaitTimeout() noexcept {recordingWaitTimeout=true;}
-inline bool ConsumeRecordingWaitTimeout() noexcept {
-    const bool result=recordingWaitTimeout;recordingWaitTimeout=false;return result;
+// CPU observation on the synchronous dispatch thread. Backpressure is
+// retryable only before any DX12 lease exists; it never reclassifies a submitted
+// provider failure or authorizes reuse of a pending recording.
+inline thread_local bool recordingPending=false;
+inline void ClearRecordingPending() noexcept {recordingPending=false;}
+inline void NoteRecordingPending() noexcept {recordingPending=true;}
+inline bool ConsumeRecordingPending() noexcept {
+    const bool result=recordingPending;recordingPending=false;return result;
 }
 }

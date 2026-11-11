@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "GenshinFsrProfiles.h"
 #include "GenshinFamilySkip.h"
 #include "GenshinManualCapture.h"
 #include "GenshinResourceProvenance.h"
@@ -145,7 +146,7 @@ inline std::string TimeText(const SYSTEMTIME& time) {
 inline bool Expected(uint64_t hash) noexcept {
     return hash==fsr2_family_takeover::k_pre_hash_1 || hash==fsr2_family_takeover::k_pre_hash_2 ||
         hash==fsr2_family_takeover::k_pre_hash_3 || hash==fsr2_family_takeover::k_pre_hash_4 ||
-        hash==fsr2_family_takeover::k_accumulate_hash || hash==0xF41E6080D4BEA352ull;
+        GenshinFsrProfiles::Accumulate(hash) || hash==0xF41E6080D4BEA352ull;
 }
 struct State {
     std::mutex mutex;
@@ -562,7 +563,7 @@ public:
         if(!Enabled() || draw.configEpoch!=Get().configEpoch || !device || !context || !source)return false;auto& s=Get();++s.cbOffers;
         if(GetCurrentThreadId()!=draw.thread){++s.wrongThread;return false;}
         if(s.cbBudgetCount>=MaxCbSamples){++s.cbBudgetDrops;return false;}
-        Slot* target=nullptr;const auto usable=draw.shaderHash==fsr2_family_takeover::k_accumulate_hash?slots_.size():slots_.size()-1;
+        Slot* target=nullptr;const auto usable=GenshinFsrProfiles::Accumulate(draw.shaderHash)?slots_.size():slots_.size()-1;
         for(size_t i=0;i<usable;++i)if(!slots_[i].pending){target=&slots_[i];break;}if(!target){++s.cbBusy;return false;}
         try {
             if(context->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)return false;

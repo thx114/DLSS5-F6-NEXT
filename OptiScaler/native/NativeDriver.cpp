@@ -150,8 +150,38 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
     if (_producer) _producer->SceneCutMode(!useVirtualUpscaler && supportedSceneRoute
         ? DlssNrSceneCut::ModeFrom(Config::Instance()->DlssNrSceneCut.value_or_default())
         : DlssNrSceneCut::Mode::Off);
+
+    auto& timingRecorder = _cpuTiming;
+    NativeProducerCpuTiming::Snapshot timingSnapshot;
+    if (timingRecorder.TakePublished(timingSnapshot)) {
+        const auto& acquire = timingSnapshot.stages[static_cast<unsigned>(NativeProducerCpuTiming::Stage::Acquire)];
+        const auto& run = timingSnapshot.stages[static_cast<unsigned>(NativeProducerCpuTiming::Stage::Run)];
+        const auto& returned = timingSnapshot.stages[static_cast<unsigned>(NativeProducerCpuTiming::Stage::Return)];
+        const auto& allocator = timingSnapshot.stages[static_cast<unsigned>(NativeProducerCpuTiming::Stage::AllocatorWait)];
+        LOG_INFO("{} CPU timing: window_ms={} attempts={} attempt_ids={}..{} "
+                 "acquire_calls={} samples={} sample_frame={} estimate_known={} estimate_ms_s={:.3f} "
+                 "run_calls={} samples={} sample_frame={} estimate_known={} estimate_ms_s={:.3f} "
+                 "return_calls={} samples={} sample_frame={} estimate_known={} estimate_ms_s={:.3f} "
+                 "allocator_wait_calls={} samples={} sample_frame={} estimate_known={} estimate_ms_s={:.3f} nested_in_run=true",
+                 _tag, timingSnapshot.endMs - timingSnapshot.beginMs, timingSnapshot.frames,
+                 timingSnapshot.firstFrame, timingSnapshot.lastFrame,
+                 acquire.calls, acquire.samples, acquire.lastSampleFrame, acquire.estimateKnown, acquire.estimatedMsPerSecond,
+                 run.calls, run.samples, run.lastSampleFrame, run.estimateKnown, run.estimatedMsPerSecond,
+                 returned.calls, returned.samples, returned.lastSampleFrame, returned.estimateKnown, returned.estimatedMsPerSecond,
+                 allocator.calls, allocator.samples, allocator.lastSampleFrame, allocator.estimateKnown, allocator.estimatedMsPerSecond);
+    }
+    auto timing = timingRecorder.BeginFrame();
+    const auto returnInput = [&](const FrameInput& returnedInput, const FrameOutput& returnedOutput) {
+        auto timingScope = timing.Measure(NativeProducerCpuTiming::Stage::Return);
+        source.Return(returnedInput, returnedOutput);
+    };
+
     FrameInput input;
-    const auto acquired = source.Acquire(input);
+    AcquireStatus acquired;
+    {
+        auto timingScope = timing.Measure(NativeProducerCpuTiming::Stage::Acquire);
+        acquired = source.Acquire(input);
+    }
     if(auto* r=GenshinPresentNrTrace::Current())r->acquireStatus=static_cast<uint32_t>(acquired);
 
     ++_diagPresents;
@@ -218,7 +248,7 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
                 _tag, work.failure, static_cast<unsigned>(work.hr), static_cast<void*>(source.Device()),
                 static_cast<void*>(work.device.Get()), static_cast<void*>(work.queueDevice.Get()), static_cast<void*>(queue));
         PublishSceneCuts(false, work.failure);
-        source.Return(input, FrameOutput {});
+        returnInput(input, FrameOutput {});
         return out;
     }
     ID3D12Device* device = work.device.Get();
@@ -236,7 +266,7 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
             static thread_local unsigned failures=0;
             if (failures++<8) LOG_ERROR("{}: R041 native creation failed: {} receipts={}",_tag,_failure,fresh->CreationReport());
             PublishSceneCuts(false, _failure.c_str());
-            source.Return(input, FrameOutput {});
+            returnInput(input, FrameOutput {});
             return out;
         }
 
@@ -511,11 +541,25 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
     HoYoShade::ColorWriteScope colorWriter((beforeNr || beforeSr) && input.api == Api::D3D12,
         device, queue, input.picture);
     if ((beforeNr || beforeSr) && input.api == Api::D3D12 && !colorWriter.Acquired()) {
-        source.Return(input, FrameOutput {}); // untouched: natural is not armed
+        returnInput(input, FrameOutput {}); // untouched: natural is not armed
         return out;
     }
     FrameOutput output;
-    const auto result = _producer->Run(queue, input, options, apply, output);
+    NativeProducer::Result result;
+    {
+        auto timingScope = timing.Measure(NativeProducerCpuTiming::Stage::Run);
+        result = _producer->Run(queue, input, options, apply, output, &timing);
+    }
+    if(result.completedPrepGpu.known) {
+        const auto& g=result.completedPrepGpu;
+        LOG_INFO("{} prep GPU completed: frame={} source_epoch={} source_generation={} source_frame={} picture_serial={} "
+            "picture={:X} queue={:X} fence={:X} target={} completed={} frequency={} flow_ms={:.4f} "
+            "trust_cut_ms={:.4f} guides_ms={:.4f} same_input=true scope=producer_prep_only inclusive_elapsed=true "
+            "exclusive_gpu=UNKNOWN consumer_model_excluded=true no_added_wait=true",
+            _tag,g.input.frame,g.input.sourceEpoch,g.input.sourceGeneration,g.input.sourceFrame,g.input.pictureSerial,
+            g.input.picture,g.queue,g.fence,g.target,g.completed,g.frequency,
+            g.milliseconds[0],g.milliseconds[1],g.milliseconds[2]);
+    }
     // Only NativeProducer's successful actual queue signal retires these reads.
     // Failed Close/submit/Signal leaves the bounded lease permanently escrowed.
     if(input.gameMotion)input.gameMotion->BindCompletion(result.submitted?output.done.fence:nullptr,
@@ -557,7 +601,7 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
         }
     }
     out.colorUncertain = output.uncertain;
-    source.Return(input, output);
+    returnInput(input, output);
     colorWriter.FinishAfterReturn(output.uncertain);
     // Return synchronously authenticates the producer fence and orders the real
     // native-B copy. Failed Return/CopyOrdered cannot publish even if Run submitted.

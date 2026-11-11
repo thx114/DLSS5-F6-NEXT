@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <runtime/F6InputPolicy.h>
 #include "FfxApi_Dx12.h"
 #include "Config.h"
 #include "Util.h"
@@ -398,6 +399,7 @@ static ffxReturnCode_t ffxDispatch_Dx12(ffxContext* context, ffxDispatchDescHead
 
 void HookFfxExeInputs()
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     LOG_INFO("Trying to hook Ffx Exe methods");
 
     HMODULE exeModule = GetModuleHandle(Util::ExePath().filename().c_str());

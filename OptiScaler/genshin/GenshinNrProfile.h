@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "GenshinOutputContract.h"
+#include "GenshinFsrProfiles.h"
 #include <d3d11.h>
 #include <d3d12.h>
 #include <nvsdk_ngx.h>
@@ -18,17 +19,17 @@ namespace GenshinNr {
 // This capability certifies this reviewed shader's numerical operations and
 // bounded UNORM8 layout. It does not certify scene transfer or temporal phase.
 class ShaderProfile final {
-    uint64_t epoch_=0,identity_=0;
-    ShaderProfile(uint64_t epoch,uint64_t identity):epoch_(epoch),identity_(identity){}
+    uint64_t epoch_=0,identity_=0,shader_=0;
+    ShaderProfile(uint64_t epoch,uint64_t identity,uint64_t shader):epoch_(epoch),identity_(identity),shader_(shader){}
     friend GenshinLegacy::Family::Shader GenshinLegacy::Family::Read(
         ID3D11Device*,ID3D11PixelShader*,uint64_t,GenshinLegacy::Family::ReadObservation*) noexcept;
 public:
-    static constexpr uint32_t Revision=1;
-    static constexpr size_t Bytes=15388;
-    static constexpr uint64_t Fnv=0x78057A29AF6C2D99ull;
-    inline static constexpr std::array<unsigned char,32> Digest={
-        0xE2,0xCF,0xA1,0x65,0xB0,0xEB,0xF3,0x6F,0x65,0x5C,0x7E,0x9E,0xF7,0x82,0x3B,0x6A,
-        0xFE,0xD1,0x11,0x3E,0x18,0xD6,0xFC,0xB7,0xD8,0x2F,0xE5,0x87,0x7D,0xF5,0xAD,0xBF};
+    static constexpr uint32_t Revision=2;
+    static constexpr size_t Bytes=GenshinFsrProfiles::Reviewed[0].bytes;
+    static constexpr uint64_t Fnv=GenshinFsrProfiles::Reviewed[0].hash;
+    inline static constexpr auto Digest=GenshinFsrProfiles::Reviewed[0].digest;
+    bool MatchesShader(uint64_t epoch,uint64_t identity,uint64_t shader)const noexcept
+    {return Matches(epoch,identity) && shader_==shader && GenshinFsrProfiles::Accumulate(shader);}
     bool Matches(uint64_t epoch,uint64_t identity)const noexcept
     {return epoch && identity && epoch_==epoch && identity_==identity;}
 };

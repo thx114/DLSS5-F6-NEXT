@@ -797,6 +797,33 @@ float3 EncodeLinearToProxy(float3 n)
     return LinearToSrgb(ProxyEncode(n));
 }
 
+// The model operand's domain at the final Look stage. Composed knee/Neutwo/
+// hybrid deliberately KEEP proxy light: the compositor bridges it to the
+// original. Signal curves and Replace instead undo their curve before Look.
+// Input is already sRGB-decoded, or the untouched passthrough value.
+float3 ResolveModelLookDomain(float3 light)
+{
+    if (gPassthrough != 0) return light;
+    const uint curve = ProxyCurve(gReversibleMode);
+    if (IsReplace(gReversibleMode))
+        return curve == kCurveNeutwo ? NeutwoDecode(light) : HybridDecode(light);
+    if (IsSignalCurve(curve)) return SignalDecode(light, curve);
+    return light;
+}
+
+float3 LayerLookToWorking(float3 proxy)
+{
+    return ResolveModelLookDomain(gPassthrough != 0 ? proxy : SrgbToLinear(proxy));
+}
+
+float3 LayerLookToProxy(float3 working)
+{
+    if (gPassthrough != 0) return working;
+    if (IsReplace(gReversibleMode) || IsSignalCurve(ProxyCurve(gReversibleMode)))
+        working = ProxyEncode(working);
+    return LinearToSrgb(working);
+}
+
 // Scale a residual so the result cannot leave the unit cube, without changing its direction.
 //
 // The model's edit is carried up from a smaller raster and laid on the frame's own proxy, so nothing
@@ -926,13 +953,43 @@ float3 LookEditAt(float2 uv, bool proxyDomain)
     if (!proxyDomain) return EditAt(uv);
     float3 base = SanitizeFinite3(gModel.SampleLevel(gLinear, uv, 0).rgb, 0.5);
     float3 raw = SanitizeFinite3(gSource.SampleLevel(gLinear, uv, 0).rgb, 0.5);
-    return CubeScaleResidual(base, raw) - base;
+    float3 answer = CubeScaleResidual(base, raw);
+    // Final Look uses EditAt's proxy-light low-pass to determine the broad
+    // fraction, even in Replace/signal modes. Preserve that sampling semantic.
+    return gPassthrough != 0 ? answer - base : SrgbToLinear(answer) - SrgbToLinear(base);
 }
 
 float3 LookBaseAt(float2 uv, float normScale, bool proxyDomain)
 {
-    if (proxyDomain) return SanitizeFinite3(gModel.SampleLevel(gLinear, uv, 0).rgb, 0.5);
+    if (proxyDomain)
+    {
+        if (gPassthrough != 0)
+            return SanitizeFinite3(gModel.SampleLevel(gLinear, uv, 0).rgb, 0.5);
+        // Final Look samples its untouched working-light original with linear
+        // filtering. Decode each tap BEFORE interpolation to match that order;
+        // decoding one bilinear sample of an encoded proxy changes halo weights.
+        uint w, h;
+        gModel.GetDimensions(w, h);
+        float2 position = uv * float2(w, h) - 0.5;
+        int2 top = int2(floor(position));
+        float2 blend = frac(position);
+        int2 limit = int2(w, h) - 1;
+        float3 a = LayerLookToWorking(SanitizeFinite3(gModel.Load(int3(clamp(top, 0, limit), 0)).rgb, 0.5));
+        float3 b = LayerLookToWorking(SanitizeFinite3(gModel.Load(int3(clamp(top + int2(1, 0), 0, limit), 0)).rgb, 0.5));
+        float3 c = LayerLookToWorking(SanitizeFinite3(gModel.Load(int3(clamp(top + int2(0, 1), 0, limit), 0)).rgb, 0.5));
+        float3 d = LayerLookToWorking(SanitizeFinite3(gModel.Load(int3(clamp(top + int2(1, 1), 0, limit), 0)).rgb, 0.5));
+        return lerp(lerp(a, b, blend.x), lerp(c, d, blend.x), blend.y);
+    }
     return OriginalInPassDomain(gOriginal.SampleLevel(gLinear, uv, 0)).rgb / normScale;
+}
+
+bool LookIsNeutral()
+{
+    return gLookStrength == 1.0 && gLookBrighten == 1.0 && gLookDarken == 1.0 &&
+        gLookColour == 1.0 && gLookHue == 1.0 && gLookShadows == 1.0 &&
+        gLookMidtones == 1.0 && gLookHighlights == 1.0 && gLookMaxBrighten == 0.0 &&
+        gLookMaxDarken == 0.0 && gLookMaxColour == 0.0 && gLookTone == 1.0 &&
+        gLookDetail == 1.0 && gLookHalo == 0.0 && gLookHaloBrightSide == 0.0;
 }
 
 float3 ApplyLookEdit(float3 original, float3 result, float2 cmpUv, float normScale, bool proxyDomain)
@@ -1011,12 +1068,7 @@ float3 ApplyLookEdit(float3 original, float3 result, float2 cmpUv, float normSca
                 float bounded = cap * (1.0-exp(-magnitude/max(cap, 1e-6)));
                 change *= bounded / max(magnitude, 1e-5);
             }
-            bool neutral = gLookStrength == 1.0 && gLookBrighten == 1.0 && gLookDarken == 1.0 &&
-                gLookColour == 1.0 && gLookHue == 1.0 && gLookShadows == 1.0 &&
-                gLookMidtones == 1.0 && gLookHighlights == 1.0 && gLookMaxBrighten == 0.0 &&
-                gLookMaxDarken == 0.0 && gLookMaxColour == 0.0 && gLookTone == 1.0 &&
-                gLookDetail == 1.0 && gLookHalo == 0.0 && gLookHaloBrightSide == 0.0;
-            if (!neutral)
+            if (!LookIsNeutral())
                 result = ClampAp1((baseChroma + change) * lo * exp2(clamp(stops, -32.0, 32.0)));
             if (!all(isfinite(result))) result = original;
         }
@@ -1436,10 +1488,30 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
         }
         #endif
         float3 base = SanitizeFinite3(gModel.Load(int3(id.xy, 0)).rgb, 0.5);
-        float3 restored = CubeScaleResidual(base, SanitizeFinite3(raw.rgb, 0.5));
+        float3 rawRgb = SanitizeFinite3(raw.rgb, 0.5);
+        float3 restored = CubeScaleResidual(base, rawRgb);
+        // Exact no-op/zero endpoints avoid lossy round trips through inverse
+        // proxy curves (and their poles). The current layer's input is the base.
+        if (gLookMode == 0 || LookIsNeutral())
+        {
+            // An already-valid proxy needs no residual arithmetic either:
+            // base + (answer-base) can lose one ULP near an inverse pole.
+            if (gPassthrough != 0 || (all(base >= 0.0) && all(base <= 1.0) &&
+                                      all(rawRgb >= 0.0) && all(rawRgb <= 1.0)))
+                restored = rawRgb;
+            gTarget[id.xy] = float4(restored, raw.a);
+            return;
+        }
+        if (gLookStrength == 0.0)
+        {
+            gTarget[id.xy] = float4(base, raw.a);
+            return;
+        }
         float2 uv = (float2(id.xy) + 0.5) / float2(gWidth, gHeight);
-        float3 looked = ApplyLookEdit(base, restored, uv, 1.0, true);
-        gTarget[id.xy] = float4(CubeScaleResidual(base, SanitizeFinite3(looked, base)), raw.a);
+        float3 workingBase = LayerLookToWorking(base);
+        float3 looked = ApplyLookEdit(workingBase, LayerLookToWorking(restored), uv, 1.0, true);
+        float3 encoded = LayerLookToProxy(SanitizeFinite3(looked, workingBase));
+        gTarget[id.xy] = float4(CubeScaleResidual(base, SanitizeFinite3(encoded, base)), raw.a);
         return;
     }
     if (gMode == 12)
@@ -1857,8 +1929,8 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
     const uint composeCurve = ProxyCurve(gReversibleMode);
     if (gPassthrough == 0 && IsSignalCurve(composeCurve))
     {
-        proxy = SignalDecode(proxy, composeCurve);
-        model = SignalDecode(model, composeCurve);
+        proxy = ResolveModelLookDomain(proxy);
+        model = ResolveModelLookDomain(model);
         proxyLuma = dot(proxy, kLuma);
     }
 
@@ -1990,9 +2062,7 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
     // RenoDX reversible-bridge behaviour and the second half of the A/B: composed vs pure model. On a
     // passthrough frame the model already worked in the frame's own space, so it is taken directly.
     if (IsReplace(gReversibleMode))
-        result = gPassthrough != 0                            ? modelDirect
-                 : ProxyCurve(gReversibleMode) == kCurveNeutwo ? NeutwoDecode(modelDirect)
-                                                               : HybridDecode(modelDirect);
+        result = ResolveModelLookDomain(modelDirect);
 
     // Replace-only detail injection. Below the frame's own resolution the model computed its
     // answer at a reduced working size -- SGSR1's enlarge can sharpen that answer but cannot
@@ -2053,90 +2123,7 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
     if (IsReplace(gReversibleMode) && gPassthrough == 0)
         result = ApplyReplaceGuard(result, original, originalLuma, guard);
 
-    // F5 final edit stage. v10.7 supplies control intent/ranges, not this algorithm.
-    // Disabled and neutral paths avoid a colour-space round trip.
-    if (gLookMode != 0)
-    {
-        if (gLookStrength == 0.0)
-            result = original;
-        else
-        {
-            float3 edit = result - original;
-            if (gLookTone != 1.0 || gLookDetail != 1.0 || gLookHalo > 0.0 || gLookHaloBrightSide > 0.0)
-            {
-                // Separate the model's edit in its shared proxy domain. Sampling
-                // coordinates follow compare/zoom; clamp sampler handles edges.
-                float2 radius = float2(gLookDetailRadius * 0.01 * gHeight / gWidth,
-                                       gLookDetailRadius * 0.01);
-                float3 broad = (EditAt(cmpUv + float2(radius.x, 0)) +
-                                EditAt(cmpUv - float2(radius.x, 0)) +
-                                EditAt(cmpUv + float2(0, radius.y)) +
-                                EditAt(cmpUv - float2(0, radius.y)) + EditAt(cmpUv)) / 5.0;
-                // Preserve the final compositor's local sign and magnitude: proxy
-                // low-pass only determines the broad fraction of the current edit.
-                float3 centre = EditAt(cmpUv);
-                float3 fraction = saturate(abs(broad) / max(abs(centre), 1e-5));
-                fraction *= step(0.0, broad * centre);
-                float3 broadEdit = edit * fraction;
-                float3 fineEdit = edit - broadEdit;
-                // A negative fine edit beside a bright neighbor witnesses a dark
-                // halo. A negative fine edit on the bright side of a dark neighbor
-                // witnesses a dark skirt. Uniform darkening has no fine residual.
-                float baseY = max(dot(max(original, 0.0), kLuma), 1e-5);
-                float fineY = dot(fineEdit, kLuma);
-                if (fineY < 0.0 && (gLookHalo > 0.0 || gLookHaloBrightSide > 0.0))
-                {
-                    float north = dot(max(OriginalInPassDomain(gOriginal.SampleLevel(gLinear, cmpUv + float2(0, radius.y), 0)).rgb / normScale, 0.0), kLuma);
-                    float south = dot(max(OriginalInPassDomain(gOriginal.SampleLevel(gLinear, cmpUv - float2(0, radius.y), 0)).rgb / normScale, 0.0), kLuma);
-                    float east = dot(max(OriginalInPassDomain(gOriginal.SampleLevel(gLinear, cmpUv + float2(radius.x, 0), 0)).rgb / normScale, 0.0), kLuma);
-                    float west = dot(max(OriginalInPassDomain(gOriginal.SampleLevel(gLinear, cmpUv - float2(radius.x, 0), 0)).rgb / normScale, 0.0), kLuma);
-                    float high = max(max(north, south), max(east, west));
-                    float low = min(min(north, south), min(east, west));
-                    float brightNeighbor = saturate((high-baseY)/max(high, 1e-5));
-                    float darkNeighbor = saturate((baseY-low)/baseY);
-                    float suppression = max(gLookHalo * brightNeighbor, gLookHaloBrightSide * darkNeighbor);
-                    fineEdit -= original / baseY * fineY * suppression;
-                }
-                edit = broadEdit * gLookTone + fineEdit * gLookDetail;
-            }
-            float3 candidate = max(original + edit, 0.0);
-            float lo = max(dot(max(original, 0.0), kLuma), 1e-5);
-            float ln = max(dot(candidate, kLuma), 1e-5);
-            float t = saturate(lo);
-            float zone = gLookShadows * (1.0-t)*(1.0-t) +
-                         gLookMidtones * 2.0*t*(1.0-t) + gLookHighlights*t*t;
-            float amount = gLookStrength * zone;
-            float stops = clamp(log2(ln / lo), -32.0, 32.0);
-            stops *= amount * (stops >= 0.0 ? gLookBrighten : gLookDarken);
-            // Smooth ceilings/floors approach the configured stop bound.
-            if (stops > 0.0 && gLookMaxBrighten > 0.0)
-                stops = gLookMaxBrighten * (1.0-exp(-stops/gLookMaxBrighten));
-            if (stops < 0.0 && gLookMaxDarken > 0.0)
-                stops = -gLookMaxDarken * (1.0-exp(stops/gLookMaxDarken));
-            float3 baseChroma = original / lo;
-            float3 change = candidate / ln - baseChroma;
-            float3 axis = baseChroma - 1.0;
-            float axis2 = dot(axis, axis);
-            float3 radial = axis2 > 1e-5 ? axis * dot(change, axis) / axis2 : change;
-            change = (radial * gLookColour + (change-radial) * gLookHue) * amount;
-            change -= dot(change, kLuma);
-            if (gLookMaxColour > 0.0)
-            {
-                float magnitude = length(change);
-                float cap = exp2(gLookMaxColour)-1.0;
-                float bounded = cap * (1.0-exp(-magnitude/max(cap, 1e-6)));
-                change *= bounded / max(magnitude, 1e-5);
-            }
-            bool neutral = gLookStrength == 1.0 && gLookBrighten == 1.0 && gLookDarken == 1.0 &&
-                gLookColour == 1.0 && gLookHue == 1.0 && gLookShadows == 1.0 &&
-                gLookMidtones == 1.0 && gLookHighlights == 1.0 && gLookMaxBrighten == 0.0 &&
-                gLookMaxDarken == 0.0 && gLookMaxColour == 0.0 && gLookTone == 1.0 &&
-                gLookDetail == 1.0 && gLookHalo == 0.0 && gLookHaloBrightSide == 0.0;
-            if (!neutral)
-                result = ClampAp1((baseChroma + change) * lo * exp2(clamp(stops, -32.0, 32.0)));
-            if (!all(isfinite(result))) result = original;
-        }
-    }
+    result = ApplyLookEdit(original, result, cmpUv, normScale, false);
 
     // Back out of the normalised space the composition worked in.
     result *= normScale;

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "FSR3_Dx12_FG.h"
+#include <runtime/F6InputPolicy.h>
 
 #include "Config.h"
 #include "Util.h"
@@ -855,6 +856,7 @@ static Fsr3::FfxErrorCode hkffxSetFrameGenerationConfigToSwapchainDX12(Fsr3::Ffx
 
 void FSR3FG::HookFSR3FGExeInputs()
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     if (o_ffxReplaceSwapchainForFrameinterpolationDX12 != nullptr)
         return;
 
@@ -967,6 +969,7 @@ void FSR3FG::HookFSR3FGExeInputs()
 
 void FSR3FG::HookFSR3FGInputs()
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     if (o_ffxReplaceSwapchainForFrameinterpolationDX12 != nullptr)
         return;
 

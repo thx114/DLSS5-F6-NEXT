@@ -4,6 +4,7 @@
 // remain independent. No ReturnedRaster, optical-flow, CPU full-frame scan or wait
 // participates in this path.
 #include "GenshinDepthMapping.h"
+#include "GenshinFsrProfiles.h"
 #include "GenshinDx12Transport.h"
 #include "GenshinFgGameMotion_Hlsl.h"
 #include "GenshinFgLeaseBudget.h"
@@ -77,7 +78,7 @@ class Reference {
 public:
     bool Known(const Owner& o)const noexcept {
         return nativeEvidence_ && acceptedGrid_.Matches(acceptedGrid_.owner) &&
-            GenshinGuides::SameOwner(owner,o) && shaderIdentity && nativeShaderHash==0x78057A29AF6C2D99ull &&
+            GenshinGuides::SameOwner(owner,o) && shaderIdentity && GenshinFsrProfiles::Accumulate(nativeShaderHash) &&
             nativeOutputHistoryUv && outputReferenceProved && Finite(nativeToSrX) && Finite(nativeToSrY);
     }
     bool PairCompatible(const Reference& previous)const noexcept {

@@ -66,11 +66,21 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     uint32_t _heapIndex = 0;
     DlssNrGpuLifetime::Use _heapUses[DLSSNR_NUM_OF_HEAPS];
 
-    // The shader reads five inputs and writes two, and not every mode uses all of them. Unused slots
+    // Diagnostic dispatches never consume production pass capacity. Three
+    // lazy slots are enough for the bounded preview; saturation skips inspection.
+    static constexpr unsigned kHistoryInspectHeapCount = 3;
+    FrameDescriptorHeap _historyInspectHeaps[kHistoryInspectHeapCount];
+    ID3D12Resource* _historyInspectConstants[kHistoryInspectHeapCount] = {};
+    DlssNrGpuLifetime::Use _historyInspectUses[kHistoryInspectHeapCount];
+    unsigned _historyInspectIndex = 0;
+    bool _historyInspectReady = false, _historyInspectFailed = false;
+    bool HistoryInspectReady();
+
+    // The shared table reads seven inputs and writes up to four outputs. Unused slots
     // still need a view bound -- an unbound descriptor is not an empty read, it is a read from
     // nothing -- so a stand-in is written into whichever are spare.
-    static constexpr uint32_t kSrvCount = 6; // t5: read only by the detail reuse pass (its history distrust)
-    static constexpr uint32_t kUavCount = 2;
+    static constexpr uint32_t kSrvCount = 7; // t5 depth/distrust; t6 optional independent residual stabilizer
+    static constexpr uint32_t kUavCount = 4; // answer, original residual, birth context, optional stabilization
 
     uint32_t _numThreadsX = 8;
     uint32_t _numThreadsY = 8;
@@ -210,7 +220,9 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     bool DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList, const DlssNrDetailReuseConstants& InConstants,
                              unsigned int Width, unsigned int Height, ID3D12Resource* In0, ID3D12Resource* In1,
                              ID3D12Resource* In2, ID3D12Resource* In3, ID3D12Resource* In4, ID3D12Resource* OutTarget,
-                             ID3D12Resource* OutSecond, ID3D12Resource* InHistoryDistrust = nullptr);
+                             ID3D12Resource* OutSecond, ID3D12Resource* InHistoryDistrust = nullptr,
+                             ID3D12Resource* OutContext = nullptr,
+                             ID3D12Resource* InStability = nullptr, ID3D12Resource* OutStability = nullptr);
 
     // Compress screen edges (dlssnr_spatial.hlsl, DlssNr_Spatial.h). SpatialReady builds the pipelines on first use and
     // says whether there are any; DispatchSpatial is false (no-op) without them. Same descriptor table shape as

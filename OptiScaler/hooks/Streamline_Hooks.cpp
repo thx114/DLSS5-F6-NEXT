@@ -18,6 +18,7 @@
 #include <proxies/KernelBase_Proxy.h>
 #include <proxies/Streamline_Proxy.h>
 #include <imgui/ImGuiNotify.hpp>
+#include <runtime/GuideDiagnostics.h>
 
 #include <json.hpp>
 #include <sl1_reflex.h>
@@ -39,6 +40,55 @@ thread_local const sl::Preferences* gamePluginPreferences = nullptr;
 // ERROR_INVALID_OPERATION (0x10DD), which Streamline's own exception handler then treats as fatal.
 // This mutex serializes every Begin...Commit sequence in this file against every other one.
 std::mutex g_detoursTransactionMutex;
+framegen::DlssgStateQueries g_dlssgStateQueries;
+std::atomic<decltype(&slGetNewFrameToken)> g_tokenExport{nullptr};
+std::atomic<decltype(&slGetNewFrameToken)> g_tokenTrampoline{nullptr};
+std::atomic<bool> g_tokenHooked{false};
+framegen::DlssgTokenDomain& PacingTokenDomain()
+{
+    // Leases may outlive a provider and static destruction. Process lifetime,
+    // no resource/queue ownership and no dependency on another static's order.
+    static auto* domain=new framegen::DlssgTokenDomain;
+    return *domain;
+}
+std::shared_ptr<void> PinPacingModule(const void* address) noexcept
+{
+    if(g_tokenHooked.load(std::memory_order_acquire) &&
+        address==reinterpret_cast<const void*>(g_tokenTrampoline.load(std::memory_order_acquire)))
+        address=reinterpret_cast<const void*>(g_tokenExport.load(std::memory_order_acquire));
+    HMODULE module=nullptr;
+    if(!address || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+        reinterpret_cast<LPCWSTR>(address),&module))return {};
+    try {return std::shared_ptr<void>(module,[](void* held){FreeLibrary(static_cast<HMODULE>(held));});}
+    catch(...) {return {};} // shared_ptr construction invokes its deleter on failure.
+}
+void ObserveDlssgState(const framegen::DlssgStateSample& sample,bool returned) noexcept
+{
+    if(!sample.querySequence)return; // Rejected/reentrant/cache reads are not SDK calls.
+    const auto lastError=GetLastError();
+    try {
+        GuideDiagnostics::Snapshot unbound;
+        FrameTrace::Facts facts;facts.kind=FrameTrace::Kind::SdkState;
+        facts.querySequence=sample.querySequence;
+        facts.queryBeginTick=sample.previousQueryEndNs;facts.queryEndTick=sample.queryEndNs;
+        facts.queryIntervalKnown=sample.counterIntervalKnown;
+        facts.presentedInterval=sample.actuallyPresented;facts.sdkStatus=sample.status;
+        const char* reason="SDK GetState other (unbound)";
+        switch(sample.reason) {
+        case framegen::DlssgStateQueryReason::Provider:reason="SDK GetState provider (unbound)";break;
+        case framegen::DlssgStateQueryReason::CapabilityCold:reason="SDK GetState capability cold (unbound)";break;
+        case framegen::DlssgStateQueryReason::CompletionFence:reason="SDK GetState completion fence (unbound observation)";break;
+        case framegen::DlssgStateQueryReason::Game:reason="SDK GetState game (unbound)";break;
+        default:break;
+        }
+        // No source, frame, token, queue, fence or provider identity is inferred.
+        // Observe itself uses a bounded try-lock ring and never queries the SDK.
+        GuideDiagnostics::Observe(GuideDiagnostics::Consumer::Fg,unbound,facts,reason,returned,sample.result);
+    }catch(...){}
+    SetLastError(lastError);
+}
+constexpr GUID frameLatencyApplicationFlagsId {0x5394b29c,0x0e6c,0x40d7,{0x9a,0x92,0x34,0xc9,0xcb,0x2b,0xa8,0x57}};
+static_assert(framegen::latency::WaitableFlag==DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
 struct GamePluginLoadScope
 {
     const sl::Preferences* previous;
@@ -49,6 +99,151 @@ struct GamePluginLoadScope
     ~GamePluginLoadScope() { gamePluginPreferences = previous; }
 };
 } // namespace
+
+sl::Result StreamlineHooks::QueryDlssgState(decltype(&slDLSSGGetState) getState,
+    const sl::ViewportHandle& viewport, sl::DLSSGState& state, const sl::DLSSGOptions* options,
+    framegen::DlssgStateQueryReason reason, framegen::DlssgStateSample* observed)
+{
+    if (getState == &hkslDLSSGGetState || getState==&hkslDLSSGGetStateSerial) getState = o_slDLSSGGetState;
+    sl::Result result = sl::Result::eErrorInvalidState;
+    framegen::DlssgStateSample sample;
+    bool queried=false;
+    DWORD sdkLastError=GetLastError();
+    try {queried = g_dlssgStateQueries.Query(reinterpret_cast<uintptr_t>(getState),
+        static_cast<uint32_t>(viewport), reason, sample, [&](auto& value) {
+            // This is the only actual SDK GetState invocation in the hooks.
+            // No callbacks into a provider, lifecycle or FG mutex are allowed.
+            result = getState(viewport, state, options);
+            sdkLastError=GetLastError();
+            value.result = static_cast<int32_t>(result);
+            value.succeeded = result == sl::Result::eOk;
+            value.stateVersion = state.structVersion;
+            if (!value.succeeded) return;
+            value.status = static_cast<uint32_t>(state.status);
+            value.actuallyPresented = state.numFramesActuallyPresented;
+            value.minWidthOrHeight = state.minWidthOrHeight;
+            value.estimatedVramBytes = state.estimatedVRAMUsageInBytes;
+            if (state.structVersion >= 2) {
+                value.maxGenerated = state.numFramesToGenerateMax;
+                value.vsyncSupported = state.bIsVsyncSupportAvailable == sl::eTrue;
+            }
+            if (state.structVersion >= 4) value.dynamicSupported = state.bIsDynamicMFGSupported == sl::eTrue;
+        });}
+    catch(...) {
+        // Query's RAII gate has unwound before any passive callback.
+        ObserveDlssgState(sample,false);
+        if(observed)*observed=sample;
+        throw;
+    }
+    // Query has returned and released BOTH its SDK/query gate and sample lock.
+    if(queried)ObserveDlssgState(sample,true);
+    if (observed) *observed = sample;
+    SetLastError(sdkLastError);
+    return queried ? result : sl::Result::eErrorInvalidState;
+}
+
+bool StreamlineHooks::ReadDlssgStateSample(decltype(&slDLSSGGetState) getState,
+    const sl::ViewportHandle& viewport, framegen::DlssgStateSample& sample)
+{
+    if (getState == &hkslDLSSGGetState || getState==&hkslDLSSGGetStateSerial) getState = o_slDLSSGGetState;
+    return g_dlssgStateQueries.Read(reinterpret_cast<uintptr_t>(getState), static_cast<uint32_t>(viewport), sample);
+}
+
+sl::Result StreamlineHooks::SubmitDlssgOptions(decltype(&slDLSSGSetOptions) setOptions,
+    const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
+{
+    if (!setOptions || setOptions==&hkslDLSSGSetOptions || setOptions==&hkslDLSSGSetOptionsSerial)
+        return sl::Result::eErrorInvalidState;
+    sl::Result result=sl::Result::eErrorInvalidState;
+    g_dlssgStateQueries.SubmitOptions([&] { result=setOptions(viewport,options); });
+    return result;
+}
+
+sl::Result StreamlineHooks::GetDlssgFrameToken(decltype(&slGetNewFrameToken) getToken,
+    sl::FrameToken*& token,const uint32_t* frame)
+{
+    return PacingTokenDomain().GetResolved([&] {
+        if(getToken==&hkslGetNewFrameToken ||
+           (g_tokenHooked.load(std::memory_order_acquire)&&getToken==g_tokenExport.load(std::memory_order_acquire)))
+            return o_slGetNewFrameToken;
+        return getToken;
+    },token,frame);
+}
+
+FGPacingLeasePtr StreamlineHooks::BeginDlssgPacing(
+    const std::shared_ptr<framegen::DlssgPacingLifetime>& lifetime,
+    decltype(&slGetNewFrameToken) getToken,decltype(&slReflexSleep) sleep,
+    decltype(&slPCLSetMarker) marker,sl::FrameToken*& token,const uint32_t* frame)
+{
+    return PacingTokenDomain().BeginResolved(lifetime,[&] {
+        auto api=getToken;auto sleepApi=sleep;auto markerApi=marker;
+        if(api==&hkslGetNewFrameToken ||
+           (g_tokenHooked.load(std::memory_order_acquire)&&api==g_tokenExport.load(std::memory_order_acquire)))
+            api=o_slGetNewFrameToken;
+        if(sleepApi==&hkslReflexSleep)sleepApi=o_slReflexSleep;
+        if(markerApi==&hkslPCLSetMarker)markerApi=o_slPCLSetMarker.load(std::memory_order_acquire);
+        return framegen::DlssgTokenDomain::Apis{api,sleepApi,markerApi};
+    },token,frame,&PinPacingModule);
+}
+
+sl::Result StreamlineHooks::hkslGetNewFrameToken(sl::FrameToken*& token,const uint32_t* frame)
+{
+    return GetDlssgFrameToken(&hkslGetNewFrameToken,token,frame);
+}
+
+framegen::latency::Caller StreamlineHooks::FrameLatencyCaller(void* returnAddress)
+{
+    const auto module = Util::GetCallerModule(returnAddress);
+    if (!module) return framegen::latency::Caller::Unknown;
+    if (module == GetModuleHandleW(nullptr)) return framegen::latency::Caller::Application;
+    const auto& state = State::Instance();
+    if (module == state.optiSlDLSSG || module == state.optiSlCommon ||
+        module == state.optiSlReflex || module == StreamlineProxy::Module())
+        return framegen::latency::Caller::Sdk;
+    // Other engine/overlay/middleware modules have no established role. A
+    // loaded plugin is not sufficient authority to block an arbitrary caller.
+    return framegen::latency::Caller::Unknown;
+}
+
+bool StreamlineHooks::DlssgPluginLoaded()
+{
+    // Plugin residency is independent of FG enabled/mode. Do not load a DLL
+    // or query the SDK merely to decide who owns a waitable object.
+    return State::Instance().optiSlDLSSG != nullptr || isDlssgHooked() || isLocalDlssgHooked() ||
+        GetModuleHandleW(L"sl.dlss_g.dll") != nullptr || GetModuleHandleW(L"nvngx_dlssg.dll") != nullptr;
+}
+
+void StreamlineHooks::RecordFrameLatencyApplicationFlags(IDXGISwapChain* swapchain, UINT applicationFlags)
+{
+    if (swapchain) swapchain->SetPrivateData(frameLatencyApplicationFlagsId,sizeof(applicationFlags),&applicationFlags);
+}
+
+framegen::latency::Flags StreamlineHooks::ReadFrameLatencyFlags(IDXGISwapChain* swapchain)
+{
+    framegen::latency::Flags flags;
+    if (!swapchain) return flags;
+    UINT bytes=sizeof(flags.requested);
+    flags.requestedKnown=SUCCEEDED(swapchain->GetPrivateData(frameLatencyApplicationFlagsId,&bytes,&flags.requested)) &&
+        bytes==sizeof(flags.requested);
+    DXGI_SWAP_CHAIN_DESC desc {};
+    flags.nativeKnown=SUCCEEDED(swapchain->GetDesc(&desc));
+    flags.effectiveNative=flags.nativeKnown ? desc.Flags : 0;
+    return flags;
+}
+
+void StreamlineHooks::ReportFrameLatencyAccess(const void* receiver, const framegen::latency::Flags& flags,
+    framegen::latency::Caller caller, bool sdkLoaded, framegen::latency::Target target)
+{
+    // Fixed process budget, including failed logging. Not one row per frame.
+    static std::atomic<unsigned> reports {0};
+    auto used=reports.load(std::memory_order_relaxed);
+    do { if(used>=32)return; }
+    while(!reports.compare_exchange_weak(used,used+1,std::memory_order_relaxed));
+    LOG_INFO("F6 frame-latency ownership: receiver={:X} requested_flags={:X} requested_known={} native_flags={:X} native_known={} provider_flags={:X} provider_known={} sdk_loaded={} caller_role={} target={} role_unknown_preserves_sdk=true observation_only=true",
+        reinterpret_cast<uintptr_t>(receiver), flags.requested, flags.requestedKnown,
+        flags.effectiveNative, flags.nativeKnown, flags.effectiveProvider, flags.providerKnown,
+        sdkLoaded, static_cast<unsigned>(caller), static_cast<unsigned>(target));
+}
 
 HMODULE StreamlineHooks::LoadIsolatedGamePlugin(LPCWSTR requestedPath)
 {
@@ -466,7 +661,7 @@ sl::Result StreamlineHooks::hkslGetFeatureVersion(sl::Feature feature, sl::Featu
 static sl::Result dummy_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
                                         const sl::DLSSGOptions* options)
 {
-    state.numFramesActuallyPresented = 1; // TODO: can do better
+    state.numFramesActuallyPresented = 0; // No real SDK presentation observation exists in this replacement stub.
     if (state.structVersion >= 2)
     {
         state.numFramesToGenerateMax = 1;
@@ -1329,7 +1524,7 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     if (state.activeFgInput != FGInput::DLSSG && state.activeFgOutput == FGOutput::DLSSG)
     {
         newOptions.mode = sl::DLSSGMode::eOff;
-        return o_slDLSSGSetOptions(viewport, newOptions);
+        return SubmitDlssgOptions(o_slDLSSGSetOptions, viewport, newOptions);
     }
 
     // Make DLSSG auto always mean On
@@ -1371,17 +1566,19 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
         // Populate dlssgMfgMax once
         if (!state.dlssgMfgMax.has_value() && !unlockPending)
         {
-            sl::DLSSGState localState {};
-            sl::DLSSGOptions localOptions {};
-            if (o_slDLSSGGetState(viewport, localState, &localOptions) == sl::Result::eOk)
+            // A capability lookup must not consume a second presented interval.
+            // Cold state remains unknown until a necessary real GetState call.
+            framegen::DlssgStateSample localState {};
+            if (ReadDlssgStateSample(o_slDLSSGGetState, viewport, localState) && localState.succeeded &&
+                localState.stateVersion >= 2)
             {
                 // A wrapper ahead of the snippet can answer a lower ceiling than the patched one.
-                if (auto unlockedMax = MfgUnlock::UnlockedMax(); unlockedMax > localState.numFramesToGenerateMax)
-                    localState.numFramesToGenerateMax = unlockedMax;
+                if (auto unlockedMax = MfgUnlock::UnlockedMax(); unlockedMax > localState.maxGenerated)
+                    localState.maxGenerated = unlockedMax;
 
-                if (localState.numFramesToGenerateMax > 0 && localState.numFramesToGenerateMax < 6)
+                if (localState.maxGenerated > 0 && localState.maxGenerated < 6)
                 {
-                    state.dlssgMfgMax = localState.numFramesToGenerateMax;
+                    state.dlssgMfgMax = localState.maxGenerated;
                     LOG_TRACE("Saving original numFramesToGenerateMax: {}", state.dlssgMfgMax.value());
 
                     // Volatile: the clamp holds for this run and leaves the ini setting alone.
@@ -1422,12 +1619,24 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 
     state.dlssgLastSetMode = newOptions.mode;
 
-    const auto result = o_slDLSSGSetOptions(viewport, newOptions);
+    const auto result = SubmitDlssgOptions(o_slDLSSGSetOptions, viewport, newOptions);
 
     MfgUnlock::RecordSetOptions(requestedCount, newOptions.numFramesToGenerate,
                                 newOptions.mode != sl::DLSSGMode::eOff, static_cast<unsigned int>(result));
 
     return result;
+}
+
+sl::Result StreamlineHooks::hkslDLSSGSetOptionsSerial(const sl::ViewportHandle& viewport,
+    const sl::DLSSGOptions& options)
+{
+    return SubmitDlssgOptions(o_slDLSSGSetOptions,viewport,options);
+}
+
+sl::Result StreamlineHooks::hkslDLSSGGetStateSerial(const sl::ViewportHandle& viewport,
+    sl::DLSSGState& state, const sl::DLSSGOptions* options)
+{
+    return QueryDlssgState(o_slDLSSGGetState,viewport,state,options,framegen::DlssgStateQueryReason::Other);
 }
 
 sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
@@ -1444,7 +1653,8 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
         sl::DLSSGState newState {};
 
         // We might be feeding a newer struct to an older SL but that seems to work just fine for this Get function
-        result = o_slDLSSGGetState(viewport, dynamic_cast<sl::DLSSGState&>(newState), options);
+        result = QueryDlssgState(o_slDLSSGGetState, viewport, newState, options,
+            framegen::DlssgStateQueryReason::Game);
         if (result != sl::Result::eOk)
             return result;
 
@@ -1474,20 +1684,17 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
 
         State::Instance().dlssgGameDMFGSupported = newState.bIsDynamicMFGSupported == sl::eTrue;
 
-        // The real DLSS-G's count, unless our own frame generation stands in for it (it writes its own
-        // count further down).
-        if (State::Instance().activeFgInput != FGInput::DLSSG)
-            MfgUnlock::RecordState(newState.numFramesActuallyPresented);
+        MfgUnlock::RecordState(newState.numFramesActuallyPresented);
     }
     else
     {
-        result = o_slDLSSGGetState(viewport, state, options);
+        result = QueryDlssgState(o_slDLSSGGetState, viewport, state, options,
+            framegen::DlssgStateQueryReason::Game);
         if (result != sl::Result::eOk)
             return result;
         State::Instance().dlssgGameDMFGSupported = state.bIsDynamicMFGSupported == sl::eTrue;
 
-        if (State::Instance().activeFgInput != FGInput::DLSSG)
-            MfgUnlock::RecordState(state.numFramesActuallyPresented);
+        MfgUnlock::RecordState(state.numFramesActuallyPresented);
 
         // The wrapper's ceiling, replaced by the unlocked count.
         if (auto unlockedMax = MfgUnlock::UnlockedMax(); unlockedMax > state.numFramesToGenerateMax)
@@ -1508,17 +1715,17 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
 
         if (!optiState.dlssgMfgMax.has_value() && !unlockPending)
         {
-            sl::DLSSGState localState {};
-            sl::DLSSGOptions localOptions {};
-            if (o_slDLSSGGetState(viewport, localState, &localOptions) == sl::Result::eOk)
+            framegen::DlssgStateSample localState {};
+            if (ReadDlssgStateSample(o_slDLSSGGetState, viewport, localState) && localState.succeeded &&
+                localState.stateVersion >= 2)
             {
                 // A wrapper ahead of the snippet can answer a lower ceiling than the patched one.
-                if (auto unlockedMax = MfgUnlock::UnlockedMax(); unlockedMax > localState.numFramesToGenerateMax)
-                    localState.numFramesToGenerateMax = unlockedMax;
+                if (auto unlockedMax = MfgUnlock::UnlockedMax(); unlockedMax > localState.maxGenerated)
+                    localState.maxGenerated = unlockedMax;
 
-                if (localState.numFramesToGenerateMax > 0 && localState.numFramesToGenerateMax < 6)
+                if (localState.maxGenerated > 0 && localState.maxGenerated < 6)
                 {
-                    optiState.dlssgMfgMax = localState.numFramesToGenerateMax;
+                    optiState.dlssgMfgMax = localState.maxGenerated;
                     LOG_TRACE("Saving original numFramesToGenerateMax: {}", optiState.dlssgMfgMax.value());
 
                     // Volatile: the clamp holds for this run and leaves the ini setting alone.
@@ -1542,19 +1749,10 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
             if (options != nullptr && options->flags & sl::DLSSGFlags::eRequestVRAMEstimate)
                 state.estimatedVRAMUsageInBytes = static_cast<uint64_t>(256 * 1024) * 1024;
 
-            if (fg->IsActive() && !fg->IsPaused())
-            {
-                state.numFramesActuallyPresented = fg->GetInterpolatedFrameCount() + 1;
-            }
-            else
-            {
-                state.numFramesActuallyPresented = 1;
-            }
         }
-        else
-        {
-            state.numFramesActuallyPresented = 1;
-        }
+
+        // Keep the actual SDK interval count. An active provider and requested
+        // interpolation multiplier do not prove any frames were presented.
 
         // Struct version 1 ends at 56 bytes, ahead of this field.
         if (originalStructVersion >= 2)
@@ -1681,7 +1879,7 @@ void* StreamlineHooks::hkdlssg_slGetPluginFunction(const char* functionName)
         if (steamOverlay != nullptr)
         {
             if (HMODULE callerModule = Util::GetCallerModule(_ReturnAddress()); callerModule == steamOverlay)
-                return o_slDLSSGSetOptions;
+                return &hkslDLSSGSetOptionsSerial;
         }
 
         return &hkslDLSSGSetOptions;
@@ -1691,14 +1889,10 @@ void* StreamlineHooks::hkdlssg_slGetPluginFunction(const char* functionName)
     {
         o_slDLSSGGetState = (decltype(&slDLSSGGetState)) o_dlssg_slGetPluginFunction(functionName);
 
-        // Give steam overlay the original as it seems to be hooking it
-        auto steamOverlay = KernelBaseProxy::GetModuleHandleA_()("gameoverlayrenderer64.dll");
-        if (steamOverlay != nullptr)
-        {
-            if (HMODULE callerModule = Util::GetCallerModule(_ReturnAddress()); callerModule == steamOverlay)
-                return o_slDLSSGGetState;
-        }
-
+        // Preserve the overlay's pass-through semantics, with serialization.
+        if (auto steam=KernelBaseProxy::GetModuleHandleA_()("gameoverlayrenderer64.dll");
+            steam && Util::GetCallerModule(_ReturnAddress())==steam)
+            return &hkslDLSSGGetStateSerial;
         return &hkslDLSSGGetState;
     }
 
@@ -1855,7 +2049,7 @@ sl::Result StreamlineHooks::hkslPCLSetMarker(sl::PCLMarker marker, const sl::Fra
             uint32_t newFrameId = static_cast<uint32_t>(frame + correction_offset);
 
             sl::FrameToken* newFramePointer {};
-            auto result = o_slGetNewFrameToken(newFramePointer, &newFrameId);
+            auto result = GetDlssgFrameToken(&hkslGetNewFrameToken,newFramePointer,&newFrameId);
             if (result != sl::Result::eOk || newFramePointer == nullptr)
             {
                 static std::atomic_bool correctionTokenLogged { false };
@@ -2066,10 +2260,14 @@ void StreamlineHooks::applyMenuDlssgInterlock(sl::DLSSGOptions& options, bool po
 
 // SL INTERPOSER
 
-void StreamlineHooks::unhookInterposer()
+void StreamlineHooks::unhookInterposer(bool tokenDomainHeld)
 {
     LOG_FUNC();
 
+    // A live source lease pins this actual token/API lifecycle. Detaching its
+    // trampoline before Sleep returns would invalidate the immutable lease.
+    auto tokenChange=tokenDomainHeld ? std::unique_lock<std::mutex>{} : PacingTokenDomain().TryChangeApi();
+    if (!tokenDomainHeld && !tokenChange.owns_lock()) return;
     std::lock_guard<std::mutex> detoursLock(g_detoursTransactionMutex);
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
@@ -2082,6 +2280,8 @@ void StreamlineHooks::unhookInterposer()
 
     if (o_slSetConstants)
         DetourDetach(&(PVOID&) o_slSetConstants, hkslSetConstants);
+    if (g_tokenHooked.load(std::memory_order_acquire) && o_slGetNewFrameToken)
+        DetourDetach(&(PVOID&)o_slGetNewFrameToken,hkslGetNewFrameToken);
 
     if (o_slEvaluateFeature)
         DetourDetach(&(PVOID&) o_slEvaluateFeature, hkslEvaluateFeature);
@@ -2113,6 +2313,9 @@ void StreamlineHooks::unhookInterposer()
     }
     else
     {
+        g_tokenHooked.store(false,std::memory_order_release);
+        g_tokenExport.store(nullptr,std::memory_order_release);
+        g_tokenTrampoline.store(nullptr,std::memory_order_release);
         dlssg::zzz::gameApi.store(0,std::memory_order_release);
         o_slInit = nullptr;
         o_slInit_sl1 = nullptr;
@@ -2140,6 +2343,8 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
         LOG_WARN("Streamline module in NULL");
         return;
     }
+    auto tokenChange=PacingTokenDomain().TryChangeApi();
+    if (!tokenChange.owns_lock()) return;
 
     // The independently loaded SDK must never become the game-origin API.
     const bool zzz=dlssg::depth_contract::Game()==GameRouting::Identity::ZenlessZoneZero;
@@ -2167,7 +2372,9 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
 
     if (o_slSetTag || o_slInit || o_slInit_sl1 || o_slSetTag_sl1 || o_slSetConstants_interposer_sl1 ||
         o_slEvaluateFeature_sl1)
-        unhookInterposer();
+    {
+        unhookInterposer(true);
+    }
 
     {
         char dllPath[MAX_PATH];
@@ -2202,7 +2409,8 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
             o_slSetD3DDevice = reinterpret_cast<decltype(&slSetD3DDevice)>(
                 KernelBaseProxy::GetProcAddress_()(slInterposer, "slSetD3DDevice"));
             o_slGetNewFrameToken = reinterpret_cast<decltype(&slGetNewFrameToken)>(
-                KernelBaseProxy::GetProcAddress_()(slInterposer, "slGetNewFrameToken")); // Not hooked
+                KernelBaseProxy::GetProcAddress_()(slInterposer, "slGetNewFrameToken"));
+            g_tokenExport.store(o_slGetNewFrameToken,std::memory_order_release);
 
             // For making the game think DLSSG is loaded and supported
             // but making SL not actually load the plugin
@@ -2225,6 +2433,8 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
                 DetourUpdateThread(GetCurrentThread());
 
                 DetourAttach(&(PVOID&) o_slInit, hkslInit);
+                if (o_slGetNewFrameToken)
+                    DetourAttach(&(PVOID&)o_slGetNewFrameToken,hkslGetNewFrameToken);
 
                 if (o_slEvaluateFeature != nullptr)
                     DetourAttach(&(PVOID&) o_slEvaluateFeature, hkslEvaluateFeature);
@@ -2270,6 +2480,8 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
                 //     DetourAttach(&(PVOID&) o_slSetD3DDevice, hkslSetD3DDevice);
 
                 auto detourResult = DetourTransactionCommit();
+                g_tokenTrampoline.store(detourResult==NO_ERROR?o_slGetNewFrameToken:nullptr,std::memory_order_release);
+                g_tokenHooked.store(detourResult==NO_ERROR && o_slGetNewFrameToken,std::memory_order_release);
                 if (zzz && detourResult==NO_ERROR && o_slEvaluateFeature)
                     dlssg::zzz::gameApi.store(reinterpret_cast<uintptr_t>(slInterposer),std::memory_order_release);
                 if (detourResult != NO_ERROR)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SysUtils.h"
+#include <runtime/F6InputPolicy.h>
 #include "Util.h"
 #include "Config.h"
 #include "Logger.h"
@@ -300,7 +301,7 @@ class FfxApiProxy
         }
 
         // Hook game's dlls
-        if (Config::Instance()->EnableFfxInputs.value_or_default() && main_dx12_hooked.dll != nullptr &&
+        if (F6InputPolicy::FsrBridgeEnabled && Config::Instance()->EnableFfxInputs.value_or_default() && main_dx12_hooked.dll != nullptr &&
             main_dx12_hooked.CreateContext != nullptr && !main_dx12_hooked.hooked)
         {
             DetourTransactionBegin();
@@ -452,7 +453,7 @@ class FfxApiProxy
             upscaling_dx12_hooked = upscaling_dx12;
         }
 
-        if (Config::Instance()->EnableFfxInputs.value_or_default() && upscaling_dx12_hooked.dll != nullptr &&
+        if (F6InputPolicy::FsrBridgeEnabled && Config::Instance()->EnableFfxInputs.value_or_default() && upscaling_dx12_hooked.dll != nullptr &&
             upscaling_dx12_hooked.CreateContext != nullptr && !upscaling_dx12_hooked.hooked)
         {
             DetourTransactionBegin();
@@ -590,7 +591,7 @@ class FfxApiProxy
             fg_dx12_hooked = fg_dx12;
         }
 
-        if (Config::Instance()->EnableFfxInputs.value_or_default() && fg_dx12_hooked.dll != nullptr &&
+        if (F6InputPolicy::FsrBridgeEnabled && Config::Instance()->EnableFfxInputs.value_or_default() && fg_dx12_hooked.dll != nullptr &&
             fg_dx12_hooked.CreateContext != nullptr && !fg_dx12_hooked.hooked)
         {
             DetourTransactionBegin();
@@ -732,7 +733,7 @@ class FfxApiProxy
             denoiser_dx12_hooked = denoiser_dx12;
         }
 
-        if (Config::Instance()->EnableFfxInputs.value_or_default() && denoiser_dx12_hooked.dll != nullptr &&
+        if (F6InputPolicy::FsrBridgeEnabled && Config::Instance()->EnableFfxInputs.value_or_default() && denoiser_dx12_hooked.dll != nullptr &&
             denoiser_dx12_hooked.CreateContext != nullptr && !denoiser_dx12_hooked.hooked)
         {
             DetourTransactionBegin();
@@ -874,7 +875,7 @@ class FfxApiProxy
             radiance_dx12_hooked = radiance_dx12;
         }
 
-        if (Config::Instance()->EnableFfxInputs.value_or_default() && radiance_dx12_hooked.dll != nullptr &&
+        if (F6InputPolicy::FsrBridgeEnabled && Config::Instance()->EnableFfxInputs.value_or_default() && radiance_dx12_hooked.dll != nullptr &&
             radiance_dx12_hooked.CreateContext != nullptr && !radiance_dx12_hooked.hooked)
         {
             DetourTransactionBegin();
@@ -1524,7 +1525,7 @@ class FfxApiProxy
             main_vk.Dispatch = (PfnFfxDispatch) KernelBaseProxy::GetProcAddress_()(main_vk.dll, "ffxDispatch");
             main_vk.Query = (PfnFfxQuery) KernelBaseProxy::GetProcAddress_()(main_vk.dll, "ffxQuery");
 
-            if (Config::Instance()->EnableFfxInputs.value_or_default() && main_vk.CreateContext != nullptr)
+            if (F6InputPolicy::FsrBridgeEnabled && Config::Instance()->EnableFfxInputs.value_or_default() && main_vk.CreateContext != nullptr)
             {
                 DetourTransactionBegin();
                 DetourUpdateThread(GetCurrentThread());

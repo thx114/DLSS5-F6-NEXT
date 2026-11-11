@@ -312,6 +312,50 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="runtime\F6InputPolicy.h" />
+    <ClInclude Include="runtime\NrPresentationSource.h" />
+    <ClInclude Include="runtime\NrPresentationOutput.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_GenshinPresentation.inl" />
+    <ClInclude Include="runtime\GuideDiagnostics.h" />
+    <ClInclude Include="runtime\GuideSourceMetadata.h" />
+    <ClInclude Include="runtime\GuideSourceMetadataNgx.h" />
+    <ClInclude Include="shaders\dlssnr\GuideMetadata.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_GuideObservation.h" />
+    <ClInclude Include="runtime\GuideCapture.h" />
+    <ClInclude Include="shaders\preview\GuidePreviewShader.h" />
+    <ClInclude Include="runtime\GuidePreview.inl" />
+    <ClInclude Include="runtime\GuideCalibration.h" />
+    <ClInclude Include="runtime\GuideCalibrationImages.h" />
+    <ClInclude Include="runtime\GuideCalibrationRuntime.h" />
+    <ClInclude Include="menu\GuideDiagnosticsMenu.h" />
+    <ClInclude Include="upscalers\NgxDx12ResourceView.h" />
+    <ClInclude Include="with_dx12\Dx11InteropSwapchainPolicy.h" />
+    <ClInclude Include="runtime\ManagedIni.h" />
+    <ClInclude Include="runtime\CpuSnapshotBytes.h" />
+    <ClInclude Include="runtime\CpuChangedByteRanges.h" />
+    <ClInclude Include="runtime\CpuIndexBounds.h" />
+    <ClInclude Include="runtime\Dx11SharedRead.h" />
+    <ClInclude Include="runtime\NativeProducerCpuTiming.h" />
+    <ClInclude Include="runtime\NativePrepGpuTiming.h" />
+    <ClInclude Include="runtime\Dx11RasterBindings.h" />
+    <ClInclude Include="runtime\InputObservation.h" />
+    <ClInclude Include="runtime\FsrHookHudMetrics.h" />
+    <ClInclude Include="runtime\StarRailResidencyPolicy.h" />
+    <ClInclude Include="runtime\OutputRevealHandoff.h" />
+    <ClInclude Include="runtime\ProducerProgress.h" />
+    <ClInclude Include="runtime\NrResident.h" />
+    <ClInclude Include="runtime\ObservedSetting.h" />
+    <ClInclude Include="genshin\GenshinInputObservation.h" />
+    <ClInclude Include="runtime\MappedResourceJournal.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_FrameInfo.h" />
+    <ClInclude Include="runtime\GpuWorkDomain.h" />
+    <ClInclude Include="runtime\FenceCompletion.h" />
+    <ClInclude Include="upscalers\FeatureTransition.h" />
+    <ClInclude Include="inputs\FG\UpscalerFrameParameters.h" />
+    <ClInclude Include="framegen\dlssg\DlssgOptionsPolicy.h" />
+    <ClInclude Include="shaders\dlssnr\SceneGuideContract.h" />
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="framegen\nvngx\Nvngx_Combo.h" />
     <ClInclude Include="fsr4\FSR4Upgrade.h" />
     <ClInclude Include="gpu_time\GpuTime_Dx11.h" />
@@ -341,6 +385,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="framegen\ffx\FSRFG_Dx12.h" />
     <ClInclude Include="framegen\IFGFeature.h" />
     <ClInclude Include="framegen\IFGFeature_Dx12.h" />
+    <ClInclude Include="framegen\GuideOrientation.h" />
     <ClInclude Include="framegen\nvngx\Nvngx_FG.h" />
     <ClInclude Include="fsr4\FSR4ModelSelection.h" />
     <ClInclude Include="hooks\D3D12_Hooks.h" />
@@ -348,6 +393,11 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="hooks\DxgiSwapchainSizing.h" />
     <ClInclude Include="shaders\dlssnr\DlssNr_DeferredSr.inl" />
     <ClInclude Include="shaders\dlssnr\DlssNr_DetailReuse.inl" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_DetailHistory.inl" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_DetailHistoryPolicy.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_HistoryDebug.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_EvaluateGuides.h" />
+    <ClInclude Include="shaders\dlssnr\precompile\dlssnr_detail_history.hlsli" />
     <ClInclude Include="shaders\dlssnr\DlssNr_SceneCut.inl" />
     <ClInclude Include="dlssnr\DlssNrSceneCut.h" />
     <ClInclude Include="dlssnr\DlssNrDetailReuseHost.h" />
@@ -580,6 +630,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="shaders\resource_flip\precompiled\RF_Shader.h" />
     <ClInclude Include="shaders\resource_flip\RF_Common.h" />
     <ClInclude Include="shaders\resource_flip\RF_Dx12.h" />
+    <ClInclude Include="shaders\resource_flip\RF_Region.h" />
     <ClInclude Include="shaders\depth_scale\DS_Common.h" />
     <ClInclude Include="shaders\depth_scale\DS_Dx12.h" />
     <ClInclude Include="shaders\depth_scale\precompiled\DS_Shader.h" />
@@ -864,6 +915,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="ui_mask\DrawUiMask.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="runtime\GuideCapture.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="runtime\GuideCalibrationRuntime.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="menu\GuideDiagnosticsMenu.cpp" />
     <ClInclude Include="ui_mask\DrawUiMask.h" />
     <ClInclude Include="resource_tracking\DrawObservation_Dx11.h" />
     <ClCompile Include="native\NativeProducer.cpp">
@@ -1065,6 +1119,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="genshin\GenshinFamilySkip.h" />
     <ClCompile Include="genshin\GenshinLegacyCapture.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClInclude Include="genshin\GenshinLegacyCapture.h" />
+    <ClInclude Include="genshin\GenshinDrawAdmission.h" />
+    <ClInclude Include="genshin\GenshinFsrPassObservation.h" />
     <ClInclude Include="genshin\GenshinFsrSubstageProgress.h" />
       <ClInclude Include="genshin\GenshinFgOutcome.h" />
     <ClInclude Include="menu\GenshinFsrSubstageUi.h" />
@@ -1085,6 +1141,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="genshin\GenshinTypedGuides.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClInclude Include="genshin\GenshinTypedGuides.h" />
     <ClInclude Include="genshin\GenshinNrProfile.h" />
+    <ClInclude Include="genshin\GenshinFsrProfiles.h" />
+    <ClInclude Include="genshin\GenshinFsrComposite.h" />
     <ClInclude Include="genshin\GenshinPresentNr.h" />
     <ClInclude Include="genshin\GenshinVisibleDrawProbe.h" />
     <ClInclude Include="genshin\GenshinVisibleOutput.h" />

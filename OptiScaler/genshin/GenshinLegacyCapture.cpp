@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "GenshinFsrProfiles.h"
+#include <runtime/F6InputPolicy.h>
+#include "GenshinFsrComposite.h"
 #include "GenshinLegacyCapture.h"
+#include "GenshinDrawAdmission.h"
+#include "GenshinFsrPassObservation.h"
 #include <resource_tracking/DrawObservation_Dx11.h>
+#include <runtime/ProducerProgress.h>
 #include <utility>
 #include "GenshinPsStateCache.h"
 #include "GenshinCpuWriterProbe.h"
@@ -128,19 +134,19 @@ static std::uint64_t captureMinimumGeneration=0;
 // The Render method/token gate is mandatory: this layout alone never admits a frame.
 struct Bindings
 {
-    std::array<ComPtr<ID3D11ShaderResourceView>,7> srvs;
+    std::array<ComPtr<ID3D11ShaderResourceView>,8> srvs;
     std::array<ComPtr<ID3D11RenderTargetView>,2> rtvs;
-    std::array<ComPtr<ID3D11Texture2D>,7> inputs;
+    std::array<ComPtr<ID3D11Texture2D>,8> inputs;
     std::array<ComPtr<ID3D11Texture2D>,2> outputs;
     std::array<ComPtr<ID3D11Resource>,2> outputResources;
     // Keep native allocation descriptors distinct from the effective view mip.
-    std::array<D3D11_TEXTURE2D_DESC,7> inResourceDesc{},inDesc{};
-    std::array<UINT,7> inputSubresource{};
+    std::array<D3D11_TEXTURE2D_DESC,8> inResourceDesc{},inDesc{};
+    std::array<UINT,8> inputSubresource{};
     std::array<UINT,2> outputSubresource{};
     std::array<D3D11_TEXTURE2D_DESC,2> outResourceDesc{},outDesc{};
-    std::array<D3D11_SHADER_RESOURCE_VIEW_DESC,7> inView{};
+    std::array<D3D11_SHADER_RESOURCE_VIEW_DESC,8> inView{};
     std::array<D3D11_RENDER_TARGET_VIEW_DESC,2> outView{};
-    std::array<uintptr_t,7> inputDevices{};
+    std::array<uintptr_t,8> inputDevices{};
     std::array<uintptr_t,2> outputDevices{};
     ComPtr<ID3D11RasterizerState> rasterizer;
     bool scissorEnabled=false;
@@ -150,6 +156,8 @@ struct Bindings
     unsigned colorSlot=0,depthSlot=2,motionSlot=3,outputSlot=1;
     ComPtr<ID3D11Buffer> cb;
     unsigned refusal=0;bool targetProfile=false,quiet=false;
+    uint64_t shaderHash=0;
+    ComPtr<ID3D11SamplerState> overlaySampler;
     uintptr_t contextIdentity=0,deviceIdentity=0;
     uint64_t deviceEpoch=0,ownerEpoch=0,configEpoch=0;
     DWORD ownerThread=0;
@@ -179,7 +187,7 @@ static bool RejectBindings(ID3D11DeviceContext* context,Bindings& b,BindingFailu
         << " context=" << reinterpret_cast<uintptr_t>(context) << " vp=" << b.viewport.TopLeftX << "," << b.viewport.TopLeftY
         << "," << b.viewport.Width << "x" << b.viewport.Height;
     D3D11_BUFFER_DESC cb{};if(b.cb)b.cb->GetDesc(&cb);out << " cb0=" << cb.ByteWidth;
-    for(unsigned i=0;i<7;++i){const auto& d=b.inResourceDesc[i];const auto& v=b.inView[i];
+    for(unsigned i=0;i<8;++i){const auto& d=b.inResourceDesc[i];const auto& v=b.inView[i];
         out << " srv" << i << "=" << bool(b.srvs[i]) << ":" << d.Width << "x" << d.Height << " fmt=" << d.Format
             << "/" << v.Format << " dim=" << v.ViewDimension << " mips=" << d.MipLevels << ":" << v.Texture2D.MostDetailedMip
             << "+" << v.Texture2D.MipLevels << " array=" << d.ArraySize << " samples=" << d.SampleDesc.Count
@@ -202,12 +210,14 @@ static bool ReadBindings(ID3D11DeviceContext* context,Bindings& b,const Bindings
     if(!b.rtvs[0] || !b.rtvs[1])return RejectBindings(context,b,BindingFailure::MissingMrt);
     if(retained && retained->refusal)retained=nullptr;
 
-    ID3D11ShaderResourceView* srvs[7]{};
+    const bool overlay=b.targetProfile && GenshinFsrProfiles::Overlay(b.shaderHash);
+    ID3D11ShaderResourceView* srvs[8]{};
     if(b.targetProfile) {
         context->PSGetShaderResources(0,1,srvs);
         context->PSGetShaderResources(2,2,srvs+2);
+        if(overlay){context->PSGetShaderResources(7,1,srvs+7);context->PSGetSamplers(1,1,&b.overlaySampler);}
     }else context->PSGetShaderResources(0,7,srvs); // Explicit capture-only observation.
-    for(unsigned i=0;i<7;++i)b.srvs[i].Attach(srvs[i]);
+    for(unsigned i=0;i<8;++i)b.srvs[i].Attach(srvs[i]);
     context->PSGetConstantBuffers(0,1,&b.cb);
     UINT count=D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
     D3D11_VIEWPORT viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]{};
@@ -217,10 +227,11 @@ static bool ReadBindings(ID3D11DeviceContext* context,Bindings& b,const Bindings
         return RejectBindings(context,b,BindingFailure::ViewportOrCb);
     if(retained && b.cb.Get()==retained->cb.Get())b.constantBytes=retained->constantBytes;
     else {D3D11_BUFFER_DESC d{};b.cb->GetDesc(&d);b.constantBytes=d.ByteWidth;}
-    if(b.constantBytes<464)return RejectBindings(context,b,BindingFailure::ViewportOrCb);
+    if(b.constantBytes<(overlay?496u:464u) || (overlay && (!b.overlaySampler || !b.srvs[7])))
+        return RejectBindings(context,b,BindingFailure::ViewportOrCb);
 
-    for(unsigned i=0;i<7;++i) {
-        if(b.targetProfile && i!=0 && i!=2 && i!=3)continue;
+    for(unsigned i=0;i<8;++i) {
+        if(b.targetProfile && i!=0 && i!=2 && i!=3 && !(overlay && i==7))continue;
         if(!b.srvs[i])continue;
         if(retained && b.srvs[i].Get()==retained->srvs[i].Get() && retained->inputs[i]) {
             b.inputs[i]=retained->inputs[i];b.inView[i]=retained->inView[i];
@@ -321,7 +332,7 @@ static bool RepairBindingsSafe(ID3D11DeviceContext* context,const Bindings& b,ID
     if(!privateId || !selectedId || !companionId || privateId==selectedId || privateId==companionId || selectedId==companionId)return false;
     // Paired repair inspects all current native inputs for aliasing. Ordinary
     // SR capture only needs t0/t2/t3; auxiliary descriptors stay off its hot path.
-    ID3D11ShaderResourceView* inputs[7]{};context->PSGetShaderResources(0,7,inputs);
+    ID3D11ShaderResourceView* inputs[8]{};context->PSGetShaderResources(0,8,inputs);
     bool inputSafe=true;
     for(auto* raw:inputs) {
         ComPtr<ID3D11ShaderResourceView> view;view.Attach(raw);
@@ -352,11 +363,12 @@ static bool RepairBindingsSafe(ID3D11DeviceContext* context,const Bindings& b,ID
 }
 static bool SameRepairBindings(const Bindings& a,const Bindings& b) noexcept
 {
-    if(a.outputSlot!=b.outputSlot || a.cb.Get()!=b.cb.Get() ||
+    if(a.shaderHash!=b.shaderHash || a.overlaySampler.Get()!=b.overlaySampler.Get() ||
+       a.outputSlot!=b.outputSlot || a.cb.Get()!=b.cb.Get() ||
        a.viewport.TopLeftX!=b.viewport.TopLeftX || a.viewport.TopLeftY!=b.viewport.TopLeftY ||
        a.viewport.Width!=b.viewport.Width || a.viewport.Height!=b.viewport.Height ||
        a.viewport.MinDepth!=b.viewport.MinDepth || a.viewport.MaxDepth!=b.viewport.MaxDepth)return false;
-    for(unsigned i=0;i<7;++i)if(a.srvs[i].Get()!=b.srvs[i].Get() || a.inputs[i].Get()!=b.inputs[i].Get() ||
+    for(unsigned i=0;i<8;++i)if(a.srvs[i].Get()!=b.srvs[i].Get() || a.inputs[i].Get()!=b.inputs[i].Get() ||
         a.inputSubresource[i]!=b.inputSubresource[i])return false;
     for(unsigned i=0;i<2;++i)if(a.rtvs[i].Get()!=b.rtvs[i].Get() || a.outputResources[i].Get()!=b.outputResources[i].Get() ||
         a.outputSubresource[i]!=b.outputSubresource[i])return false;
@@ -385,6 +397,9 @@ static bool NonHoYoConsumersEffectivelyOff() noexcept;
 static bool ObservationOnlyCurrent(ID3D11DeviceContext*,uint64_t) noexcept;
 static bool RefreshClaimObservation(ID3D11DeviceContext*,uint64_t) noexcept;
 static void RefreshOwnerObservation(ID3D11DeviceContext*,const ControlsSnapshot&) noexcept;
+// Zero means capture demand is requested or not yet known. A nonzero token
+// proves only that capture observation was off at this exact controls epoch.
+static std::atomic<uint64_t> captureInputOffEpoch{0};
 static bool OptionalGuideDemand() noexcept
 {
     const auto& cfg=*Config::Instance();
@@ -429,6 +444,14 @@ static NativeMrt::Frame NativeFrame(ID3D11Device* device,ID3D11DeviceContext* co
         v.view=reinterpret_cast<uintptr_t>(b.rtvs[i].Get());v.device=b.outputDevices[i];
         v.desc=b.outResourceDesc[i];v.viewFormat=b.outView[i].Format;
         v.viewDimension=b.outView[i].ViewDimension;v.firstMip=b.outView[i].Texture2D.MipSlice;}
+    if(GenshinFsrProfiles::Overlay(shader.hash)) {
+        auto& v=f.overlay;constexpr unsigned slot=7;
+        v.resource=reinterpret_cast<uintptr_t>(b.inputs[slot].Get());v.view=reinterpret_cast<uintptr_t>(b.srvs[slot].Get());
+        v.device=b.inputDevices[slot];v.desc=b.inResourceDesc[slot];v.viewFormat=b.inView[slot].Format;
+        v.viewDimension=b.inView[slot].ViewDimension;v.firstMip=b.inView[slot].Texture2D.MostDetailedMip;
+        v.mipCount=b.inView[slot].Texture2D.MipLevels;
+        f.overlaySampler=reinterpret_cast<uintptr_t>(b.overlaySampler.Get());
+    }
     // Keep optional native evidence for requested FG (even before provider
     // readiness) or independent NR. Explicit NoFG alone creates no fresh
     // reference; existing GPU owners still retire through their original paths.
@@ -453,6 +476,125 @@ cbuffer Settings:register(b0){uint depthFlipY;uint motionFlipY;uint2 unused;};
     PreparedMotion[id.xy]=-sign(d)*magnitude*magnitude;
 })";
 
+namespace {
+using ProducerProgress=FramePipeline::ProducerProgress;
+ProducerProgress::Owner ProgressOwner(const void* pipeline,ID3D11Device* device,ID3D11DeviceContext* context,
+    uint64_t deviceEpoch,uint64_t ownerEpoch,uint64_t configEpoch,uint64_t instance,DWORD thread) noexcept {
+    return {reinterpret_cast<uintptr_t>(pipeline),reinterpret_cast<uintptr_t>(device),reinterpret_cast<uintptr_t>(context),
+        deviceEpoch,ownerEpoch,configEpoch,instance,thread};
+}
+// Serialized by the existing native owner boundary. Observation only: this
+// watch never produces or refreshes a source/SDK/display/completion ticket.
+struct ProducerWatch {
+    struct Target {
+        ProducerProgress::Production production{};
+        uint64_t draw=0,object=0,hash=0,identity=0,bytes=0;
+    } target;
+    struct Sample {
+        ProducerProgress::Owner owner{};
+        uint64_t render=0,draw=0;
+        UINT count=0;unsigned kind=0;bool countKnown=false;
+        Target previous{};
+        Family::CurrentComparison comparison{};
+    };
+    ProducerProgress progress;
+    std::array<Sample,ProducerProgress::ProbeBudget> samples{};
+    unsigned pending=0;
+    // Draw wrappers have no engine-instance token. They may spend ONLY an
+    // observation budget for the locked Present snapshot, never claim its input.
+    // Actual target production below requires the independently matched token.
+    ProducerProgress::Owner SnapshotKey(const void* pipeline,ID3D11Device* device,ID3D11DeviceContext* context,
+        uint64_t deviceEpoch,uint64_t ownerEpoch,uint64_t configEpoch,DWORD thread) const noexcept {
+        return ProgressOwner(pipeline,device,context,deviceEpoch,ownerEpoch,configEpoch,progress.Identity().instance,thread);
+    }
+    bool Due(const ProducerProgress::Owner& snapshot) const noexcept {
+        return pending<samples.size() && progress.ProbeDue(snapshot);
+    }
+    void Emit() {
+        LOG_INFO("Genshin producer progress: phase={} owner={:X} device={:X} context={:X} device_epoch={} owner_epoch={} config_epoch={} instance={:X} thread={} render_generation={} target_generation={} target_instance={:X} target_draw={} target_object={:X} target_hash={:016X} probes={} observation_only=true target_stage=token-matched gpu_completion=UNKNOWN",
+            static_cast<unsigned>(progress.State()),progress.Identity().pipeline,progress.Identity().device,progress.Identity().context,
+            progress.Identity().deviceEpoch,progress.Identity().ownerEpoch,progress.Identity().configEpoch,progress.Identity().instance,
+            progress.Identity().thread,progress.Rendered(),target.production.generation,target.production.owner.instance,
+            target.draw,target.object,target.hash,progress.Probes());
+        for(unsigned i=0;i<pending;++i){const auto& p=samples[i];const auto& c=p.comparison;
+            LOG_INFO("Genshin producer comparison: owner={:X} device={:X} context={:X} device_epoch={} owner_epoch={} config_epoch={} instance={:X} thread={} render_generation={} draw={} kind={} count={} count_known={} previous_instance={:X} previous_generation={} previous_draw={} previous_object={:X} previous_hash={:016X} previous_identity={} previous_bytes={} cached_object={:X} cached_hash={:016X} cached_identity={} cached_bytes={} cached_state={} cached_device={:X} cached_epoch={} cached_hr={:08X} binding_cached={} metadata_cached={} actual_object={:X} actual_hash={:016X} actual_identity={} actual_bytes={} actual_state={} actual_device={:X} actual_epoch={} actual_hr={:08X} sequence={}/{} stable={} mismatch={} coverage_refused={} dispatch_before={:X}/{:X}/{:X}/{:X}/{:X} dispatch_after={:X}/{:X}/{:X}/{:X}/{:X} observation_only=true",
+                p.owner.pipeline,p.owner.device,p.owner.context,p.owner.deviceEpoch,p.owner.ownerEpoch,p.owner.configEpoch,p.owner.instance,p.owner.thread,
+                p.render,p.draw,p.kind,p.count,p.countKnown,p.previous.production.owner.instance,p.previous.production.generation,
+                p.previous.draw,p.previous.object,p.previous.hash,p.previous.identity,p.previous.bytes,
+                c.cached.shader,c.cachedHash,c.cachedIdentity,c.cachedBytes,static_cast<unsigned>(c.cached.state),c.cached.actualDevice,
+                c.cached.recordedEpoch,static_cast<unsigned>(c.cached.privateDataResult),c.cached.bindingCached,c.cached.metadataCached,
+                c.actual.shader,c.actualHash,c.actualIdentity,c.actualBytes,static_cast<unsigned>(c.actual.state),c.actual.actualDevice,
+                c.actual.recordedEpoch,static_cast<unsigned>(c.actual.privateDataResult),c.sequenceBefore,c.sequenceAfter,c.stable,c.mismatch,c.coverageRefused,
+                c.dispatchBefore[0],c.dispatchBefore[1],c.dispatchBefore[2],c.dispatchBefore[3],c.dispatchBefore[4],
+                c.dispatchAfter[0],c.dispatchAfter[1],c.dispatchAfter[2],c.dispatchAfter[3],c.dispatchAfter[4]);
+        }
+        pending=0;
+    }
+} producerWatch;
+// Diagnose the missing PASS, independently of shader/count selection. Only
+// scalar binding facts and a bounded actual PS reference cross into Present;
+// no texture, source, query, lease or SDK input is retained or manufactured.
+struct FsrPassWatch {
+    using Owner=ProducerProgress::Owner;
+    struct Record {
+        Owner owner{};FsrPassObservation::Facts facts{};
+        uint64_t render=0,draw=0;UINT count=0;unsigned kind=0;bool countKnown=false;
+        FsrPassObservation::PendingDelivery delivery;
+        DrawObservationDx11::ShaderIdentity actual{};uintptr_t object=0;
+        ComPtr<ID3D11PixelShader> shader;
+    };
+    FsrPassObservation::ScanBudget budget;
+    std::array<Record,8> records{};
+    unsigned used=0,dual=0,matched=0;
+    std::array<unsigned,7> failed{};
+    void Observe(const Owner& owner,ID3D11DeviceContext* context,ID3D11Device* device,
+        uint64_t draw,UINT count,bool known,unsigned kind) {
+        if(!budget.Spend(owner))return;
+        const auto facts=FsrPassObservation::Inspect(context);if(!facts.dual)return;++dual;
+        const auto mask=facts.Failures();for(unsigned i=0;i<failed.size();++i)if(mask&(1u<<i))++failed[i];
+        if(mask)return;++matched;
+        // This diagnostic uses only actual getters/private create identity. It
+        // never invokes the production cache correction or source classifier.
+        if(used==records.size())return;
+        ComPtr<ID3D11PixelShader> shader;context->PSGetShader(&shader,nullptr,nullptr);
+        const auto actual=DrawObservationDx11::Identity(shader.Get());
+        const auto object=reinterpret_cast<uintptr_t>(shader.Get());
+        for(unsigned i=0;i<used;++i)if(records[i].object==object &&
+            records[i].actual.hash==actual.hash && records[i].actual.bytes==actual.bytes)return;
+        auto& r=records[used++];r.owner=owner;r.facts=facts;r.render=budget.Opened();r.draw=draw;
+        r.count=count;r.countKnown=known;r.kind=kind;r.actual=actual;r.object=object;r.shader=std::move(shader);
+    }
+    void Present(const Owner& owner,uint64_t render,uint64_t produced,bool stalled) {
+        if(!FsrPassObservation::ProcessRequested())return;
+        for(unsigned i=0;i<used;++i){auto& r=records[i];
+            if(!r.delivery.TryEmit(r.owner,owner,GetCurrentThreadId()))continue;
+            const auto& f=r.facts;
+            LOG_INFO("Genshin FSR pass signature: pid={} device_epoch={} owner_epoch={} config_epoch={} instance={:X} context={:X} thread={} render_snapshot={} draw={} kind={} count={} count_known={} cb0={} input={}x{} output={}x{} actual_object={:X} create_hash={:016X} create_bytes={} fixed_layout_observation_only=true source_authority=NONE binding_snapshot_atomic=false",
+                GetCurrentProcessId(),r.owner.deviceEpoch,r.owner.ownerEpoch,r.owner.configEpoch,r.owner.instance,r.owner.context,r.owner.thread,
+                r.render,r.draw,r.kind,r.count,r.countKnown,f.cbBytes,f.inputs[0].width,f.inputs[0].height,f.outputs[1].width,f.outputs[1].height,
+                r.object,r.actual.hash,r.actual.bytes);
+            for(unsigned slot=0;slot<7;++slot){const auto& s=f.inputs[slot];
+                LOG_INFO("Genshin FSR pass surface: pid={} draw={} role=srv slot={} resource={:X} width={} height={} format={} semantics=UNPROVED",
+                    GetCurrentProcessId(),r.draw,slot,s.resource,s.width,s.height,s.format);}
+            for(unsigned slot=0;slot<2;++slot){const auto& s=f.outputs[slot];
+                LOG_INFO("Genshin FSR pass surface: pid={} draw={} role=rtv slot={} resource={:X} width={} height={} format={} semantics=UNPROVED",
+                    GetCurrentProcessId(),r.draw,slot,s.resource,s.width,s.height,s.format);}
+            // Reuse existing create-byte custody/disassembly, outside the draw.
+            // Absence is reported by ShaderLog, never reconstructed as code.
+            if(r.shader)GenshinDepthEvidence::ShaderLog(r.shader.Get(),r.draw,"FSR_SIGNATURE_PS");
+            r.shader.Reset();
+        }
+        if(budget.Ends(owner,render))
+            LOG_INFO("Genshin FSR pass scan: pid={} begin_render={} end_render={} same_owner={} draws={} draw_cap={} dual_rtv={} fixed_signature_matches={} failed_missing={} failed_cb={} failed_weights={} failed_input_sizes={} failed_history_sizes={} failed_viewport={} failed_scale={} observation_only=true scope=bounded_hooked_draws no_absence_or_performance_claim=true",
+                GetCurrentProcessId(),budget.Opened(),render,budget.SameOwner(owner),budget.Draws(),FsrPassObservation::ScanBudget::MaxDraws,
+                dual,matched,failed[0],failed[1],failed[2],failed[3],failed[4],failed[5],failed[6]);
+        const bool changed=owner.Valid() && !budget.SameOwner(owner);const auto previous=budget.Opened();
+        if(changed){records={};used=0;}
+        budget.Advance(owner,render,produced,stalled);
+        if(changed || budget.Opened()!=previous){dual=matched=0;failed={};}
+    }
+} fsrPassWatch;
+}
 struct CapturePipeline::Storage
 {
     GenshinSubstage::Key substageKey{};
@@ -509,10 +651,12 @@ struct CapturePipeline::Storage
     };
     struct History
     {
-        uint64_t instance=0,epoch=0,generation=0,canonicalGeneration=0,canonicalHistoryEpoch=0,repairedGeneration=0,completedTick=0;
+        uint64_t instance=0,epoch=0,generation=0,canonicalGeneration=0,canonicalHistoryEpoch=0,repairedGeneration=0,completedTick=0,shaderHash=0;
         GenshinPresentNr::Source canonicalSource{};
         GenshinCameraHistory::History cameraHistory;
         ComPtr<ID3D11Texture2D> color,depth,motion,output,privateOutput;
+        ComPtr<ID3D11Texture2D> compositeSource;
+        ComPtr<ID3D11ShaderResourceView> compositeView;
         std::shared_ptr<GenshinTransport::PreparedSrOutput> srOutput;
         bool srOutputUnavailable=false;
         ComPtr<ID3D11UnorderedAccessView> depthUav,motionUav;
@@ -542,6 +686,7 @@ struct CapturePipeline::Storage
     ComPtr<ID3DDeviceContextState> scratch;
     uint64_t nextContextStateAttempt=0; // Missing-state recovery only, never a draw-path clock.
     ComPtr<ID3D11ComputeShader> prepare;
+    GenshinFsrComposite::Pass composite;
     ComPtr<ID3D11Buffer> constants;
     ComPtr<ID3D11Query> completion;
     std::array<ComPtr<ID3D11Query>,3> completedSrQueries;
@@ -555,6 +700,7 @@ struct CapturePipeline::Storage
         std::shared_ptr<GenshinTransport::PreparedSrInputs> preparedInputs;
         std::shared_ptr<GenshinTransport::PreparedSrOutput> preparedOutput;
         ComPtr<ID3D11Buffer> prepareConstants;
+        ComPtr<ID3D11ShaderResourceView> compositeSource;
         uint64_t instance=0,historyEpoch=0;
         bool queryDone=false;
     };
@@ -600,6 +746,10 @@ struct CapturePipeline::Storage
     std::uint64_t presentTargetSwapchain=0,presentTargetGeneration=0;
     Settings settings;
     Status status;
+    // At most one selected comparison result, scoped by the actual draw serial.
+    uint64_t comparedDraw=0;
+    Family::Shader comparedShader;
+    Family::ReadObservation comparedObservation;
     NativeMrt::Transaction native;
     std::shared_ptr<Bindings> pendingNative,pendingRepair;
     std::shared_ptr<const Bindings> bindingCache; // Metadata only; issued Flights own GPU lifetimes.
@@ -674,7 +824,7 @@ struct CapturePipeline::Storage
         const auto& c=h.canonicalSource;const auto& live=presentNrSource;
         const bool sameOwner=!invalidated && GetCurrentThreadId()==thread && c.Known() && live.Known() &&
             h.canonicalHistoryEpoch==h.epoch && c.instance==h.instance && c.generation==h.canonicalGeneration &&
-            live.instance==c.instance && live.generation==c.generation && live.privateOutput==c.privateOutput &&
+            live.instance==c.instance && live.generation==c.generation && live.privateOutput==c.privateOutput && live.transfer==c.transfer &&
             c.privateOutput==GenshinPresentNr::Identity(h.output.Get()) &&
             c.device==GenshinPresentNr::Identity(device.Get()) && c.context==GenshinPresentNr::Identity(context.Get()) &&
             live.device==c.device && live.context==c.context && c.deviceEpoch==deviceEpoch &&
@@ -699,7 +849,9 @@ struct CapturePipeline::Storage
             knownOutput,sameOwner,compatible,noToken,static_cast<bool>(h.output),h.failed};
     }
     bool RepairEligible(const Bindings& b,const History& h,bool noToken) const noexcept
-    {return VisibleOutput::CanRepair(RepairPair(b,h,noToken));}
+    {return b.shaderHash==h.shaderHash &&
+        (!GenshinFsrProfiles::Overlay(b.shaderHash) || (h.compositeView && h.compositeSource.Get()==h.output.Get())) &&
+        VisibleOutput::CanRepair(RepairPair(b,h,noToken));}
     void RevokeRepair() noexcept
     {
         pendingRepair.reset();repairInstance=repairGeneration=repairShader=0;presentNrContent.Revoke();presentNrPictures.Revoke();
@@ -715,10 +867,10 @@ struct CapturePipeline::Storage
         {trace.stage=8;RevokeRepair();status.reason=CaptureReason::Draining;status.srAccepted=false;return false;}
         auto held=std::move(pendingRepair);if(!held || !pairedLease.Occupied())return false;
         History* h=nullptr;for(auto& candidate:histories)if(candidate && candidate->instance==repairInstance)h=candidate.get();
-        Bindings current;current.targetProfile=true;current.quiet=true;il2cpp_callsite::RenderToken token;
+        Bindings current;current.targetProfile=true;current.quiet=true;current.shaderHash=held?held->shaderHash:0;il2cpp_callsite::RenderToken token;
         const auto shader=Family::Current(context.Get(),device.Get(),deviceEpoch);
         if(!h || repairDraw!=status.observedDraws || h->generation!=repairGeneration || !shader.Known() || shader.identity!=repairShader ||
-            shader.hash!=fsr2_family_takeover::k_accumulate_hash || !ReadBindings(context.Get(),current,held.get()) ||
+            !GenshinFsrProfiles::Accumulate(shader.hash) || !ReadBindings(context.Get(),current,held.get()) ||
             !SameRepairBindings(current,*held) || !RepairBindingsSafe(context.Get(),current,h->output.Get()) ||
             !RepairEligible(current,*h,MatchToken(current,token)==0)){pairedLease.End();if(h)ClearCanonical(*h);repairStage=6;trace.stage=6;return false;}
         ComPtr<ID3DDeviceContextState> previous;
@@ -732,7 +884,10 @@ struct CapturePipeline::Storage
             RevokeRepair();status.pending=true;status.reason=CaptureReason::Draining;status.srAccepted=false;
             return false;
         }
-        context->CopySubresourceRegion(current.outputs[current.outputSlot].Get(),current.outputSubresource[current.outputSlot],
+        if(GenshinFsrProfiles::Overlay(shader.hash)) {
+            composite.Draw(context.Get(),h->compositeView.Get(),current.srvs[7].Get(),current.overlaySampler.Get(),
+                current.cb.Get(),current.rtvs[current.outputSlot].Get(),h->outputWidth,h->outputHeight);
+        } else context->CopySubresourceRegion(current.outputs[current.outputSlot].Get(),current.outputSubresource[current.outputSlot],
             0,0,0,h->output.Get(),0,nullptr);
         pairedCopySerial=GenshinPresentNrTrace::Sequence();pairedLease.End();context1->SwapDeviceContextState(previous.Get(),nullptr);
         trace.stage=5;trace.submitted=true;trace.copySeq=pairedCopySerial;
@@ -1206,6 +1361,10 @@ bool CapturePipeline::BeginDrawObservation(UINT count,bool countKnown,unsigned d
 {
     GenshinCpuStageTiming::Scope hostObserve(GenshinCpuStageTiming::Stage::HostObserveDraw);
     auto& s=*storage_;s.returnedDrawKind=drawKind;++s.status.observedDraws;s.status.srAccepted=false;s.status.entryInstalled=il2cpp_callsite::active();
+    s.comparedDraw=0;s.comparedShader={};s.comparedObservation={};
+    // A capture's original-return witness belongs only to the draw that armed
+    // it. An unmatched callback cannot be completed by a later scene writer.
+    s.observedRouteReturnPending=false;
     if(s.fullDrawObservation && GetCurrentThreadId()==s.thread && !s.invalidated && s.context && s.device){
         const bool guideDemand=OptionalGuideDemand();
         s.ObserveCameraDemand(guideDemand);
@@ -1227,15 +1386,19 @@ bool CapturePipeline::BeginDrawObservation(UINT count,bool countKnown,unsigned d
     const auto blocked=[&](CaptureStage stage) {s.status.captureStage=stage;++s.status.preShaderBlocked;return false;};
     if(!s.settings.enabled){s.status.reason=CaptureReason::Disabled;return blocked(CaptureStage::Disabled);}
     if(!Config::Instance()->GenshinControlsCurrent(s.configEpoch)){RevokeTransport();return blocked(CaptureStage::ControlsChanged);}
+    if(!s.invalidated && !s.status.captureOnlyActive && s.device && s.context && s.status.entryInstalled &&
+       GetCurrentThreadId()==s.thread && drawKind>=1 && drawKind<=7){
+        const auto snapshot=producerWatch.SnapshotKey(this,s.device.Get(),s.context.Get(),s.deviceEpoch,s.ownerEpoch,s.configEpoch,s.thread);
+        if(producerWatch.Due(snapshot) && producerWatch.progress.OfferProbe(snapshot)){
+            auto& sample=producerWatch.samples[producerWatch.pending++];sample={};
+            sample.owner=snapshot;sample.render=producerWatch.progress.Rendered();sample.draw=s.status.observedDraws;
+            sample.kind=drawKind;sample.count=count;sample.countKnown=countKnown;sample.previous=producerWatch.target;
+            s.comparedShader=Family::CompareCurrent(s.context.Get(),s.device.Get(),s.deviceEpoch,s.comparedObservation,sample.comparison);
+            s.comparedDraw=s.status.observedDraws;
+        }
+        fsrPassWatch.Observe(snapshot,s.context.Get(),s.device.Get(),s.status.observedDraws,count,countKnown,drawKind);
+    }
     return true;
-}
-GenshinFsr::NativeDrawAction CapturePipeline::BeforeNonTargetDraw(UINT count,unsigned drawKind)
-{
-    // Only positive, known non-three counts use this entry. Unknown/zero draws
-    // retain BeforeDraw's original slow path; this entry grants no capture.
-    if(!count || count==3)return BeforeDraw(count,true,true,drawKind);
-    if(BeginDrawObservation(count,true,drawKind))storage_->status.captureStage=CaptureStage::DrawCount;
-    return Action::ContinueOriginal;
 }
 GenshinFsr::NativeDrawAction CapturePipeline::BeforeDraw(UINT count,bool familyAllowed,bool countKnown,unsigned drawKind)
 {
@@ -1243,8 +1406,15 @@ GenshinFsr::NativeDrawAction CapturePipeline::BeforeDraw(UINT count,bool familyA
     if(!BeginDrawObservation(count,countKnown,drawKind))return Action::ContinueOriginal;
     auto& s=*storage_;
     const auto blocked=[&](CaptureStage stage) {s.status.captureStage=stage;++s.status.preShaderBlocked;return Action::ContinueOriginal;};
-    if(countKnown && count!=3){s.status.captureStage=CaptureStage::DrawCount;return Action::ContinueOriginal;}
-    if(countKnown)++s.status.threeElementDraws;
+    const DrawAdmission::Call call{count,drawKind,countKnown};
+    if(countKnown && count==3)++s.status.threeElementDraws;
+    // Capture-only keeps its existing observation contract. Ordinary SR admits
+    // known positive work regardless of vertex count, then authenticates PS,
+    // bindings and Render token below. Unknown/zero work cannot publish a frame.
+    if((s.status.captureOnlyActive && countKnown && count!=3) ||
+       (!s.status.captureOnlyActive && !call.KnownWork())) {
+        s.status.captureStage=CaptureStage::DrawCount;return Action::ContinueOriginal;
+    }
     if(!s.device || !s.context)return blocked(CaptureStage::MissingOwner);
     if(!s.status.captureOnlyActive && (!s.context1 || !s.scratch)){
         s.status.reason=CaptureReason::PreparationFailed;return blocked(CaptureStage::ContextState);}
@@ -1349,6 +1519,7 @@ GenshinFsr::NativeDrawAction CapturePipeline::BeforeDraw(UINT count,bool familyA
     };
     ComPtr<ID3D11PixelShader> observedPixel;
     const auto shader=[&]() {
+        if(s.comparedDraw==s.status.observedDraws){s.status.shaderObservation=s.comparedObservation;return s.comparedShader;}
         if(!reuseDrawShader())return Family::Current(s.context.Get(),s.device.Get(),s.deviceEpoch,&s.status.shaderObservation);
         // The retained immediate context/device pair was checked before this
         // call; Read still authenticates the actual shader/device/epoch record.
@@ -1360,13 +1531,15 @@ GenshinFsr::NativeDrawAction CapturePipeline::BeforeDraw(UINT count,bool familyA
     }();
     if(shader.Known())++s.status.knownShaderDraws;else ++s.status.unknownShaderDraws;
     s.status.shaderHash=shader.hash;s.status.shaderIdentity=shader.identity;
-    const bool accumulate=shader.Known() && shader.hash==fsr2_family_takeover::k_accumulate_hash;
+    const bool accumulate=shader.Known() && GenshinFsrProfiles::Accumulate(shader.hash) &&
+        (!GenshinFsrProfiles::Overlay(shader.hash) ||
+         (shader.nrProfile && shader.nrProfile->MatchesShader(s.deviceEpoch,shader.identity,shader.hash)));
     const bool prepass=shader.Known() && s.family.replaced && s.settings.familySkip && familyAllowed && count==3 &&
         (shader.hash==fsr2_family_takeover::k_pre_hash_1 || shader.hash==fsr2_family_takeover::k_pre_hash_2 ||
          shader.hash==fsr2_family_takeover::k_pre_hash_3 || shader.hash==fsr2_family_takeover::k_pre_hash_4);
     if(!accumulate && !prepass) {
         s.status.captureStage=shader.Known()?CaptureStage::ShaderMismatch:CaptureStage::ShaderUnknown;
-        if(!s.status.targetShaderDraws)s.status.reason=shader.Known()?CaptureReason::ShaderNotMatched:CaptureReason::ShaderUnavailable;
+        s.status.reason=shader.Known()?CaptureReason::ShaderNotMatched:CaptureReason::ShaderUnavailable;
         return Action::ContinueOriginal;
     }
     // Retire at a real producer/family invocation or Present. Unrelated
@@ -1376,7 +1549,7 @@ GenshinFsr::NativeDrawAction CapturePipeline::BeforeDraw(UINT count,bool familyA
     // receives its full current device/epoch/private-data check on every call.
     if(s.family.replaced){
         const auto held=Family::Read(s.device.Get(),s.familyAccumulate.Get(),s.deviceEpoch);
-        if(!held.Known() || held.hash!=fsr2_family_takeover::k_accumulate_hash || held.identity!=s.family.shaderIdentity)
+        if(!held.Known() || !GenshinFsrProfiles::SkipPrepasses(held.hash) || held.identity!=s.family.shaderIdentity)
         {s.family.Reset();s.familyAccumulate.Reset();}
     }
     // Admit examines time only after these early refusals. Do not read the
@@ -1412,13 +1585,14 @@ GenshinFsr::NativeDrawAction CapturePipeline::BeforeDraw(UINT count,bool familyA
     // inspection so an unrelated 3-vertex draw cannot overwrite the producer refusal.
     if(!accumulate){s.status.captureStage=shader.Known()?CaptureStage::ShaderMismatch:CaptureStage::ShaderUnknown;
         // No Render token was inspected on this branch.
-        if(!s.status.targetShaderDraws)s.status.reason=shader.Known()?CaptureReason::ShaderNotMatched:CaptureReason::ShaderUnavailable;
+        s.status.reason=shader.Known()?CaptureReason::ShaderNotMatched:CaptureReason::ShaderUnavailable;
         return Action::ContinueOriginal;}
     s.status.captureStage=CaptureStage::Bindings;
     // Revoke old selected content before either native fallback or successful
     // before-native replacement; private preparation cannot preserve old colour.
     s.NativeSelectedContent(s.status.observedDraws);
     ++s.status.targetShaderDraws;
+    s.status.targetDrawKind=drawKind;s.status.targetDrawCount=count;s.status.targetCountKnown=countKnown;
     s.repairTargetDraw=s.status.observedDraws;s.repairStage=2;s.repairPollStop=0;
     s.repairMask=s.repairTokenMatches=0;s.repairCanonical=s.repairCpuGeneration=0;
     s.TraceRepairTarget(2);
@@ -1436,7 +1610,7 @@ GenshinFsr::NativeDrawAction CapturePipeline::BeforeDraw(UINT count,bool familyA
     GenshinSubstage::Scope substageScope(s.substageKey);
     GenshinSubstage::Event(GenshinSubstage::Stage::TargetDraw,GenshinSubstage::State::Succeeded);
     GenshinSubstage::Event(GenshinSubstage::Stage::Bindings,GenshinSubstage::State::Running);
-    auto bindings=std::make_shared<Bindings>();bindings->targetProfile=true;
+    auto bindings=std::make_shared<Bindings>();bindings->targetProfile=true;bindings->shaderHash=shader.hash;
     if(!ReadBindings(s.context.Get(),*bindings,s.bindingCache.get())){++s.status.bindingRejected;s.status.bindingRefusal=bindings->refusal;
         s.pendingRepairTrace.target.bindingsRefusal=bindings->refusal;
         GenshinSubstage::Event(GenshinSubstage::Stage::Bindings,GenshinSubstage::State::Failed,
@@ -1485,14 +1659,23 @@ GenshinFsr::NativeDrawAction CapturePipeline::BeforeDraw(UINT count,bool familyA
     const auto native=NativeFrame(s.device.Get(),s.context.Get(),*bindings,token,shader,
         s.deviceEpoch,s.ownerEpoch,s.configEpoch,s.thread,s.status.observedDraws,s.settings);
     ++s.status.tokenMatches;s.status.captureStage=CaptureStage::Native;
+    // Production follows this invocation's exact matched token, never the
+    // Present snapshot used to schedule diagnostic comparisons.
+    producerWatch.target={{ProgressOwner(this,s.device.Get(),s.context.Get(),s.deviceEpoch,s.ownerEpoch,s.configEpoch,
+        token.params.instance,s.thread),token.generation},s.status.observedDraws,s.status.shaderObservation.shader,
+        shader.hash,shader.identity,shader.bytes};
     // Reuse the existing claim-boundary subscription. This accounts for real
     // readers/retirements and rechecks dynamic demand under the native owner lock.
     // It is not equivalent to disabling owned HoYoShade integration alone.
-    const bool beforeNative=RefreshClaimObservation(s.context.Get(),s.configEpoch);
+    // Existing triangle replacement permission does not certify arbitrary
+    // geometry. A new non-three target executes the real companion MRT draw
+    // before the same-call Returned/ClaimOriginal transaction and SR copyback.
+    const bool beforeNative=call.LegacyReplacement() && !GenshinFsrProfiles::Overlay(shader.hash) &&
+        RefreshClaimObservation(s.context.Get(),s.configEpoch);
     const auto armed=s.native.Arm(native);s.status.nativeRefusal=static_cast<uint32_t>(armed);
     if(armed!=NativeMrt::Reason::Ready){s.status.reason=CaptureReason::UnsupportedBindings;return Action::ContinueOriginal;}
     s.pendingNative=std::move(bindings);s.pendingToken=token;s.pendingShader=shader;
-    s.pendingAccumulate=accumulateShader;s.pendingFamilyAllowed=familyAllowed;
+    s.pendingAccumulate=accumulateShader;s.pendingFamilyAllowed=familyAllowed && call.LegacyReplacement();
     if(beforeNative && s.native.BeginReplacement()==NativeMrt::Reason::Ready) {
         Action action=Action::ContinueOriginal;
         try{action=CompleteNativeReplacement(true);}
@@ -1514,7 +1697,9 @@ GenshinFsr::NativeDrawAction CapturePipeline::CompleteNativeReplacement(bool bef
     GenshinSubstage::Scope substageScope(s.substageKey);
     auto bindings=std::move(s.pendingNative);const auto token=s.pendingToken;const auto shader=s.pendingShader;
     auto accumulateShader=std::move(s.pendingAccumulate);const auto familyAllowed=s.pendingFamilyAllowed;
-    const bool accumulate=shader.Known() && shader.hash==fsr2_family_takeover::k_accumulate_hash;
+    const bool accumulate=shader.Known() && GenshinFsrProfiles::Accumulate(shader.hash) &&
+        (!GenshinFsrProfiles::Overlay(shader.hash) ||
+         (shader.nrProfile && shader.nrProfile->MatchesShader(s.deviceEpoch,shader.identity,shader.hash)));
     const auto* source=beforeNative?s.native.ReplacementFrame():s.native.ClaimedFrame();
     if(!bindings || !source || (beforeNative && !ObservationOnlyCurrent(s.context.Get(),s.configEpoch)))
         return Action::ContinueOriginal;
@@ -1564,7 +1749,7 @@ GenshinFsr::NativeDrawAction CapturePipeline::CompleteNativeReplacement(bool bef
     const auto deltaMs=h.lastTime.time_since_epoch().count()?std::clamp(std::chrono::duration<float,std::milli>(now-h.lastTime).count(),1.0f,100.0f):16.666667f;
     const auto& controls=source->controls;
     if(!NativeMrt::ApplyProfile(controls,token,h.havePreviousJitter,h.previousJitterX,h.previousJitterY,
-           deltaMs,h.epoch,!h.generation,false,p))
+           deltaMs,h.epoch,!h.generation,h.shaderHash && h.shaderHash!=shader.hash,p))
     {s.status.reason=CaptureReason::InvalidTemporalInput;return Action::ContinueOriginal;}
     const GenshinGuides::Owner cameraOwner{reinterpret_cast<uint64_t>(s.device.Get()),
         reinterpret_cast<uint64_t>(s.context.Get()),s.deviceEpoch,s.ownerEpoch,s.configEpoch,
@@ -1572,6 +1757,16 @@ GenshinFsr::NativeDrawAction CapturePipeline::CompleteNativeReplacement(bool bef
     // Select before the outer query, immutable receipt, ResourceSet inspection
     // and provider call. No output identity is rewritten after admission.
     const auto srOutput=s.SelectSrOutput(h,cameraOwner,p,bindings->outputFormat);
+    const bool compose=GenshinFsrProfiles::Overlay(shader.hash);
+    if(compose) {
+        if(!s.composite.Init(s.device.Get())){s.status.reason=CaptureReason::PreparationFailed;return Action::ContinueOriginal;}
+        if(h.compositeSource.Get()!=h.output.Get() || !h.compositeView) {
+            ComPtr<ID3D11ShaderResourceView> view;
+            if(FAILED(s.device->CreateShaderResourceView(h.output.Get(),nullptr,&view)))
+            {s.status.reason=CaptureReason::PreparationFailed;return Action::ContinueOriginal;}
+            h.compositeSource=h.output;h.compositeView=std::move(view);
+        }
+    }
     const bool cameraDemand=!beforeNative && OptionalGuideDemand();
     s.ObserveCameraDemand(cameraDemand);
     const auto cameraSample=cameraDemand?GenshinCameraHistory::Adapt(token,cameraOwner):std::nullopt;
@@ -1584,6 +1779,7 @@ GenshinFsr::NativeDrawAction CapturePipeline::CompleteNativeReplacement(bool bef
     catch(...){s.status.reason=CaptureReason::PreparationFailed;return Action::ContinueOriginal;}
     auto& flight=s.flights.back();flight.query=completion;flight.bindings=held;
     flight.instance=h.instance;flight.historyEpoch=h.epoch;flight.preparedOutput=srOutput;
+    if(compose)flight.compositeSource=h.compositeView;
     s.completion=completion;s.rawLease=std::move(held);s.status.pending=true;
     auto& b=*s.rawLease;
     s.TraceOuterQuery(1,p.instance,p.generation,p.sourceFrame,h.output.Get(),b.outputs[b.outputSlot].Get(),
@@ -1763,7 +1959,11 @@ GenshinFsr::NativeDrawAction CapturePipeline::CompleteNativeReplacement(bool bef
                     Config::Instance()->GenshinControlsCurrent(s.configEpoch);
             }
             if(resumeObservation){ownerObservation=srOnlyHandoff;ownerObservation.call=0;}
-            s.context->CopySubresourceRegion(b.outputs[b.outputSlot].Get(),b.outputSubresource[b.outputSlot],0,0,0,h.output.Get(),0,nullptr);++s.status.outputCopies;
+            if(compose) {
+                s.composite.Draw(s.context.Get(),flight.compositeSource.Get(),b.srvs[7].Get(),b.overlaySampler.Get(),
+                    b.cb.Get(),b.rtvs[b.outputSlot].Get(),p.outputWidth,p.outputHeight);
+            } else s.context->CopySubresourceRegion(b.outputs[b.outputSlot].Get(),b.outputSubresource[b.outputSlot],0,0,0,h.output.Get(),0,nullptr);
+            ++s.status.outputCopies;
             replacementCopied=true;
             if(beforeNative)++s.status.beforeNativeReplacements;
             s.pendingRepairTrace.outer.copyOrdered=true;
@@ -1771,11 +1971,12 @@ GenshinFsr::NativeDrawAction CapturePipeline::CompleteNativeReplacement(bool bef
             // The SR copy is ordered on the same immediate context subsequently
             // used to capture the real final backbuffer at Present. No scene guide
             // is claimed to describe game postprocessing or HUD here.
-            const GenshinPresentNr::Source copiedSource={GenshinPresentNr::Identity(s.device.Get()),GenshinPresentNr::Identity(s.context.Get()),
+            GenshinPresentNr::Source copiedSource={GenshinPresentNr::Identity(s.device.Get()),GenshinPresentNr::Identity(s.context.Get()),
                 reinterpret_cast<uintptr_t>(privateOutputIdentity.Get()),GenshinPresentNr::Identity(b.outputResources[b.outputSlot].Get()),
                 s.deviceEpoch,s.ownerEpoch,s.configEpoch,p.instance,p.generation,p.sourceFrame,s.thread,
                 p.outputWidth,p.outputHeight,b.outputSubresource[b.outputSlot],s.substageKey,
                 s.pendingRepairTrace.outer.seq,GenshinPresentNrTrace::Sequence(),0};
+            copiedSource.transfer=compose?GenshinPresentNr::Source::Transfer::NativeOverlay:GenshinPresentNr::Source::Transfer::Copy;
             h.canonicalSource=copiedSource;
             h.canonicalSource.attempt=s.substageAttempt;
             h.canonicalSource.historyEpoch=h.epoch;
@@ -1822,16 +2023,19 @@ GenshinFsr::NativeDrawAction CapturePipeline::CompleteNativeReplacement(bool bef
                 h.gameOutputs[1]=h.gameOutputs[0];h.gameOutputSubresources[1]=h.gameOutputSubresources[0];
                 h.gameOutputs[0]=b.outputs[b.outputSlot];h.gameOutputSubresources[0]=b.outputSubresource[b.outputSlot];}
             h.previousJitterX=cp.jitter_x;h.previousJitterY=cp.jitter_y;h.havePreviousJitter=true;
+            if(h.shaderHash!=shader.hash)LOG_INFO("Genshin FSR profile committed: pid={} hash={:016X} identity={} generation={} source_frame={} colour={} native_draw_preserved={} native_alpha_preserved={} before_native={} reset={}",
+                GetCurrentProcessId(),shader.hash,shader.identity,p.generation,p.sourceFrame,compose?"native-t7-s1-composite":"base",!beforeNative,compose,beforeNative,p.reset);
+            h.shaderHash=shader.hash;
             il2cpp_callsite::consume_render_token_for(cp.instance,token.generation);
             s.status.reason=CaptureReason::OutputQueued;s.status.srAccepted=true;
-            if(accumulate && familyAllowed)
+            if(accumulate && GenshinFsrProfiles::SkipPrepasses(shader.hash) && familyAllowed)
             {
                 s.familyAccumulate=accumulateShader;
                 s.family.Notify(shader,reinterpret_cast<uintptr_t>(s.device.Get()),reinterpret_cast<uintptr_t>(s.context.Get()),
                     s.ownerEpoch,true,GetTickCount64());++s.status.familyReplacements;
             }
         }
-        else{ownerObservation.srOnly=false;const bool retryableTimeout=result.unsubmittedRecordingTimeout &&
+        else{ownerObservation.srOnly=false;const bool retryablePending=result.unsubmittedRecordingPending &&
             result.reason==GenshinFsr::Reason::Pending && !result.pendingLease;
             const bool unsupportedExposure=result.unsubmittedManualExposure &&
                 result.reason==GenshinFsr::Reason::InvalidParameters && !result.pendingLease &&
@@ -1859,11 +2063,11 @@ GenshinFsr::NativeDrawAction CapturePipeline::CompleteNativeReplacement(bool bef
                 h.manualExposureUnavailable=true;
                 s.status.reason=CaptureReason::ConsumerFailed;s.status.srAccepted=false;
             }
-            else if(retryableTimeout) {
+            else if(retryablePending) {
                 s.status.reason=CaptureReason::Pending;
                 static std::atomic<unsigned> reports{0};
                 if(reports.fetch_add(1,std::memory_order_relaxed)<8)
-                    LOG_INFO("R23 SR unsubmitted timeout pending: pid={} instance={} generation={} native_preserved=true retry=true no_authority=true",
+                    LOG_INFO("SR unsubmitted recording pending: pid={} instance={} generation={} native_preserved=true retry=true no_authority=true",
                         GetCurrentProcessId(),p.instance,p.generation);
             } else {s.status.reason=CaptureReason::ConsumerFailed;s.status.srAccepted=false;h.failed=true;h.generation=token.generation;}
             il2cpp_callsite::consume_render_token_for(cp.instance,token.generation);}
@@ -2093,11 +2297,13 @@ void CapturePipeline::AfterOriginalDraw(UINT count,bool countKnown) noexcept
         s.depthMapping.Returned(s.context.Get());
         s.ObservePresentPicture(count,countKnown);
     }
-    if(!countKnown || count!=3)return;
+    if(!s.status.captureOnlyActive && !DrawAdmission::Call{count,s.returnedDrawKind,countKnown}.KnownWork())return;
+    if(s.status.captureOnlyActive && (!countKnown || count!=3))return;
     if(s.pendingRepair){s.CompleteRepair();
         if(!Config::Instance()->GenshinControlsCurrent(s.configEpoch))RevokeTransport();return;}
     if(s.native.Pending()) {
-        Bindings currentBindings;currentBindings.targetProfile=true;il2cpp_callsite::RenderToken currentToken;
+        Bindings currentBindings;currentBindings.targetProfile=true;
+        currentBindings.shaderHash=s.pendingNative?s.pendingNative->shaderHash:0;il2cpp_callsite::RenderToken currentToken;
         const bool matched=s.pendingNative && ReadBindings(s.context.Get(),currentBindings,s.pendingNative.get()) &&
             MatchToken(currentBindings,currentToken,s.pendingToken.params.instance)==1;
         NativeMrt::Reason reason=NativeMrt::Reason::BindingsChanged;
@@ -2113,15 +2319,21 @@ void CapturePipeline::AfterOriginalDraw(UINT count,bool countKnown) noexcept
         } else s.status.reason=CaptureReason::UnsupportedBindings;
         s.pendingNative.reset();s.pendingRepair.reset();s.pendingAccumulate.Reset();s.native.Revoke();
     }
-    if(s.signalProvider!=&Engine::Producer::Publish)return;
+    // The default engine producer publishes only on the capture draw. Do not
+    // copy its receipt and query Render tokens for every subsequent scene draw.
+    // Consume the exact call ticket even on refusal; a later return cannot retry it.
+    if(s.signalProvider!=&Engine::Producer::Publish || !s.observedRouteReturnPending)return;
+    const bool selected=s.observedRouteDrawSerial==s.status.observedDraws;
+    const auto generation=s.observedRouteGeneration;s.observedRouteReturnPending=false;
+    if(!selected)return;
     const auto engine=s.engineProducer.GetReceipt();il2cpp_callsite::RenderToken current;
-    if(engine.actualRenderWitness && il2cpp_callsite::match_capture_render_token(engine.candidate.nativeSize.width,engine.candidate.nativeSize.height,
-        engine.candidate.outputSize.width,engine.candidate.outputSize.height,s.minimumCaptureGeneration,current)==1 && current.generation==engine.sourceGeneration)
+    if(engine.actualRenderWitness && engine.sourceGeneration==generation &&
+       il2cpp_callsite::match_capture_render_token(engine.candidate.nativeSize.width,engine.candidate.nativeSize.height,
+        engine.candidate.outputSize.width,engine.candidate.outputSize.height,s.minimumCaptureGeneration,current)==1 &&
+       current.generation==generation && current.params.instance==engine.candidate.instance &&
+       current.params.frame_index==engine.candidate.sourceFrame)
     {   s.engineProducer.AfterOriginalDraw(current.generation);
-        const bool selected=s.observedRouteReturnPending && s.observedRouteDrawSerial==s.status.observedDraws &&
-            s.observedRouteGeneration==current.generation;
-        s.observedRouteReturnPending=false;
-        if(RuntimeCapture::Enabled() && selected)RuntimeCapture::ObserveRoute(s.RouteObservation(s.engineProducer.GetReceipt()));
+        if(RuntimeCapture::Enabled())RuntimeCapture::ObserveRoute(s.RouteObservation(s.engineProducer.GetReceipt()));
     }
 }
 void CapturePipeline::ObservePresentTarget(IDXGISwapChain* swapchain,std::uint64_t identity) noexcept
@@ -2384,9 +2596,10 @@ struct ShaderCreations {
 static ShaderCreations shaderCreations;
 static DWORD nativeThread=0;
 static ControlsSnapshot nativeControls{};
-// Config notifications are serialized by nativeMutex, including stale callers.
-static uint64_t captureNotifiedEpoch=0;
-static bool captureNotifiedActive=false;
+// Only writer epoch transitions need its atomic exchange/revocation. The
+// owner boundary still observes PS controls and a live capture session each
+// time; neither consumer's lifetime is inferred from this notification key.
+static uint64_t writerNotifiedEpoch=0;
 static Status nativeStatus;
 static std::atomic<bool> game{false};
 // Published by the draw hook after acquiring the real controls. This gates
@@ -2549,15 +2762,33 @@ ManualCapture::Snapshot ManualCapture::GetSnapshot()noexcept
 bool IsInternalCallActive() noexcept { return internal || GenshinPresentNr::Scope::Current()!=nullptr; }
 static bool CurrentGame()
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return false;
     wchar_t path[32768]{};DWORD n=GetModuleFileNameW(nullptr,path,32768);
     return n && n<32768 && GenshinFsr::IsGenshinExecutable(std::wstring_view(path,n));
 }
 static bool RouteActive(const ControlsSnapshot& controls) noexcept
 {
-    return controls.Active() || (controls.settings.enabled && (controls.settings.captureOnlyObservation || captureOnlyMode==CaptureOnlyMode::ObservationOnly));
+    return F6InputPolicy::FsrBridgeEnabled && (controls.Active() || (controls.settings.enabled && (controls.settings.captureOnlyObservation || captureOnlyMode==CaptureOnlyMode::ObservationOnly)));
+}
+FramePipeline::InputObservationDemand ReadNewInputObservationDemand() noexcept
+{
+    const auto& cfg=*Config::Instance();
+    const bool nr=cfg.DlssNrEnabled.ObservedValue(),fg=GenshinFgConsumer::NewWorkRequested(),
+        effects=cfg.HoYoShadeEnabled.ObservedValue();
+    if(nr || fg || effects)return {nr,fg,effects};
+    const auto preview=GenshinDepthProvider::ReadObservationDemand();
+    // Historical capture metadata and retained GPU readers are not requests
+    // for new CPU input. Their existing Poll/retirement routes stay intact.
+    const auto captureEpoch=captureInputOffEpoch.load(std::memory_order_acquire);
+    const bool unknownCapture=!captureEpoch || !cfg.GenshinControlsCurrent(captureEpoch);
+    const bool capture=captureOnlyMode.load(std::memory_order_acquire)!=CaptureOnlyMode::Disabled ||
+        manualArm.load(std::memory_order_acquire) || manualStop.load(std::memory_order_acquire) ||
+        RuntimeCapture::Get().active.load(std::memory_order_acquire);
+    return {nr,fg,effects,preview.requested,capture,!preview.known || unknownCapture};
 }
 bool UpdateNativeObservationDemand(const ControlsSnapshot& controls) noexcept
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return false;
     // Entry/lifecycle demand is deliberately broader than the optional draw
     // subscription selected later under nativeMutex. Bridge SR stays observed.
     const bool active=RouteActive(controls) || OptionalGuideDemand() ||
@@ -2634,7 +2865,7 @@ static bool OptionalCollectorsIdle(const HoYoShade::ObservationDemand& hoYo) noe
     expected={};GenshinDepthEvidence::PendingRasterExport()=0;
     auto& raster=GenshinReturnedRaster::detail::Store();
     std::unique_lock lock(raster.mutex,std::try_to_lock);
-    if(!lock.owns_lock() || raster.pendingSlot>=0 || raster.pending.source || raster.clear.resource)return false;
+    if(!lock.owns_lock() || raster.pendingSlot>=0 || raster.pending || raster.clear.resource)return false;
     if(!hoYo.Current())return false;
     // The boundary checked every real producer/lease, mapping EVENT and global
     // export/retirement owner. An immutable CPU Evidence still cached by a
@@ -2723,9 +2954,8 @@ bool TrySkipNonTargetDrawObservation(ID3D11DeviceContext* context,UINT count,boo
 {
     // TLS is only an early negative hint. The actual owner stays locked.
     // Known Full-route consumers leave before the try-lock.
-    // Direct counts are per-instance counts here, not SR/replay admission.
-    // DrawAuto/indirect have no CPU count; only their actual known non-FSR PS
-    // can reject them. Never decode/read back their GPU arguments to do so.
+    // Counts never prove a negative target identity, including indexed quads.
+    // DrawAuto/indirect arguments remain unknown and are never read back.
     const bool direct=drawKind>=1 && drawKind<=4;
     if(drawKind<1 || drawKind>7 || (direct && (!countKnown || !count)) || !game || internal ||
         !ownerObservation.srOnly || ownerObservation.context!=context ||
@@ -2743,18 +2973,18 @@ bool TrySkipNonTargetDrawObservation(ID3D11DeviceContext* context,UINT count,boo
             !shaderHookInstalled || !nativeStatus.entryInstalled || !nativeControls.Active() ||
             PsState::optionalInstall.Phase()==PsState::OptionalInstallPhase::PendingPublication ||
             !OwnerObservationCurrent(context,nativeControls.epoch) || nativePipeline->DrawPairPending())return false;
-        if(!direct || count==3){
-            // Fullscreen and unknown-count draws need a negative shader proof.
-            // Unknown/missing records and every FSR-family member stay on the
-            // original path, including its original count/replay restrictions.
-            ComPtr<ID3D11PixelShader> pixel;context->PSGetShader(&pixel,nullptr,nullptr);
-            const auto shader=Family::Read(nativeDevice.Get(),pixel.Get(),nativeDeviceEpoch);
-            if(!shader.Known())return false;
-            const auto hash=shader.hash;
-            if(hash==fsr2_family_takeover::k_accumulate_hash ||
-                hash==fsr2_family_takeover::k_pre_hash_1 || hash==fsr2_family_takeover::k_pre_hash_2 ||
-                hash==fsr2_family_takeover::k_pre_hash_3 || hash==fsr2_family_takeover::k_pre_hash_4)return false;
-        }
+        // Let a bounded stalled-producer observation enter the original path.
+        // OfferProbe, under this same owner lock, selects dispersed draw offsets.
+        const auto snapshot=producerWatch.SnapshotKey(nativePipeline.get(),nativeDevice.Get(),context,
+            nativeDeviceEpoch,nativeStatus.ownerEpoch,nativeControls.epoch,GetCurrentThreadId());
+        if(producerWatch.Due(snapshot) || fsrPassWatch.budget.Active(snapshot))return false;
+        // Reuse the established binding-cache domain under its exact owner and
+        // controls. Current falls back to real getters when coverage is absent;
+        // there is no raw setter mirror or geometry-only negative shortcut.
+        PsState::DrawScope psScope(&shaderCreationOwner,context,nativeDevice.Get(),nativeDeviceEpoch,
+            nativeControls.epoch,true,+[](uint64_t epoch){return Config::Instance()->GenshinControlsCurrent(epoch);});
+        const auto shader=Family::Current(context,nativeDevice.Get(),nativeDeviceEpoch);
+        if(!DrawAdmission::NonFamilyShader(shader.Known(),shader.hash))return false;
         // GPU flights already have their own Poll/Present retirement. They do
         // not subscribe unrelated native draws. Only an unfinished Before/After
         // pair needs the next callback's cleanup; its decision is paired locally.
@@ -2797,25 +3027,20 @@ static void ObserveCaptureSessionControls(const ControlsSnapshot& controls) noex
        (!controls.settings.enabled || !controls.settings.captureOnlyObservation ||
         controls.epoch!=capture.configEpoch))RuntimeCapture::Stop();
 }
-static void ObserveCaptureControls(const ControlsSnapshot& controls,bool captureOff=false) noexcept
+static void ObserveCaptureControls(const ControlsSnapshot& controls) noexcept
 {
-    const bool active=controls.Active();
-    // A current capture-off owner was notified at its boundary. Retain the last
-    // actual notification so an intervening stale caller cannot hide a change.
-    if(!captureOff || captureNotifiedEpoch!=controls.epoch || captureNotifiedActive!=active){
-        PsState::ObserveConfig(controls.epoch,active);
+    // PS domains and their per-thread metrics can change without a controls
+    // edit. Observe them at every boundary, not only on configuration changes.
+    PsState::ObserveConfig(controls.epoch,controls.Active());
+    captureInputOffEpoch.store(controls.settings.enabled && controls.settings.captureOnlyObservation?0:controls.epoch,
+        std::memory_order_release);
+    // Keep the last actual notification, including stale callers. A -> B -> A
+    // must revoke twice; this is not a monotonic admission/configuration cache.
+    if(writerNotifiedEpoch!=controls.epoch){
         GenshinCpuWriterProbe::ObserveConfig(controls.epoch);
-        captureNotifiedEpoch=controls.epoch;captureNotifiedActive=active;
+        writerNotifiedEpoch=controls.epoch;
     }
-    if(!captureOff || RuntimeCapture::Get().active.load(std::memory_order_acquire))ObserveCaptureSessionControls(controls);
-}
-// Snapshot before nativeMutex to preserve the existing Config-owner -> native order.
-// Default-off paths do not acquire the Config owner. An absent snapshot is not
-// evidence of current settings and cannot open or refresh a collection session.
-static std::optional<ControlsSnapshot> CaptureControlsAtBoundary()
-{
-    if(!RuntimeCapture::Get().active.load(std::memory_order_acquire))return std::nullopt;
-    return Config::Instance()->AcquireGenshinControls();
+    ObserveCaptureSessionControls(controls);
 }
 static void UpdateControlsStatus(const ControlsSnapshot& controls)
 {
@@ -2828,11 +3053,77 @@ static void UpdateControlsStatus(const ControlsSnapshot& controls)
     nativeStatus.deviceEpoch=nativeDeviceEpoch;
     nativeStatus.effectiveFamilySkip=nativeStatus.effectiveFamilySkip && nativeStatus.effectiveEnabled && shaderHookInstalled;
 }
-static void NoteControls(const ControlsSnapshot& controls)
+// One callback owns one stack-local controls snapshot and one native lock.
+// Member order is the Config -> native ordering: capture acquisition completes
+// before the wait scope/lock, and held timing ends before the lock is released.
+// No snapshot, owner qualification or callable permission escapes this callback.
+class OwnerCallbackBoundary final
 {
-    ObserveCaptureControls(controls);
-    UpdateControlsStatus(controls);
-}
+    std::optional<ControlsSnapshot> controls_;
+    GenshinHookCpuTiming::Scope wait_{GenshinHookCpuTiming::Stage::OwnerLock};
+    std::unique_lock<std::mutex> lock_{nativeMutex};
+    std::optional<GenshinHookCpuTiming::Scope> held_;
+
+    static std::optional<ControlsSnapshot> CaptureControls()
+    {
+        // Metadata/lifecycle callbacks need current controls only while a
+        // collection session is live. Absence never authorizes observation.
+        if(!RuntimeCapture::Get().active.load(std::memory_order_acquire))return std::nullopt;
+        return Config::Instance()->AcquireGenshinControls();
+    }
+    explicit OwnerCallbackBoundary(std::optional<ControlsSnapshot> controls):controls_(std::move(controls))
+    {
+        wait_.Finish();held_.emplace(GenshinHookCpuTiming::Stage::OwnerLocked);
+        if(controls_)ObserveCaptureControls(*controls_);
+    }
+public:
+    OwnerCallbackBoundary():OwnerCallbackBoundary(CaptureControls()){}
+    explicit OwnerCallbackBoundary(const ControlsSnapshot& controls)
+        :OwnerCallbackBoundary(std::optional<ControlsSnapshot>{controls}){}
+    OwnerCallbackBoundary(const OwnerCallbackBoundary&)=delete;
+    OwnerCallbackBoundary& operator=(const OwnerCallbackBoundary&)=delete;
+
+    bool ImmediateDeviceMatches(ID3D11DeviceContext* context) const noexcept
+    {
+        if(!context)return false;
+        // The retained immediate context cannot change its type or device.
+        // Unknown contexts keep the actual public API qualification below.
+        if(nativeDevice && context==nativeContext.Get())return true;
+        if(context->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)return false;
+        ComPtr<ID3D11Device> device;context->GetDevice(&device);
+        return device.Get()==nativeDevice.Get();
+    }
+    bool RasterCurrent(ID3D11DeviceContext* context) const noexcept
+    {
+        if(!controls_)return false;
+        const auto& controls=*controls_;
+        if(!context || !RouteActive(controls) || !shaderHookInstalled ||
+           !Config::Instance()->GenshinControlsCurrent(controls.epoch))return false;
+        if(nativePipeline && context==nativeContext.Get() && GetCurrentThreadId()==nativeThread &&
+           nativeDevice && nativeDeviceEpoch && nativeControls.epoch==controls.epoch &&
+           nativeControls.settings==controls.settings && !nativePipeline->NeedsDrain())return true;
+        return ImmediateDeviceMatches(context) && nativeDeviceEpoch &&
+            (!nativePipeline || (context==nativeContext.Get() && GetCurrentThreadId()==nativeThread &&
+              nativeControls.epoch==controls.epoch && nativeControls.settings==controls.settings));
+    }
+    bool ObserveRaster(ID3D11DeviceContext* context,bool draw) const noexcept
+    {
+        if(!controls_)return false;
+        const auto epoch=controls_->epoch;
+        if(draw?ObservationOnlyCurrent(context,epoch):OwnerObservationCurrent(context,epoch))return false;
+        if(!RasterCurrent(context)){
+            GenshinReturnedRaster::Invalidate(context,nullptr,GenshinReturnedRaster::Boundary::Owner);return false;}
+        ownerObservation.srOnly=false;
+        if(draw && nativePipeline)nativePipeline->SubscribeDrawObservation(true);
+        return true;
+    }
+    void UpdateStatus() const
+    {
+        // Status publication must not notify stale nativeControls after a live
+        // capture snapshot was already observed at this callback's entry.
+        UpdateControlsStatus(controls_?*controls_:nativeControls);
+    }
+};
 static bool DrainNativePipeline()
 {
     PsState::RetireOwner(&shaderCreationOwner);
@@ -2935,14 +3226,12 @@ static void ObserveCameraSample() noexcept
 }
 bool InitializeDevice(ID3D11Device* device)noexcept
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return false;
     try
     {
         if(!CurrentGame()){nativeStatus.reason=CaptureReason::WrongGame;return false;}
         const auto controls=Config::Instance()->AcquireGenshinControls();
-        GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        ObserveCaptureControls(controls);
+        OwnerCallbackBoundary boundary(controls);
         game=true;
         if(!device || (nativeDevice && nativeDevice.Get()!=device)){nativeStatus.reason=CaptureReason::UnsupportedBindings;return false;}
         if(!nativeDevice){static uint64_t epochs=0;nativeDeviceEpoch=++epochs;}
@@ -2950,7 +3239,7 @@ bool InitializeDevice(ID3D11Device* device)noexcept
         nativeDevice=device;
         RuntimeCapture::Start(device,controls.settings.enabled && controls.settings.captureOnlyObservation,controls.epoch);
         ResourceProof::Configure(device,nativeDeviceEpoch,controls.settings.enabled && controls.settings.captureOnlyObservation);
-        if(!nativePipeline)nativeControls=controls;NoteControls(controls);
+        if(!nativePipeline)nativeControls=controls;UpdateControlsStatus(controls);
         PublishManualState();
         if(RouteActive(controls))TryInstallEntry();else nativeStatus.reason=CaptureReason::Disabled;
         return true;
@@ -2967,10 +3256,7 @@ void SetShaderHookInstalled(bool installed)noexcept
 void NotePixelShaderCreated(ID3D11Device* device,ID3D11PixelShader* shader,const void* bytes,size_t size)noexcept
 {
     if(!game || internal)return;
-    try{const auto captureControls=CaptureControlsAtBoundary();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        if(captureControls)ObserveCaptureControls(*captureControls);
+    try{OwnerCallbackBoundary boundary;
         ++shaderCreations.callbacks;
         if(device!=nativeDevice.Get()){++shaderCreations.wrongDevice;return;}
         const auto tick=GetTickCount64();if(!shaderCreations.firstTick)shaderCreations.firstTick=tick;shaderCreations.lastTick=tick;
@@ -2984,7 +3270,7 @@ void NotePixelShaderCreated(ID3D11Device* device,ID3D11PixelShader* shader,const
             DrawObservationDx11::RememberShader(shader,fact.hash,size);
             GenshinDepthEvidence::RetainVertex(shader,bytes,size,fact.hash);
             shaderCreations.lastHash=fact.hash;shaderCreations.lastBytes=fact.bytes;
-            if(fact.Known() && fact.hash==fsr2_family_takeover::k_accumulate_hash)++shaderCreations.accumulate;
+            if(fact.Known() && GenshinFsrProfiles::Accumulate(fact.hash))++shaderCreations.accumulate;
             RuntimeCapture::CacheShader(bytes,size,fact);
             RuntimeCapture::ShaderCreated(shader,bytes,size,fact);
             RuntimeCapture::RawShaderCreated(shader,bytes,size,nativeDeviceEpoch,1);}
@@ -2995,10 +3281,7 @@ void NotePixelShaderCreated(ID3D11Device* device,ID3D11PixelShader* shader,const
 void NoteRawShaderCreated(ID3D11Device* device,ID3D11DeviceChild* shader,const void* bytes,size_t size,unsigned stage)noexcept
 {
     if(!game || internal)return;
-    try{const auto captureControls=CaptureControlsAtBoundary();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        if(captureControls)ObserveCaptureControls(*captureControls);
+    try{OwnerCallbackBoundary boundary;
         if(device==nativeDevice.Get()){
             // The visible CreateVertexShader hook reports stage 0. Retain its
             // actual bytes too: both Scene/Picture replay and depth-writer
@@ -3012,7 +3295,7 @@ void NoteRawShaderCreated(ID3D11Device* device,ID3D11DeviceChild* shader,const v
     catch(...){}
 }
 Action BeforeNativeDraw(ID3D11DeviceContext* context,UINT count,bool inputsEnabled,bool countKnown,unsigned drawKind,
-    const ControlsSnapshot* acquiredControls,bool knownNonTargetDraw,OptionalDrawObserver* observer)noexcept
+    const ControlsSnapshot* acquiredControls,OptionalDrawObserver* observer)noexcept
 {
     bool collected=false;
     const auto collectFull=[&]()noexcept{
@@ -3021,17 +3304,12 @@ Action BeforeNativeDraw(ID3D11DeviceContext* context,UINT count,bool inputsEnabl
     };
     if(observer)observer->full=true;
     if(!game || internal || !context){collectFull();return Action::ContinueOriginal;}
-    // Count rejects SR capture only. Full consumer observation remains under the
-    // original owner lock; no enabled option is treated as an absent reader.
-    const bool nonTargetDraw=knownNonTargetDraw && countKnown && count!=0 && count!=3;
     GenshinCpuStageTiming::Scope hostEntry(GenshinCpuStageTiming::Stage::HostBeforeNativeDraw);
     try
     {
         auto controls=acquiredControls?*acquiredControls:Config::Instance()->AcquireGenshinControls();
         controls.enableFsr2Inputs=controls.enableFsr2Inputs && inputsEnabled;
-        GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
+        OwnerCallbackBoundary boundary(controls);
         nativeStatus.srAccepted=false;
         // Classify only target capture before any context/device/shader getter.
         // The retained immediate context/device pair is immutable and protected
@@ -3039,24 +3317,18 @@ Action BeforeNativeDraw(ID3D11DeviceContext* context,UINT count,bool inputsEnabl
         const bool sameOwner=SameNativeOwner(context,controls);
         const bool captureOff=countKnown && count && drawKind>=1 && drawKind<=4 && sameOwner &&
             CaptureObservationCurrent(controls);
-        ObserveCaptureControls(controls,captureOff);
-        bool prefilteredNonTarget=sameOwner && nonTargetDraw;
         // Configure owns another mutex. A stable owner with the same controls
         // already configured ordinary (non-capture) observation at device/entry
         // setup. Do not repeat its disabled-state lock/reset on every non-target
         // draw. Active provenance, capture, unknown owners and transitions still
         // configure before any observer; no consumer subscription is changed.
-        if((!prefilteredNonTarget && !captureOff) || controls.settings.captureOnlyObservation || ResourceProof::Active())
+        if(!captureOff || controls.settings.captureOnlyObservation || ResourceProof::Active())
             ResourceProof::Configure(nativeDevice.Get(),nativeDeviceEpoch,controls.settings.enabled && controls.settings.captureOnlyObservation);
-        ComPtr<ID3D11Device> queriedDevice;
+        // One boundary resolves the immutable immediate-context/device pair.
+        // Unknown contexts still use the actual public getters before consumers.
+        if(!sameOwner && !boundary.ImmediateDeviceMatches(context)){
+            collectFull();return Action::ContinueOriginal;}
         ID3D11Device* drawDevice=nativeDevice.Get();
-        // A retained immediate context cannot change its type or device. Reuse
-        // that actual owner for target and non-target draws alike.
-        if(!sameOwner){
-            if(context->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE){collectFull();return Action::ContinueOriginal;}
-            context->GetDevice(&queriedDevice);drawDevice=queriedDevice.Get();
-            if(drawDevice!=nativeDevice.Get()){collectFull();return Action::ContinueOriginal;}
-        }
         const bool fullObservation=!SelectSrOnlyObservation(context,controls);
         if(fullObservation)ownerObservation.srOnly=false;
         if(observer)observer->full=fullObservation;
@@ -3102,7 +3374,6 @@ Action BeforeNativeDraw(ID3D11DeviceContext* context,UINT count,bool inputsEnabl
             !RouteActive(controls) || nativeControls.epoch!=controls.epoch || nativeControls.settings!=controls.settings ||
             (nativeContext && nativeContext.Get()!=context))
         {
-            prefilteredNonTarget=false;
             if(!DrainNativePipeline()){UpdateControlsStatus(controls);return Action::ContinueOriginal;}
             nativeControls=controls;
         }
@@ -3113,31 +3384,12 @@ Action BeforeNativeDraw(ID3D11DeviceContext* context,UINT count,bool inputsEnabl
         // never admits SR/family work while the hook is unpublished.
         if(!shaderHookInstalled){nativeStatus.reason=CaptureReason::ShaderUnavailable;return Action::ContinueOriginal;}
         struct Guard{Guard(){internal=true;}~Guard(){internal=false;}}guard;
-        if(prefilteredNonTarget){
-            const auto result=nativePipeline->BeforeNonTargetDraw(count,drawKind);
-            nativeStatus=nativePipeline->GetStatus();UpdateControlsStatus(controls);return result;
-        }
         if(!nativePipeline){nativePipeline=std::make_unique<CapturePipeline>(context,controls.settings,Consumer{},nativeDeviceEpoch,controls.epoch);
             nativeContext=context;nativeThread=GetCurrentThreadId();nativeWorkOwned.store(true,std::memory_order_release);}
         nativePipeline->SubscribeDrawObservation(fullObservation);
         auto result=nativePipeline->BeforeDraw(count,countKnown && shaderHookInstalled,countKnown,drawKind);nativeStatus=nativePipeline->GetStatus();UpdateControlsStatus(controls);return result;
     }
     catch(...){collectFull();drawObservation={};return Action::ContinueOriginal;}
-}
-// Called with nativeMutex held, after resolving the current draw controls.
-// No retained diagnostic epoch/LOCATION is an authorization input.
-static bool ReturnedRasterCurrent(ID3D11DeviceContext* context,const ControlsSnapshot& controls)noexcept
-{
-    if(!context || !RouteActive(controls) || !shaderHookInstalled ||
-       !Config::Instance()->GenshinControlsCurrent(controls.epoch))return false;
-    if(nativePipeline && context==nativeContext.Get() && GetCurrentThreadId()==nativeThread &&
-       nativeDevice && nativeDeviceEpoch && nativeControls.epoch==controls.epoch &&
-       nativeControls.settings==controls.settings && !nativePipeline->NeedsDrain())return true;
-    if(context->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)return false;
-    ComPtr<ID3D11Device> device;context->GetDevice(&device);
-    return device.Get()==nativeDevice.Get() && nativeDeviceEpoch &&
-        (!nativePipeline || (context==nativeContext.Get() && GetCurrentThreadId()==nativeThread &&
-          nativeControls.epoch==controls.epoch && nativeControls.settings==controls.settings));
 }
 // This is controls reuse, not a retained draw/owner/resource receipt. Keep the
 // fallback Config acquisition BEFORE nativeMutex, with no lock across the draw.
@@ -3155,14 +3407,8 @@ void BeforeNativeDepthRaster(ID3D11DeviceContext* context,const DrawControlsSnap
 {
     if(!game || internal || GenshinPresentNr::Scope::Current() ||
         (!NativeObservationActive() && !NativeObservationDrainNeeded()))return;
-    try{const auto controls=AcquireDrawControls(context,drawControls);GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        if(ObservationOnlyCurrent(context,controls.epoch))return;
-        if(!ReturnedRasterCurrent(context,controls)){
-            GenshinReturnedRaster::Invalidate(context,nullptr,GenshinReturnedRaster::Boundary::Owner);return;}
-        ownerObservation.srOnly=false;
-        if(nativePipeline)nativePipeline->SubscribeDrawObservation(true);
+    try{const auto controls=AcquireDrawControls(context,drawControls);OwnerCallbackBoundary boundary(controls);
+        if(!boundary.ObserveRaster(context,true))return;
         if(GenshinDepthEvidence::RasterExportPending(context)){
             const auto stamp=GenshinReturnedRaster::ObservationStamp(context);
             GenshinDepthEvidence::MarkOriginalCall(context,stamp[0],stamp[1]);}
@@ -3188,12 +3434,8 @@ static bool BeforeModRasterKind(ID3D11DeviceContext* context,UINT kind,UINT coun
         token.observationCall=GenshinDepthMapping::CurrentDraw().observationCall;
         if(!token.observationCall){token={};return false;}
         if(!demanded && !NativeObservationDrainNeeded())return true;
-        std::lock_guard lock(nativeMutex);
-        if(ObservationOnlyCurrent(context,controls.epoch))return true;
-        if(!ReturnedRasterCurrent(context,controls)){
-            GenshinReturnedRaster::Invalidate(context,nullptr,GenshinReturnedRaster::Boundary::Owner);return true;}
-        ownerObservation.srOnly=false;
-        if(nativePipeline)nativePipeline->SubscribeDrawObservation(true);
+        OwnerCallbackBoundary boundary(controls);
+        if(!boundary.ObserveRaster(context,true))return true;
         token.deviceEpoch=nativeDeviceEpoch;
         if(GenshinDepthEvidence::RasterExportPending(context)){
             const auto stamp=GenshinReturnedRaster::ObservationStamp(context);
@@ -3215,10 +3457,10 @@ static bool AfterModRasterKind(ID3D11DeviceContext* context,UINT kind,ModRasterO
     if(!observation.observed)return true;
     try{
         const auto controls=AcquireDrawControls(context,&observation.draw);
-        std::lock_guard lock(nativeMutex);
+        OwnerCallbackBoundary boundary(controls);
         if(observation.draw.context!=context || observation.draw.thread!=GetCurrentThreadId() ||
             observation.deviceEpoch!=nativeDeviceEpoch || controls.epoch!=observation.draw.controls.epoch ||
-            !ReturnedRasterCurrent(context,controls)){
+            !boundary.RasterCurrent(context)){
             GenshinReturnedRaster::Invalidate(context,nullptr,GenshinReturnedRaster::Boundary::Owner);return false;}
         GenshinReturnedRaster::RasterReturned(context,{nativeDeviceEpoch,controls.epoch});
         GenshinDepthEvidence::ExportRasterReturn(context,[&](ID3D11Resource* resource,UINT mip){
@@ -3255,26 +3497,16 @@ bool AfterModIndexedInstanced(ID3D11DeviceContext* context,UINT count,UINT insta
 void BeforeNativeDepthClear(ID3D11DeviceContext* context,ID3D11DepthStencilView* view,UINT flags,float depth,UINT8 stencil)noexcept
 {
     if(!game || internal || GenshinPresentNr::Scope::Current())return;
-    try{const auto controls=Config::Instance()->AcquireGenshinControls();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        if(OwnerObservationCurrent(context,controls.epoch))return;
-        if(!ReturnedRasterCurrent(context,controls)){
-            GenshinReturnedRaster::Invalidate(context,nullptr,GenshinReturnedRaster::Boundary::Owner);return;}
-        ownerObservation.srOnly=false;
+    try{const auto controls=Config::Instance()->AcquireGenshinControls();OwnerCallbackBoundary boundary(controls);
+        if(!boundary.ObserveRaster(context,false))return;
         GenshinReturnedRaster::BeforeClear(context,{nativeDeviceEpoch,controls.epoch},view,flags,depth,stencil);
     }catch(...){GenshinReturnedRaster::Invalidate(context,nullptr,GenshinReturnedRaster::Boundary::Owner);}
 }
 void AfterNativeDepthClear(ID3D11DeviceContext* context,ID3D11DepthStencilView* view,UINT flags,float depth,UINT8 stencil)noexcept
 {
     if(!game || internal || GenshinPresentNr::Scope::Current())return;
-    try{const auto controls=Config::Instance()->AcquireGenshinControls();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        if(OwnerObservationCurrent(context,controls.epoch))return;
-        if(!ReturnedRasterCurrent(context,controls)){
-            GenshinReturnedRaster::Invalidate(context,nullptr,GenshinReturnedRaster::Boundary::Owner);return;}
-        ownerObservation.srOnly=false;
+    try{const auto controls=Config::Instance()->AcquireGenshinControls();OwnerCallbackBoundary boundary(controls);
+        if(!boundary.ObserveRaster(context,false))return;
         GenshinReturnedRaster::ClearReturned(context,{nativeDeviceEpoch,controls.epoch},view,flags,depth,stencil);
     }catch(...){GenshinReturnedRaster::Invalidate(context,nullptr,GenshinReturnedRaster::Boundary::Owner);}
 }
@@ -3282,16 +3514,11 @@ void AfterNativeDraw(ID3D11DeviceContext* context,UINT count,bool countKnown,con
 {
     if(!game || internal || (!NativeObservationActive() && !NativeObservationDrainNeeded()))return;
     GenshinCpuStageTiming::Scope hostAfter(GenshinCpuStageTiming::Stage::HostAfterNativeDraw); GenshinHookCpuTiming::Scope r448AfterDraw(GenshinHookCpuTiming::Stage::AfterDraw);
-    try{const auto controls=AcquireDrawControls(context,drawControls);GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        const bool captureOff=countKnown && count && ownerObservation.captureOff &&
-            SameNativeOwner(context,controls) && CaptureObservationCurrent(controls);
-        ObserveCaptureControls(controls,captureOff);
+    try{const auto controls=AcquireDrawControls(context,drawControls);OwnerCallbackBoundary boundary(controls);
         const bool srOnly=ObservationOnlyCurrent(context,controls.epoch);
         if(!srOnly){
             ownerObservation.srOnly=false;
-            if(ReturnedRasterCurrent(context,controls))
+            if(boundary.RasterCurrent(context))
                 GenshinReturnedRaster::RasterReturned(context,{nativeDeviceEpoch,controls.epoch});
             else GenshinReturnedRaster::Invalidate(context,nullptr,GenshinReturnedRaster::Boundary::Owner);
             GenshinDepthEvidence::ExportRasterReturn(context,[&](ID3D11Resource* resource,UINT mip){
@@ -3302,7 +3529,7 @@ void AfterNativeDraw(ID3D11DeviceContext* context,UINT count,bool countKnown,con
             // The original game draw has already executed. A changed owner may
             // drain, but it cannot submit or replace that draw's native result.
             if(!RouteActive(controls) || controls.epoch!=nativeControls.epoch || controls.settings!=nativeControls.settings){
-                nativePipeline->RevokeTransport();DrainNativePipeline();NoteControls(controls);return;}
+                nativePipeline->RevokeTransport();DrainNativePipeline();UpdateControlsStatus(controls);return;}
             nativePipeline->SubscribeDrawObservation(!srOnly);
             // R735: the Before scope ended before the original draw. Rebind only
             // after its return; owner/context/thread/controls match above. Keep
@@ -3323,14 +3550,10 @@ void ObserveNativeDepthCompute(ID3D11DeviceContext* context,UINT x,UINT y,UINT z
     if(!game || internal || GenshinPresentNr::Scope::Current() || !context)return;
     try{
         const auto controls=Config::Instance()->AcquireGenshinControls();
-        GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked); // Preserve Config -> native -> samples order.
+        OwnerCallbackBoundary boundary(controls); // Preserve Config -> native -> samples order.
         if(OwnerObservationCurrent(context,controls.epoch))return;
         ownerObservation.srOnly=false;
-        if(context->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)return;
-        ComPtr<ID3D11Device> device;context->GetDevice(&device);
-        if(device.Get()!=nativeDevice.Get())return;
+        if(!boundary.ImmediateDeviceMatches(context))return;
         if(!RouteActive(controls) || !shaderHookInstalled){GenshinDepthEvidence::ForgetDepthInput(context);return;}
         if(nativePipeline && (context!=nativeContext.Get() || GetCurrentThreadId()!=nativeThread))return;
         // Without an SR pipeline, only the actual native transaction's retained
@@ -3348,11 +3571,8 @@ void AfterContextBoundary(ID3D11DeviceContext* context)noexcept
     // Preserve the owner, not its binding, through the opaque callback work.
     // The GPU/query/content invalidation below is intentionally unchanged.
     PsState::Mutation psBoundary(context);
-    try{const auto captureControls=CaptureControlsAtBoundary();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
+    try{OwnerCallbackBoundary boundary;
         ownerObservation.srOnly=false;
-        if(captureControls)ObserveCaptureControls(*captureControls);
         ComPtr<ID3D11Device> device;context->GetDevice(&device);
         if(device.Get()!=nativeDevice.Get())return;
         GenshinReturnedRaster::Invalidate(context,nullptr,GenshinReturnedRaster::Boundary::State);
@@ -3365,16 +3585,13 @@ void AfterContextBoundary(ID3D11DeviceContext* context)noexcept
             struct Guard{Guard(){internal=true;}~Guard(){internal=false;}}guard;
             nativePipeline->Invalidate();nativeStatus=nativePipeline->GetStatus();
         }
-        nativeStatus.srAccepted=false;nativeStatus.effectiveFamilySkip=false;NoteControls(nativeControls);
+        nativeStatus.srAccepted=false;nativeStatus.effectiveFamilySkip=false;boundary.UpdateStatus();
     }catch(...){}
 }
 void ObserveNativePresentTarget(IDXGISwapChain* swapchain,std::uint64_t identity)noexcept
 {
     if(!game || !ResourceProof::Active())return;
-    try{const auto captureControls=CaptureControlsAtBoundary();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        if(captureControls)ObserveCaptureControls(*captureControls);
+    try{OwnerCallbackBoundary boundary;
         if(nativePipeline && GetCurrentThreadId()==nativeThread)
         nativePipeline->ObservePresentTarget(swapchain,identity);}catch(...){}
 }
@@ -3402,9 +3619,7 @@ GenshinPresentNr::Ticket TakePresentNr(IDXGISwapChain* swapchain,ID3D11Device* d
             }
         };
         if(!GenshinPresentNr::Route(enabled,finished,before,deferred,optical,interop,gameFg)) {note("mode");return {};}
-        const auto controls=cfg.AcquireGenshinControls();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
+        const auto controls=cfg.AcquireGenshinControls();OwnerCallbackBoundary boundary(controls);
         if(!nativePipeline){note("no-pipeline");return {};}
         if(GetCurrentThreadId()!=nativeThread){note("owning-thread");return {};}
         if(device!=nativeDevice.Get()){note("device");return {};}
@@ -3426,9 +3641,7 @@ GenshinBridgeFg::SenderInput TakePresentFg(IDXGISwapChain* swapchain,ID3D11Devic
         const auto& cfg=*Config::Instance();
         result.pictureKind=GenshinBridgeFg::CurrentPictureKind();
         if(result.pictureKind==GenshinPresentNr::FgPictureKind::Unknown)return result;
-        const auto controls=cfg.AcquireGenshinControls();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
+        const auto controls=cfg.AcquireGenshinControls();OwnerCallbackBoundary boundary(controls);
         if(!nativePipeline || GetCurrentThreadId()!=nativeThread || device!=nativeDevice.Get() ||
            !RouteActive(controls) || controls.epoch!=nativeControls.epoch || controls.settings!=nativeControls.settings ||
            !scope->MatchesNative(swapchain,device))return result;
@@ -3618,10 +3831,7 @@ void OnPresent(ID3D11Device* device)noexcept
         GenshinNativeQuery::detail::NotifyFirstRevocation();
         GenshinSubstage::EnablePresetReceipt(controls.hookCpuTiming);
         PublishPresetReceipt();
-        GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        ObserveCaptureControls(controls);
+        OwnerCallbackBoundary boundary(controls);
         // R606: the existing locked owner boundary closes only this thread's
         // complete Shader observation frame; cache/GPU admission is unchanged.
         shaderCreationOwner.PresentShaderCacheMetrics(nativeContext.Get(),device,nativeDeviceEpoch,
@@ -3656,7 +3866,7 @@ void OnPresent(ID3D11Device* device)noexcept
             }
             nativePipeline->Poll();nativeStatus=nativePipeline->GetStatus();nativeStatus.srAccepted=nativeStatus.srAccepted && accepted;
             if(disabled)nativeStatus.reason=CaptureReason::Disabled;}
-        NoteControls(controls);
+        UpdateControlsStatus(controls);
         if(device==nativeDevice.Get() && nativePipeline && GetCurrentThreadId()==nativeThread &&
             !OwnerObservationCurrent(nativeContext.Get(),controls.epoch))
             RefreshOwnerObservation(nativeContext.Get(),controls);
@@ -3694,16 +3904,32 @@ void OnPresent(ID3D11Device* device)noexcept
                 }
             }
         }
+        const bool progressCurrent=device==nativeDevice.Get() && nativePipeline && nativeContext &&
+            GetCurrentThreadId()==nativeThread && RouteActive(controls) && shaderHookInstalled && nativeStatus.entryInstalled &&
+            !nativePipeline->NeedsDrain() && nativeControls.epoch==controls.epoch && nativeControls.settings==controls.settings &&
+            Config::Instance()->GenshinControlsCurrent(controls.epoch);
+        il2cpp_callsite::CapturedParams renderParams{};uint64_t renderGeneration=0;
+        const bool progressObserved=progressCurrent && il2cpp_callsite::last_params_for(0,renderParams,renderGeneration);
+        if(progressObserved)
+            producerWatch.progress.Observe(ProgressOwner(nativePipeline.get(),device,nativeContext.Get(),nativeDeviceEpoch,
+                nativeStatus.ownerEpoch,controls.epoch,renderParams.instance,nativeThread),renderGeneration,producerWatch.target.production);
+        else producerWatch.progress.Observe({},0,{});
+        const auto& progress=producerWatch.progress;
+        const auto produced=producerWatch.target.production.owner==progress.Identity()?producerWatch.target.production.generation:0;
+        fsrPassWatch.Present(progressObserved?progress.Identity():ProducerProgress::Owner{},progressObserved?progress.Rendered():0,
+            produced,progressObserved && progress.State()==ProducerProgress::Phase::Stalled);
         // Sparse diagnostics from the real producer owner, independent of optional disk capture.
         // One sample per second records the first concrete refusal and frame counters.
         static uint64_t nextStatusTick=0;const auto statusTick=GetTickCount64();
         if(device==nativeDevice.Get() && statusTick>=nextStatusTick){nextStatusTick=statusTick+1000;
-            LOG_INFO("Genshin internal FSR: pid={} epoch={} hook={} shader_hook={} render_calls={} draws={} target_shader_draws={} binding_rejected={} binding_stage={} last_shader={:X} candidates={} token_matches={} native_returned={} submitted={} copyback={} reason={} native_reason={} copyback_counter_scope=selected_game_rtv_ordered final_backbuffer_consumption=UNKNOWN visual=UNKNOWN",
+            producerWatch.Emit();
+            LOG_INFO("Genshin internal FSR: pid={} epoch={} hook={} shader_hook={} render_calls={} draws={} target_shader_draws={} binding_rejected={} binding_stage={} last_shader={:X} candidates={} token_matches={} native_returned={} submitted={} copyback={} reason={} native_reason={} target_kind={} target_count={} target_count_known={} copyback_counter_scope=selected_game_rtv_ordered final_backbuffer_consumption=UNKNOWN visual=UNKNOWN",
                 GetCurrentProcessId(),nativeDeviceEpoch,nativeStatus.entryInstalled,shaderHookInstalled,
                 il2cpp_callsite::render_call_count(),nativeStatus.observedDraws,nativeStatus.targetShaderDraws,nativeStatus.bindingRejected,
                 nativeStatus.bindingRefusal,nativeStatus.shaderHash,nativeStatus.candidates,nativeStatus.tokenMatches,
                 nativeStatus.nativeReturns,nativeStatus.submitted,nativeStatus.outputCopies,ReasonText(nativeStatus.reason),
-                NativeMrt::ReasonText(static_cast<NativeMrt::Reason>(nativeStatus.nativeRefusal)));
+                NativeMrt::ReasonText(static_cast<NativeMrt::Reason>(nativeStatus.nativeRefusal)),
+                nativeStatus.targetDrawKind,nativeStatus.targetDrawCount,nativeStatus.targetCountKnown);
             LOG_INFO("Genshin FSR capture boundary: pid={} device_epoch={} device={:X} context={:X} owner_thread={} stage={} context_state_hr={:08X} three_element={} pre_shader_blocked={} shader_lookups={} known={} unknown={} shader_read={} shader_object={:X} shader_device={:X} record_epoch={} record_hr={:08X} family_cpu_cached={} family_cpu_generation={} creates={} wrong_device_creates={} recorded={} record_failed={} before_hook_publication={} accumulate_creates={} first_create_tick={} last_create_tick={} last_create_hash={:016X} last_create_bytes={} observation_only=true",
                 GetCurrentProcessId(),nativeDeviceEpoch,reinterpret_cast<uintptr_t>(nativeDevice.Get()),reinterpret_cast<uintptr_t>(nativeContext.Get()),nativeThread,
                 static_cast<unsigned>(nativeStatus.captureStage),static_cast<unsigned>(nativeStatus.contextStateResult),nativeStatus.threeElementDraws,nativeStatus.preShaderBlocked,
@@ -3717,15 +3943,13 @@ void OnPresent(ID3D11Device* device)noexcept
 }
 HRESULT BeforeResize(IDXGISwapChain* swapchain)noexcept
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return S_OK;
     PsState::RetireOwner(&shaderCreationOwner);
     if(!game)return S_OK;
     GenshinCpuWriterProbe::Revoke(nullptr);
     try
     {
-        const auto captureControls=CaptureControlsAtBoundary();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        if(captureControls)ObserveCaptureControls(*captureControls);
+        OwnerCallbackBoundary boundary;
         ComPtr<ID3D11Device> device;if(!swapchain || FAILED(swapchain->GetDevice(IID_PPV_ARGS(&device))) || device.Get()!=nativeDevice.Get())return S_OK;
         GenshinDepthProvider::RevokePreview();
         GenshinReturnedRaster::Invalidate(nullptr,nullptr,GenshinReturnedRaster::Boundary::Owner);
@@ -3734,7 +3958,7 @@ HRESULT BeforeResize(IDXGISwapChain* swapchain)noexcept
         if(!nativePipeline->Invalidate()){nativeStatus=nativePipeline->GetStatus();return DXGI_ERROR_WAS_STILL_DRAWING;}
         nativePipeline.reset();nativeContext.Reset();nativeThread=0;RetirePendingRenderTokens();ResourceProof::Invalidate();
         nativeWorkOwned.store(false,std::memory_order_release);
-        nativeStatus.srAccepted=false;nativeStatus.reason=CaptureReason::Draining;NoteControls(nativeControls);
+        nativeStatus.srAccepted=false;nativeStatus.reason=CaptureReason::Draining;boundary.UpdateStatus();
         return S_OK;
     }
     catch(...){return DXGI_ERROR_WAS_STILL_DRAWING;}
@@ -3840,10 +4064,7 @@ Engine::Receipt GetEngineProducerReceipt()noexcept{try{GenshinHookCpuTiming::Sco
         GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);return nativePipeline?nativePipeline->GetEngineProducerReceipt():Engine::Receipt{};}catch(...){return {};}}
 bool SetCaptureOnlyProviders(CaptureSignalProvider signalProvider,CapturePresentProvider presentProvider,void* opaque,CaptureOnlyMode mode) noexcept
 {
-    try{const auto captureControls=CaptureControlsAtBoundary();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        if(captureControls)ObserveCaptureControls(*captureControls);
+    try{OwnerCallbackBoundary boundary;
         if(mode!=CaptureOnlyMode::Disabled && mode!=CaptureOnlyMode::ObservationOnly)return false;
         if(nativePipeline && (GetCurrentThreadId()!=nativeThread || !DrainNativePipeline()))return false;
         captureSignalProvider=signalProvider;capturePresentProvider=presentProvider;captureProviderOpaque=opaque;captureOnlyMode=mode;
@@ -3867,10 +4088,7 @@ std::shared_ptr<const CaptureSnapshot> GetCaptureOnlySnapshot() noexcept
 }
 std::shared_ptr<const RawObservation::Snapshot> RawObservation::GetSnapshot() noexcept
 {
-    try{const auto controls=Config::Instance()->AcquireGenshinControls();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        ObserveCaptureControls(controls);
+    try{const auto controls=Config::Instance()->AcquireGenshinControls();OwnerCallbackBoundary boundary(controls);
         if(!nativePipeline)return {};
         if(!RouteActive(controls) || controls.epoch!=nativeControls.epoch || controls.settings!=nativeControls.settings)
             nativePipeline->RevokeTransport();
@@ -3880,10 +4098,7 @@ bool RawObservation::Snapshot::Current() const noexcept
 {const auto current=RawObservation::GetSnapshot();return current.get()==this;}
 RawObservation::Receipt RawObservation::GetReceipt() noexcept
 {
-    try{const auto controls=Config::Instance()->AcquireGenshinControls();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        ObserveCaptureControls(controls);
+    try{const auto controls=Config::Instance()->AcquireGenshinControls();OwnerCallbackBoundary boundary(controls);
         if(!nativePipeline)return {};
         if(!RouteActive(controls) || controls.epoch!=nativeControls.epoch || controls.settings!=nativeControls.settings)
             nativePipeline->RevokeTransport();
@@ -3899,10 +4114,7 @@ std::uint64_t ResolveNativeSwapchainIdentity(IDXGISwapChain* swapchain) noexcept
 Presentation::Ticket BeginNativePresent(ID3D11Device* device,std::uint64_t swapchain,UINT flags,bool present1) noexcept
 {
     if(!game || (flags & DXGI_PRESENT_TEST))return {};
-    try{const auto captureControls=CaptureControlsAtBoundary();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        if(captureControls)ObserveCaptureControls(*captureControls);
+    try{OwnerCallbackBoundary boundary;
         if(device!=nativeDevice.Get() || !nativePipeline || GetCurrentThreadId()!=nativeThread)return {};
         return nativePipeline->BeginPresent(swapchain,flags,present1);}
     catch(...){return {};}
@@ -3910,10 +4122,7 @@ Presentation::Ticket BeginNativePresent(ID3D11Device* device,std::uint64_t swapc
 void CompleteNativePresent(const Presentation::Ticket& ticket,HRESULT result) noexcept
 {
     if(!game || !ticket.Known())return;
-    try{const auto captureControls=CaptureControlsAtBoundary();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        if(captureControls)ObserveCaptureControls(*captureControls);
+    try{OwnerCallbackBoundary boundary;
         if(nativePipeline && ticket.owner.device==reinterpret_cast<uintptr_t>(nativeDevice.Get()) &&
             ticket.owner.deviceEpoch==nativeDeviceEpoch && GetCurrentThreadId()==nativeThread)
             nativePipeline->CompletePresent(ticket,result);}
@@ -3922,10 +4131,7 @@ void CompleteNativePresent(const Presentation::Ticket& ticket,HRESULT result) no
 void ForgetNativeSwapchain(std::uint64_t swapchain) noexcept
 {
     if(!game || !swapchain)return;
-    try{const auto captureControls=CaptureControlsAtBoundary();GenshinHookCpuTiming::Scope r448OwnerWait(GenshinHookCpuTiming::Stage::OwnerLock);
-        std::lock_guard lock(nativeMutex);r448OwnerWait.Finish();
-        GenshinHookCpuTiming::Scope r448OwnerHeld(GenshinHookCpuTiming::Stage::OwnerLocked);
-        if(captureControls)ObserveCaptureControls(*captureControls);
+    try{OwnerCallbackBoundary boundary;
         if(nativePipeline){
         nativePipeline->ForgetSwapchain(swapchain);
         if(GetCurrentThreadId()==nativeThread && nativePipeline->GetStatus().reason==CaptureReason::Draining)DrainNativePipeline();}}

@@ -291,8 +291,20 @@ Result Dx11Owner::Submit(const CapturedFrame& f)
             creation.maxRenderSize.height!=s.creation.maxRenderSize.height || creation.displaySize.width!=s.creation.displaySize.width ||
             creation.displaySize.height!=s.creation.displaySize.height) return fail(Reason::Draining);
         auto checked=s.lifecycle.Check(p,resources.output.identity,orderedRetained);
+        // A retained no-provider-work query can block orderedRetained without
+        // making this fresh invocation a failed history. Preserve all old roots;
+        // report retryable backpressure only before this invocation owns a lease.
+        if(invocation.transport)checked.NoteUnsubmittedRecordingPending(
+            invocation.transport->Live(),invocation.transport->LeaseCreated());
         if (checked.reason!=Reason::None || checked.disposition==Disposition::QueuedOutput ||
             checked.disposition==Disposition::ReusedOutput) return checked;
+    }
+    // Match the existing recording capacity. Nonblocking backpressure must
+    // not turn missed frames into an unbounded list of query/resource owners.
+    // Keep every retained invocation; refuse before queuing another one.
+    if(s.submissions.size() >= FramePipeline::GpuWorkDomain::RecordingCount) {
+        failure.unsubmittedRecordingPending=true;
+        return fail(Reason::Pending);
     }
     GenshinSubstage::Event(GenshinSubstage::Stage::SrAdmission,GenshinSubstage::State::Succeeded);
     // Capture must already prove safe native replay. Refuse unsafe partial-output fallback before submission.
@@ -352,22 +364,22 @@ Result Dx11Owner::Submit(const CapturedFrame& f)
         ? InvocationOrdering::AuthenticatedTransport : InvocationOrdering::NativeImmediate;
     s.context1->SwapDeviceContextState(previous.Get(),nullptr);
     s.context->End(completion.Get());
-    const bool recordingTimeout=GenshinTransport::ConsumeRecordingWaitTimeout();
-    const bool retryableTimeout=result!=FFX_OK && recordingTimeout && invocation.transport &&
+    const bool recordingPending=GenshinTransport::ConsumeRecordingPending();
+    const bool retryablePending=result!=FFX_OK && recordingPending && invocation.transport &&
         !invocation.transport->LeaseCreated();
     const bool backendRebuild=result!=FFX_OK && transition==Transition::UnsubmittedBackendRebuild &&
         (!invocation.transport || (invocation.transport->Live() && !invocation.transport->LeaseCreated()));
     Result submitted;
-    if(retryableTimeout || backendRebuild) {
+    if(retryablePending || backendRebuild) {
         // Keep preparation resources and the real EVENT until normal retirement;
         // this invocation added no provider work or lifecycle pending count.
         s.submissions.back().lifecyclePending=false;
         if(backendRebuild)s.lifecycle.BackendRebuildPending();
         submitted.instance=p.instance;submitted.epoch=p.epoch;submitted.generation=p.generation;
         submitted.outputIdentity=resources.output.identity;submitted.reason=Reason::Pending;
-        submitted.disposition=Disposition::RunNative;submitted.unsubmittedRecordingTimeout=retryableTimeout;
+        submitted.disposition=Disposition::RunNative;submitted.unsubmittedRecordingPending=retryablePending;
         if(backendRebuild)submitted.transition=Transition::UnsubmittedBackendRebuild;
-        if(retryableTimeout)LOG_INFO("R23 SR unsubmitted timeout excludes lifecycle: pid={} instance={} generation={} lease_created=false native_replay=true",
+        if(retryablePending && p.generation%300==1)LOG_INFO("SR recording pending excludes lifecycle: pid={} instance={} generation={} lease_created=false native_replay=true",
             GetCurrentProcessId(),p.instance,p.generation);
     } else submitted=s.lifecycle.Submitted(p,resources.output.identity,result==FFX_OK,true,f.replaySafe,true);
     s.lastParameters=p;s.lastResourceIdentities=std::move(identities);s.retainedOutput=f.output;
@@ -375,7 +387,7 @@ Result Dx11Owner::Submit(const CapturedFrame& f)
     // Backend failure invalidates history; query/leases stay alive until completion, then a new epoch is mandatory.
     if (result!=FFX_OK) {
         RevokeGuides();
-        if(retryableTimeout || backendRebuild) {
+        if(retryablePending || backendRebuild) {
             submitted.reason=Reason::Pending;
             submitted.disposition=Disposition::RunNative;
             submitted.pendingLease=false;

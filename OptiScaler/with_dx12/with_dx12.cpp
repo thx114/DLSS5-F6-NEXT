@@ -1,6 +1,8 @@
 #include <pch.h>
+#include <runtime/F6InputPolicy.h>
 
 #include "with_dx12.h"
+#include <framegen/FinalOutputEndpoint.h>
 
 #include <proxies/DXGI_Proxy.h>
 #include <proxies/D3D12_Proxy.h>
@@ -15,7 +17,7 @@ HRESULT CreateD3D12DeviceOnAdapter(IDXGIAdapter* adapter, D3D_FEATURE_LEVEL feat
 
     *device = nullptr;
 
-    if(GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())) {
+    if((F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()))) {
         Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dred;
         const auto hr=D3D12GetDebugInterface(IID_PPV_ARGS(&dred));
         if(SUCCEEDED(hr) && dred) {
@@ -43,7 +45,7 @@ namespace
 {
 bool GenshinConsumerPair()
 {
-    static const bool selected = GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
+    static const bool selected = (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()));
     return selected;
 }
 
@@ -169,9 +171,26 @@ void WithDx12::UpdateStateObjects()
     State::Instance().currentCommandQueue = _d3d12CommandQueue;
 }
 
+void WithDx12::AdoptSwapchainQueue(ID3D12CommandQueue* queue)
+{
+    // The SDK's nested raw factory queue belongs to physical output, not to
+    // SR, shared uploads or presentation NR. Do not publish it into State.
+    if (framegen::final_output::CreationScope::Active() || !queue) return;
+    if (State::Instance().currentD3D12Device == nullptr)
+    {
+        ID3D12Device* device = nullptr;
+        if (FAILED(queue->GetDevice(IID_PPV_ARGS(&device))) || !device) return;
+        State::Instance().currentD3D12Device = device; // Retain existing State ownership.
+        D3D12Hooks::HookDevice(device);
+    }
+    State::Instance().currentCommandQueue = queue;
+    SetD3D12Objects(State::Instance().currentD3D12Device, queue, D3D12_COMMAND_LIST_TYPE_DIRECT);
+}
+
 void WithDx12::SetD3D12Objects(ID3D12Device* InDevice, ID3D12CommandQueue* InCommandQueue,
                                D3D12_COMMAND_LIST_TYPE InCommandListType)
 {
+    if (framegen::final_output::CreationScope::Active()) return;
     if (GenshinConsumerPair())
     {
         {

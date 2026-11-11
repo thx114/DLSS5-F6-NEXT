@@ -2,6 +2,9 @@
 #include "SysUtils.h"
 
 #include <atomic>
+#include <framegen/DlssgStateSample.h>
+#include <framegen/FrameLatencyOwnership.h>
+#include <framegen/DlssgPacingLifetime.h>
 
 #include <sl.h>
 #include <sl1.h>
@@ -13,6 +16,8 @@
 #include "include/sl.param/parameters.h"
 
 #include "Hook_Utils.h"
+
+struct IDXGISwapChain;
 
 struct Adapter
 {
@@ -144,7 +149,32 @@ class StreamlineHooks
     static void updateDlssgOptions();
     static void applyMenuDlssgInterlock(sl::DLSSGOptions& options, bool potentiallyActive);
 
-    static void unhookInterposer();
+    // Every real SDK GetState (including required present-thread fence reads)
+    // goes through this gate. It never acquires a provider/continuity/FG lock.
+    static sl::Result QueryDlssgState(decltype(&slDLSSGGetState) getState,
+        const sl::ViewportHandle& viewport, sl::DLSSGState& state, const sl::DLSSGOptions* options,
+        framegen::DlssgStateQueryReason reason, framegen::DlssgStateSample* sample = nullptr);
+    // Nonconsumptive observation only. No SDK query and no cached fence.
+    static bool ReadDlssgStateSample(decltype(&slDLSSGGetState) getState,
+        const sl::ViewportHandle& viewport, framegen::DlssgStateSample& sample);
+    // Same SDK not-thread-safe SetOptions must share the innermost API gate.
+    // Invoke with a resolved REAL interface, outside any other SDK API gate.
+    static sl::Result SubmitDlssgOptions(decltype(&slDLSSGSetOptions) setOptions,
+        const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options);
+    // Resolved REAL token API only. The proxy wrapper must pass its raw API.
+    static sl::Result GetDlssgFrameToken(decltype(&slGetNewFrameToken) getToken,
+        sl::FrameToken*& token,const uint32_t* frame);
+    static FGPacingLeasePtr BeginDlssgPacing(const std::shared_ptr<framegen::DlssgPacingLifetime>& lifetime,
+        decltype(&slGetNewFrameToken) getToken,decltype(&slReflexSleep) sleep,
+        decltype(&slPCLSetMarker) marker,sl::FrameToken*& token,const uint32_t* frame);
+    static framegen::latency::Caller FrameLatencyCaller(void* returnAddress);
+    static bool DlssgPluginLoaded();
+    static void RecordFrameLatencyApplicationFlags(IDXGISwapChain* swapchain, UINT applicationFlags);
+    static framegen::latency::Flags ReadFrameLatencyFlags(IDXGISwapChain* swapchain);
+    static void ReportFrameLatencyAccess(const void* receiver, const framegen::latency::Flags& flags,
+        framegen::latency::Caller caller, bool sdkLoaded, framegen::latency::Target target);
+
+    static void unhookInterposer(bool tokenDomainHeld = false);
     static HMODULE LoadIsolatedGamePlugin(LPCWSTR requestedPath);
     static void hookInterposer(HMODULE slInterposer);
 
@@ -173,6 +203,20 @@ class StreamlineHooks
     static bool isCommonHooked();
     static bool isPclHooked();
     static bool isReflexHooked();
+
+    // Capability readers must distinguish the real SDK from our game-facing
+    // wrappers, which can rewrite requests and reported maxima. Keep the hook
+    // addresses private and expose only this identity classification.
+    static bool IsWrappedDlssgInterface(decltype(&slDLSSGSetOptions) setOptions,
+                                       decltype(&slDLSSGGetState) getState) noexcept
+    {
+        return setOptions == &hkslDLSSGSetOptions || setOptions == &hkslDLSSGSetOptionsSerial ||
+            getState == &hkslDLSSGGetState || getState == &hkslDLSSGGetStateSerial;
+    }
+    static bool IsWrappedReflexInterface(decltype(&slReflexSetOptions) setOptions) noexcept
+    {
+        return setOptions == &hkslReflexSetOptions;
+    }
 
   private:
     inline static sl::RenderAPI renderApi = sl::RenderAPI::eCount;
@@ -239,6 +283,7 @@ class StreamlineHooks
     static sl::Result hkslGetNativeInterface(void* proxyInterface, void** baseInterface);
 
     static sl::Result hkslSetD3DDevice(void* d3dDevice);
+    static sl::Result hkslGetNewFrameToken(sl::FrameToken*& token,const uint32_t* frame);
 
     // DLSS
     inline static PFN_slGetPluginFunction o_dlss_slGetPluginFunction = nullptr;
@@ -264,6 +309,8 @@ class StreamlineHooks
     static sl::Result hkslDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options);
     static sl::Result hkslDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
                                         const sl::DLSSGOptions* options);
+    static sl::Result hkslDLSSGSetOptionsSerial(const sl::ViewportHandle&, const sl::DLSSGOptions&);
+    static sl::Result hkslDLSSGGetStateSerial(const sl::ViewportHandle&, sl::DLSSGState&, const sl::DLSSGOptions*);
     static void* hkdlssg_slGetPluginFunction(const char* functionName);
     static const char* hkdlssg_slGetPluginJSONConfig_sl1();
 

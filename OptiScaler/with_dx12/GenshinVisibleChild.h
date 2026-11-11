@@ -11,17 +11,27 @@
 #include <new>
 #include <cstdint>
 #include <mutex>
+#include <chrono>
 #include <array>
+#include <algorithm>
 #include <wrl/client.h>
 #include <inputs/FG/GenshinFgTicket.h>
+#include <runtime/OutputRevealHandoff.h>
 #pragma comment(lib, "comctl32.lib")
 
 // R564 bounded owner: only same-process, top-level windowed parent and
 // window mutation/destruction run on its owner; Present may run on the render thread.
 // No worker, thread attach, synchronous cross-thread SendMessage or HWND reuse.
 // GPU resource lifetime belongs to the wrapper; Hide never releases it.
+struct GenshinVisibleChildTestAccess;
 class GenshinVisibleChild final
 {
+    friend struct GenshinVisibleChildTestAccess;
+    static uintptr_t Key(IUnknown* object) noexcept {
+        Microsoft::WRL::ComPtr<IUnknown> identity;
+        return object && SUCCEEDED(object->QueryInterface(IID_PPV_ARGS(&identity)))
+            ? reinterpret_cast<uintptr_t>(identity.Get()):0;
+    }
 public:
     // Copied from the actual ReturnedPicture ticket, not inferred from a HWND,
     // provider clock, latest CPU Render or monotonically increasing wrapper ID.
@@ -101,7 +111,7 @@ private:
         GenshinBridgeFg::SdkStreamLease inputLease;
         GenshinBridgeFg::SdkOwnerActivity sdkOwnerActivity;
         std::shared_ptr<std::atomic<bool>> streamLive;
-        GenshinBridgeFg::OutputRevealWindow revealWindow;
+        FramePipeline::OutputRevealHandoff revealWindow;
         void RevokeStream() noexcept {
             if(streamLive)streamLive->store(false,std::memory_order_release);
             streamLive.reset();inputLease.Revoke();revealWindow.Release();
@@ -197,6 +207,12 @@ private:
     // replace a pending owner acknowledgement or invalidate a fresh hidden snapshot.
     // Protected by snapshotMutex_; only a valid Show starts a new visibility lease.
     bool hideLatched_ = false;
+    // Avoid scheduling a new handoff from Win32 owner-mutation reentry.
+    inline static thread_local unsigned ownerOperationDepth_=0;
+    struct OwnerOperation {
+        OwnerOperation() noexcept {++ownerOperationDepth_;}
+        ~OwnerOperation(){--ownerOperationDepth_;}
+    };
     void ArmHideLocked() noexcept {
         if(!hideLatched_) {
             BumpEpoch();hideRequested_.store(epoch_.load());hideLatched_=true;
@@ -236,7 +252,6 @@ private:
         std::lock_guard lock(snapshotMutex_);
         snapshot_={parent_,child_,epoch_.load(),width_,height_,dpi_,GetTickCount64(),
             ready && !closed_ && !hideRequested_.load(),visible};
-        display_->revealWindow.OwnerChanged();
     }
     bool RefusePreparation() noexcept {
         // A failed owner check must revoke readiness even when Hide
@@ -481,26 +496,69 @@ public:
         std::lock_guard lock(snapshotMutex_);
         parentContent_=source;
     }
-    // Called before constructing a new SDK input scope. Pausing inputs here
-    // avoids making a synchronous SDK Present fail merely to drain its output.
-    // The caller still presents the natural parent exactly once. Workers can
-    // finish an already-admitted raw, but cannot continually move the last tail.
-    bool YieldForOutputReveal() noexcept {
-        std::lock_guard display(display_->mutex);
-        uint64_t epoch=0;
+    // An independently presented native picture overtakes the SDK display
+    // lease. Cancel pending owner commands AND captured worker stream permits
+    // before forwarding it; a fresh wall-time lease cannot prove equivalence.
+    // RequestHide revokes display authority synchronously on either thread.
+    // Real output queues/tails and endpoint custody retain their normal drain.
+    void SuspendDisplayForNativeFallback() noexcept {
+        RequestHide();
+    }
+private:
+    // A hidden->visible HWND transition must exclude every raw using it. An
+    // already-visible window has no HWND transition: a newly completed output
+    // may renew its lease while a later raw is queued. Its own exact tail is
+    // still mandatory, and an uncertain/foreign stream never grants renewal.
+    // This observes completion only; endpoint retirement retains the last raw.
+    bool OutputTailReady(const PhysicalContent& content,bool alreadyVisible,uint64_t& completed) noexcept {
+        const auto& lastRaw=display_->streamTail;
+        if(lastRaw.queue.Get()!=content.queue.Get() || lastRaw.fence.Get()!=content.fence.Get() ||
+            lastRaw.uncertain || lastRaw.value<content.value)return false;
+        if(!alreadyVisible && !display_->HiddenReady())return false;
+        return content.Ready(completed);
+    }
+public:
+    // Observe OUTPUT once before constructing this frame's input. This never
+    // waits, retries a lock, calls Show or dispatches messages. Pending work is
+    // left with its true owner; no source is spent as a drain frame.
+    void ServiceOutputReveal() noexcept {
+        if(ownerOperationDepth_)return;
+        PhysicalContent content; // release observer refs outside the gate
+        std::unique_lock display(display_->mutex,std::try_to_lock);
+        if(!display.owns_lock() || !display_->sdkOwnerActivity.MayWaitForOwner(false))return;
         {
-            std::lock_guard snapshot(snapshotMutex_);
+            std::unique_lock snapshot(snapshotMutex_,std::try_to_lock);
+            if(!snapshot.owns_lock())return;
             const auto now=GetTickCount64();
             if(pendingContent_.revealed || !Current(snapshot_) || !StreamCurrent(pendingContent_) ||
-                now>=pendingContent_.until || !display_->revealWindow.Hold(pendingContent_.sequence,
-                    now,pendingContent_.until,display_->inputLease.Until()))return false;
-            epoch=pendingContent_.epoch;
+                now>=pendingContent_.until)return;
+            content=pendingContent_;
         }
-        RequestReveal(epoch); // owner is try-only; expiry resumes admission without a Show
-        return true;
+        using Step=FramePipeline::OutputRevealHandoff::Step;
+        display_->revealWindow.Service(content.until,display_->inputLease.Until(),
+            []{return GetTickCount64();},[&] {
+                bool alreadyVisible=false;
+                {
+                    std::unique_lock snapshot(snapshotMutex_,std::try_to_lock);
+                    if(!snapshot.owns_lock())return Step::Abandon;
+                    if(!Current(snapshot_) || !StreamCurrent(content) ||
+                        pendingContent_.sequence!=content.sequence ||
+                        pendingContent_.streamLive!=content.streamLive ||
+                        pendingContent_.outputLive!=content.outputLive)return Step::Abandon;
+                    if(pendingContent_.revealed)return Step::Revealed;
+                    alreadyVisible=snapshot_.visible;
+                }
+                uint64_t completed=0;
+                if(!OutputTailReady(content,alreadyVisible,completed))return Step::TailPending;
+                // Even on the HWND owner, only queue its ordinary evaluation.
+                // Natural owner messages/timer do Show after rechecking tails.
+                RequestReveal(content.epoch);
+                return Step::OwnerPending;
+            });
     }
     void Hide() noexcept {
         if(!OnOwnerThread()){RequestHide();return;}
+        OwnerOperation operation;
         uint64_t request=0;
         PhysicalContent discard;
         std::lock_guard display(display_->mutex);
@@ -522,6 +580,7 @@ public:
     // Hide its pixels, but preserve a still-current input transaction/stream so
     // a slow SDK call can finish without revoking its asynchronous worker.
     void ExpireVisibleOutput() noexcept {
+        OwnerOperation operation;
         PhysicalContent discard; // release observer COM refs after display unlock
         std::lock_guard display(display_->mutex);
         if(!display_->inputLease.Current(GetTickCount64())){Hide();return;}
@@ -538,6 +597,7 @@ public:
     bool Prepare() noexcept
     {
         if(!OnOwnerThread()){const auto s=ReadSnapshot();QueueCommand();return Current(s);}
+        OwnerOperation operation;
         if(hideRequested_.load())Hide();
         if (closed_ || !parent_ || !child_ || !IsWindow(parent_) || !IsWindow(child_) ||
             GetPropW(parent_, Property) != this || GetPropW(child_, Property) != this || GetParent(child_) != parent_ ||
@@ -573,11 +633,18 @@ private:
             display_->scopeEpoch==content.epoch && content.epoch==epoch_.load() && !hideRequested_.load() &&
             (!requireInput || display_->inputLease.Accepted()) && display_->inputLease.Current(GetTickCount64());
     }
+    // A late raw still reports its real tail, but cleanup belongs only to the
+    // display stream it captured. Never let old completion cancel a new lease.
+    void HideCapturedStream(const PhysicalContent& content) noexcept {
+        if(content.streamLive && content.streamLive==display_->streamLive &&
+           content.epoch==display_->scopeEpoch && content.epoch==Epoch())Hide();
+    }
     // Queue only an owner evaluation. In particular, SDK S_OK and raw CPU return
     // cannot start or renew the visible lease; ApplyShow requires the real tail.
     bool RequestReveal(uint64_t epoch) noexcept {
         {
-            std::lock_guard lock(snapshotMutex_);
+            std::unique_lock lock(snapshotMutex_,std::try_to_lock);
+            if(!lock.owns_lock())return false;
             if(!Current(snapshot_) || snapshot_.epoch!=epoch)return false;
             showEpoch_.store(epoch);
         }
@@ -605,8 +672,8 @@ private:
             std::lock_guard lock(snapshotMutex_);
             if(!Current(snapshot_) || !StreamCurrent(content,false))return false;
             // Keep one still-fresh, unrevealed output. ApplyShow checks both
-            // its tail and the last raw tail; the bounded admission window
-            // prevents continuous tail chasing between SDK input calls.
+            // its tail and the last raw tail. ServiceOutputReveal queues an
+            // owner evaluation without pausing this frame's source consumption.
             // This is output-stream ordering, never a FIFO join to SDK inputs.
             if(!pendingContent_.revealed && StreamCurrent(pendingContent_,false) &&
                 GetTickCount64()<pendingContent_.until)return true;
@@ -616,6 +683,7 @@ private:
     }
     bool ApplyShow(uint64_t epoch) noexcept {
         if(!OnOwnerThread())return false;
+        OwnerOperation operation;
         std::unique_lock display(display_->mutex,std::try_to_lock);
         if(!display.owns_lock())return false;
         if(!Prepare() || epoch!=epoch_.load())return false;
@@ -631,14 +699,9 @@ private:
         if(GetTickCount64()>=content.until) {
             ObserveContent("output-observation-expired",content,0);return false;
         }
-        const auto& lastRaw=display_->streamTail;
-        if(lastRaw.queue.Get()!=content.queue.Get() || lastRaw.fence.Get()!=content.fence.Get() ||
-            lastRaw.value<content.value || !display_->HiddenReady()) {
-            ObserveContent("last-physical-raw-tail-pending",content,0);return false;
-        }
         if(!alreadyVisible && (!content.primed || !display_->hiddenAcknowledged))return false;
         uint64_t completed=0;
-        if(!content.Ready(completed)) {
+        if(!OutputTailReady(content,alreadyVisible,completed)) {
             ObserveContent("physical-tail-pending-or-failed",content,completed);
             if(completed==UINT64_MAX)Hide();
             return false;
@@ -654,7 +717,8 @@ private:
             display_->revealWindow.Release();
             showUntil_.store(GetTickCount64()+LeaseMs);
         }
-        Publish(true);ObserveContent("shown-after-physical-tail",content,completed);return Visible(epoch);
+        Publish(true);ObserveContent(alreadyVisible ? "lease-renewed-after-physical-tail" :
+            "shown-after-physical-tail",content,completed);return Visible(epoch);
     }
 public:
     // Input and output are separate transactions. Hooks save the exact SDK
@@ -681,12 +745,6 @@ public:
             std::lock_guard display(owner_.display_->mutex);
             owner_.display_->sdkOwnerActivity.Leave(this);
             sdkOwnerMarked_=false;
-            owner_.display_->revealWindow.OwnerChanged();
-        }
-        static uintptr_t Key(IUnknown* object) noexcept {
-            Microsoft::WRL::ComPtr<IUnknown> identity;
-            return object && SUCCEEDED(object->QueryInterface(IID_PPV_ARGS(&identity)))
-                ? reinterpret_cast<uintptr_t>(identity.Get()):0;
         }
         PresentPermit(GenshinVisibleChild& owner,IDXGISwapChain* sc,uint64_t epoch,
                       HRESULT nativeResult,bool nativePreserved,const ContentSource& source)
@@ -728,7 +786,6 @@ public:
             if(p->owner_.OnOwnerThread()) {
                 std::lock_guard display(p->owner_.display_->mutex);
                 p->sdkOwnerMarked_=p->owner_.display_->sdkOwnerActivity.Enter(p);
-                p->owner_.display_->revealWindow.OwnerChanged();
             }
         }
         static void AfterPresent(IDXGISwapChain* sc,HRESULT result) noexcept {
@@ -765,15 +822,16 @@ public:
             return true;
         }
         class PhysicalOutput final {
+            friend struct ::GenshinVisibleChildTestAccess;
             PresentPermit* inputPermit_=nullptr; // same-stack diagnostics only; never retained on a worker
             PhysicalContent content_;
             std::shared_ptr<DisplayGate> display_;
             size_t hiddenSlot_=0;
             bool scoped_=false,rawEntered_=false,finished_=false;
-            ULONGLONG handoffUntil_=0;
-            ULONGLONG HandoffBudget() const noexcept {
-                const auto now=GetTickCount64();return now<handoffUntil_?handoffUntil_-now:0;
-            }
+            // SDK raw admission has its own finite lock budget. The native
+            // observer never waits and cannot turn brief gate contention into
+            // an immediate raw rejection. Every raw recheck shares this deadline.
+            std::chrono::steady_clock::time_point rawAdmissionUntil_{};
             void FinishHidden(bool tailKnown,uint64_t value) noexcept {
                 auto& tail=display_->hiddenTails[hiddenSlot_];
                 if(rawEntered_) {
@@ -842,44 +900,16 @@ public:
                     FAILED(device->GetDeviceRemovedReason()))return refuse("PhysicalColorOrCreationQueueMismatch");
                 auto gate=retainedDisplay_.load(std::memory_order_acquire);
                 if(!gate)return refuse("NoRetainedDisplayOwner");
-                // One total scheduling budget per raw, shared by lock/reveal/
-                // hide and the pre-Present recheck. Contention cannot multiply
-                // the existing display lease into several serial pauses.
-                handoffUntil_=GetTickCount64()+LeaseMs;
-                // Endpoint::PresentImpl is the only caller. Worker SDK entry
-                // holds no DisplayGate lock: both waits below have depth one.
-                // Same-thread HWND reentry may recurse, but never waits below.
+                // Endpoint::PresentImpl is the only caller. Preserve the raw's
+                // original finite admission allowance, shared with MayPresent
+                // and RawEntered. No owner ACK wait or reveal hold is involved.
+                rawAdmissionUntil_=std::chrono::steady_clock::now()+std::chrono::milliseconds(LeaseMs);
                 std::unique_lock display(gate->mutex,std::defer_lock);
-                if(!display.try_lock_for(std::chrono::milliseconds(HandoffBudget())))return refuse("OwnerOrParentBoundaryBusy");
+                if(!display.try_lock_until(rawAdmissionUntil_))return refuse("OwnerOrParentBoundaryBusy");
                 if(!gate->live || !gate->owner || gate->child!=d.OutputWindow || !IsRetainedChild(d.OutputWindow))
                     return refuse("PhysicalWindowLifetimeChanged");
                 if(gate->binding.Owner().Known() && gate->binding.Owner().outputOwner!=outputOwner)
                     return refuse("SdkOutputOwnerMismatch");
-                // The SDK may already have queued this raw when the render
-                // thread yields new inputs. Returning WAS_STILL_DRAWING here
-                // poisons its next host Present and restarts FG. Let the owner
-                // finish the bounded reveal instead, outside the display lock.
-                // Never wait for the HWND owner from that owner's own stack.
-                if(gate->revealWindow.BlocksRaw(GetTickCount64())) {
-                    if(!gate->sdkOwnerActivity.MayWaitForOwner(gate->owner->OnOwnerThread()))
-                        gate->revealWindow.Release();
-                    else {
-                        const auto budget=(std::min)(HandoffBudget(),gate->revealWindow.Remaining(GetTickCount64()));
-                        gate->revealWindow.AwaitOwner(display,budget,[&] {
-                            return !gate->live || !gate->owner ||
-                                !gate->sdkOwnerActivity.MayWaitForOwner(false) ||
-                                !gate->revealWindow.BlocksRaw(GetTickCount64());
-                        });
-                        if(!gate->sdkOwnerActivity.MayWaitForOwner(false))
-                            gate->revealWindow.Release();
-                        if(gate->revealWindow.BlocksRaw(GetTickCount64()))
-                            return refuse("OwnerRevealHandoffIncomplete");
-                    }
-                }
-                if(!gate->live || !gate->owner || gate->child!=d.OutputWindow || !IsRetainedChild(d.OutputWindow))
-                    return refuse("PhysicalWindowLifetimeChangedAfterHandoff");
-                if(gate->binding.Owner().Known() && gate->binding.Owner().outputOwner!=outputOwner)
-                    return refuse("SdkOutputOwnerMismatchAfterHandoff");
                 auto* p=current_;
                 if(p && p->armed_ && p->sdkEntered_ && p->owner_.display_==gate) {
                     // Exact creation owner applies to synchronous calls too. TLS
@@ -896,20 +926,11 @@ public:
                     gate->binding.Device12()==Key(device.Get()) &&
                     gate->binding.Owner().outputOwner==outputOwner &&
                     d.BufferDesc.Width==gate->binding.Owner().width && d.BufferDesc.Height==gate->binding.Owner().height;};
-                // Source-less bootstrap remains hidden. Normal asynchronous
-                // owner acknowledgement is scheduling, not an SDK failure.
-                // Worker RequestHide only posts an owner command; it performs
-                // no cross-thread HWND mutation or GPU/endpoint wait. Owner
-                // publication needs only this gate and its HWND snapshot.
+                // Source-less bootstrap remains hidden. Request the actual
+                // owner hide, but never wait or pump messages from an SDK raw.
+                // Until ACK, the original hidden-only admission below refuses.
                 if(!streamAuthorized() && !gate->hiddenAcknowledged) {
                     gate->owner->RequestHide();
-                    // RequestHide/ArmHideLocked have returned: only Bind's
-                    // original depth-one lock remains at this second wait.
-                    if(gate->sdkOwnerActivity.MayWaitForOwner(gate->owner->OnOwnerThread()))
-                        gate->revealWindow.AwaitOwner(display,HandoffBudget(),[&] {
-                            return !gate->live || !gate->owner || gate->hiddenAcknowledged ||
-                                !gate->sdkOwnerActivity.MayWaitForOwner(false);
-                        });
                     if(!gate->live || !gate->owner || gate->child!=d.OutputWindow || !IsRetainedChild(d.OutputWindow))
                         return refuse("PhysicalWindowLifetimeChangedAfterHide");
                     if(gate->binding.Owner().Known() && gate->binding.Owner().outputOwner!=outputOwner)
@@ -958,7 +979,7 @@ public:
             bool MayPresent() const noexcept {
                 if(!display_ || finished_)return false;
                 std::unique_lock display(display_->mutex,std::defer_lock);
-                if(!display.try_lock_for(std::chrono::milliseconds(HandoffBudget())) || !display_->live)return false;
+                if(!display.try_lock_until(rawAdmissionUntil_) || !display_->live)return false;
                 if(scoped_)return display_->owner && display_->owner->StreamCurrent(content_,false) &&
                     GetForegroundWindow()==GetAncestor(display_->child,GA_ROOT);
                 return display_->hiddenAcknowledged && display_->child==retainedChild_.load() &&
@@ -997,7 +1018,7 @@ public:
                     display_->owner->StreamCurrent(content_,false);
                 bool observed=false;
                 if(valid){candidate=content_;observed=display_->owner->AcceptContent(candidate);}
-                else if(display_->owner)display_->owner->Hide();
+                else if(display_->owner)display_->owner->HideCapturedStream(content_);
                 static std::atomic<uint64_t> reports{0};const auto n=++reports;
                 static thread_local ULONGLONG lastReport=0;
                 const auto now=GetTickCount64();
@@ -1016,7 +1037,7 @@ public:
                 if(scoped_) {
                     if(rawEntered_)display_->streamTail.uncertain=true;
                     display_->streamTail.inFlight=false;
-                    if(display_->owner)display_->owner->Hide();
+                    if(display_->owner)display_->owner->HideCapturedStream(content_);
                 } else FinishHidden(false,0);
                 if(rawEntered_ && inputPermit_)inputPermit_->physicalTailFailed_=true;
             }

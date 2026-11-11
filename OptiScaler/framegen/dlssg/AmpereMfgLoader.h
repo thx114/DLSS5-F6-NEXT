@@ -15,17 +15,23 @@ struct Status
     std::string ErrorMessage; // Human-readable error if anything failed
 };
 
+// Requests are not runtime capability. Five generated plus one source is 6x;
+// the bound provider must still report and accept its actual maximum.
+inline constexpr int MaximumGeneratedRequest = 5;
+inline constexpr int DefaultGeneratedRequest = 3;
+
 Status LastStatus();
 
 /// Called after DLL initialization, once GPU/environment information is available.
 void TrySetup();
 
-/// Formats dlssg_sm86.ini content with Native 0.2.3 specification and strict clamping.
+/// Formats requested settings; the loaded runtime owns the actual supported cap.
 inline std::string FormatIniContent(int maxFrames, const std::string& kernelImg, int hwBilinear = 0, const std::string& router = "SM86", int logLevel = 1)
 {
-    // Native 0.2.3 strictly requires: MaxGeneratedFrames must be 1, 2 or 3
-    if (maxFrames <= 0 || maxFrames > 3)
-        maxFrames = 3;
+    // Keep the existing default. A 310.9 backend may accept five generated
+    // frames; older backends remain limited by their real SDK capability.
+    if (maxFrames <= 0 || maxFrames > MaximumGeneratedRequest)
+        maxFrames = DefaultGeneratedRequest;
 
     std::string validKernel = kernelImg;
     if (validKernel != "PTX" && validKernel != "Cubin")
@@ -39,7 +45,7 @@ inline std::string FormatIniContent(int maxFrames, const std::string& kernelImg,
     int validLogLevel = (logLevel >= 0 && logLevel <= 3) ? logLevel : 1;
 
     std::ostringstream ss;
-    ss << "; Native 0.2.3. Restart the game after changing this file.\n";
+    ss << "; OptiScaler requested settings. Restart the game after changing this file.\n";
     ss << "[Compatibility]\n";
     ss << "Router=" << validRouter << "\n";
     ss << "KernelImage=" << validKernel << "\n";

@@ -10,6 +10,7 @@
 // 消除双跑残余。纯 C++ 状态机，不依赖 D3D11/Windows（时间由调用方注入，可单测）。
 
 #include <cstdint>
+#include "../GenshinFsrProfiles.h"
 
 namespace fsr2_family_takeover
 {
@@ -18,7 +19,7 @@ constexpr std::uint64_t k_pre_hash_1 = 0x3CDF78FAC0ABCF6Dull; // PRE-1: cb0=1696
 constexpr std::uint64_t k_pre_hash_2 = 0xAC63A3AF611EC7C9ull; // PRE-2: cb0=480, t1=160x560（SMAA LUT 变体）
 constexpr std::uint64_t k_pre_hash_3 = 0x6018B8E925D4124Bull; // PRE-3: cb0=480, t1=render-size R8G8B8A8_TYPELESS
 constexpr std::uint64_t k_pre_hash_4 = 0x590E69FEB210010Eull; // PRE-4: cb0=480, t1=render-size R8G8B8A8_TYPELESS
-constexpr std::uint64_t k_accumulate_hash = 0x78057A29AF6C2D99ull; // 累积/上采样（现 Mode 2 目标）
+constexpr std::uint64_t k_accumulate_hash = GenshinFsrProfiles::Reviewed[0].hash; // 累积/上采样（现 Mode 2 目标）
 constexpr std::uint64_t k_smaa_hash = 0xF41E6080D4BEA352ull;      // SMAA 模式合成（排除项）
 
 // 重置状态（进程初始化/上下文重建时调用）

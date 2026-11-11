@@ -4,6 +4,7 @@
 #include "GenshinDx12Transport.h"
 #include "GenshinOwnerIdentity.h"
 #include "GenshinDepthPortableResources.h"
+#include "../runtime/Dx11SharedRead.h"
 #include <functional>
 
 namespace GenshinDepthMapping {class Capture;}
@@ -22,6 +23,7 @@ class PictureJob final {
     ComPtr<IUnknown> gameContext_;
     ComPtr<ID3D12Device> producer_;
     ComPtr<ID3D11Texture2D> input_,output_,gameOutput_;
+    FramePipeline::Dx11SharedRead outputRead_;
     ComPtr<ID3D11ShaderResourceView> inputView_;
     ComPtr<ID3D11Fence> inputFence_,ready_,gameReady_;
     ComPtr<ID3D12Resource> boundInput_;
@@ -44,6 +46,13 @@ public:
         return thread_==GetCurrentThreadId()&&signalled_&&!retired_&&!poisoned_&&device_&&game_&&producer_&&
             SUCCEEDED(device_->GetDeviceRemovedReason())&&SUCCEEDED(game_->GetDeviceRemovedReason())&&
             SUCCEEDED(producer_->GetDeviceRemovedReason())?gameOutput_.Get():nullptr;
+    }
+    // This view aliases the completed/ordered mapper output. It conveys no
+    // new content or readiness authority; the PreparedDepthLease retains the
+    // job until both input-ready and actual consumer-done fences retire.
+    ID3D12Resource* ReadResource(ID3D12Device* device) noexcept {
+        if(!Texture()||!ordered_||!Same(device,producer_.Get()))return nullptr;
+        return outputRead_.Open(output_.Get(),device,width_,height_,DXGI_FORMAT_R32G32B32A32_FLOAT);
     }
     // The actual NR copy remains on its existing context/reader-debt path.
     // This adds only the physical dependency for that copy, never a capture
@@ -203,6 +212,11 @@ class PictureLane final {
                FAILED(device_->CreateFence(0,D3D11_FENCE_FLAG_SHARED,IID_PPV_ARGS(&j->ready_)))||
                FAILED(j->ready_->CreateSharedHandle(nullptr,GENERIC_ALL,nullptr,&rh.value))||
                FAILED(game5->OpenSharedFence(rh.value,IID_PPV_ARGS(&j->gameReady_))))return {};
+            // Import while this resource's sole exported NT handle is alive.
+            // Failure leaves the unchanged game-side copy fallback available;
+            // ReadResource later uses only this immutable cached import.
+            j->outputRead_.Open(j->output_.Get(),producer_.Get(),width,height,
+                DXGI_FORMAT_R32G32B32A32_FLOAT,oh.value);
         }
         // Same-object imports may remain cached, but the new genuine packet
         // (and its immutable value/owner) is mandatory on EVERY submission.

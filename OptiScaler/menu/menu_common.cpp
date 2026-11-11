@@ -9,17 +9,17 @@
 #include "MenuPages.h"
 #include "NextgenUi.h"
 #include "NextgenF5Panels.h"
+#include "GuideDiagnosticsMenu.h"
+#include <runtime/GuideCalibrationRuntime.h>
 #include "UiLocalization.h"
-#include "CriticalErrorWindow.h"
-#include "GenshinFsrHintController.h"
-#include <genshin/GenshinHookHintPresentation.h>
-#include <genshin/GenshinLegacyCapture.h>
 #include <mods/gimi/GimiRuntime.h>
 #include <uid/DrawUidPanel.h>
 #include <inputs/GenshinFsrContract.h>
+#include <runtime/F6InputPolicy.h>
 #include <framegen/dlssg/MfgUnlock.h>
 #include <framegen/dlssg/AmpereMfgLoader.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
+#include <framegen/GuideOrientation.h>
 #include <dlssnr/DlssNr_ExposureScan.h>
 
 #include <algorithm>
@@ -33,7 +33,6 @@
 #include <dlssnr/DlssNr.h>
 #include <native/VirtualUpscalerDriver.h>
 #include <native/NativeLowLatency.h>
-#include <genshin/GenshinHookCpuTiming.h>
 #include <native/VkPresentBridge.h>
 
 #include "input/input_system.h"
@@ -86,8 +85,6 @@ enum class UiTargetMode
         singleChangeBackend.second = true;
 
 static float fontSize = 14.0f; // just changing this doesn't make other elements scale ideally
-static ImVec2 overlaySize(0.0f, 0.0f);
-static ImVec2 overlayPosition(-1000.0f, -1000.0f);
 static bool _hdrTonemapApplied = false;
 static bool nextgenThemePending = false;
 static bool nextgenStyleActive = false;
@@ -139,63 +136,18 @@ static Upscaler currentBackend = Upscaler::Reset;
 static std::string currentBackendName = "";
 static int refreshRate = 0;
 static ImVec2 lastPosition(-1000.0f, -1000.0f);
-static CriticalUi::GenshinFsrHintController genshinCriticalHints;
-static bool criticalErrorsCollapsed = false;
-static CriticalUi::Rect criticalMainMenuBounds {};
-static std::uint64_t criticalLastSampleTick = 0;
-
-// One deadline for this process, independent of menus, devices, controls or
-// advice transitions. Reuse the cached process identity, not the first UI draw.
-// Convert UTC creation age once; later clock adjustments cannot reopen it.
-static const std::uint64_t paimonAdviceDeadlineTick = []() noexcept -> std::uint64_t {
-    constexpr std::uint64_t lifetime100ns = 120ULL * 1000 * 10000;
-    const auto created = GenshinLegacy::Ui::ProcessStartIdentity();
-    if (!created) return 0; // Unknown startup age must not open a fresh window.
-    const auto tick = GetTickCount64();
-    FILETIME current {};
-    GetSystemTimeAsFileTime(&current);
-    const auto utc = (std::uint64_t(current.dwHighDateTime) << 32) | current.dwLowDateTime;
-    if (utc < created || utc - created >= lifetime100ns) return 0;
-    // Round remaining time down, so the advice never gets an extra millisecond.
-    return tick + (lifetime100ns - (utc - created)) / 10000;
-}();
-
-static void UpdateGenshinCriticalHints(const State& state, Config* config)
-{
-    const auto now = GetTickCount64(); // Same monotonic clock as captured Render tokens.
-    if (criticalLastSampleTick && now >= criticalLastSampleTick &&
-        now - criticalLastSampleTick < CriticalUi::GenshinFsrHintPolicy::SampleIntervalMs) return;
-    criticalLastSampleTick = now;
-    const auto controls = config->AcquireGenshinControls();
-    const auto observation = GenshinLegacy::Ui::ReadObservation();
-    // The native snapshot must describe the current controls, never a previous config.
-    const bool currentRoute = controls.Active() && observation.session.controlsEpoch == controls.epoch;
-    genshinCriticalHints.Update(observation, GetCurrentProcessId(), GenshinLegacy::Ui::ProcessStartIdentity(),
-        GetTickCount64(), state.frameCount, static_cast<std::uint32_t>((std::max)(state.screenWidth, 0.0f)),
-        static_cast<std::uint32_t>((std::max)(state.screenHeight, 0.0f)), currentRoute,
-        config->DlssNrEnabled.value_or_default() ? GenshinLoading::NrMode::Requested : GenshinLoading::NrMode::Disabled);
-}
 
 // How many frames DLSS frame generation adds per real frame (0: off). A game's own DLSS frame generation reports it on
 // each evaluate; OptiScaler's own DLSSG output (OptiFG input, e.g. Optical F5Low's upscaler) gets no such report back,
 // so there it is the count OptiScaler asked for while its frame generation runs.
 static int DlssgInterpolationCount(const State& state)
 {
-    // Genshin's provider activity/requested multiplier is not a measured
-    // generated-frame count. Do not inflate its FPS/ON indicators from it.
-    static const bool genshinProcess = GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
-    if (genshinProcess && state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::DLSSG)
+    // GetState returns a query-interval total, not a per-source multiplier.
+    // Neither it nor requested options can supply a measured generated count.
+    if (state.activeFgOutput==FGOutput::DLSSG)
         return 0;
     if (const int reported = state.dlssgDetectedInterpolationCount; reported > 0)
         return reported;
-
-    const auto fg = state.currentFG;
-
-    if (state.activeFgOutput == FGOutput::DLSSG && state.activeFgInput == FGInput::Upscaler && fg != nullptr &&
-        fg->IsActive() && !fg->IsPaused())
-    {
-        return (int) fg->GetInterpolatedFrameCount();
-    }
 
     return 0;
 }
@@ -1974,6 +1926,8 @@ struct MenuCommon::RenderMenuContext
 
     bool frameTimesCalculated = false;
     bool newFrame = false;
+    bool usesSourceStatistics = false;
+    std::string frameStatistics;
 
     VersionCheckStatus versionStatus;
     std::string currentVersionText;
@@ -2242,8 +2196,7 @@ void MenuCommon::BeginMenuFrameIfNeeded(RenderMenuContext& ctx)
 
     // These are demand categories, not proof of visible pixels. A toast may
     // expire while being built; StarRail's existing notice path can be empty.
-    const bool notificationDemand = config->IsStarRailInputProfile() || ImGui::notifications.size() > 0 ||
-                                    genshinCriticalHints.Notices().Size() > 0;
+    const bool notificationDemand = config->IsStarRailInputProfile() || ImGui::notifications.size() > 0;
     const bool otherOverlayDemand =
         (!config->DisableSplash.value_or_default() && now > splashStart && now < splashLimit) || scanIndicator ||
         (config->DlssNrCompare.value_or_default() != 0 && config->DlssNrCompareTags.value_or_default());
@@ -2409,22 +2362,56 @@ void MenuCommon::UpdateFrameTimeAverages(RenderMenuContext& ctx)
 
     if (config->ShowFps.value_or_default() || _isVisible)
     {
-        float frameCnt = 0;
-        frameTime = 0;
-        for (size_t i = 299; i > 199; i--)
+        // Read once for this renderer frame. A missed observation lock keeps
+        // the last coherent sample, with its age still checked below.
+        ctx.usesSourceStatistics = state.activeFgOutput == FGOutput::DLSSG ||
+            (F6InputPolicy::DirectDlssInputs && ctx.currentFeature != nullptr);
+        struct StatisticsCache {
+            GuideDiagnostics::Statistics observed;
+            uint64_t sourceEnd=0,querySequence=0;
+            bool sourceKnown=false,sdkKnown=false;
+            std::string text;
+        };
+        static thread_local StatisticsCache cache;
+        auto& observed=cache.observed;
+        if (ctx.usesSourceStatistics) GuideDiagnostics::ReadStatistics(observed);
+        const auto sampleNow = FrameTrace::NowNs();
+        const bool sourceKnown = observed.source.known && std::isfinite(observed.source.hz) &&
+            observed.source.hz > 0 && sampleNow >= observed.source.lastNs &&
+            sampleNow-observed.source.lastNs <= 3000000000ull;
+        if (ctx.usesSourceStatistics)
         {
-            if (state.frameTimes[i] > 0.0)
+            frameRate = sourceKnown ? observed.source.hz : 0.0;
+            frameTime = frameRate > 0 ? 1000.0/frameRate : 0.0;
+            const bool sdkKnown=observed.sdkSucceeded && observed.intervalKnown && observed.endNs > observed.beginNs &&
+                sampleNow >= observed.endNs && sampleNow-observed.endNs <= 3000000000ull;
+            // Generated-output callbacks reuse text until the actual source,
+            // SDK interval or freshness changes. They do not recalculate FPS.
+            if (cache.text.empty() || cache.sourceEnd!=observed.source.lastNs ||
+                cache.querySequence!=observed.querySequence || cache.sourceKnown!=sourceKnown || cache.sdkKnown!=sdkKnown)
             {
-                frameTime += state.frameTimes[i];
-                frameCnt++;
+                cache.sourceEnd=observed.source.lastNs;cache.querySequence=observed.querySequence;
+                cache.sourceKnown=sourceKnown;cache.sdkKnown=sdkKnown;
+                cache.text=sourceKnown ? StrFmt("源：%.1f Hz",frameRate) : "源：未知";
+                if (sdkKnown) cache.text+=StrFmt(" | SDK：%u / %.2f ms",observed.presented,
+                    (observed.endNs-observed.beginNs)*1e-6);
+                else cache.text+=" | SDK：区间未知";
+                cache.text+=" | 实际显示率：未知";
             }
+            ctx.frameStatistics=cache.text;
         }
-
-        frameTime /= frameCnt;
-        frameRate = 1000.0 / frameTime;
+        else
+        {
+            float frameCnt=0;frameTime=0;
+            for (size_t i=299;i>199;--i)
+                if (state.frameTimes[i]>0) {frameTime+=state.frameTimes[i];++frameCnt;}
+            frameTime=frameCnt>0 ? frameTime/frameCnt : 0.0;
+            frameRate=frameTime>0 ? 1000.0/frameTime : 0.0;
+        }
         frameTimesCalculated = true;
 
-        float lastFT = static_cast<float>(state.frameTimes.empty() ? 0.0f : state.frameTimes.back());
+        float lastFT = static_cast<float>(ctx.usesSourceStatistics ? frameTime :
+            (state.frameTimes.empty() ? 0.0f : state.frameTimes.back()));
         float lastUT = static_cast<float>(state.upscaleTimes.empty() ? 0.0f : state.upscaleTimes.back());
         gFrameTimes.Push(lastFT);
         gUpscalerTimes.Push(lastUT);
@@ -2502,16 +2489,14 @@ void MenuCommon::RenderNrCompareTags()
 // placement needs a shared frame/clock receipt; a duration is never an offset.
 struct OverlayGpuTimings
 {
-    GenshinHookCpuTiming::BridgeGpuReading fsr {};
     DlssNr::GpuTimingSample nr {};
     uint64_t capturedMs = 0, fgFrame = 0, lowLatencyFrame = 0;
-    bool fsrEnabled = false, nrEnabled = false;
-    void Capture(bool genshin, bool nrRequested, uint64_t fg, uint64_t lowLatency)
+    bool nrEnabled = false;
+    void Capture(bool nrRequested, uint64_t fg, uint64_t lowLatency)
     {
-        fsr = genshin ? GenshinHookCpuTiming::ReadBridgeGpu() : GenshinHookCpuTiming::BridgeGpuReading {};
         nr = nrRequested ? DlssNr::ReadGpuTiming() : DlssNr::GpuTimingSample {};
         capturedMs = GetTickCount64(); fgFrame = fg; lowLatencyFrame = lowLatency;
-        fsrEnabled = genshin; nrEnabled = nrRequested;
+        nrEnabled = nrRequested;
     }
 };
 
@@ -2519,20 +2504,19 @@ struct OverlayGpuTimings
 struct OverlayGpuDuration
 {
     std::optional<double> milliseconds;
-    bool bridgeOnly = false;
 };
 
-static OverlayGpuDuration ReadOverlayGpuDuration(const OverlayGpuTimings& sample, bool fsr)
+static OverlayGpuDuration ReadOverlayGpuDuration(const OverlayGpuTimings& sample)
 {
-    if (fsr ? !sample.fsrEnabled : !sample.nrEnabled)
+    if (!sample.nrEnabled)
         return {};
 
-    const auto stamp = fsr ? sample.fsr.sampleMs : sample.nr.publishedMs;
-    const auto ms = fsr ? sample.fsr.milliseconds : sample.nr.milliseconds;
+    const auto stamp = sample.nr.publishedMs;
+    const auto ms = sample.nr.milliseconds;
     const bool fresh = stamp && sample.capturedMs >= stamp && sample.capturedMs - stamp <= 2000;
-    if (!fresh || !std::isfinite(ms) || ms < 0.0 || (fsr && !sample.fsr.samples))
+    if (!fresh || !std::isfinite(ms) || ms < 0.0)
         return {};
-    return { ms, false };
+    return { ms };
 }
 
 // All rows share one scale, including the schematic NR endpoint. Reflex positions
@@ -2564,9 +2548,8 @@ struct OverlayTimingPlot
             rangeMs = std::max(rangeMs, (timing->position + timing->length) * reportMs);
     }
 
-    void IncludeGpu(const OverlayGpuDuration& fsr, const OverlayGpuDuration& nr)
+    void IncludeGpu(const OverlayGpuDuration& nr)
     {
-        rangeMs = std::max(rangeMs, fsr.milliseconds.value_or(0.0));
         rangeMs = std::max(rangeMs, presentEndMs + nr.milliseconds.value_or(0.0));
         // Keep translated GPU labels and their exact values clear of every bar.
         const auto includeLabel = [&](const OverlayGpuDuration& duration, const char* label)
@@ -2577,7 +2560,6 @@ struct OverlayTimingPlot
             labelWidth = std::max(labelWidth,
                 ImGui::CalcTextSize(text.c_str()).x + ImGui::GetStyle().ItemInnerSpacing.x);
         };
-        includeLabel(fsr, fsr.bridgeOnly ? "FSR 桥 DX12 GPU" : "FSR 全链 GPU");
         includeLabel(nr, "NR GPU");
     }
 
@@ -2605,33 +2587,23 @@ struct OverlayTimingPlot
     }
 };
 
-static void RenderOverlayGpuTiming(const OverlayGpuTimings& sample, bool fsr,
+static void RenderOverlayGpuTiming(const OverlayGpuTimings& sample,
                                    const OverlayGpuDuration& duration, const OverlayTimingPlot& plot)
 {
-    if (fsr ? !sample.fsrEnabled : !sample.nrEnabled)
+    if (!sample.nrEnabled)
         return;
 
-    const char* label = fsr ? (duration.bridgeOnly ? "FSR 桥 DX12 GPU" : "FSR 全链 GPU") : "NR GPU";
     if (!duration.milliseconds)
     {
-        MenuText::TextDisabled("%s：暂无数据", label);
+        MenuText::TextDisabled("%s：暂无数据", "NR GPU");
         return;
     }
 
-    const auto color = toneMapColor(fsr ? ImVec4(0.10f, 0.70f, 0.78f, 1.0f) : ImVec4(0.38f, 0.82f, 0.44f, 1.0f));
-    MenuText::TextColored(color, "%-12s %4.1fms", label, *duration.milliseconds);
-    plot.Draw(fsr ? 0.0 : plot.presentEndMs, *duration.milliseconds, color);
-
-    if (!MenuText::ItemHelpHovered())
-        return;
-
-    const auto tip = fsr
-        ? (duration.bridgeOnly
-            ? MenuText::Translate("真实已完成 D3D12 桥段 GPU 耗时；仅包含桥段，不代表 D3D11 全链。与 Reflex 同批刷新。\n条从时间轴左端起画，长度为实测耗时；横向锚点仅为示意，不代表真实 GPU 开始时间或同帧时序。")
-            : MenuText::Format("D3D11 全链独立 GPU 耗时：输入、传输、超分及回写，包含 GPU 等待。监控开启时最多每 100 毫秒采样，与 Reflex 同批更新。样本 CPU 年龄 %.1f 秒；查询异步完成。\n条从时间轴左端起画，长度为实测耗时；横向锚点仅为示意，不代表真实 GPU 开始时间或同帧时序。不与 D3D12 桥段合并。",
-                double(sample.capturedMs - sample.fsr.sampleMs) / 1000.0))
-        : MenuText::Translate("真实已完成 NR GPU 耗时：准备、模型或复用及合成回写，包含 GPU 等待，与 Reflex 同批刷新。\n条从当前呈现条右端向右延伸，长度为实测耗时；无呈现样本时从左端示意。横向锚点不代表真实 GPU 开始时间或同帧时序，不证明串行或异步并行；各计时不能相加。");
-    MenuText::ItemHelp(true, tip.c_str());
+    const auto color = toneMapColor(ImVec4(0.38f, 0.82f, 0.44f, 1.0f));
+    MenuText::TextColored(color, "%-12s %4.1fms", "NR GPU", *duration.milliseconds);
+    plot.Draw(plot.presentEndMs, *duration.milliseconds, color);
+    MenuText::ItemHelp(MenuText::ItemHelpHovered(),
+        "真实已完成 NR GPU 耗时：准备、模型或复用及合成回写，包含 GPU 等待，与 Reflex 同批刷新。\n条从当前呈现条右端向右延伸，长度为实测耗时；无呈现样本时从左端示意。横向锚点不代表真实 GPU 开始时间或同帧时序，不证明串行或异步并行；各计时不能相加。");
 }
 
 void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
@@ -2651,33 +2623,6 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
     auto& averageFrameTime = ctx.averageFrameTime;
     auto& averageUpscalerFT = ctx.averageUpscalerFT;
 
-    const float criticalHeight=io.DisplaySize.y?io.DisplaySize.y:state.screenHeight;
-    const float notificationScale=std::clamp(0.5f+(2.0f-0.5f)/(1440.0f-480.0f)*(criticalHeight-480.0f),0.5f,2.0f);
-    if(config->UseHQFont.value_or_default())ImGui::PushFontSize(std::round(notificationScale*fontSize));
-    // The main window renders last. Its current stored bounds prevent the
-    // separate critical queue from covering its controls while it is open.
-    auto menuBounds = criticalMainMenuBounds;
-    if (_isVisible)
-        if (const auto* menu = ImGui::FindWindowByName(windowTitle.c_str()))
-            menuBounds = { menu->Pos.x, menu->Pos.y, menu->Size.x, menu->Size.y };
-    const CriticalUi::Colors criticalColors {
-        toneMapColor(ImVec4(1.0f, 0.58f, 0.26f, 1.0f)), toneMapColor(ImVec4(1.0f, 1.0f, 1.0f, 1.0f))
-    };
-    const auto criticalLayout = CriticalUi::Render(genshinCriticalHints.Notices(), criticalErrorsCollapsed, menuBounds,
-        _isVisible, config->UseHQFont.value_or_default(), notificationScale, criticalColors,
-        genshinCriticalHints.ProgressSnapshot(), GetTickCount64(), paimonAdviceDeadlineTick);
-    if (criticalLayout.visible && genshinCriticalHints.Notices().Get(CriticalUi::Key::GenshinFsr) ==
-        CriticalUi::Notice::GenshinHooking)
-    {
-        const auto& progress = genshinCriticalHints.ProgressSnapshot();
-        GenshinLegacy::Ui::HookHintPresentation().DrawListBuilt({ progress.session, progress.attempt },
-                                                               GetCurrentThreadId());
-    }
-    // Draw-list creation is not a Present acknowledgement. The actual overlay
-    // submission/presenter owner must publish Submitted/CompletePresent before
-    // a pre-hook scheduling gate can truthfully consume Ready().
-
-    if(config->UseHQFont.value_or_default())ImGui::PopFontSize();
 
     // If Fps overlay is visible
     if (config->ShowFps.value_or_default())
@@ -2701,8 +2646,16 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             stylePushed = true;
         }
 
-        // Set overlay position
-        ImGui::SetNextWindowPos(overlayPosition, ImGuiCond_Always);
+        // Anchor this frame, including first use/context recreation. A cached
+        // previous size/position can put the FPS window outside a resized output.
+        const auto corner = config->FpsOverlayPosition.value_or_default();
+        const bool right = corner == FpsOverlayPos_TopRight || corner == FpsOverlayPos_BottomRight;
+        const bool bottom = corner == FpsOverlayPos_BottomLeft || corner == FpsOverlayPos_BottomRight;
+        const float splashOffset = bottom && !config->DisableSplash.value_or_default() &&
+            now > splashStart && now < splashLimit ? splashSize.y : 0.0f;
+        ImGui::SetNextWindowPos(ImVec2(right ? io.DisplaySize.x : 0.0f,
+            bottom ? (std::max)(0.0f, io.DisplaySize.y - splashOffset) : 0.0f),
+            ImGuiCond_Always, ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
 
         // Set overlay window properties
         ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(0, 0, 0, 0));  // Transparent border
@@ -2792,9 +2745,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             std::string secondLine = "";
             std::string thirdLine = "";
 
-            static const bool genshinProcess = GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
-            const bool unmeasuredGenshinFg = genshinProcess && state.activeFgInput == FGInput::Upscaler &&
-                state.activeFgOutput == FGOutput::DLSSG;
+            const bool unmeasuredGenshinFg = ctx.usesSourceStatistics;
 
             auto fg = state.currentFG;
             auto fgText = (fg != nullptr && fg->IsActive() && !fg->IsPaused()) ? (" (" + std::string(fg->Name()) + ")")
@@ -2856,7 +2807,11 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             }
 
 
-            if (!unmeasuredGenshinFg && fg != nullptr && fg->IsActive() && !fg->IsPaused())
+            if (unmeasuredGenshinFg)
+            {
+                fpsPart=ctx.frameStatistics; // same immutable reading as footer
+            }
+            else if (fg != nullptr && fg->IsActive() && !fg->IsPaused())
             {
                 const double baseFps = frameRate / (double) (fg->GetInterpolatedFrameCount() + 1);
 
@@ -3013,24 +2968,22 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                 static OverlayGpuTimings gpuTimings {};
                 const bool pollTimings = previousPoll <= 0.001 || now < previousPoll ||
                     previousPoll + delayBetweenPollsMs < now ||
-                    gpuTimings.fsrEnabled != genshinProcess ||
                     gpuTimings.nrEnabled != config->DlssNrEnabled.value_or_default();
 
 #ifdef LOW_LATENCY_INPUTS
-                if (genshinProcess || config->DlssNrEnabled.value_or_default())
-                    MenuText::TextDisabled("实心条：FSR 左端、NR 接呈现右端；横向锚点仅示意");
+                if (config->DlssNrEnabled.value_or_default())
+                    MenuText::TextDisabled("实心条：NR 接呈现右端；横向锚点仅示意");
                 static TimingData timingData {};
 
                 if (pollTimings)
                 {
                     gotData = InputCommon::get_timing_data(timingData);
-                    gpuTimings.Capture(genshinProcess, config->DlssNrEnabled.value_or_default(),
+                    gpuTimings.Capture(config->DlssNrEnabled.value_or_default(),
                         fg != nullptr ? fg->FrameCount() : 0, state.reflexFrameId);
                     previousPoll = now;
                 }
 
-                const auto fsrDuration = ReadOverlayGpuDuration(gpuTimings, true);
-                const auto nrDuration = ReadOverlayGpuDuration(gpuTimings, false);
+                const auto nrDuration = ReadOverlayGpuDuration(gpuTimings);
                 const bool hasTimeline = gotData && timingData.timeRange &&
                     std::isfinite(timingData.timeRange->length) && timingData.timeRange->length > 0.0;
                 const double reportMs = hasTimeline ? timingData.timeRange->length / 1000.0 : 0.0;
@@ -3047,7 +3000,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                     timingPlot.Include(timingData.osRenderQueue, reportMs);
                     timingPlot.Include(timingData.gpuRender, reportMs);
                 }
-                timingPlot.IncludeGpu(fsrDuration, nrDuration);
+                timingPlot.IncludeGpu(nrDuration);
                 const auto drawTiming = [&](const auto& timing, const char* desc, ImVec4 color)
                 {
                     timingPlot.DrawTiming(timing, desc, color, reportMs);
@@ -3059,9 +3012,8 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                     MenuText::Text("整帧低延迟计时：%.1fms", reportMs);
                     drawTiming(timingData.simulation, "模拟", ImVec4(0.768f, 0.169f, 0.169f, 1.0f));
                     drawTiming(timingData.renderSubmit, "渲染提交", ImVec4(0.235f, 0.705f, 0.294f, 1.0f));
-                    RenderOverlayGpuTiming(gpuTimings, true, fsrDuration, timingPlot);
                     drawTiming(timingData.present, "呈现", ImVec4(1.0f, 0.88f, 0.098f, 1.0f));
-                    RenderOverlayGpuTiming(gpuTimings, false, nrDuration, timingPlot);
+                    RenderOverlayGpuTiming(gpuTimings, nrDuration, timingPlot);
                     drawTiming(timingData.driver, "驱动", ImVec4(0.263f, 0.388f, 0.847f, 1.0f));
                     drawTiming(timingData.osRenderQueue, "渲染队列", ImVec4(0.76f, 0.51f, 0.188f, 1.0f));
                     drawTiming(timingData.gpuRender, "GPU 渲染", ImVec4(0.569f, 0.117f, 0.705f, 1.0f));
@@ -3069,37 +3021,28 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                 else
                 {
                     MenuText::TextDisabled("Reflex 时间线：暂无数据（不要求开启 FG）");
-                    RenderOverlayGpuTiming(gpuTimings, true, fsrDuration, timingPlot);
-                    RenderOverlayGpuTiming(gpuTimings, false, nrDuration, timingPlot);
+                    RenderOverlayGpuTiming(gpuTimings, nrDuration, timingPlot);
                 }
 #else
-                if (genshinProcess || config->DlssNrEnabled.value_or_default())
-                    MenuText::TextDisabled("实心条：FSR 左端、NR 接呈现右端；横向锚点仅示意");
+                if (config->DlssNrEnabled.value_or_default())
+                    MenuText::TextDisabled("实心条：NR 接呈现右端；横向锚点仅示意");
                 static ReflexHooks::TimingReportSnapshot timingReport {};
                 if (pollTimings)
                 {
                     gotData = ReflexHooks::updateTimingData(timingReport);
-                    gpuTimings.Capture(genshinProcess, config->DlssNrEnabled.value_or_default(),
+                    gpuTimings.Capture(config->DlssNrEnabled.value_or_default(),
                         fg != nullptr ? fg->FrameCount() : 0, state.reflexFrameId);
                     previousPoll = now;
                 }
 
                 const auto& timingData = timingReport.timingData;
-                auto fsrDuration = ReadOverlayGpuDuration(gpuTimings, true);
-                auto nrDuration = ReadOverlayGpuDuration(gpuTimings, false);
-                const auto useReportDuration = [&](OverlayGpuDuration& duration, bool fsr)
+                auto nrDuration = ReadOverlayGpuDuration(gpuTimings);
+                if (!nrDuration.milliseconds && gotData && gpuTimings.nrEnabled)
                 {
-                    if (duration.milliseconds || !gotData ||
-                        (fsr ? !gpuTimings.fsrEnabled : !gpuTimings.nrEnabled))
-                        return;
-                    const auto& ms = fsr ? timingReport.bridgeGpuMs : timingReport.nrGpuMs;
+                    const auto& ms = timingReport.nrGpuMs;
                     if (ms && std::isfinite(*ms) && *ms >= 0.0)
-                        duration = { ms, fsr };
-                };
-                // Prefer the full D3D11 chain; the DX12 bridge is a labelled fallback,
-                // never a second FSR row or a substitute scope for the full chain.
-                useReportDuration(fsrDuration, true);
-                useReportDuration(nrDuration, false);
+                        nrDuration = { ms };
+                }
                 const bool hasTimeline = gotData && timingData[TimingType::TimeRange] &&
                     std::isfinite(timingData[TimingType::TimeRange]->length) &&
                     timingData[TimingType::TimeRange]->length > 0.0;
@@ -3120,7 +3063,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                         timingPlot.Include(timingData[TimingType::GpuRender], reportMs);
                     }
                 }
-                timingPlot.IncludeGpu(fsrDuration, nrDuration);
+                timingPlot.IncludeGpu(nrDuration);
 
                 if (hasTimeline)
                 {
@@ -3142,6 +3085,9 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                     else
                     {
                         MenuText::Text("整帧 Reflex 计时：%.1fms", rangeInUs / 1000.0);
+                        if (timingReport.beforeGpuQueueMs)
+                            MenuText::Text("GPU 开始前排队：%.1fms（同份报告）",*timingReport.beforeGpuQueueMs);
+                        else MenuText::TextDisabled("GPU 开始前排队：未知");
                     }
 
                     const auto drawTiming = [&](const auto& timing, const char* desc, ImVec4 color)
@@ -3151,9 +3097,8 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
 
                     drawTiming(timingData[TimingType::Simulation], "模拟", ImVec4(0.768f, 0.169f, 0.169f, 1.0f));
                     drawTiming(timingData[TimingType::RenderSubmit], "渲染提交", ImVec4(0.235f, 0.705f, 0.294f, 1.0f));
-                    RenderOverlayGpuTiming(gpuTimings, true, fsrDuration, timingPlot);
                     drawTiming(timingData[TimingType::Present], "呈现", ImVec4(1.0f, 0.88f, 0.098f, 1.0f));
-                    RenderOverlayGpuTiming(gpuTimings, false, nrDuration, timingPlot);
+                    RenderOverlayGpuTiming(gpuTimings, nrDuration, timingPlot);
 
                     if (!estimated)
                     {
@@ -3173,8 +3118,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                 else
                 {
                     MenuText::TextDisabled("Reflex 时间线：暂无数据（不要求开启 FG）");
-                    RenderOverlayGpuTiming(gpuTimings, true, fsrDuration, timingPlot);
-                    RenderOverlayGpuTiming(gpuTimings, false, nrDuration, timingPlot);
+                    RenderOverlayGpuTiming(gpuTimings, nrDuration, timingPlot);
                     MenuText::TextDisabled("GPU 活跃时间：不可用");
                 }
 #endif
@@ -3190,9 +3134,6 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
         else
             ImGui::PopStyleColor(2);
 
-        // Get size for postioning
-        overlaySize = ImGui::GetWindowSize();
-
         if (config->UseHQFont.value_or_default())
             ImGui::PopFontSize();
 
@@ -3201,31 +3142,6 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
         if (stylePushed)
             ImGui::PopStyleVar(7);
 
-        // Left / Right
-        if (config->FpsOverlayPosition.value_or_default() == FpsOverlayPos_TopLeft ||
-            config->FpsOverlayPosition.value_or_default() == FpsOverlayPos_BottomLeft)
-        {
-            overlayPosition.x = 0;
-        }
-        else
-        {
-            overlayPosition.x = io.DisplaySize.x - overlaySize.x;
-        }
-
-        // Top / Bottom
-        if (config->FpsOverlayPosition.value_or_default() == FpsOverlayPos_TopLeft ||
-            config->FpsOverlayPosition.value_or_default() == FpsOverlayPos_TopRight)
-        {
-            overlayPosition.y = 0;
-        }
-        else
-        {
-            // Prevent overlapping with splash message
-            if (!config->DisableSplash.value_or_default() && now > splashStart && now < splashLimit)
-                overlayPosition.y = io.DisplaySize.y - overlaySize.y - splashSize.y;
-            else
-                overlayPosition.y = io.DisplaySize.y - overlaySize.y;
-        }
     }
 }
 
@@ -3300,18 +3216,13 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
 
     std::string joinedUpscalers(joined.begin(), joined.end());
 
-    const auto genshinStatus = GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())
-        ? GenshinLegacy::GetStatus() : GenshinLegacy::Status {};
-    const bool genshinBridgeActive = genshinStatus.srAccepted &&
-        (genshinStatus.submitted != 0 || genshinStatus.outputCopies != 0);
-
     // Optical F5Low's lines (the native modes, menu/HeaderBanner.h) come first; the rule leaves a game's own feature,
     // and the cases with no offer to make, to the lines below.
     const bool f5lowLine = DlssNr::RenderHeaderBanner(
         config,
         currentFeature == nullptr || !currentFeature->IsInited() ? HeaderBanner::Feature::None
         : native::IsVirtualUpscalerFeature(currentFeature)       ? HeaderBanner::Feature::F5Low
-        : currentFeature->IsFrozen() && !genshinBridgeActive     ? HeaderBanner::Feature::Frozen
+        : currentFeature->IsFrozen()                           ? HeaderBanner::Feature::Frozen
                                                                  : HeaderBanner::Feature::Game,
         upscalerFiles, joinedUpscalers, currentFeature != nullptr ? currentFeature->Name() : std::string(),
         toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)), UpscalerFileChecks);
@@ -3319,10 +3230,6 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
     if (f5lowLine)
     {
         // Drawn by DlssNr::RenderHeaderBanner.
-    }
-    else if (genshinBridgeActive)
-    {
-        // Bridge status/errors have their own UI; suppress generic inactive/frozen hints here.
     }
     else if (currentFeature == nullptr || !currentFeature->IsInited())
     {
@@ -3585,22 +3492,6 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
     auto& currentFeature = ctx.currentFeature;
     auto& menuResScale = ctx.menuResScale;
     auto& primaryGpu = *ctx.primaryGpu;
-
-    static const bool genshinProcess = [] {
-        wchar_t path[32768]{};
-        const auto length = GetModuleFileNameW(nullptr, path, 32768);
-        return length && length < 32768 && GenshinFsr::IsGenshinExecutable(std::wstring_view(path, length));
-    }();
-    if (genshinProcess)
-    {
-        // The existing bridge Enabled owner also persists this choice in Save Settings.
-        // Keep this outside the current-feature gate so native FSR can be re-enabled.
-        const auto controls = config->AcquireGenshinControls();
-        bool enabled = controls.settings.enabled;
-        if (MenuText::Checkbox("替换原神 FSR 为所选超分", &enabled))
-            config->EditGenshinControls(controls.epoch, [enabled](GenshinLegacy::Settings& settings) { settings.enabled = enabled; });
-        ShowHelpMarker("关闭后使用游戏原生 FSR；重新启用无需重新注入。依赖此接入的 NR/FG 暂停接收新帧，其他设置不变。点击保存设置后记住选择。");
-    }
 
     if (currentFeature != nullptr && !currentFeature->IsFrozen())
     {
@@ -4172,29 +4063,39 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             }
             else
             {
-                if (bool pOverride = config->RenderPresetOverride.value_or_default();
-                    MenuText::Checkbox("渲染预设覆盖", &pOverride))
-                    config->RenderPresetOverride = pOverride;
+                static const char* srModelLabels[] = { "默认", "J", "K", "L", "M" };
+                static const uint32_t srModelValues[] = {
+                    NVSDK_NGX_DLSS_Hint_Render_Preset_Default,
+                    NVSDK_NGX_DLSS_Hint_Render_Preset_J,
+                    NVSDK_NGX_DLSS_Hint_Render_Preset_K,
+                    NVSDK_NGX_DLSS_Hint_Render_Preset_L,
+                    NVSDK_NGX_DLSS_Hint_Render_Preset_M
+                };
+                int srModel = config->RenderPresetOverride.value_or_default() ? -1 : 0;
+                if (config->RenderPresetOverride.value_or_default())
+                {
+                    for (int i = 1; i < IM_ARRAYSIZE(srModelValues); ++i)
+                        if (comboPreset.value_or_default() == srModelValues[i]) srModel = i;
+                }
+                if (MenuText::Segmented("SR 模型预设", &srModel, srModelLabels, IM_ARRAYSIZE(srModelLabels)))
+                {
+                    comboPreset = srModelValues[srModel];
+                    config->RenderPresetOverride = srModel != 0;
+                }
+                ShowHelpMarker("选择 J/K/L/M 后点击下方“应用更改”，对所有 SR 质量档使用该预设。K/L/M 是否被当前 NGX 版本接受由 SDK 决定，SDK 可能回退到默认预设。");
 
-                ShowHelpMarker("各预设各有优缺点。覆盖可能改善画质；启用或关闭后点击应用。");
-
-                /*
-                auto currentPresetIndex = GetPresetIndex(currentFeature, false);
-
-                if (currentPresetIndex == 0)
-                    MenuText::Text("当前预设：默认");
-                else
-                    MenuText::Text("当前预设：%c", 64 + currentPresetIndex);
-                */
-
-                ImGui::BeginDisabled(!config->RenderPresetOverride.value_or_default() /*|| overridden*/);
-
-                ImGui::PushItemWidth(135.0f * menuResScale);
-
-                AddDLSSRenderPreset("覆盖预设", &comboPreset);
-
-                ImGui::PopItemWidth();
-                ImGui::EndDisabled();
+                if (ImGui::TreeNode("全部 SR 预设（高级）"))
+                {
+                    bool pOverride = config->RenderPresetOverride.value_or_default();
+                    if (MenuText::Checkbox("渲染预设覆盖", &pOverride))
+                        config->RenderPresetOverride = pOverride;
+                    ImGui::BeginDisabled(!config->RenderPresetOverride.value_or_default());
+                    ImGui::PushItemWidth(135.0f * menuResScale);
+                    AddDLSSRenderPreset("覆盖预设", &comboPreset);
+                    ImGui::PopItemWidth();
+                    ImGui::EndDisabled();
+                    ImGui::TreePop();
+                }
             }
 
             ImGui::SameLine(0.0f, 6.0f);
@@ -4497,11 +4398,11 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
             // MaxGeneratedFrames slider
             int maxFrames = config->FGDLSSGAmpereMfgMaxFrames.value_or_default();
-            const char* frameLabels[] = { "默认能力（3X）", "1 (2X)", "2 (3X)", "3 (4X)" };
-            const char* currentLabel = (maxFrames >= 0 && maxFrames <= 3) ? frameLabels[maxFrames] : "默认能力（3X）";
-            if (MenuText::SliderInt("最大生成帧数##sm86", &maxFrames, 0, 3, currentLabel))
+            const char* frameLabels[] = { "兼容默认（3 个生成帧）", "1 (2X)", "2 (3X)", "3 (4X)", "4 (5X)", "5 (6X)" };
+            const char* currentLabel = (maxFrames >= 0 && maxFrames <= AmpereMfgLoader::MaximumGeneratedRequest) ? frameLabels[maxFrames] : frameLabels[0];
+            if (MenuText::SliderInt("最大生成帧数##sm86", &maxFrames, 0, AmpereMfgLoader::MaximumGeneratedRequest, currentLabel))
                 config->FGDLSSGAmpereMfgMaxFrames = maxFrames;
-            ShowHelpMarker("报告给游戏的最大生成帧数：1＝2X，2＝3X，3＝4X，实际数量由游戏选择。0 为默认能力上限，最多 4X。保存并重启生效。");
+            ShowHelpMarker("请求生成帧上限：1＝2X，3＝4X，5＝6X。6X 需要支持它的运行时；实际数量仍受 SDK 能力与成功配置限制。0 保留兼容默认值 3 个生成帧。保存并重启生效。");
 
             // KernelImage combo
             std::string resolvedAuto = AmpereMfgLoader::ResolveAutoKernelImage();
@@ -4531,6 +4432,16 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
         MenuText::TextWrapped("外部插帧已启用，请在游戏或解锁器中设置倍数。");
         return;
     }
+
+    // Match startup routing without rewriting the persisted legacy selection.
+    const auto effectiveInput = [](FGInput saved) {
+        if constexpr (!F6InputPolicy::FsrBridgeEnabled)
+            if (saved == FGInput::FSRFG || saved == FGInput::FSRFG30)
+                return FGInput::Upscaler;
+        return saved;
+    };
+    const auto savedInput = config->FGInput.value_or_default();
+    const bool redirectedFsrInput = effectiveInput(savedInput) != savedInput;
 
     static std::vector<MenuOption<FGInput>> inputOptions;
     inputOptions.clear();
@@ -4586,10 +4497,12 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // FSRFG inputs requirements
     auto constexpr fsrfgInputIndex = (uint32_t) FGInput::FSRFG;
+    inputOptions[fsrfgInputIndex].set_hidden(!F6InputPolicy::FsrBridgeEnabled);
     inputOptions[fsrfgInputIndex].set_disabled(state.swapchainApi != API::DX12, "不支持此图形接口");
 
     // FSRFG30 inputs requirements
     auto constexpr fsrfg30InputIndex = (uint32_t) FGInput::FSRFG30;
+    inputOptions[fsrfg30InputIndex].set_hidden(!F6InputPolicy::FsrBridgeEnabled);
     inputOptions[fsrfg30InputIndex].set_disabled(state.swapchainApi != API::DX12, "不支持此图形接口");
 
     if (!config->FGInput.has_value())
@@ -4643,7 +4556,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     outputOptions[xefgOutputIndex].set_disabled(vulkanNoFg, "不支持此图形接口");
     // Unsupported FG input selected
     const auto currentInputIndex = (uint32_t) state.activeFgInput;
-    if (config->FGInput != FGInput::NoFG && inputOptions.size() > currentInputIndex &&
+    if (!redirectedFsrInput && config->FGInput != FGInput::NoFG && inputOptions.size() > currentInputIndex &&
         inputOptions[currentInputIndex].disabled && state.activeFgInput == config->FGInput)
     {
         LOG_WARN("Resetting FGInput to NoFG: {}", inputOptions[currentInputIndex].label);
@@ -4733,8 +4646,17 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
         {
             ImGui::TableNextColumn();
 
-            PopulateCombo("插帧输入", config->FGInput, inputOptions);
+            auto selectedInput = effectiveInput(config->FGInput.value_or_default());
+            const auto priorSelection = selectedInput;
+            PopulateCombo("插帧输入", selectedInput, inputOptions);
+            if (selectedInput != priorSelection)
+                config->FGInput = selectedInput;
             ShowTooltip("用于插帧的数据来源，即游戏原生支持的插帧接口。");
+            if (redirectedFsrInput && inputOptions.size() > currentInputIndex)
+            {
+                MenuText::TextDisabled("本次有效插帧输入：%s", inputOptions[currentInputIndex].label.c_str());
+                MenuText::TextWrapped("旧 FSR 插帧输入仅保留在保存配置中；本次通过 DLSS 超分提供输入。");
+            }
 
             ImGui::TableNextColumn();
 
@@ -4794,7 +4716,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
         const bool nvngxFgChanged = (replaceFgOutputWithNvngx || showNvngxFgDowndown) &&
                                     state.activeFgNvngx != config->FGNvngxReplacement.value_or_default();
         state.fgSettingsChanged = state.activeFgOutput != config->FGOutput.value_or_default() ||
-                                  state.activeFgInput != config->FGInput.value_or_default() || nvngxFgChanged;
+                                  state.activeFgInput != effectiveInput(config->FGInput.value_or_default()) || nvngxFgChanged;
 
         if (state.fgSettingsChanged)
         {
@@ -4806,6 +4728,17 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
         const bool dlssgInputOrOutput =
             state.activeFgOutput == FGOutput::DLSSG || state.activeFgInput == FGInput::DLSSG;
+
+        if (!state.externalFrameGeneration &&
+            (state.activeFgOutput == FGOutput::DLSSG || config->FGOutput.value_or_default() == FGOutput::DLSSG))
+        {
+            int modelPreset = static_cast<int>(config->FGDLSSGModelPreset.value_or_default());
+            static const char* modelPresets[] = { "驱动默认", "A", "B", "C" };
+            if (MenuText::Segmented("DLSS FG 模型", &modelPreset, modelPresets, IM_ARRAYSIZE(modelPresets)))
+                config->FGDLSSGModelPreset = static_cast<uint32_t>(modelPreset);
+            MenuText::TextDisabled("保存设置并重启游戏后生效。");
+            ShowHelpMarker("仅覆盖本游戏进程读取到的 NVIDIA DLSS-FG 驱动设置，不写入驱动配置文件。选择后需重启游戏，由 NGX 初始化时读取。");
+        }
 
         ImGui::BeginDisabled(state.dlssgGameDMFGSupported && config->FGDLSSGOverrideForceDMFG.value_or_default());
         if (state.dlssgMfgMax.has_value() && state.dlssgMfgMax.value() >= 1 && !dlssgInputOrOutput)
@@ -5077,6 +5010,16 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
 
     const UiTargetMode uiTargetMode = getUiTargetMode();
     const bool outputIsHdr = uiTargetMode != UiTargetMode::SDR;
+
+    if (config->IsStarRailInputProfile() && !state.externalFrameGeneration &&
+        ((state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::DLSSG) ||
+         (config->FGInput.value_or_default() == FGInput::Upscaler && config->FGOutput.value_or_default() == FGOutput::DLSSG)))
+    {
+        bool resident = config->StarRailForceFGResident.ObservedValue();
+        if (MenuText::Checkbox("强制 FG 常驻（崩铁）", &resident))
+            config->StarRailForceFGResident = resident;
+        ShowHelpMarker("资源短暂缺失时保留插帧会话。缺少当前帧深度或运动时显示原始帧，输入恢复后继续插帧；不重复旧画面。");
+    }
 
     // Keep the Genshin multiplier directly below its enable request. Readiness
     // selects the original capability source; editing still changes only the
@@ -5792,16 +5735,42 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             ShowHelpMarker("修正 DLSS 光线重建的错误深度输入。");
 
             bool resourceFlip = config->FGResourceFlip.value_or_default();
-            if (MenuText::CheckboxInline("翻转（Unity）", &resourceFlip))
+            if (MenuText::CheckboxInline("旧版统一翻转", &resourceFlip))
+            {
                 config->FGResourceFlip = resourceFlip;
-            ShowHelpMarker("翻转 Unity 游戏的运动矢量和深度资源。");
+                state.fgChanged = true;
+            }
+            ShowHelpMarker("为下方选择沿用的项目同时翻转深度贴图、运动贴图并取反运动 Y。独立设置不受影响。");
 
             ImGui::SameLine(0.0f, 16.0f);
 
             bool resourceFlipOffset = config->FGResourceFlipOffset.value_or_default();
             if (MenuText::Checkbox("翻转时使用偏移", &resourceFlipOffset))
+            {
                 config->FGResourceFlipOffset = resourceFlipOffset;
-            ShowHelpMarker("用高度差作为偏移。");
+                state.fgChanged = true;
+            }
+            ShowHelpMarker("上下翻转时从纹理底部读取有效区域；只取反运动分量时不使用偏移。");
+
+            const auto orientationOverride = [&](const char* label, auto& setting) {
+                int selected = setting.has_value() ? (setting.value() ? 2 : 1) : 0;
+                const char* choices[] = {"沿用旧设置", "关闭", "开启"};
+                if (MenuText::Combo(label, &selected, choices, IM_ARRAYSIZE(choices)))
+                {
+                    if (selected == 0) setting = std::nullopt;
+                    else setting = selected == 2;
+                    state.fgChanged = true;
+                }
+            };
+            orientationOverride("FG 深度贴图上下翻转", config->FGDepthTextureFlipY);
+            orientationOverride("FG 运动贴图上下翻转", config->FGMotionTextureFlipY);
+            orientationOverride("FG 运动 Y 分量取反", config->FGMotionYInverted);
+            ShowHelpMarker("贴图上下翻转改变采样行，Y 分量取反改变运动方向；三项仅作用于 FG，独立于 NR。修改后重建 FG 输入。");
+            const auto fgOrientation = framegen::ResolveGuideOrientation(*config);
+            MenuText::Text("FG 当前方向：深度翻转 %s / 运动翻转 %s / Y 取反 %s",
+                fgOrientation.depthFlipY ? "开启" : "关闭",
+                fgOrientation.motionFlipY ? "开启" : "关闭",
+                fgOrientation.motionYInverted ? "开启" : "关闭");
 
             ImGui::Spacing();
 
@@ -6051,15 +6020,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             {
                 MenuText::Text("当前 DLSS-G 状态：");
                 ImGui::SameLine();
-                if (auto count = state.dlssgDetectedInterpolationCount; count > 0)
-                {
-                    MenuText::TextColored(toneMapColor(ImVec4(0.f, 1.f, 0.25f, 1.f)),
-                                       std::format("ON {}x", count + 1).c_str());
-                }
-                else
-                {
-                    MenuText::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)), "关闭");
-                }
+                MenuText::Text("实际生成数量未知；请看 SDK 查询区间与显示事件");
 
                 // Issue mostly shows up on AMD on Windows on pre-RDNA3 in some non-UE games
                 // Hide to reduce confusion, config is still read
@@ -6299,46 +6260,6 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             }
             ShowHelpMarker("部分调度标志组合可能需要此设置。");
         }
-    }
-
-    // FSR-FG Inputs
-    if (state.currentFGSwapchain != nullptr &&
-        (state.activeFgInput == FGInput::FSRFG || state.activeFgInput == FGInput::FSRFG30))
-    {
-        SeparatorWithHelpMarker("帧生成（FSR 插帧输入）", "请在游戏启用 FSR 插帧");
-
-        auto fgOutput = reinterpret_cast<IFGFeature_Dx12*>(state.currentFG);
-        if (fgOutput != nullptr)
-        {
-            MenuText::Text("当前 FSR 插帧状态：");
-            ImGui::SameLine();
-            if (state.fsrfgInputActive)
-            {
-                if (fgOutput->IsActive())
-                    MenuText::TextColored(toneMapColor(ImVec4(0.f, 1.f, 0.25f, 1.f)), "ON");
-                else
-                    MenuText::TextColored(toneMapColor(ImVec4(1.0f, 0.647f, 0.0f, 1.f)), "启用插帧");
-            }
-            else
-            {
-                MenuText::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)), "关闭");
-                MenuText::Text("请在游戏中选择 FSR 帧生成，可能需要先选择 FSR 超分。");
-            }
-        }
-
-        bool skipConfig = config->FSRFGSkipConfigForHudless.value_or_default();
-        if (MenuText::Checkbox("忽略配置中的去 HUD 输入", &skipConfig))
-            config->FSRFGSkipConfigForHudless = skipConfig;
-
-        ShowHelpMarker("不使用 ffxConfig 设置的去 HUD 输入。");
-
-        ImGui::SameLine(0.0f, 6.0f);
-
-        bool skipDispatch = config->FSRFGSkipDispatchForHudless.value_or_default();
-        if (MenuText::Checkbox("忽略调度中的去 HUD 输入", &skipDispatch))
-            config->FSRFGSkipDispatchForHudless = skipDispatch;
-
-        ShowHelpMarker("不使用 ffxDispatch 设置的去 HUD 输入。");
     }
 
     // Streamline FG Inputs
@@ -6867,25 +6788,6 @@ void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
     auto& currentFeature = ctx.currentFeature;
     auto& menuResScale = ctx.menuResScale;
 
-    static const bool genshinExecutable=GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
-    const bool genshinSrExposure=genshinExecutable && config->UseFsr2Inputs.value_or_default() &&
-        (!currentFeature || currentFeature->GetUpscalerType()==Upscaler::DLSS_on12) &&
-        (state.api==API::DX11 || (!currentFeature && GenshinLegacy::GetStatus().effectiveEnabled));
-    // Also available when unsupported startup exposure prevented CreateFeature.
-    if(genshinSrExposure && !config->AutoExposure.value_or(true)) {
-        const bool liveAuto=currentFeature && currentFeature->IsInited() && currentFeature->AutoExposure();
-        MenuText::TextWrapped(liveAuto ?
-            "手动曝光配置不受支持：当前 SR feature 使用自动曝光。配置仍为关闭。" :
-            "手动曝光配置不受支持：尚无可用的自动曝光 SR feature。配置仍为关闭。");
-        if(MenuText::Button("启用自动曝光并恢复 SR##genshinExposure")) {
-            config->AutoExposure=true;
-            // The retained unregistered owner retries on the next token. A
-            // live supported feature already has this mode, needing no reset.
-            if(currentFeature && !currentFeature->AutoExposure())ReInitUpscaler();
-            LOG_INFO("R048 user restored SR automatic exposure: requested_auto=true manual_input_supported=false");
-        }
-    }
-
     bool rcasEnabled = false;
 
     if (currentFeature != nullptr && !currentFeature->IsFrozen())
@@ -7287,31 +7189,14 @@ void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
                 // AutoExposure is always enabled for XeSS with native Dx11.
                 const bool autoExposureDisabled = state.api == API::DX11 && currentBackend == Upscaler::XeSS;
                 ImGui::BeginDisabled(autoExposureDisabled);
-                // Reject before writing Config or requesting feature retirement.
-                // A false live feature may still be explicitly restored to true.
-                ImGui::BeginDisabled(genshinSrExposure && currentFeature->AutoExposure());
                 if (bool autoExposure = currentFeature->AutoExposure(); MenuText::Checkbox("自动曝光", &autoExposure))
                 {
-                    if(!genshinSrExposure || autoExposure) {
-                        config->AutoExposure = autoExposure;
-                        ReInitUpscaler();
-                    }
+                    config->AutoExposure = autoExposure;
+                    ReInitUpscaler();
                 }
-                ImGui::EndDisabled();
                 const bool exposureHelpHovered = MenuText::ItemHelpHovered();
-                // Reset remains an explicit action separate from the unavailable
-                // manual toggle. The internal Genshin producer supplies auto=true.
-                if(genshinSrExposure) {
-                    ImGui::SameLine();
-                    ImGui::BeginDisabled(!config->AutoExposure.has_value());
-                    if(MenuText::Button("R")) {
-                        config->AutoExposure.reset();
-                        if(!currentFeature->AutoExposure())ReInitUpscaler();
-                    }
-                    ImGui::EndDisabled();
-                } else ShowResetButton(&config->AutoExposure, "R");
-                MenuText::ItemHelp(exposureHelpHovered, genshinSrExposure ?
-                    "原神 Bridge 当前仅支持自动曝光；缺少受支持的手动曝光输入，不能关闭。R 恢复游戏标志。" :
+                ShowResetButton(&config->AutoExposure, "R");
+                MenuText::ItemHelp(exposureHelpHovered,
                     "部分虚幻引擎游戏需要此设置。颜色闪烁或物体拖影时可尝试。");
                 ImGui::EndDisabled();
 
@@ -8125,7 +8010,7 @@ void MenuCommon::RenderFpsOverlaySettings(RenderMenuContext& ctx)
         bool fpsEnabled = config->ShowFps.value_or_default();
         if (MenuText::Checkbox("启用帧率叠加层", &fpsEnabled))
             config->ShowFps = fpsEnabled;
-        ShowHelpMarker("可独立常开，不需要启用 FG 或 NR。Reflex 计时类型显示原神 FSR 桥的真实 GPU 耗时条；FSR 从时间轴左端起画，NR 从当前呈现条右端向右画；长度为真实已完成耗时，横向锚点仅为示意，不代表同帧 GPU 时序。没有有效样本时显示暂无数据。");
+        ShowHelpMarker("可独立常开，不需要启用 FG 或 NR。Reflex 计时类型可显示 NR 的真实 GPU 耗时条；NR 从当前呈现条右端向右画，长度为真实已完成耗时，横向锚点仅为示意，不代表同帧 GPU 时序。没有有效样本时显示暂无数据。");
 
         ImGui::SameLine(0.0f, 6.0f);
 
@@ -8177,56 +8062,6 @@ void MenuCommon::RenderFpsOverlaySettings(RenderMenuContext& ctx)
         bool useTheme = config->OverlaysUseTheme.value_or_default();
         if (MenuText::Checkbox("使用主题颜色", &useTheme))
             config->OverlaysUseTheme = useTheme;
-    }
-}
-
-void MenuCommon::RenderUpscalerInputsSettings(RenderMenuContext& ctx)
-{
-    auto config = ctx.config;
-    auto& currentFeature = ctx.currentFeature;
-
-    // UPSCALER INPUTS -----------------------------
-    ImGui::Spacing();
-    auto uiStateOpen = currentFeature == nullptr || currentFeature->IsFrozen();
-    if (auto ch = ScopedCollapsingHeader("超分输入", uiStateOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0);
-        ch.IsHeaderOpen())
-    {
-        ScopedIndent indent {};
-        ImGui::Spacing();
-
-        if (config->EnableFsr2Inputs.value_or_default())
-        {
-            bool fsr2Inputs = config->UseFsr2Inputs.value_or_default();
-            bool fsr2Pattern = config->Fsr2Pattern.value_or_default();
-
-            if (MenuText::Checkbox("使用 FSR2 输入", &fsr2Inputs))
-                config->SetUseFsr2Inputs(fsr2Inputs);
-
-            if (MenuText::Checkbox("使用 FSR2 模式匹配", &fsr2Pattern))
-                config->Fsr2Pattern = fsr2Pattern;
-            ShowTooltip("下次启动时生效。");
-        }
-
-        if (config->EnableFsr3Inputs.value_or_default())
-        {
-            bool fsr3Inputs = config->UseFsr3Inputs.value_or_default();
-            bool fsr3Pattern = config->Fsr3Pattern.value_or_default();
-
-            if (MenuText::Checkbox("使用 FSR3 输入", &fsr3Inputs))
-                config->UseFsr3Inputs = fsr3Inputs;
-
-            if (MenuText::Checkbox("使用 FSR3 模式匹配", &fsr3Pattern))
-                config->Fsr3Pattern = fsr3Pattern;
-            ShowTooltip("下次启动时生效。");
-        }
-
-        if (config->EnableFfxInputs.value_or_default())
-        {
-            bool ffxInputs = config->UseFfxInputs.value_or_default();
-
-            if (MenuText::Checkbox("使用 FFX 输入", &ffxInputs))
-                config->UseFfxInputs = ffxInputs;
-        }
     }
 }
 
@@ -8489,29 +8324,6 @@ void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
 // Height of the graphs and bottom bar, measured last frame so the page view can leave room for them.
 static float mainMenuFooterHeight = 0.0f;
 
-static void RenderGenshinHookCpuTiming(Config* config, void (*showHelp)(const char*))
-{
-    static const bool genshinProcess = GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
-    if (!genshinProcess) return;
-
-    MenuText::SeparatorText("Hook CPU 计时（原神）");
-    bool requested = config->AcquireGenshinControls().hookCpuTiming;
-    if (MenuText::Checkbox("启用 Hook CPU 实时采样", &requested))
-        config->SetGenshinHookCpuTiming(requested);
-    showHelp("默认关闭。在下一次 Present 生效，无需重启；点击保存设置可记住选择。"
-                   "统计约每秒输出到日志，建议短时观察后关闭。累计墙钟耗时包含等待，嵌套项不可相加，不代表 CPU 独占或 GPU 耗时。");
-
-    // Read the actual sampler bit, rather than treating the requested config as
-    // proof that a Present has already published it or samples have been taken.
-    const bool sampling = GenshinHookCpuTiming::Enabled();
-    if (requested != sampling)
-        MenuText::TextWrapped(requested ? "已请求开启，等待下一次 Present 启用采样。"
-                                        : "已请求关闭，等待下一次 Present 停止采样。");
-    else
-        MenuText::TextWrapped(sampling ? "内存采样已启用；需短时运行后查看 Hook CPU 日志。"
-                                       : "内存采样已关闭。");
-}
-
 void MenuCommon::RenderMainMenuPages(RenderMenuContext& ctx)
 {
     using MenuPages::Page;
@@ -8588,7 +8400,6 @@ void MenuCommon::RenderMainMenuPages(RenderMenuContext& ctx)
         {
             const MenuText::ScopedSeparatorOmission heading("超分辨率");
             section(RenderActiveUpscalerSettings);
-            section(RenderUpscalerInputsSettings, true);
             break;
         }
         case Page::FrameGeneration:
@@ -8651,7 +8462,7 @@ void MenuCommon::RenderMainMenuPages(RenderMenuContext& ctx)
             DlssNr::RenderMenu(ctx.config, ctx.menuResScale, page);
             break;
         case Page::Debug:
-            RenderGenshinHookCpuTiming(ctx.config, ShowHelpMarker);
+            GuideDiagnosticsMenu::Render(ctx.config);
             DlssNr::RenderMenu(ctx.config, ctx.menuResScale, page);
             break;
         case Page::Diagnostics:
@@ -8693,7 +8504,8 @@ void MenuCommon::RenderMainMenuGraphs(RenderMenuContext& ctx)
 
     // First footer row: live readings and scale; the second row owns language and actions.
     ImGui::Separator();
-    const auto ft = StrFmt("%7.2f ms / %6.1f fps", frameTime, frameRate);
+    const auto ft = ctx.usesSourceStatistics ? ctx.frameStatistics :
+        StrFmt("%7.2f ms / %6.1f fps", frameTime, frameRate);
     const auto resolution = currentFeature != nullptr && !currentFeature->IsFrozen()
         ? StrFmt("%dx%d -> %dx%d", currentFeature->RenderWidth(), currentFeature->RenderHeight(),
                  currentFeature->TargetWidth(), currentFeature->TargetHeight()) : std::string();
@@ -9214,9 +9026,6 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
 
     if (MenuText::Begin(windowTitle.c_str(), NULL, mainFlags))
     {
-        const auto criticalPos = ImGui::GetWindowPos();
-        const auto criticalSize = ImGui::GetWindowSize();
-        criticalMainMenuBounds = { criticalPos.x, criticalPos.y, criticalSize.x, criticalSize.y };
         // Remember the size (relative to Menu Scale) for Save Settings.
         const ImVec2 windowSize = ImGui::GetWindowSize();
         if (std::fabs(windowSize.x - lastWindowSize.x) > 0.5f || std::fabs(windowSize.y - lastWindowSize.y) > 0.5f)
@@ -9363,10 +9172,11 @@ bool MenuCommon::RenderMenu()
     UpdateRenderTiming(ctx);
     UpdateMenuInputMode(ctx);
     HandleMenuShortcuts(ctx);
+    GuideDiagnosticsMenu::Visibility(_isVisible);
+    GuideCalibrationRuntime::Tick();
 
     // 2) Prepare one-shot notifications and start a new ImGui frame only when needed.
     UpdateVersionAndStartupNotifications(ctx);
-    UpdateGenshinCriticalHints(ctx.state, ctx.config);
     // This branch performs no ImGui drawing; a newly queued F5Low toast must demand this frame.
     if (!ctx.config->IsStarRailInputProfile())
         DlssNr::UpdateF5LowHint(ctx.config);
@@ -9390,6 +9200,7 @@ bool MenuCommon::RenderMenu()
 
     // 4) Draw the full settings menu last so popups and child windows keep their existing behavior.
     RenderMainMenuWindow(ctx);
+    if(_isVisible)GuideDiagnosticsMenu::RenderHistoryWindow(ctx.config);
 
     if (ctx.newFrame)
         ImGui::EndFrame();

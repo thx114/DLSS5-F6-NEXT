@@ -1,5 +1,8 @@
 ﻿#include "pch.h"
+#include <menu/GuideDiagnosticsMenu.h>
 #include <dlssnr/ModelScalarPolicy.h>
+#include <runtime/F6InputPolicy.h>
+#include <runtime/GuideCapture.h>
 
 #if defined(_MSC_VER)
 #pragma execution_character_set("utf-8")
@@ -705,7 +708,8 @@ static void InheritedPresetCombo(Config* config, unsigned pass,
     if (InheritedProfileCombo("模型预设", opt, names, nameCount))
     {
         Profiles::ClampConfiguredModelScalars(*config);
-        GenshinSubstage::RequestPreset(pass, before, Profiles::PassPreset(*config, pass));
+        if constexpr (F6InputPolicy::FsrBridgeEnabled)
+            GenshinSubstage::RequestPreset(pass, before, Profiles::PassPreset(*config, pass));
     }
 }
 
@@ -1256,6 +1260,23 @@ static std::string NrOptionsStatusChinese(std::string value)
 {
     if (NextgenUi::English()) return value;
     const std::pair<const char*, const char*> words[] = {
+        { "Waiting for a new successful DLSS source picture.", "等待新的成功 DLSS 源帧。" },
+        { "NR is disabled; presenting the current source picture.", "NR 已关闭；显示当前源帧。" },
+        { "NR bypass: the current source has no matching guide capture.", "当前源帧缺少匹配的深度／运动；保留当前原图。" },
+        { "Present -> NR -> detail retention -> FG (current source, one write).", "呈现输入 → NR → 细节保留 → FG；当前源帧已处理并发布一次。" },
+        { "Preparing NR; presenting the current unmodified source.", "正在准备 NR；显示当前未修改的源帧。" },
+        { "feedback-recorded-awaiting-publication", "细节已录制；等待真实提交／完成回执" },
+        { "adjacent-published-source", "上一源帧历史已接受" },
+        { "no-published-history", "当前帧重新播种；暂无已发布历史" },
+        { "recording-awaits-completion-and-reset", "历史资源仍在使用；本帧使用新 NR 结果" },
+        { "missing-current-frame-contract", "当前深度、运动、曝光或实际队列未获证明" },
+        { "current-source-or-consumer-contract", "当前源帧或指南映射尚未验证" },
+        { "unknown-native-metadata", "当前指南元数据不完整" },
+        { "unsupported-or-blocked-route", "当前路线无法证明深度与运动；本帧使用新 NR 结果" },
+        { "source-not-adjacent", "源帧不连续；丢弃旧细节" },
+        { "contract-changed", "模型、Look 或输入映射变化；重新播种" },
+        { "fresh-only-settings", "持续时长或强度为零；只使用本帧细节" },
+        { "history-512-MiB-budget", "历史资源达到预算；本帧使用新 NR 结果" },
         { "Waiting for DLSS-G finished-picture inputs.", "等待 DLSS-G 的最终画面输入。" },
         { "This option needs a native DirectX 12 game.", "此选项需要原生 DirectX 12 游戏。" },
         { "The graphics device changed. Restart the game to use this option.", "图形设备已更换，请重启游戏后使用此选项。" },
@@ -1343,7 +1364,8 @@ struct NrCommon
 
 static NrCommon ReadNrCommon(Config* config)
 {
-    return { config->DlssNrEnabled.value_or_default(), config->DlssNrFinishedPicture.value_or_default(),
+    return { config->DlssNrEnabled.value_or_default(),
+             DlssNr::UsesGenshinPresentPipeline() || config->DlssNrFinishedPicture.value_or_default(),
              DlssNr::IsRunningVk() };
 }
 
@@ -1356,12 +1378,25 @@ static void RenderEnableToggle(Config* config)
         config->DlssNrEnabled = enabled;
 
     HelpMarker("开启 DLSS 神经渲染。需要 nvngx_dlssnr.dll 以及随附的 nvngx.dll_dlssnr.dll。");
+    if (config->IsStarRailInputProfile())
+    {
+        const bool placement = config->DlssNrFinishedPicture.value_or_default() &&
+            !config->DlssNrRunBeforeSr.value_or_default() && !config->DlssNrDeferredDlss.value_or_default();
+        bool resident = config->StarRailForceNRResident.ObservedValue();
+        ImGui::BeginDisabled(!placement);
+        if (MenuText::Checkbox("强制 NR 常驻（崩铁）", &resident))
+            config->StarRailForceNRResident = resident;
+        ImGui::EndDisabled();
+        HelpMarker("仅用于成品画面 NR。DLSS 引导缺失时继续处理当前画面；不改变 SR、FG 或 NR 注入位置。");
+        if (!placement) MenuText::TextDisabled("常驻需要先选择成品画面 NR。");
+    }
 }
 
-// UI classification also applies before the internal FSR route becomes active.
-// Exact executable identity affects labels/visibility only; it grants no resource admission.
-static bool GenshinMenuProcess()
+// Legacy bridge UI must not constrain genuine DLSS inputs, even in Genshin.
+// Executable identity affects labels only when the bridge is enabled.
+static bool GenshinBridgeMenuProcess()
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return false;
     static const bool value = [] {
         const auto executable = Util::ExePath().filename().wstring();
         return _wcsicmp(executable.c_str(), L"YuanShen.exe") == 0 ||
@@ -1373,8 +1408,18 @@ static bool GenshinMenuProcess()
 // A loaded model is not proof of current Genshin final-picture consumption or visible output.
 static bool GenshinPresentedStatus(const NrCommon& nr)
 {
-    return nr.finishedPicture && !nr.vulkan && GenshinLegacy::GetStatus().effectiveEnabled &&
+    return F6InputPolicy::FsrBridgeEnabled && nr.finishedPicture && !nr.vulkan &&
+           GenshinLegacy::GetStatus().effectiveEnabled &&
            State::Instance().swapchainInteropApi == SwapchainInteropApi::None;
+}
+
+// Both menu layouts consume the same bounded completed-sample publication.
+// Model residency and an old local timer are not current processing evidence.
+static std::optional<double> MenuNrGpuTime(bool vulkan)
+{
+    if (vulkan) return DlssNr::LastGpuTimeVk();
+    const auto completed = DlssNr::ReadGpuTiming();
+    return completed.publishedMs != 0 ? std::optional<double>(completed.milliseconds) : std::nullopt;
 }
 
 // The full running-status block, for the Status & Presets page.
@@ -1383,6 +1428,7 @@ static void RenderRunningStatus(Config* config, const NrCommon& nr)
     const bool enabled = nr.enabled;
     const bool finishedPicture = nr.finishedPicture;
     const bool vulkan = nr.vulkan;
+    const auto ms = MenuNrGpuTime(vulkan);
 
     // Turning the pass off does not release the model, so the feature handle stays alive and
     // IsRunning keeps answering yes. Reporting a cost from that was wrong in the way that matters
@@ -1426,12 +1472,20 @@ static void RenderRunningStatus(Config* config, const NrCommon& nr)
         else if (enabled)
             MenuText::TextUnformatted("等待超分器运行。");
     }
+    else if (!vulkan && !ms.has_value())
+    {
+        // Residency is not activity. The completed-sample publication expires
+        // even if no later Dispatch arrives to clear the old local timer.
+        MenuText::TextDisabled("模型已就绪；最近 5 秒没有可用的 NR GPU 完成样本。");
+        if (finishedPicture)
+        {
+            const std::string status = DlssNr::FinishedPictureStatus();
+            if (!status.empty()) MenuText::TextWrapped("%s", status.c_str());
+        }
+    }
     else if (GenshinPresentedStatus(nr))
     {
-        if (const auto ms = DlssNr::LastGpuTime(); ms && std::isfinite(*ms) && *ms >= 0.0)
-            MenuText::TextDisabled("最近 NR 总 GPU 区间：%.2f ms。[呈现模式]", *ms);
-        else
-            MenuText::TextDisabled("最近 NR 总 GPU 区间：暂无测量。[呈现模式]");
+        MenuText::TextDisabled("最近 NR 总 GPU 区间：%.2f ms。[呈现模式]", *ms);
         const char* reason = DlssNr::FailureReason();
         if (reason[0] != 0)
             MenuText::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f), "本次会话已停用：%s。", NrOptionsStatusChinese(reason).c_str());
@@ -1443,7 +1497,6 @@ static void RenderRunningStatus(Config* config, const NrCommon& nr)
         // nothing in it to hang this off.
         // Either backend's timer. They measure the same thing by different means, and only one
         // of them is running.
-        const auto ms = vulkan ? DlssNr::LastGpuTimeVk() : DlssNr::LastGpuTime();
 
         // With "应用模型效果" off the pass STILL RUNS (so Hold-frame A/B can toggle its edit on
         // a frozen frame) -- it only outputs the clean frame.
@@ -1453,9 +1506,11 @@ static void RenderRunningStatus(Config* config, const NrCommon& nr)
 
         // With Reuse detail between frames, full and reused frames alternate, so one reading is either the heavy or
         // the light one; the average over the recent frames is the real per-frame cost.
-        const auto detailReuse = !config->DlssNrDetailReuse.value_or_default() ? DlssNr::DetailReuseInfo {}
-                                 : vulkan                                     ? DlssNr::DetailReuseStatusVk()
-                                                                              : DlssNr::DetailReuseStatus();
+        const bool detailStatusRequested = config->DlssNrDetailReuse.value_or_default() ||
+            (!vulkan && config->DlssNrPresentedTemporalDetail.value_or_default());
+        const auto detailReuse = !detailStatusRequested ? DlssNr::DetailReuseInfo {}
+                                 : vulkan               ? DlssNr::DetailReuseStatusVk()
+                                                        : DlssNr::DetailReuseStatus();
         {
             ScopedMonoFont monoFont {};
 
@@ -1486,13 +1541,15 @@ static void RenderRunningStatus(Config* config, const NrCommon& nr)
 // One line of the same status, for the other pages.
 static void RenderStatusLine(const NrCommon& nr)
 {
-    const auto ms = nr.vulkan ? DlssNr::LastGpuTimeVk() : DlssNr::LastGpuTime();
+    const auto ms = MenuNrGpuTime(nr.vulkan);
     ScopedMonoFont monoFont {};
 
     if (!nr.enabled)
         MenuText::TextDisabled("NR 已关闭。");
     else if (!DlssNr::IsRunning() && !nr.vulkan)
         MenuText::TextDisabled("NR 未运行，请见“状态与预设”页。");
+    else if (!nr.vulkan && !ms.has_value())
+        MenuText::TextDisabled("模型已就绪；最近 5 秒没有可用的 NR GPU 完成样本。");
     else if (GenshinPresentedStatus(nr))
     {
         if (ms && std::isfinite(*ms) && *ms >= 0.0)
@@ -1784,18 +1841,19 @@ static void RenderF5LowPage(Config* config, const NrCommon& nr)
         MenuText::TextWrapped(NextgenUi::English()
             ? "Multi-frame NR reuse: unsupported on Vulkan; saved settings are retained."
             : "多帧 NR 复用：Vulkan 暂未支持；已保存设置保持不变。");
-    else if (!config->DlssNrDetailReuse.value_or_default())
-        MenuText::TextUnformatted("跨帧细节复用：关闭");
+    else if (!config->DlssNrDetailReuse.value_or_default() &&
+             !config->DlssNrPresentedTemporalDetail.value_or_default())
+        MenuText::TextUnformatted("跨帧复用与细节持续反馈：关闭");
     else
     {
         const auto status = DlssNr::DetailReuseStatus();
         if (!status.why.empty())
-            MenuText::TextWrapped("跨帧细节复用：开启，%s", NrOptionsStatusChinese(status.why).c_str());
+            MenuText::TextWrapped("细节历史：%s", NrOptionsStatusChinese(status.why).c_str());
         else if (status.active)
-            MenuText::Text("跨帧细节复用：开启（完整 %llu | 复用 %llu%s）", status.full, status.reused,
+            MenuText::Text("细节历史：已运行（完整 %llu | 复用 %llu%s）", status.full, status.reused,
                         status.holding ? " | 快速运动时暂停" : "");
         else
-            MenuText::TextUnformatted("跨帧细节复用：开启");
+            MenuText::TextUnformatted("细节历史：等待 NR 输入");
     }
     HelpMarker(reuseVk
         ? (NextgenUi::English() ? "Multi-frame NR reuse is unsupported on Vulkan; its controls are hidden."
@@ -2584,7 +2642,7 @@ static void RenderExposureSection(Config* config, float menuResScale)
 static void RenderSharedDlssUpsampling(Config* config, const NrCommon& nr)
 {
     const bool finishedPicture = nr.finishedPicture;
-    const bool genshin = GenshinMenuProcess();
+    const bool genshin = GenshinBridgeMenuProcess();
     if (genshin && !config->MenuShowUnfinished.value_or_default()) return;
     ImGui::BeginDisabled(genshin);
     bool beforeSr = config->DlssNrRunBeforeSr.value_or_default() ||
@@ -2634,11 +2692,12 @@ static void RenderOptionsPage(Config* config, float menuResScale, const NrCommon
     const bool rayReconstruction = activeFeature && activeFeature->GetUpscalerType() == Upscaler::DLSSD;
     const bool deferredActive = !finishedPicture && config->DlssNrDeferredDlss.value_or_default() && !rayReconstruction;
 
-    const bool genshin = GenshinMenuProcess();
+    const bool genshin = GenshinBridgeMenuProcess();
     const char* placementNames[] = { genshin ? "Auto-afterSR（未完成）" : "超分辨率之后",
                                     genshin ? "BeforeSR（未完成）" : "超分辨率之前",
                                     "最终画面（呈现模式）" };
-    int placement = finishedPicture ? 2 : (beforeSr ? 1 : 0);
+    const bool fixedPresent = DlssNr::UsesGenshinPresentPipeline();
+    int placement = fixedPresent || finishedPicture ? 2 : (beforeSr ? 1 : 0);
     const bool showUnfinished = config->MenuShowUnfinished.value_or_default();
     bool placementChanged = false;
     ImGui::BeginDisabled(deferredActive);
@@ -2646,8 +2705,13 @@ static void RenderOptionsPage(Config* config, float menuResScale, const NrCommon
     const bool placementVisible[]={!genshin || showUnfinished,!genshin || showUnfinished,true};
     placementChanged=MenuText::Segmented("NR 处理位置：",&placement,placementNames,3,placementEnabled,placementVisible);
     ImGui::EndDisabled();
+    if (fixedPresent)
+        MenuText::TextDisabled("当前入口：呈现输入 → NR → 细节保留 → FG；每个真实源帧一次。");
     if (placementChanged)
     {
+        // One selector owns both the normal Evaluate seams and the Genshin
+        // presentation adapter. Never let the latter silently override a choice.
+        config->DlssNrGenshinPresentPipeline = placement == 2;
         if (placement == 0)
         {
             if (finishedPicture) RetryNr();
@@ -2668,18 +2732,23 @@ static void RenderOptionsPage(Config* config, float menuResScale, const NrCommon
         {
             if (!finishedPicture) RetryNr();
             finishedPicture = true;
+            beforeSr = false;
             config->DlssNrFinishedPicture = true;
+            config->DlssNrRunBeforeSr = false;
         }
     }
 
-    HelpMarker("NR 的处理位置。\n超分辨率之后：处理超分后的画面。\n超分辨率之前：处理较小输入，开销较低。\n最终画面：处理游戏后期效果后的画面；原生 DLSS-G 路径在插帧前处理，并保留 HUD。\n模型分辨率是独立设置；选择呈现模式不会自动使用屏幕原始分辨率。\n启用光线重建时，NR 总是在其后运行。");
+    HelpMarker("NR 的处理位置。\n超分辨率之后：处理超分后的画面。\n超分辨率之前：处理较小输入，开销较低。\n最终画面：处理游戏后期效果后的画面，在插帧前运行。\n模型分辨率是独立设置；切换入口不调整模型尺寸、层数或效果。\n启用光线重建时，NR 总是在其后运行。");
 
-    if (finishedPicture && enabled)
+    if (fixedPresent && enabled)
+        MenuText::TextWrapped("%s", NrOptionsStatusChinese(DlssNr::FinishedPictureStatus()).c_str());
+    else if (finishedPicture && enabled)
     {
         const auto feature = State::Instance().currentFeature;
         const bool bridge = feature && feature->Api() == API::DX11 && feature->IsWithDx12() &&
                             State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12;
-        const bool genshinPresent = GenshinLegacy::GetStatus().effectiveEnabled &&
+        const bool genshinPresent = F6InputPolicy::FsrBridgeEnabled &&
+            GenshinLegacy::GetStatus().effectiveEnabled &&
             State::Instance().swapchainInteropApi == SwapchainInteropApi::None;
         if (bridge && (config->DlssNrRunBeforeSr.value_or_default() || config->DlssNrDeferredDlss.value_or_default()))
             MenuText::TextWrapped("DX11 桥接的呈现模式暂不支持在超分前运行模型，请关闭下方选项。");
@@ -2701,7 +2770,7 @@ static void RenderOptionsPage(Config* config, float menuResScale, const NrCommon
     }
 
     // Placement and deferred DLSS application are Global controls, independent of layer editors.
-    RenderSharedDlssUpsampling(config, nr);
+    if (!fixedPresent) RenderSharedDlssUpsampling(config, nr);
 
     int precisionChoice = config->DlssNrPrecision.value_or_default() == 4 ? 1 : 0;
     const char* precisions[] = { "NVIDIA 原版（FP8）", "实验混合精度（FP8+NVFP4）" };
@@ -2782,6 +2851,7 @@ static void RenderOptionsPage(Config* config, float menuResScale, const NrCommon
 // Cross-frame NR reuse controls retain their exact configuration fields and backend gates.
 static void RenderReusePage(Config* config, float menuResScale)
 {
+    if(MenuText::Button("打开每帧细节保留调试"))GuideDiagnosticsMenu::OpenHistoryWindow();
     ImGui::PushItemWidth(220.0f * menuResScale);
     MenuText::SeparatorText(NextgenUi::English() ? "Multi-frame NR reuse" : "多帧NR复用");
     RenderPassFeedback(config, menuResScale);
@@ -2814,11 +2884,12 @@ static void RenderReusePage(Config* config, float menuResScale)
     ImGui::EndDisabled();
     MenuText::Text("当前计算内核：%s", NrOptionsStatusChinese(kernelSet).c_str());
     bool detailReuse = config->DlssNrDetailReuse.value_or_default();
-    const auto detailReuseStatus = !detailReuse            ? DlssNr::DetailReuseInfo {}
-                                   : DlssNr::IsRunningVk() ? DlssNr::DetailReuseStatusVk()
-                                                           : DlssNr::DetailReuseStatus();
-    const bool detailReuseOwnsBottleneck = detailReuse &&
-        (config->DlssNrDetailReuseInterval.value_or_default() > 1 || config->DlssNrPresentedTemporalDetail.value_or_default());
+    const bool presentedFeedback = config->DlssNrPresentedTemporalDetail.value_or_default();
+    const auto detailReuseStatus = !(detailReuse || presentedFeedback) ? DlssNr::DetailReuseInfo {}
+                                   : DlssNr::IsRunningVk()              ? DlssNr::DetailReuseStatusVk()
+                                                                        : DlssNr::DetailReuseStatus();
+    const bool detailReuseOwnsBottleneck = presentedFeedback ||
+        (detailReuse && config->DlssNrDetailReuseInterval.value_or_default() > 1);
     if (vitReuseVk)
         MenuText::TextWrapped("瓶颈复用：Vulkan 游戏中关闭，避免暗处闪烁");
     else if (detailReuseOwnsBottleneck)
@@ -2826,33 +2897,67 @@ static void RenderReusePage(Config* config, float menuResScale)
     else if (DlssNrNative::VitPlainKernels() ? vitReusePlain : vitReuse)
         MenuText::TextUnformatted(("瓶颈复用：" + NrOptionsStatusChinese(DlssNrNative::VitStatus())).c_str());
     detailReuse = RenderDetailReuseToggle(config);
-    if (detailReuse)
+    bool temporal = config->DlssNrPresentedTemporalDetail.value_or_default();
+    if (MenuText::Checkbox("细节持续保留（每源帧完整计算）", &temporal))
+        config->DlssNrPresentedTemporalDetail = temporal;
+    const bool legacyDetailReuseActive = detailReuse && !temporal;
+    HelpMarker("独立于上方的跳帧复用：每个真实源帧完整计算 NR，只搬运细节残差。超分前使用同次 DLSS Evaluate 的深度、运动及真实前后 jitter 差；最终画面需要已验证的场景指南映射。缺少当前输入或完成凭据时使用本帧 NR 结果，不拿旧帧补齐。");
+    ImGui::BeginDisabled(!temporal || vitReuseVk);
+    int durationMs = static_cast<int>(std::min(config->DlssNrPresentedTemporalDurationMs.value_or_default(),
+                                              Config::kPresentedTemporalDurationMaxMs));
+    if (MenuText::SliderInt("细节反馈持续时长（毫秒）", &durationMs, 0,
+                            static_cast<int>(Config::kPresentedTemporalDurationMaxMs), "%d ms"))
+        config->DlssNrPresentedTemporalDurationMs = static_cast<uint32_t>(std::clamp(durationMs, 0,
+            static_cast<int>(Config::kPresentedTemporalDurationMaxMs)));
+    HelpMarker("正值控制旧残差按源帧实际时间衰减的速度；0 不携带旧细节。强度仍有独立上限，逐像素历史不会因融合而续期。不计生成帧。");
+    int maxAgeMs = static_cast<int>(std::clamp(config->DlssNrPresentedTemporalMaxAgeMs.value_or_default(),
+        Config::kPresentedTemporalMaxAgeMinMs, Config::kPresentedTemporalMaxAgeMaxMs));
+    if (MenuText::SliderInt("反馈历史最长寿命（毫秒）", &maxAgeMs,
+        static_cast<int>(Config::kPresentedTemporalMaxAgeMinMs),
+        static_cast<int>(Config::kPresentedTemporalMaxAgeMaxMs), "%d ms"))
+        config->DlssNrPresentedTemporalMaxAgeMs = static_cast<uint32_t>(maxAgeMs);
+    HelpMarker("每个像素保留最老贡献的年龄，达到最长寿命后重新播种当前细节。融合不能刷新旧贡献的年龄；没有按时钟定期更新整幅画面的计时器。");
+    float strength = config->DlssNrPresentedTemporalStrength.value_or_default();
+    strength = std::isfinite(strength) ? std::clamp(strength, 0.0f, 0.95f) : 0.85f;
+    if (MenuText::SliderFloat("历史反馈强度上限", &strength, 0.0f, 0.95f, "%.2f"))
+        config->DlssNrPresentedTemporalStrength = strength;
+    HelpMarker("完整模型帧融合旧细节的最大比例，默认 0.85，最高 0.95；实际比例还受衰减、剩余寿命、运动和深度信任约束。0 停止旧细节融合。");
+    ImGui::EndDisabled();
+    if (temporal)
     {
-        bool temporal = config->DlssNrPresentedTemporalDetail.value_or_default();
-        if (MenuText::Checkbox("呈现细节持续反馈（实验功能，默认关闭）", &temporal))
-            config->DlssNrPresentedTemporalDetail = temporal;
-        HelpMarker("仅 D3D12 呈现模式：融合可靠运动搬运的细节。原神优先使用真实映射深度；仅在 NR 间隔为 1 且无当前深度时，可使用实际最终图片光流与信任遮罩进行颜色/运动反馈，每帧仍完整计算 NR。此分支没有深度遮挡判定，不等于深度防闪完成，可能拖尾；会增加细节融合 GPU 开销。缺少真实图片光流、对应基帧或有效指南时不反馈。不新增光流管线，默认关闭，待实机验证。");
-        ImGui::BeginDisabled(!temporal || vitReuseVk);
-        int durationMs = static_cast<int>(std::min(config->DlssNrPresentedTemporalDurationMs.value_or_default(),
-                                                  Config::kPresentedTemporalDurationMaxMs));
-        if (MenuText::SliderInt("细节反馈持续时长（毫秒）", &durationMs, 0,
-                                static_cast<int>(Config::kPresentedTemporalDurationMaxMs), "%d ms"))
-            config->DlssNrPresentedTemporalDurationMs = static_cast<uint32_t>(std::clamp(durationMs, 0,
-                static_cast<int>(Config::kPresentedTemporalDurationMaxMs)));
-        HelpMarker("控制旧细节影响的指数衰减：正值为降至约 37% 的时间，0 使用 0.75 基础权重。它同时受下方强度上限和历史最长寿命约束，不会无限续期。按真实完整模型刷新计时，不计生成帧。间隔 1 仍每帧完整计算；原神无深度分支没有深度遮挡保护。镜头切换、尺寸、路线或指南失效仍立即丢弃历史。");
-        int maxAgeMs = static_cast<int>(std::clamp(config->DlssNrPresentedTemporalMaxAgeMs.value_or_default(),
-            Config::kPresentedTemporalMaxAgeMinMs, Config::kPresentedTemporalMaxAgeMaxMs));
-        if (MenuText::SliderInt("反馈历史最长寿命（毫秒）", &maxAgeMs,
-            static_cast<int>(Config::kPresentedTemporalMaxAgeMinMs),
-            static_cast<int>(Config::kPresentedTemporalMaxAgeMaxMs), "%d ms"))
-            config->DlssNrPresentedTemporalMaxAgeMs = static_cast<uint32_t>(maxAgeMs);
-        HelpMarker("旧细节整条反馈链的最长寿命，默认 500 毫秒。融合结果写回不会续期；到期前逐步减少旧历史权重，到期强制完整模型计算并换成当前新细节，包括 NR 间隔大于 1 时。降低可缩短反射拖尾，过低可能减少稳定效果。");
-        float strength = config->DlssNrPresentedTemporalStrength.value_or_default();
-        strength = std::isfinite(strength) ? std::clamp(strength, 0.0f, 0.95f) : 0.85f;
-        if (MenuText::SliderFloat("历史反馈强度上限", &strength, 0.0f, 0.95f, "%.2f"))
-            config->DlssNrPresentedTemporalStrength = strength;
-        HelpMarker("完整模型帧融合旧细节的最大比例，默认 0.85，最高 0.95；实际比例还受衰减、剩余寿命、运动和深度信任约束。降低能更快跟随当前反射与光照，0 停止完整模型帧的旧细节融合。不会提高 NR 效果强度，也不改变生成帧倍率。");
+        const auto status = DlssNr::DetailReuseStatus();
+        ImGui::BeginDisabled(vitReuseVk);
+        GuideDiagnosticsMenu::RenderHistoryTuning(config);
         ImGui::EndDisabled();
+        // Measurement is now explicitly owned by the separate debug window.
+        // Merely visiting this settings page must not start pixel readbacks.
+        if (status.active)
+        {
+            MenuText::TextUnformatted(status.feedbackHistoryUsable
+                ? "细节持续反馈：融合已录制（不代表实际贡献）"
+                : "细节持续反馈：已记录当前细节，等待相邻历史");
+        }
+        else
+            MenuText::TextWrapped("细节持续反馈：%s", status.why.empty()
+                ? "等待当前 NR 输入" : NrOptionsStatusChinese(status.why).c_str());
+        static GuideCapture::ContributionSample measured;
+        const auto now = GuideDiagnostics::Now();
+        GuideCapture::ReadHistoryMeasurement(measured);
+        if (!vitReuseVk &&
+            measured.Matches(status.feedbackOwner, status.feedbackConfiguration, status.feedbackSource, now))
+            MenuText::Text("历史贡献：%.1f%% 采样点 | 源帧 %llu | %llu ms 前",
+                100.0f * measured.changed, measured.source, now - measured.tick);
+        else
+            MenuText::TextDisabled("历史贡献：等待本配置的 GPU 实测");
+        if (status.modelCallCountsKnown)
+            MenuText::Text("模型调用：%llu 次 | 失败 %llu 次", status.modelCalls, status.modelFailures);
+        else
+            MenuText::TextDisabled("模型调用：暂无当前统计");
+        if (detailReuse)
+            MenuText::TextDisabled("间隔复用：持续反馈期间未运行");
+    }
+    if (legacyDetailReuseActive)
+    {
         bool gameMotion = config->DlssNrGameMotionReuse.value_or_default();
         if (MenuText::Checkbox("允许原生 DLSS-G 场景运动复用（实验功能）", &gameMotion))
             config->DlssNrGameMotionReuse = gameMotion;
@@ -2860,7 +2965,7 @@ static void RenderReusePage(Config* config, float menuResScale)
         int interval = static_cast<int>(std::clamp(config->DlssNrDetailReuseInterval.value_or_default(), 1u, 8u));
         if (MenuText::SliderInt("NR 间隔", &interval, 1, 8, "%d"))
             config->DlssNrDetailReuseInterval = static_cast<unsigned>(std::clamp(interval, 1, 8));
-        HelpMarker("每隔多少个真实渲染帧运行一次完整 NR。1 表示每帧完整计算（有资格的持续反馈仍可独立运行）；2 到 8 表示在完整计算之间复用运动搬运的细节。快速运动或门禁触发时仍会强制完整计算。Vulkan 暂不支持跨帧细节复用。");
+        HelpMarker("每隔多少个真实渲染帧运行一次完整 NR。持续保留开启时每帧完整计算，此间隔只在持续保留关闭时生效。关闭持续保留后，1 表示每帧完整计算；2 到 8 表示在完整计算之间复用运动搬运的细节。快速运动或门禁触发时仍会强制完整计算。Vulkan 暂不支持跨帧细节复用。");
         int fgInterval = static_cast<int>(std::clamp(config->DlssNrDetailReuseFgInterval.value_or_default(), 1u, 2u));
         const char* fgIntervalFormat = fgInterval == 1 ? "每个 FG 帧" : "每 2 个 FG 帧";
         const auto fgReuse = DlssNr::FgDetailReuseStatus();
@@ -2891,11 +2996,11 @@ static void RenderReusePage(Config* config, float menuResScale)
         else
             MenuText::TextDisabled("NR 调度速率：暂无测量");
         if (!actual.why.empty())
-            MenuText::TextWrapped("复用暂停原因：%s", NrOptionsStatusChinese(actual.why).c_str());
+            MenuText::TextWrapped("细节状态：%s", NrOptionsStatusChinese(actual.why).c_str());
 
     }
 
-    if (detailReuse)
+    if (legacyDetailReuseActive)
     {
         // Debugging and A/B testing only; the defaults are the tuned values.
         if (MenuText::TreeNode("调试##detailReuse"))
@@ -3554,7 +3659,8 @@ static void RenderFirstLayerParameters(Config* config, float menuResScale)
             const auto before = config->DlssNrPreset.value_or_default();
             config->DlssNrPreset = preset;
             Profiles::ClampConfiguredModelScalars(*config);
-            GenshinSubstage::RequestPreset(0u, before, preset);
+            if constexpr (F6InputPolicy::FsrBridgeEnabled)
+                GenshinSubstage::RequestPreset(0u, before, preset);
         }
         ImGui::EndDisabled();
         HelpMarker("与模型选择独立的预设提示：默认、预设 A、预设 B。切换时将强度收敛到当前预设上限：B 为 1，其他为 2；默认均为 1。未知／旧版值会保留，直到主动选择其他选项。");
@@ -3749,6 +3855,7 @@ static void RenderColourAndLighting(Config* config, float menuResScale)
 // Process-local diagnostic capture. Only the capture API owns collection and file IO.
 static void RenderGenshinManualCapture()
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     namespace Capture = GenshinLegacy::ManualCapture;
     using Phase = Capture::Phase;
     using Reason = Capture::Reason;
@@ -3984,7 +4091,8 @@ struct GenshinFgPreviewDemandScope {
 
 static void RenderGenshinFgGuidePreview()
 {
-    if (!GenshinMenuProcess()) return;
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
+    if (!GenshinBridgeMenuProcess()) return;
     const auto& state = State::Instance();
     const char* unavailable=state.api==Vulkan || state.swapchainApi==Vulkan ? "Vulkan-disabled" :
         state.swapchainInteropApi!=SwapchainInteropApi::Dx11wDx12 ? "Dx11wDx12-route-unavailable" : nullptr;
@@ -4084,8 +4192,11 @@ static void RenderDebugPage(Config* config, float menuResScale)
 
     // Keep the FG control above the long manual-capture panel and the NR-only
     // debug controls. It is a core Debug control, independent of NR enablement.
-    RenderGenshinFgGuidePreview();
-    RenderGenshinManualCapture();
+    if constexpr (F6InputPolicy::FsrBridgeEnabled)
+    {
+        RenderGenshinFgGuidePreview();
+        RenderGenshinManualCapture();
+    }
     RenderDetectedColourFormat();
 
     MenuText::SeparatorText("对比");
@@ -4170,46 +4281,17 @@ static void RenderDebugPage(Config* config, float menuResScale)
     static const char* debugNames[] = { "关闭", "代理输入（模型所见）", "模型原始输出",
                                         "放大的差异" };
     int debugView = (int) config->DlssNrDebugView.value_or_default();
-    if (MenuText::Segmented(GenshinMenuProcess() ? "NR 调试视图" : "调试视图", &debugView, debugNames,
+    if (MenuText::Segmented(GenshinBridgeMenuProcess() ? "NR 调试视图" : "调试视图", &debugView, debugNames,
                             IM_ARRAYSIZE(debugNames)))
         config->DlssNrDebugView = (uint32_t) debugView;
 
-    HelpMarker(GenshinMenuProcess() ? "仅切换 NR 模型画面，需要 NR 实际执行。FG 接收的深度/运动请使用本页顶部的独立开关；灰色表示 NR 无差异。" : "显示模型输入、原始输出或放大 20 倍的差异；灰色表示无变化。");
+    HelpMarker(GenshinBridgeMenuProcess() ? "仅切换 NR 模型画面，需要 NR 实际执行。FG 接收的深度/运动请使用本页顶部的独立开关；灰色表示 NR 无差异。" : "显示模型输入、原始输出或放大 20 倍的差异；灰色表示无变化。");
 
-    static const char* previewNames[] = { "关闭###关闭", "编码前颜色###颜色：NR 编码前输入", "输入颜色###颜色：模型代理输入", "深度###深度：当前 NR 输入", "运动###运动：当前 NR 输入" };
-    int preview = (int) std::min(config->DlssNrGuidePreview.value_or_default(), 4u);
-    if (MenuText::Segmented("NR 输入资源预览", &preview, previewNames, IM_ARRAYSIZE(previewNames)))
-        config->DlssNrGuidePreview = (uint32_t) preview;
-    HelpMarker("在模型求值前取当帧快照，正常历史处理后显示。与原调试视图独立；打开时优先显示输入预览。关闭即可恢复正常画面。");
-    if (preview)
-    {
-        bool raw = config->DlssNrGuidePreviewRaw.value_or_default();
-        if (MenuText::Checkbox("原始资源坐标与数值", &raw)) config->DlssNrGuidePreviewRaw = raw;
-        HelpMarker("关闭：实际模型输入的有效子矩形，深度增强显示对比度，运动按模型缩放换算为 UV 位移；打开：本帧原始资源全图，深度直接显示原始 Z 灰度、运动显示原始数值。所有显示变换仅作用于预览，不改变 NR 输入。");
-        bool flip = config->DlssNrGuidePreviewFlipY.value_or_default();
-        if (MenuText::Checkbox("仅预览 Y 翻转", &flip)) config->DlssNrGuidePreviewFlipY = flip;
-        HelpMarker("只翻转预览采样行；不会改变 NR 输入、运动向量 Y 正负、历史、模型重置或复用节奏。");
-        if (preview == 3)
-            MenuText::TextWrapped(raw ? "深度显示：原始 Z 灰度；非线性深度可能接近全黑或全白，不代表输入缺失。" :
-                                       "深度显示：增强对比，近亮远暗；不是线性距离。棋盘格表示当前输入不可用。只影响预览。");
-        if (preview == 4)
-        {
-            float gain = config->DlssNrGuidePreviewMotionGain.value_or_default();
-            if (MenuText::SliderFloat("运动显示增益", &gain, 0.01f, 4096.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
-                config->DlssNrGuidePreviewMotionGain = gain;
-            MenuText::TextWrapped("运动颜色：R=X，G=Y（0.5 为零，亮=正，暗=负）；B=长度。预览翻转不改变向量方向。");
-        }
-        if (preview == 1)
-            MenuText::TextWrapped("颜色显示：读取编码前资源数值；线性 HDR 使用 x/(白点+x) 映射，其余截断至 0..1。此显示不改变输入编码。");
-        const auto previewStatus = DlssNr::GuidePreviewStatus();
-        MenuText::TextWrapped("最近记录状态：%s", previewStatus.empty() ? "等待 NR 当前帧（当前后端可能不支持此 DX12 预览）" : previewStatus.c_str());
-    }
-
-    if (GenshinMenuProcess() && preview == 3)
-        MenuText::TextWrapped("当前 NR 深度输入可能缺失；选择此项不代表资源存在。下方原始桥深度预览是独立来源，不认证当前 NR 深度或 FG 输入。");
+    GuideDiagnosticsMenu::RenderPreviewStrip(config);
 
     // Independent, process-local raw preview demand on the ordinary Compare/Debug page.
-    GenshinDepthProvider::DrawPreview();
+    if constexpr (F6InputPolicy::FsrBridgeEnabled)
+        GenshinDepthProvider::DrawPreview();
 
     ImGui::PopItemWidth();
 }
@@ -4401,14 +4483,14 @@ void RenderMenu(Config* config, float menuResScale, MenuPages::Page page)
     using MenuPages::Page;
     if (MenuPages::NavigationPage(page) == Page::ProFilters)
     {
-        if (GenshinMenuProcess()) GenshinFgPreview::Request(false,"debug-page-hidden");
+        if (GenshinBridgeMenuProcess()) GenshinFgPreview::Request(false,"debug-page-hidden");
         HoYoShadeControls::Render(config, CurrentNativeApi() == NativeApi::Vulkan,
                                   CurrentNativeApi() == NativeApi::Dx11 &&
                                   State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12);
         return;
     }
     Profiles::ClampConfiguredModelScalars(*config);
-    if (GenshinMenuProcess() && MenuPages::NavigationPage(page)!=Page::Debug)
+    if (GenshinBridgeMenuProcess() && MenuPages::NavigationPage(page)!=Page::Debug)
         GenshinFgPreview::Request(false,"debug-page-hidden");
 
     static int previousFrame = -1;

@@ -178,8 +178,8 @@ HRESULT ProviderRetirement::Commit() noexcept
     return S_OK;
 }
 CreationScope::CreationScope(const std::shared_ptr<Provider>& p) noexcept
-    : previous(std::move(creating)), activity(BeginActivity(p)) { creating = activity; }
-CreationScope::~CreationScope() { creating = std::move(previous); EndActivity(activity); }
+    : previous(std::move(creating)), activity(BeginActivity(p)) { ++depth; creating = activity; }
+CreationScope::~CreationScope() { creating = std::move(previous); EndActivity(activity); --depth; }
 void PrepareSource(IDXGISwapChain* input, IDXGISwapChain* source, UINT flags,
                    const DXGI_PRESENT_PARAMETERS* params) noexcept
 {

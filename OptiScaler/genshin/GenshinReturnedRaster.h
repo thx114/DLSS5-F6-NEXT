@@ -6,12 +6,14 @@
 #include "GenshinQueryScope.h"
 #include "GenshinDepthSemantic.h"
 #include "GenshinDepthReplayState.h"
+#include "../runtime/Dx11RasterBindings.h"
 #include <wrl/client.h>
 #include <array>
 #include <atomic>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <variant>
 #include <cstring>
 #include <cmath>
 
@@ -60,13 +62,17 @@ enum class ClaimFailure:unsigned {None,SourceUntracked,PendingBracket,ClearMissi
     AlreadyClaimed,ReturnOrder,SourceLayout,ReadersBusy,Allocation};
 struct Binding {
     ComPtr<ID3D11Buffer> buffer;UINT first=0,count=4096;
-    bool Same(const Binding& b)const noexcept {return buffer.Get()==b.buffer.Get() && first==b.first && count==b.count;}
 };
 struct Raster {
     // Tokens precede owners; replacement assignment preserves release order.
     GenshinDepthRetention::Buffers<90> retention;
     Raster()=default;Raster(const Raster&)=default;Raster(Raster&&)noexcept=default;
-    Raster& operator=(Raster other)noexcept {this->~Raster();new(this) Raster(std::move(other));return *this;}
+    Raster& operator=(Raster&& other)noexcept {
+        if(this!=&other){this->~Raster();new(this) Raster(std::move(other));}return *this;
+    }
+    Raster& operator=(const Raster& other)noexcept {
+        if(this!=&other)*this=Raster(other);return *this;
+    }
     ComPtr<ID3D11DepthStencilView> view;
     ComPtr<ID3D11Resource> source;
     ComPtr<ID3D11VertexShader> vs;ComPtr<ID3D11HullShader> hs;ComPtr<ID3D11DomainShader> ds;ComPtr<ID3D11PixelShader> ps;
@@ -84,38 +90,40 @@ struct Raster {
     std::array<D3D11_RECT,16> scissors{};UINT scissorCount=16,reference=0;
     D3D11_PRIMITIVE_TOPOLOGY topology{};
     bool queryQuiescent=false;Refusal refusal=Refusal::None;unsigned stageMask=0;
+    ComPtr<ID3D11DeviceContext1> constantContext;
     std::shared_ptr<const GenshinDepthSemantic::Draw> semantic;
     GenshinDepthSemantic::CaptureFailureObservation captureFailure{};
-    // These are actual CB bindings/ranges, NOT immutable numerical CB values.
-    // No clip/projection ABI is qualified by object pointers or a FNV hash.
-    bool Same(const Raster& b)const noexcept {
-        if(view.Get()!=b.view.Get() || source.Get()!=b.source.Get() || vs.Get()!=b.vs.Get() || ps.Get()!=b.ps.Get() ||
-           hs.Get()!=b.hs.Get() || ds.Get()!=b.ds.Get() ||
-           depth.Get()!=b.depth.Get() || raster.Get()!=b.raster.Get() || layout.Get()!=b.layout.Get() ||
-           indices.Get()!=b.indices.Get() || indexFormat!=b.indexFormat || indexOffset!=b.indexOffset ||
-           strides!=b.strides || offsets!=b.offsets ||
-           reference!=b.reference || topology!=b.topology || viewportCount!=b.viewportCount || scissorCount!=b.scissorCount ||
-           std::memcmp(&viewDesc,&b.viewDesc,sizeof(viewDesc)) || std::memcmp(&depthDesc,&b.depthDesc,sizeof(depthDesc)) ||
-           std::memcmp(viewports.data(),b.viewports.data(),viewportCount*sizeof(D3D11_VIEWPORT)) ||
-           std::memcmp(scissors.data(),b.scissors.data(),scissorCount*sizeof(D3D11_RECT)))return false;
-        const auto& a=draw;const auto& d=b.draw;
-        if(a.context!=d.context || a.thread!=d.thread || a.kind!=d.kind || a.count!=d.count || a.start!=d.start ||
-           a.base!=d.base || a.instances!=d.instances || a.instanceStart!=d.instanceStart ||
-           a.indirectBuffer.Get()!=d.indirectBuffer.Get() || a.indirectIdentity.Get()!=d.indirectIdentity.Get() ||
-           a.indirectOffset!=d.indirectOffset || a.indirectArgumentsUnknown!=d.indirectArgumentsUnknown ||
-           a.observationCall!=d.observationCall || !(epochs==b.epochs))return false;
-        for(unsigned i=0;i<constants.size();++i)if(!constants[i].Same(b.constants[i]))return false;
-        for(unsigned i=0;i<vertices.size();++i)if(vertices[i].Get()!=b.vertices[i].Get())return false;
-        return (!semantic && !b.semantic) || GenshinDepthSemantic::Same(semantic,b.semantic);
+    // Drop the previous snapshot once when a returned ticket replaces it. Do
+    // not construct/move a whole Raster just to release its live owners. Keep
+    // buffer charges until every owner (including indirect arguments) is gone.
+    void ClearBindings()noexcept {
+        draw={};epochs={};refusal=Refusal::None;
+        view.Reset();source.Reset();vs.Reset();hs.Reset();ds.Reset();ps.Reset();
+        depth.Reset();raster.Reset();layout.Reset();indices.Reset();
+        for(auto& vertex:vertices)vertex.Reset();
+        strides.fill(0);offsets.fill(0);indexFormat=DXGI_FORMAT_UNKNOWN;indexOffset=0;
+        for(auto& binding:constants){binding.buffer.Reset();binding.first=0;binding.count=4096;}
+        viewDesc={};depthDesc={};viewports={};scissors={};
+        viewportCount=scissorCount=16;reference=0;topology={};
+        queryQuiescent=false;stageMask=0;constantContext.Reset();semantic.reset();captureFailure={};
+        for(size_t i=0;i<retention.count;++i)retention.tokens[i].reset();
+        retention.count=0;
     }
 };
+struct DrawTicket {
+    GenshinDepthMapping::DrawArguments draw{};
+    Epochs epochs{};
+    Refusal refusal=Refusal::WriteBoundary;
+};
+// The first alternative creates no Raster, buffer retention or semantic state.
+using PendingRaster=std::variant<DrawTicket,Raster>;
 struct Interval {
     ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;
     ComPtr<ID3D11Resource> resource;ComPtr<ID3D11DepthStencilView> clearView;
     D3D11_TEXTURE2D_DESC texture{};D3D11_DEPTH_STENCIL_VIEW_DESC clearDesc{};
     Epochs epochs{};DWORD thread=0;float clearValue=0;UINT clearFlags=0;UINT8 stencil=0;
     uint64_t clearSerial=0,returnedSerial=0,returnedDraws=0,version=0,loss=0;
-    Raster last{};bool clearReturned=false,semanticComplete=true;
+    Raster last{};bool lastIsTicket=true,clearReturned=false,semanticComplete=true;
     ComPtr<ID3D11Resource> copiedFrom;uint64_t copySerial=0;unsigned copyHops=0;
     ComPtr<ID3D11VertexShader> firstUnprovedVs;ComPtr<ID3D11PixelShader> firstUnprovedPs;
     unsigned firstUnprovedReason=0;bool firstUnprovedQueryQuiescent=false;
@@ -161,6 +169,12 @@ struct Token {
 };
 class Evidence;
 namespace detail {
+inline const GenshinDepthMapping::DrawArguments& PendingDraw(const PendingRaster& pending)noexcept {
+    return std::visit([](const auto& value)->const GenshinDepthMapping::DrawArguments&{return value.draw;},pending);
+}
+inline Epochs PendingEpochs(const PendingRaster& pending)noexcept {
+    return std::visit([](const auto& value){return value.epochs;},pending);
+}
 // NativeFrame stores the selected input as an ID3D11Texture2D interface
 // (NativeFrame/ReadBindings), not an ID3D11Resource interface address. Resolve
 // the original bound SRV and verify the same COM object before joining it to
@@ -201,7 +215,7 @@ struct State {
     ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;
     Epochs epochs{};DWORD thread=0;uint64_t serial=0,loss=0;
     ComPtr<ID3D11Resource> observedCopySource; // bounded diagnostic location, never authority
-    std::array<Track,4> tracks{};ClearPending clear{};Raster pending{};int pendingSlot=-1;
+    std::array<Track,4> tracks{};ClearPending clear{};std::optional<PendingRaster> pending;int pendingSlot=-1;
     bool indirectReturned=false;
     // Scalar diagnostics only: no COM retention, dereference or authority.
     uintptr_t traceResource=0;unsigned traceOwners=0,traceReports=0;
@@ -339,8 +353,11 @@ inline void NoteRetirement(State& s,const Interval& interval,const char* reason,
 // An interrupted indirect bracket must not preserve an earlier writer.
 inline void DiscardPending(State& s)noexcept {
     if(s.pendingSlot>=0){auto& i=s.tracks[s.pendingSlot].interval;
-        Unproved(i,Refusal::MissingReturn,&s.pending);i.returnedSerial=0;}
-    s.pending={};s.pendingSlot=-1;s.indirectReturned=false;
+        const auto* raster=s.pending?std::get_if<Raster>(&*s.pending):nullptr;
+        Unproved(i,Refusal::MissingReturn,raster);i.returnedSerial=0;}
+    // No pending draw means no snapshot to construct, walk or destroy. This
+    // boundary also runs on every Map/Unmap and ordinary resource write.
+    s.pending.reset();s.pendingSlot=-1;s.indirectReturned=false;
 }
 inline void Reset(State& s)noexcept {NoteLifecycle(s,nullptr,"reset");DiscardPending(s);
     for(const auto& t:s.tracks)NoteRetirement(s,t.interval,"reset",Refusal::OwnerLost,Boundary::Owner);
@@ -395,15 +412,30 @@ inline UINT TrackedRasterOutputBindings(const State& s)noexcept {
 }
 // A bound DSV can be read without changing its depth plane. Preserve the last
 // completed writer in that case; stencil operations do not write depth either.
-inline bool DepthWritable(ID3D11DeviceContext* c,const D3D11_DEPTH_STENCIL_VIEW_DESC& view)noexcept {
-    if(view.Flags&D3D11_DSV_READ_ONLY_DEPTH)return false;
-    ComPtr<ID3D11DepthStencilState> state;UINT reference=0;c->OMGetDepthStencilState(&state,&reference);
-    if(!state)return true; // D3D11 default: depth enabled, write all.
-    D3D11_DEPTH_STENCIL_DESC desc{};state->GetDesc(&desc);
+struct RasterDepthBinding {
+    ComPtr<ID3D11DepthStencilView> view;ComPtr<ID3D11Resource> source;
+    D3D11_DEPTH_STENCIL_VIEW_DESC viewDesc{};
+    ComPtr<ID3D11DepthStencilState> depth;UINT reference=0;
+    D3D11_DEPTH_STENCIL_DESC depthDesc{};
+};
+inline bool DepthWritable(ID3D11DeviceContext* c,RasterDepthBinding& binding)noexcept {
+    if(binding.viewDesc.Flags&D3D11_DSV_READ_ONLY_DEPTH)return false;
+    c->OMGetDepthStencilState(&binding.depth,&binding.reference);
+    auto& desc=binding.depthDesc;
+    desc.DepthEnable=TRUE;desc.DepthWriteMask=D3D11_DEPTH_WRITE_MASK_ALL;desc.DepthFunc=D3D11_COMPARISON_LESS;
+    desc.StencilReadMask=D3D11_DEFAULT_STENCIL_READ_MASK;desc.StencilWriteMask=D3D11_DEFAULT_STENCIL_WRITE_MASK;
+    desc.FrontFace={D3D11_STENCIL_OP_KEEP,D3D11_STENCIL_OP_KEEP,D3D11_STENCIL_OP_KEEP,D3D11_COMPARISON_ALWAYS};
+    desc.BackFace=desc.FrontFace;
+    if(binding.depth)binding.depth->GetDesc(&desc);
     return desc.DepthEnable && desc.DepthWriteMask==D3D11_DEPTH_WRITE_MASK_ALL;
 }
-inline bool SnapshotCandidate(ID3D11DeviceContext* c,Raster& r,Epochs epochs,bool captureSemantic)noexcept {
-    r={};r.draw=GenshinDepthMapping::CurrentDraw();r.epochs=epochs;
+inline bool DepthWritable(ID3D11DeviceContext* c,const D3D11_DEPTH_STENCIL_VIEW_DESC& view)noexcept {
+    RasterDepthBinding binding;binding.viewDesc=view;return DepthWritable(c,binding);
+}
+// r is freshly emplaced by BeforeRaster. binding was read/validated in that
+// same locked invocation; no state-changing API runs between admission and here.
+inline bool SnapshotCandidate(ID3D11DeviceContext* c,Raster& r,Epochs epochs,RasterDepthBinding&& binding)noexcept {
+    r.draw=GenshinDepthMapping::CurrentDraw();r.epochs=epochs;
     const auto refuse=[&](Refusal reason){r.refusal=reason;return false;};
     const bool direct=r.draw.Matches(c,r.draw.kind,r.draw.count);
     // A direct instanced draw shares these exact bound shaders/CBs and raster
@@ -424,14 +456,8 @@ inline bool SnapshotCandidate(ID3D11DeviceContext* c,Raster& r,Epochs epochs,boo
             sizeof(D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS)<=desc.ByteWidth-draw.indirectOffset;
     }
     if(!direct && !instanced && !indirect)return refuse(Refusal::DrawAuthority);
-    c->OMGetRenderTargets(0,nullptr,&r.view);
-    D3D11_TEXTURE2D_DESC texture{};if(!ClearView(r.view.Get(),r.source,r.viewDesc,texture))return refuse(Refusal::DsvLayout);
-    c->OMGetDepthStencilState(&r.depth,&r.reference);
-    r.depthDesc.DepthEnable=TRUE;r.depthDesc.DepthWriteMask=D3D11_DEPTH_WRITE_MASK_ALL;r.depthDesc.DepthFunc=D3D11_COMPARISON_LESS;
-    r.depthDesc.StencilReadMask=D3D11_DEFAULT_STENCIL_READ_MASK;r.depthDesc.StencilWriteMask=D3D11_DEFAULT_STENCIL_WRITE_MASK;
-    r.depthDesc.FrontFace={D3D11_STENCIL_OP_KEEP,D3D11_STENCIL_OP_KEEP,D3D11_STENCIL_OP_KEEP,D3D11_COMPARISON_ALWAYS};
-    r.depthDesc.BackFace=r.depthDesc.FrontFace;
-    if(r.depth)r.depth->GetDesc(&r.depthDesc);
+    r.view=std::move(binding.view);r.source=std::move(binding.source);r.viewDesc=binding.viewDesc;
+    r.depth=std::move(binding.depth);r.reference=binding.reference;r.depthDesc=binding.depthDesc;
     if(!r.depthDesc.DepthEnable || r.depthDesc.DepthWriteMask!=D3D11_DEPTH_WRITE_MASK_ALL ||
        (r.viewDesc.Flags&D3D11_DSV_READ_ONLY_DEPTH))return refuse(Refusal::DepthWrite);
     ComPtr<ID3D11Predicate> predicate;BOOL value=FALSE;c->GetPredication(&predicate,&value);if(predicate)return refuse(Refusal::Predication);
@@ -453,7 +479,7 @@ inline bool SnapshotCandidate(ID3D11DeviceContext* c,Raster& r,Epochs epochs,boo
     c->IAGetIndexBuffer(&r.indices,&r.indexFormat,&r.indexOffset);
     c->RSGetViewports(&r.viewportCount,r.viewports.data());c->RSGetScissorRects(&r.scissorCount,r.scissors.data());
     if(r.viewportCount>16 || r.scissorCount>16)return refuse(Refusal::Viewport);
-    ComPtr<ID3D11DeviceContext1> c1;c->QueryInterface(IID_PPV_ARGS(&c1));
+    c->QueryInterface(IID_PPV_ARGS(&r.constantContext));auto* c1=r.constantContext.Get();
     // Batch getters, including tessellation only on this Genshin writer path.
     // VS-only retains the original two calls; other games never enter here.
     for(UINT stage=0;stage<(r.ds?4u:2u);++stage){
@@ -475,10 +501,7 @@ inline bool SnapshotCandidate(ID3D11DeviceContext* c,Raster& r,Epochs epochs,boo
     r.queryQuiescent=GenshinQueryScope::KnownQuiescent(c);
     D3D11_RASTERIZER_DESC rd{};rd.DepthClipEnable=TRUE;
     if(r.raster)r.raster->GetDesc(&rd);
-    // One unknown writer already made this clear interval fail closed. Until
-    // the next real clear, parsing further shaders cannot restore semantics;
-    // retain their real raster state for mapping/lifetime without redoing it.
-    if(captureSemantic && epochs.device && epochs.config && r.viewportCount==1 && rd.DepthBias==0 &&
+    if(epochs.device && epochs.config && r.viewportCount==1 && rd.DepthBias==0 &&
        rd.DepthBiasClamp==0 && rd.SlopeScaledDepthBias==0 && rd.DepthClipEnable){
         std::array<GenshinDepthSemantic::Binding,42> bindings{};
         for(UINT stage=0;stage<(r.ds?3u:1u);++stage)for(UINT i=0;i<14;++i){
@@ -486,26 +509,39 @@ inline bool SnapshotCandidate(ID3D11DeviceContext* c,Raster& r,Epochs epochs,boo
         r.semantic=GenshinDepthSemantic::Capture(c,r.vs.Get(),r.hs.Get(),r.ds.Get(),r.ps.Get(),r.topology,bindings,r.viewports[0],
             r.depthDesc.DepthFunc,epochs.device,epochs.config,&r.captureFailure);
         if(!r.semantic)r.refusal=Refusal::SemanticCapture;
-    }else if(captureSemantic)r.refusal=Refusal::RasterDepthBias;
+    }else r.refusal=Refusal::RasterDepthBias;
     return true;
 }
-inline bool Snapshot(ID3D11DeviceContext* c,Raster& r,Epochs epochs={},bool captureSemantic=true)noexcept {
-    r={};Raster candidate;
-    // Getter references exist only in this temporary during admission. Failure
-    // releases every partial owner/charge, leaving no persistent candidate.
-    if(!SnapshotCandidate(c,candidate,epochs,captureSemantic)){
-        r.refusal=candidate.refusal;r.stageMask=candidate.stageMask;r.epochs=epochs;
-        r.captureFailure=candidate.captureFailure;
-        if(r.retention.Add(candidate.draw.indirectBuffer.Get()))r.draw=candidate.draw;
+inline bool Snapshot(ID3D11DeviceContext* c,Raster& r,Epochs epochs,RasterDepthBinding&& binding)noexcept {
+    if(!SnapshotCandidate(c,r,epochs,std::move(binding))){
+        // Only the first rejected writer of an interval takes this cold path.
+        // Preserve its old compact failure record and release partial owners;
+        // successful capture needs just the one freshly emplaced Raster.
+        Raster rejected;rejected.refusal=r.refusal;rejected.stageMask=r.stageMask;rejected.epochs=epochs;
+        rejected.captureFailure=r.captureFailure;
+        if(rejected.retention.Add(r.draw.indirectBuffer.Get()))rejected.draw=std::move(r.draw);
         else {
             // Keep the scalar first-call association even when no budget can
             // retain its argument buffer. Such an indirect call stays unproved.
-            r.draw.context=candidate.draw.context;r.draw.thread=candidate.draw.thread;
-            r.draw.kind=candidate.draw.kind;r.draw.observationCall=candidate.draw.observationCall;
+            rejected.draw.context=r.draw.context;rejected.draw.thread=r.draw.thread;
+            rejected.draw.kind=r.draw.kind;rejected.draw.observationCall=r.draw.observationCall;
         }
+        r=std::move(rejected);
         return false;
     }
-    r=std::move(candidate);return true;
+    return true;
+}
+// Once an interval has lost semantic completeness, another full snapshot can
+// never restore authority before the next real clear. Keep only the draw
+// observation and owner epoch needed to pair the original API call. This path
+// deliberately performs no D3D11 state queries, shader inspection, constant
+// buffer polling, or retention admission.
+inline bool SnapshotTicket(ID3D11DeviceContext* c,DrawTicket& ticket,Epochs epochs)noexcept {
+    ticket.draw=GenshinDepthMapping::CurrentDraw();ticket.epochs=epochs;ticket.refusal=Refusal::WriteBoundary;
+    if(!c || !ticket.draw.observationCall || ticket.draw.context!=c || ticket.draw.thread!=GetCurrentThreadId()){
+        ticket.refusal=Refusal::DrawAuthority;return false;
+    }
+    return true;
 }
 }
 // Immutable historical facts plus a current-content check. API return is not
@@ -539,7 +575,7 @@ inline void Invalidate(ID3D11DeviceContext* c,ID3D11Resource* written,Boundary b
     if(GenshinDepthSemantic::Internal())return;
     GenshinDepthMapping::Deferred::Written(written,boundary==Boundary::Unmap);
     // The Unmap hook brackets numerical invalidation/capture itself.
-    if(boundary!=Boundary::Unmap)GenshinDepthSemantic::Invalidate(c,written);
+    if(boundary!=Boundary::Unmap)GenshinDepthSemantic::Invalidate(c,written,boundary==Boundary::Map);
     detail::Access a;if(!a)return;auto& s=a.s;
     // Writes/deferred boundaries on another context can alias a retained source.
     // Revocation never adopts the caller as the producer owner.
@@ -813,38 +849,53 @@ inline void BeforeRaster(ID3D11DeviceContext* c,Epochs e)noexcept {
     // Resource binding capability is independent of capture/FG/NR demand.
     // These getters only retire tracks whose resource equals a bound output;
     // unmatched views feed no diagnostic, capture or consumer publication.
-    // The DSV writer and its exact Before/After snapshot below are unchanged.
+    // DSV identity and writability are required before either pending alternative.
+    detail::RasterDepthBinding binding;bool depthRead=false;
     const UINT outputBindings=detail::TrackedRasterOutputBindings(s);
     if(outputBindings&D3D11_BIND_RENDER_TARGET){
-        std::array<ID3D11RenderTargetView*,8> rtvs{};c->OMGetRenderTargets(8,rtvs.data(),nullptr);
+        std::array<ID3D11RenderTargetView*,8> rtvs{};c->OMGetRenderTargets(8,rtvs.data(),&binding.view);depthRead=true;
         for(auto* v:rtvs)if(v){ComPtr<ID3D11Resource> r;v->GetResource(&r);for(auto& t:s.tracks)if(t.interval.resource.Get()==r.Get()){detail::NoteRetirement(s,t.interval,"raster-nondepth-output");t={};}v->Release();}
     }
     if(outputBindings&D3D11_BIND_UNORDERED_ACCESS){
         std::array<ID3D11UnorderedAccessView*,64> uavs{};
         const UINT slots=s.device->GetFeatureLevel()>=D3D_FEATURE_LEVEL_11_1?64u:8u;
-        c->OMGetRenderTargetsAndUnorderedAccessViews(0,nullptr,nullptr,0,slots,uavs.data());
+        c->OMGetRenderTargetsAndUnorderedAccessViews(0,nullptr,depthRead?nullptr:binding.view.GetAddressOf(),0,slots,uavs.data());depthRead=true;
         for(auto* v:uavs)if(v){ComPtr<ID3D11Resource> r;v->GetResource(&r);for(auto& t:s.tracks)if(t.interval.resource.Get()==r.Get()){detail::NoteRetirement(s,t.interval,"raster-nondepth-output");t={};}v->Release();}
     }
-    ComPtr<ID3D11DepthStencilView> v;c->OMGetRenderTargets(0,nullptr,&v);ComPtr<ID3D11Resource> source;
-    D3D11_DEPTH_STENCIL_VIEW_DESC vd{};D3D11_TEXTURE2D_DESC td{};
-    if(!detail::ClearView(v.Get(),source,vd,td)){
-        if(v){v->GetResource(&source);detail::NoteLifecycle(s,source.Get(),"raster-dsv-layout-refused");for(auto& t:s.tracks)if(t.interval.resource.Get()==source.Get()){detail::NoteRetirement(s,t.interval,"raster-dsv-layout-refused",Refusal::DsvLayout);t={};}}
+    if(!depthRead)c->OMGetRenderTargets(0,nullptr,&binding.view);
+    auto& source=binding.source;auto& vd=binding.viewDesc;D3D11_TEXTURE2D_DESC td{};
+    if(!detail::ClearView(binding.view.Get(),source,vd,td)){
+        if(binding.view){binding.view->GetResource(&source);detail::NoteLifecycle(s,source.Get(),"raster-dsv-layout-refused");for(auto& t:s.tracks)if(t.interval.resource.Get()==source.Get()){detail::NoteRetirement(s,t.interval,"raster-dsv-layout-refused",Refusal::DsvLayout);t={};}}
         return;
     }
     const int slot=detail::Find(s,source.Get(),vd.Texture2D.MipSlice);if(slot<0){detail::NoteLifecycle(s,source.Get(),"raster-source-untracked",vd.Format);return;}
-    if(!detail::DepthWritable(c,vd))return;
+    if(!detail::DepthWritable(c,binding))return;
     auto& t=s.tracks[slot];const auto version=detail::Next(s);if(!version)return;
     t.interval.version=version;t.interval.returnedSerial=0; // missing return cannot reuse an earlier draw
-    const bool captured=detail::Snapshot(c,s.pending,e,t.interval.semanticComplete);
-    if(!captured || s.pending.refusal!=Refusal::None)Unproved(t.interval,s.pending.refusal,&s.pending);
+    // New writer snapshots are a subscription, not retirement. Still process
+    // actual output/write invalidation above, so a stopped interval cannot be
+    // reused on restart. Existing GPU readers keep their independent owners.
+    if(!GenshinLegacy::ReadNewInputObservationDemand().Requested()){
+        Unproved(t.interval,Refusal::WriteBoundary);return;
+    }
+    if(t.interval.semanticComplete){
+        auto& raster=std::get<Raster>(s.pending.emplace(std::in_place_type<Raster>));
+        const bool captured=detail::Snapshot(c,raster,e,std::move(binding));
+        if(!captured || raster.refusal!=Refusal::None)Unproved(t.interval,raster.refusal,&raster);
+    }else{
+        // Construct only this alternative, leaving the large Raster inactive.
+        auto& ticket=std::get<DrawTicket>(s.pending.emplace(std::in_place_type<DrawTicket>));
+        detail::SnapshotTicket(c,ticket,e);
+    }
     s.pendingSlot=slot;
 }
 namespace detail {
 inline bool SameIndirectCall(const State& s,ID3D11DeviceContext* c,ID3D11Buffer* buffer,UINT offset,uint64_t call)noexcept {
-    const auto& draw=s.pending.draw;
+    if(!s.pending)return false;
+    const auto& draw=PendingDraw(*s.pending);
     return call && s.pendingSlot>=0 && c && c==s.context.Get() && s.thread==GetCurrentThreadId() &&
         s.loss==loss.load() && s.device && SUCCEEDED(s.device->GetDeviceRemovedReason()) &&
-        s.pending.epochs==s.epochs && draw.context==c && draw.thread==GetCurrentThreadId() &&
+        PendingEpochs(*s.pending)==s.epochs && draw.context==c && draw.thread==GetCurrentThreadId() &&
         draw.kind==6 && draw.indirectArgumentsUnknown && draw.observationCall==call &&
         draw.indirectIdentity && draw.indirectBuffer.Get()==buffer && draw.indirectOffset==offset;
 }
@@ -861,26 +912,46 @@ inline void IndirectReturned(ID3D11DeviceContext* c,ID3D11Buffer* buffer,UINT of
     a.s.indirectReturned=true;
 }
 inline void FinishIndirectObservation()noexcept {
-    detail::Access a;if(a && a.s.pending.draw.indirectArgumentsUnknown)detail::DiscardPending(a.s);
+    detail::Access a;if(a && a.s.pending && detail::PendingDraw(*a.s.pending).indirectArgumentsUnknown)detail::DiscardPending(a.s);
 }
 inline void RasterReturned(ID3D11DeviceContext* c,Epochs e)noexcept {
     detail::Access a;if(!a)return;auto& s=a.s;if(!detail::Owner(s,c,e))return;
     const int slot=s.pendingSlot;s.pendingSlot=-1;if(slot<0)return;
-    auto& out=s.tracks[slot].interval;Raster now{};
-    const bool matchingCall=s.pending.draw.observationCall && s.pending.draw.observationCall==GenshinDepthMapping::CurrentDraw().observationCall;
-    const bool snapshot=s.pending.refusal==Refusal::None || s.pending.refusal==Refusal::SemanticCapture || s.pending.refusal==Refusal::RasterDepthBias;
-    const bool paired=matchingCall && (!s.pending.draw.indirectArgumentsUnknown || s.indirectReturned) && out.clearReturned &&
-        (!snapshot || (detail::Snapshot(c,now,e,out.semanticComplete) && s.pending.Same(now)));
-    if(!paired)Unproved(out,Refusal::ReturnedState,&s.pending);
-    if(out.returnedDraws==UINT64_MAX){Unproved(out,Refusal::CoverageOverflow,&s.pending);out.returnedSerial=0;
-        s.pending={};s.indirectReturned=false;return;}
-    out.last=std::move(s.pending);s.pending={};s.indirectReturned=false;
-    out.last.queryQuiescent=out.last.queryQuiescent && now.queryQuiescent;
+    auto& out=s.tracks[slot].interval;
+    if(!s.pending){Unproved(out,Refusal::MissingReturn);out.returnedSerial=0;s.indirectReturned=false;return;}
+    auto& pending=*s.pending;auto* raster=std::get_if<Raster>(&pending);const bool ticketOnly=!raster;bool returnedQuiescent=false;
+    const auto& draw=detail::PendingDraw(pending);
+    const bool matchingCall=draw.context==c && draw.thread==GetCurrentThreadId() && draw.observationCall &&
+        draw.observationCall==GenshinDepthMapping::CurrentDraw().observationCall;
+    const bool snapshot=raster && (raster->refusal==Refusal::None || raster->refusal==Refusal::SemanticCapture || raster->refusal==Refusal::RasterDepthBias);
+    // The original retained snapshot is the sole numerical capture. Re-read
+    // every public binding, then let Semantic::Returned below validate its
+    // exact live revisions/payloads/loss. Reconstructing a second Draw used to
+    // repeat shader analysis lookup, CB polling and resource budget admission.
+    const bool paired=matchingCall && (!draw.indirectArgumentsUnknown || s.indirectReturned) && out.clearReturned &&
+        detail::PendingEpochs(pending)==e && GenshinDepthSemantic::detail::SameArguments(draw,GenshinDepthMapping::CurrentDraw()) &&
+        (!snapshot || FramePipeline::MatchesDx11RasterBindings(c,*raster,raster->constantContext.Get()));
+    if(paired && snapshot)returnedQuiescent=GenshinQueryScope::KnownQuiescent(c);
+    if(!paired)Unproved(out,Refusal::ReturnedState,raster);
+    if(out.returnedDraws==UINT64_MAX){Unproved(out,Refusal::CoverageOverflow,raster);out.returnedSerial=0;
+        s.pending.reset();s.indirectReturned=false;return;}
+    if(raster){out.last=std::move(*raster);out.lastIsTicket=false;}
+    else{
+        auto& ticket=std::get<DrawTicket>(pending);
+        if(!out.lastIsTicket){out.last.ClearBindings();out.lastIsTicket=true;}
+        out.last.draw=std::move(ticket.draw);out.last.epochs=ticket.epochs;out.last.refusal=ticket.refusal;
+        // Pairing owns indirect arguments only across the original API call.
+        // An unresolved observation cannot pin an uncharged buffer until clear.
+        out.last.draw.indirectBuffer.Reset();out.last.draw.indirectIdentity.Reset();
+        Unproved(out,Refusal::WriteBoundary);
+    }
+    s.pending.reset();s.indirectReturned=false;
+    out.last.queryQuiescent=out.last.queryQuiescent && returnedQuiescent;
     out.returnedSerial=detail::Next(s);if(!out.returnedSerial)return;
     ++out.returnedDraws;
     // Every real returned writer is counted, including the first rejected one
     // and all following writers. A later valid writer cannot revive this clear.
-    if(!out.semanticComplete){++out.unresolvedWriters;return;}
+    if(ticketOnly || !out.semanticComplete){++out.unresolvedWriters;return;}
     if(!out.last.semantic){Unproved(out,out.last.refusal==Refusal::None?Refusal::SemanticCapture:out.last.refusal,&out.last);++out.unresolvedWriters;return;}
     if(!GenshinDepthSemantic::Returned(c,out.last.semantic)){Unproved(out,Refusal::SemanticReturn,&out.last);++out.unresolvedWriters;return;}
     const auto appended=out.semanticWriters.Append(out.last.semantic);

@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <framegen/GuideOrientation.h>
 #include <genshin/GenshinFgCallerObservation.h>
 
 #include "FSRFG_Dx12.h"
@@ -1454,14 +1455,16 @@ bool FSRFG_Dx12::SetResource(Dx12Resource* inputResource)
     fResource->height = inputResource->height;
     fResource->cmdList = inputResource->cmdList;
 
+    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance());
     auto willFlip = State::Instance().activeFgInput == FGInput::Upscaler &&
-                    Config::Instance()->FGResourceFlip.value_or_default() &&
-                    (fResource->type == FG_ResourceType::Velocity || fResource->type == FG_ResourceType::Depth);
+                    ((type == FG_ResourceType::Velocity && orientation.MotionCopy()) ||
+                     (type == FG_ResourceType::Depth && orientation.DepthCopy()));
 
     // Resource flipping
-    if (willFlip && _device != nullptr)
+    if (willFlip && (_device == nullptr || !FlipResource(fResource)))
     {
-        FlipResource(fResource);
+        _frameResources[fIndex].erase(type);
+        return false;
     }
 
     if (type == FG_ResourceType::UIColor)

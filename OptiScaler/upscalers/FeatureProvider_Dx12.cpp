@@ -6,6 +6,7 @@
 #include <resource_tracking/GenericDepth_Dx12.h>
 
 #include "NVNGX_Parameter.h"
+#include "FeatureTransition.h"
 
 #include "upscalers/dlss/DLSSFeature_Dx12.h"
 #include "upscalers/dlssd/DLSSDFeature_Dx12.h"
@@ -85,7 +86,7 @@ bool FeatureProvider_Dx12::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
         ImGui::InsertNotification({ ImGuiToastType::Warning, 10000, "Falling back to FSR 2.1.2" });
         *feature = std::make_unique<FSR2FeatureDx12_212>(handleId, parameters);
         upscaler = Upscaler::FSR21;
-        loaded = true; // Assuming the fallback always loads successfully
+        loaded = (*feature)->ModuleLoaded(); // Construction alone does not establish availability.
     }
 
     // DLSSD is stored in the config as DLSS
@@ -111,12 +112,17 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
     if (state.newBackend == Upscaler::Reset || dlssOnNonCapable)
         state.newBackend = cfg.Dx12Upscaler.value_or_default();
 
-    contextData->changeBackendCounter++;
+    const auto phase = FeatureTransition::Advance(contextData->changeBackendCounter);
+    if (phase == FeatureTransition::Phase::Invalid)
+    {
+        LOG_ERROR("Invalid upscaler rebuild phase: {}", contextData->changeBackendCounter);
+        return false;
+    }
 
     LOG_INFO("changeBackend is true, counter: {0}", contextData->changeBackendCounter);
 
     // first release everything
-    if (contextData->changeBackendCounter == 1)
+    if (phase == FeatureTransition::Phase::Retire)
     {
         if (state.currentFG != nullptr && state.activeFgInput == FGInput::Upscaler)
         {
@@ -128,29 +134,23 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
         {
             LOG_INFO("changing backend to {}", UpscalerDisplayName(state.newBackend));
 
-            auto* dc = contextData->feature.get();
-            // Use given params if using DLSS passthrough
             const bool isPassthrough = state.newBackend == Upscaler::DLSSD || state.newBackend == Upscaler::DLSS;
-
-            contextData->createParams = isPassthrough ? parameters : GetNGXParameters(API::DX12, false);
-            contextData->createParams->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, dc->GetFeatureFlags());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_Width, dc->RenderWidth());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_Height, dc->RenderHeight());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_OutWidth, dc->DisplayWidth());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_OutHeight, dc->DisplayHeight());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_PerfQualityValue, dc->PerfQualityValue());
-
-            dc = nullptr;
+            auto retired = FeatureTransition::Prepare(*contextData, parameters, isPassthrough,
+                []() -> ContextData<IFeature_Dx12>::ParameterOwner {
+                    return { GetNGXParameters(API::DX12, false),
+                        [](NVSDK_NGX_Parameter* p) { delete static_cast<NVNGX_Parameters*>(p); } };
+                }, [](auto& table, auto& feature) { FeatureTransition::CopyRecipe(table, feature); });
+            if (!retired)
+            {
+                LOG_ERROR("Cannot prepare upscaler replacement; current feature retained");
+                contextData->changeBackendCounter = 0;
+                return false;
+            }
 
             State::Instance().currentFeature = nullptr;
-
-            Util::DelayedDestroy(std::move(contextData->feature));
-
-            // LOG_DEBUG("sleeping before reset of current feature for 1000ms");
-            // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
-            // contextData->feature.reset();
-            // contextData->feature = nullptr;
+            // The feature destructor still owns its existing GPU drain contract.
+            // Its exact initialization table survives alongside it.
+            Util::DelayedDestroy(std::move(retired));
         }
         else // Clean up state if no feature is set
         {
@@ -159,11 +159,7 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
             state.newBackend = Upscaler::Reset;
             state.changeBackend[handleId] = false;
 
-            if (contextData->createParams != nullptr)
-            {
-                TryDestroyNGXParameters(contextData->createParams, NVNGXProxy::D3D12_DestroyParameters());
-                contextData->createParams = nullptr;
-            }
+            contextData->ClearCreateParams();
 
             contextData->changeBackendCounter = 0;
 
@@ -174,7 +170,7 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
     }
 
     // create new feature
-    if (contextData->changeBackendCounter == 2)
+    if (phase == FeatureTransition::Phase::Construct)
     {
         LOG_INFO("Creating new {} upscaler", UpscalerDisplayName(state.newBackend));
         contextData->feature.reset();
@@ -182,6 +178,11 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
         if (!GetFeature(state.newBackend, handleId, contextData->createParams, &contextData->feature))
         {
             LOG_ERROR("Upscaler can't created");
+            contextData->feature.reset();
+            contextData->ClearCreateParams();
+            contextData->changeBackendCounter = 0;
+            state.newBackend = Upscaler::Reset;
+            state.changeBackend[handleId] = false;
             return false;
         }
 
@@ -189,13 +190,13 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
     }
 
     // init feature
-    if (contextData->changeBackendCounter == 3)
+    if (phase == FeatureTransition::Phase::Initialize)
     {
         auto initResult = contextData->feature->Init(device, cmdList, contextData->createParams);
 
         contextData->changeBackendCounter = 0;
 
-        if (!initResult)
+        if (!initResult || !contextData->feature->ModuleLoaded())
         {
             LOG_ERROR("init failed with {0} feature", UpscalerDisplayName(state.newBackend));
 
@@ -230,14 +231,7 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
             state.changeBackend[handleId] = false;
         }
 
-        // If this is an OptiScaler fake NVNGX param table, delete it
-        int optiParam = 0;
-
-        if (contextData->createParams->Get("OptiScaler", &optiParam) == NVSDK_NGX_Result_Success && optiParam == 1)
-        {
-            TryDestroyNGXParameters(contextData->createParams, NVNGXProxy::D3D12_DestroyParameters());
-            contextData->createParams = nullptr;
-        }
+        contextData->ClearCreateParams();
     }
 
     // if initial feature can't be inited

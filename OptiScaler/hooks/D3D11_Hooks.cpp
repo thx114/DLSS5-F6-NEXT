@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <runtime/F6InputPolicy.h>
 #include "D3D11_Hooks.h"
 #include "SwapchainCreateRule.h"
 
@@ -713,8 +714,8 @@ static void HookToDeviceLocal(ID3D11Device* InDevice, GenshinQueryScope::Creatio
     // own sampler hooks are already in (a second call with the same device is a no-op inside Install()).
     // Only the normal native factory return can supply this one-use witness.
     // Full context hooks and absent-state seeding precede initializer publication.
-    HookQueryContextCreations(InDevice);
-    if (birth) GenericDepthDx11::PrepareCreatedContextQueries(InDevice,*birth);
+    if constexpr (F6InputPolicy::FsrBridgeEnabled) HookQueryContextCreations(InDevice);
+    if (F6InputPolicy::FsrBridgeEnabled && birth) GenericDepthDx11::PrepareCreatedContextQueries(InDevice,*birth);
     if(InDevice && !birth && NativeQueryGenshinProcess()){
         // Observe the actual late capture BEFORE ordinary Install. Do not use
         // State(), NativeObject(), Intact() or any helper that creates/adopts a
@@ -724,8 +725,8 @@ static void HookToDeviceLocal(ID3D11Device* InDevice, GenshinQueryScope::Creatio
         Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;InDevice->GetImmediateContext(&context);
         ObserveQueryBirth(source,attempt,InDevice,context.Get(),caller,nullptr,site);
     }
-    const bool genshin = GenshinLegacy::InitializeDevice(InDevice);
-    GenericDepthDx11::Install(InDevice, genshin);
+    const bool genshin = F6InputPolicy::FsrBridgeEnabled && GenshinLegacy::InitializeDevice(InDevice);
+    if constexpr (!F6InputPolicy::DirectDlssInputs) GenericDepthDx11::Install(InDevice, genshin);
     if(genshin)GenericDepthDx11::BindModRuntime(InDevice);
     if (genshin && GenericDepthDx11::Installed())
         HookGenshinPixelShader(InDevice);
@@ -960,6 +961,7 @@ template<class Factory> static HRESULT CallNativeFactoryAndPrepare(Factory execu
 }
 static bool NativeQueryGenshinProcess()
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return false;
     wchar_t path[32768]{};const auto count=GetModuleFileNameW(nullptr,path,32768);
     return count && count<32768 && GenshinFsr::IsGenshinExecutable(std::wstring_view(path,count));
 }
@@ -1156,6 +1158,7 @@ static HRESULT hkD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVE
                                                D3D_FEATURE_LEVEL* pFeatureLevel,
                                                ID3D11DeviceContext** ppImmediateContext)
 {
+    const std::optional<UINT> applicationFlags = pSwapChainDesc ? std::optional<UINT>{pSwapChainDesc->Flags} : std::nullopt;
     FactoryFirstEntry firstEntry(1,pSwapChainDesc==nullptr && ppSwapChain==nullptr,_ReturnAddress(),
         reinterpret_cast<const void*>(o_D3D11CreateDeviceAndSwapChain));
     // Only the authenticated active native CreateDevice may consume this
@@ -1333,7 +1336,7 @@ static HRESULT hkD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVE
         else
         {
             *ppSwapChain = new WrappedIDXGISwapChain4(realSC, realDevice, pSwapChainDesc->OutputWindow,
-                                                      pSwapChainDesc->Flags, false);
+                                                      pSwapChainDesc->Flags, false, false, applicationFlags);
 
             State::Instance().currentSwapchain = *ppSwapChain;
             State::Instance().currentWrappedSwapchain = *ppSwapChain;
@@ -1470,7 +1473,7 @@ void D3D11Hooks::Hook(HMODULE dx11Module)
         preexisting.Publish(result);
         if(result!=NO_ERROR)LOG_ERROR("Failed to hook D3D11 factories: {:X}",result);
 #if !defined(OPTISCALER_R533_NATIVE_PROVENANCE_VALIDATION)
-        else GenshinNativeQuery::ScheduleSetup(dx11Module);
+        else if constexpr (F6InputPolicy::FsrBridgeEnabled) GenshinNativeQuery::ScheduleSetup(dx11Module);
 #endif
         ObserveFactoryInstallation("install",dx11Module,factory,swapFactory,on12Factory,
             deviceAttach,swapAttach,on12Attach,result,true,previouslyLive);

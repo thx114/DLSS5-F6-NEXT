@@ -9,6 +9,11 @@
 #include <native/NrInputObservation.h>
 #include <dlssnr/PassProfiles.h>
 #include <dlssnr/ModelScalarPolicy.h>
+#include <runtime/NrPresentationSource.h>
+#include <runtime/NrPresentationOutput.h>
+#include <runtime/F6InputPolicy.h>
+#include "DlssNr_HistoryDebug.h"
+#include <upscalers/GameRoutePolicy.h>
 
 #include <set>
 #include <wrl/client.h>
@@ -36,12 +41,15 @@
 
 #include "DlssNr_Dx12.h"
 #include <shaders/dlssnr/DlssNr_Look.h>
+#include "DlssNr_EvaluateGuides.h"
 #include <ui_mask/DrawUiMask.h>
 #include "DlssNr_SurfaceFormats.h"
 #include "DlssNr_ActiveColor.h"
 #include "DlssNr_Guides.h"
 #include "DlssNr_GuideCoordinates.h"
+#include "SceneGuideContract.h"
 #include "DlssNr_NativeGuidePhase.h"
+#include "DlssNr_GuideObservation.h"
 #include "DlssNr_SeamClock.h"
 #include "DlssNr_GameScale.h"
 #include "DlssNr_TrimAnchors.h"
@@ -321,6 +329,9 @@ struct NrState
     // The second half of the model-output ping-pong. The base proxy stays immutable: pass 0 writes
     // output (A), pass 1 writes this (B), and pass 2 writes A again. Only the final answer is composed.
     ID3D12Resource* passScratch = nullptr;
+    ID3D12Resource* historyDebug = nullptr;
+    ID3D12Device* historyDebugDevice = nullptr; // identity held by the resource
+    ID3D12CommandQueue* historyDebugQueue = nullptr; // identity, never completion proof
     bool passScratchFailed = false;
 
     // A pass's raw answer, saturated back into the proxy's valid range, before it becomes the next
@@ -1076,6 +1087,7 @@ void ReleaseNrFeature(const NrRetired& r)
 
 void TickNrRetired()
 {
+    DlssNrGuideObservation::Poll();
     DlssNrGpuLifetime::CollectRetired(g_nrRetired, [](const NrRetired& entry)
     {
         ReleaseNrFeature(entry);
@@ -1109,8 +1121,12 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT modelFormat, DXGI_FORMAT colourF
         return;
 
     LOG_INFO("DLSS-NR rebuilding surfaces: model format {} -> {}, colour format {} -> {} (inject point or Compress "
-             "screen edges changed)",
-             (int) haveModel, (int) modelFormat, (int) haveColour, (int) colourFormat);
+             "screen edges changed) pid={} dispatch={} retiredEntries={} trackedRecordings={} registryHalted={} "
+             "watchedOverflow={} watchedOverflowPeak={}",
+             (int) haveModel, (int) modelFormat, (int) haveColour, (int) colourFormat,
+             GetCurrentProcessId(), g_frames, g_nrRetired.size(), g_nrGpuWork.Tracked(), g_nrGpuWork.Halted(),
+             DlssNrWatchedLists::g_overflowCount.load(std::memory_order_acquire),
+             DlssNrWatchedLists::g_overflowPeak.load(std::memory_order_relaxed));
 
     ForgetCalibration();
 
@@ -1131,10 +1147,11 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT modelFormat, DXGI_FORMAT colourF
     for (ID3D12Resource** r :
          { &g_nr.output, &g_nr.passScratch, &g_nr.layerLookScratch, &g_nr.passClampScratch, &g_nr.passClampScratch2, &g_nr.colorCopy,
            &g_nr.hdrCopy, &g_nr.colorSmall, &g_nr.outputNative, &g_nr.activeColor, &g_nr.lutScratch,
-           &g_nr.sceneGuideMotion, &g_nr.sceneGuideDepth })
+           &g_nr.sceneGuideMotion, &g_nr.sceneGuideDepth, &g_nr.historyDebug })
         ParkNrResource(*r);
 
     g_nr.sceneModelContract = {};
+    g_nr.historyDebugDevice=nullptr;g_nr.historyDebugQueue=nullptr;
     g_nr.passScratchFailed = false;
     g_nr.layerLookScratchFailed = false;
     g_nr.passClampScratchFailed = false;
@@ -1951,6 +1968,47 @@ DXGI_FORMAT TypedGuideFormat(DXGI_FORMAT f)
 
 bool IsTypeless(DXGI_FORMAT f) { return TypedGuideFormat(f) != f; }
 
+// Facts about a view the existing scene-guide consumer can actually read. This
+// classifies formats only; the Late slot and recorded descriptor keep ownership.
+DlssNr::SceneGuides::Texture SceneGuideView(const D3D12_RESOURCE_DESC& d, bool present,
+                                          bool motion)
+{
+    using namespace DlssNr::SceneGuides;
+    Texture t;
+    t.present = present;
+    t.texture2D = d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    t.shaderReadable = (d.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0;
+    t.width = d.Width; t.height = d.Height;
+    t.layers = d.DepthOrArraySize; t.samples = d.SampleDesc.Count; t.mipLevels = d.MipLevels;
+    t.format = static_cast<uint32_t>(d.Format);
+    if (motion)
+    {
+        switch (d.Format)
+        {
+        case DXGI_FORMAT_R16G16_FLOAT: case DXGI_FORMAT_R32G32_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_FLOAT: case DXGI_FORMAT_R32G32B32A32_FLOAT:
+        case DXGI_FORMAT_R8G8_SNORM: case DXGI_FORMAT_R16G16_SNORM:
+        case DXGI_FORMAT_R8G8B8A8_SNORM: case DXGI_FORMAT_R16G16B16A16_SNORM:
+            t.encoding = Samples::SignedMotion;
+            break;
+        default: break;
+        }
+    }
+    else
+    {
+        switch (d.Format)
+        {
+        case DXGI_FORMAT_R32_FLOAT: case DXGI_FORMAT_R16_FLOAT: case DXGI_FORMAT_R16_UNORM:
+        case DXGI_FORMAT_R24_UNORM_X8_TYPELESS: case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+        case DXGI_FORMAT_D32_FLOAT: case DXGI_FORMAT_D16_UNORM: case DXGI_FORMAT_D24_UNORM_S8_UINT:
+            t.encoding = Samples::DeviceDepth;
+            break;
+        default: break;
+        }
+    }
+    return t;
+}
+
 // Creates a typed twin of a guide buffer, matching everything but the format.
 ID3D12Resource* CreateGuideClone(ID3D12Device* device, ID3D12Resource* source)
 {
@@ -2236,6 +2294,56 @@ void ReportSkipOnce(const char* reason)
 }
 
 #include "DlssNr_DetailReuse.inl"
+#include "DlssNr_DetailHistory.inl"
+
+// Display-only inspection, kept outside the history module's admission policy.
+// The shared preview owns immutable completed copies and renderer read leases.
+void CaptureHistoryDebug(const DetailReuse::Frame& f, const DlssNrDetailReuseConstants& params,
+                         const DetailHistory::Recording& recording, ID3D12Resource* fresh,
+                         ID3D12Resource* oldResidual, ID3D12Resource* oldContext, ID3D12Resource* oldStability)
+{
+    auto*& scratch=g_nr.historyDebug;
+    auto*& queue=g_nr.historyDebugQueue;
+    auto*& device=g_nr.historyDebugDevice;
+    if(!GuideCapture::HistoryDebugView())
+    {
+        if(scratch)ParkNrResource(scratch);
+        queue=nullptr;device=nullptr;
+        return;
+    }
+    GuideCapture::SampleToken token;
+    if(!GuideCapture::TryBeginSample(GuideCapture::Stream::History,token))return;
+    struct Cancel {GuideCapture::SampleToken& token;~Cancel(){GuideCapture::CancelSample(token);}} cancel{token};
+    const auto view=token.historyView;
+    if(!view)return; // demand can change between the advisory check and reservation
+    if(!f.info||!f.info->IndependentCommands)
+    {GuideCapture::PreviewUnavailable("History inspector requires an independently owned recording");return;}
+    const auto desc=DetailHistory::ScratchDesc(DXGI_FORMAT_R16G16B16A16_FLOAT,f.workWidth,f.workHeight);
+    if(DetailHistory::AllocationBytes(f.device,desc)>64ull*1024*1024)
+    {GuideCapture::PreviewUnavailable("History inspector exceeds its 64 MiB scratch budget");return;}
+    if(scratch&&(device!=f.device||queue!=f.temporalQueue||
+        scratch->GetDesc().Width!=f.workWidth||scratch->GetDesc().Height!=f.workHeight))ParkNrResource(scratch);
+    if(!scratch)scratch=CreateScratch(f.device,desc.Format,f.workWidth,f.workHeight);
+    if(!scratch||!DlssNrGpuLifetime::Retain(recording.resourceUse,{scratch}))
+    {GuideCapture::PreviewUnavailable("History inspector allocation/recording owner unavailable");return;}
+    device=f.device;queue=f.temporalQueue;
+    auto inspect=params;inspect.Mode=DlssNrDetailReuse_FeedbackInspect;inspect.DebugView=view;
+    if(!f.pass->DispatchDetailReuse(f.cmdList,inspect,f.workWidth,f.workHeight,
+        f.modelInput,fresh,oldResidual,oldContext,f.motion,scratch,nullptr,f.depth,nullptr,oldStability,nullptr))
+    {GuideCapture::PreviewUnavailable("History inspector shader dispatch unavailable");return;}
+    Barrier(f.cmdList,scratch,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    GuideCapture::Inputs input;input.independentRecording=true;input.historyDiagnostic=true;input.historyView=view;
+    input.colour=scratch;input.colourRect={0,0,f.workWidth,f.workHeight};
+    auto stamp=DlssNrGuideObservation::Source(*f.info);
+    stamp.configuration=f.revision;stamp.owner=f.owner;stamp.feature=reinterpret_cast<uintptr_t>(g_nr.feature);
+    stamp.historySource=DetailHistory::publishedKey.sample.ordinal;
+    stamp.historyAvailable=params.FeedbackHistoryValid!=0;
+    stamp.accepted=true;stamp.fusionRecorded=true;stamp.stage=GuideDiagnostics::Stage::Recorded;
+    stamp.reason="same-source independent history inspector; completion pending";
+    if(GuideCapture::TryRecord(token,static_cast<ID3D12GraphicsCommandList*>(DetailHistory::RealList(f.cmdList)),input,stamp))
+        DlssNrWatchedLists::Add(f.cmdList);
+    Barrier(f.cmdList,scratch,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+}
 #include "DlssNr_SceneCut.inl"
 #include "DlssNr_Spatial.inl"
 
@@ -2277,7 +2385,7 @@ DlssNr_Dx12::DlssNr_Dx12(std::string InName, ID3D12Device* InDevice)
 
     LOG_DEBUG("{0} start!", _name);
 
-    // Six inputs (the sixth is read by the detail reuse pass only), two outputs, one constant buffer, and a clamped
+    // Six inputs (the sixth is read by the detail reuse pass only), three outputs, one constant buffer, and a clamped
     // linear sampler.
     //
     // The sampler exists because the model may be run below full resolution, in which case its answer
@@ -2369,15 +2477,16 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
     };
 
     for (uint32_t i = 0; i < kSrvCount; ++i)
-        CreateShaderResourceView(_device, srvs[i], currentHeap.GetSrvCPU(i));
+        CreateShaderResourceView(_device, srvs[i] ? srvs[i] : srvs[0], currentHeap.GetSrvCPU(i));
 
     ID3D12Resource* const uavs[kUavCount] = {
         OutTarget,
         OutKeep != nullptr ? OutKeep : OutTarget,
+        OutTarget,
     };
 
     for (uint32_t i = 0; i < kUavCount; ++i)
-        CreateUnorderedAccessView(_device, uavs[i], currentHeap.GetUavCPU(i), 0);
+        CreateUnorderedAccessView(_device, uavs[i] ? uavs[i] : uavs[0], currentHeap.GetUavCPU(i), 0);
 
     if (!UploadNrConstants(_device, _constantBuffers[slot], InConstants))
     {
@@ -2469,6 +2578,11 @@ DlssNr_Dx12::~DlssNr_Dx12()
             buffer = nullptr;
         }
     }
+
+    // In-flight recordings retain their own COM references through the real
+    // queue/fence and Reset token, just like the production ring above.
+    for (auto*& buffer : _historyInspectConstants)
+        if (buffer) { buffer->Release(); buffer = nullptr; }
 
     if (_lutPipelineState)
         _lutPipelineState->Release();
@@ -2761,12 +2875,12 @@ bool DlssNr_Dx12::DispatchDetailStats(ID3D12GraphicsCommandList* InCmdList, cons
     ID3D12Resource* const srvs[kSrvCount] = { InOutput, InPrevOutput, InInput, InPrevInput, InProxy, InOutput };
 
     for (uint32_t i = 0; i < kSrvCount; ++i)
-        CreateShaderResourceView(_device, srvs[i], currentHeap.GetSrvCPU(i));
+        CreateShaderResourceView(_device, srvs[i] ? srvs[i] : srvs[0], currentHeap.GetSrvCPU(i));
 
-    ID3D12Resource* const uavs[kUavCount] = { OutGrid, OutGrid };
+    ID3D12Resource* const uavs[kUavCount] = { OutGrid, OutGrid, OutGrid };
 
     for (uint32_t i = 0; i < kUavCount; ++i)
-        CreateUnorderedAccessView(_device, uavs[i], currentHeap.GetUavCPU(i), 0);
+        CreateUnorderedAccessView(_device, uavs[i] ? uavs[i] : uavs[0], currentHeap.GetUavCPU(i), 0);
 
     if (!UploadNrConstants(_device, _constantBuffers[slot], InConstants))
     {
@@ -2862,22 +2976,57 @@ bool DlssNr_Dx12::DetailReuseReady()
     return _init && _detailReusePipelineState != nullptr;
 }
 
+bool DlssNr_Dx12::HistoryInspectReady()
+{
+    if (_historyInspectReady || _historyInspectFailed || !_init)
+        return _historyInspectReady;
+    _historyInspectFailed = true; // no per-source allocation retry after failure
+    if (!InitHeaps(_device, _historyInspectHeaps, kHistoryInspectHeapCount)) return false;
+    const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+    const auto desc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(DlssNrConstants));
+    for (unsigned i = 0; i < kHistoryInspectHeapCount; ++i)
+    {
+        if (FAILED(_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&_historyInspectConstants[i])))) return false;
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbv {};
+        cbv.BufferLocation = _historyInspectConstants[i]->GetGPUVirtualAddress();
+        cbv.SizeInBytes = sizeof(DlssNrConstants);
+        _device->CreateConstantBufferView(&cbv, _historyInspectHeaps[i].GetCbvCPU(0));
+    }
+    _historyInspectReady = true;
+    return true;
+}
+
 bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
                                       const DlssNrDetailReuseConstants& InConstants, unsigned int Width,
                                       unsigned int Height, ID3D12Resource* In0, ID3D12Resource* In1,
                                       ID3D12Resource* In2, ID3D12Resource* In3, ID3D12Resource* In4,
                                       ID3D12Resource* OutTarget, ID3D12Resource* OutSecond,
-                                      ID3D12Resource* InHistoryDistrust)
+                                      ID3D12Resource* InHistoryDistrust, ID3D12Resource* OutContext,
+                                      ID3D12Resource* InStability, ID3D12Resource* OutStability)
 {
     if (!DetailReuseReady() || InCmdList == nullptr || _device == nullptr || In0 == nullptr ||
         OutTarget == nullptr || Width == 0 || Height == 0)
         return false;
+    if (InConstants.Mode == DlssNrDetailReuse_FeedbackResolve &&
+        (!OutSecond || !OutContext || OutTarget == OutSecond || OutTarget == OutContext || OutSecond == OutContext))
+        return false;
 
-    const int acquiredSlot = DlssNrGpuLifetime::AcquireSlot(_heapUses, _heapIndex, NrRecording(_device, InCmdList));
+    if (InConstants.Mode == DlssNrDetailReuse_FeedbackResolve && InConstants.FeedbackStabilitySeconds > 0 &&
+        (!InStability || !OutStability || InStability == OutStability ||
+         OutStability == OutTarget || OutStability == OutSecond || OutStability == OutContext)) return false;
+
+    const bool inspect = InConstants.Mode == DlssNrDetailReuse_FeedbackInspect;
+    if (inspect && !HistoryInspectReady()) return false;
+    const auto recording = NrRecording(_device, InCmdList);
+    const int acquiredSlot = inspect
+        ? DlssNrGpuLifetime::AcquireSlot(_historyInspectUses, _historyInspectIndex, recording)
+        : DlssNrGpuLifetime::AcquireSlot(_heapUses, _heapIndex, recording);
     if (acquiredSlot < 0) return false;
     const uint32_t slot = static_cast<uint32_t>(acquiredSlot);
-
-    FrameDescriptorHeap& currentHeap = _frameHeaps[slot];
+    FrameDescriptorHeap& currentHeap = inspect ? _historyInspectHeaps[slot] : _frameHeaps[slot];
+    auto* constants = inspect ? _historyInspectConstants[slot] : _constantBuffers[slot];
+    const auto& use = inspect ? _historyInspectUses[slot] : _heapUses[slot];
 
     ID3D12Resource* const srvs[kSrvCount] = {
         In0,
@@ -2886,24 +3035,29 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
         In3 != nullptr ? In3 : In0,
         In4 != nullptr ? In4 : In0,
         InHistoryDistrust != nullptr ? InHistoryDistrust : In0,
+        InStability != nullptr ? InStability : In0,
     };
 
     for (uint32_t i = 0; i < kSrvCount; ++i)
-        CreateShaderResourceView(_device, srvs[i], currentHeap.GetSrvCPU(i));
+        CreateShaderResourceView(_device, srvs[i] ? srvs[i] : srvs[0], currentHeap.GetSrvCPU(i));
 
-    ID3D12Resource* const uavs[kUavCount] = { OutTarget, OutSecond != nullptr ? OutSecond : OutTarget };
+    ID3D12Resource* const uavs[kUavCount] = {
+        OutTarget, OutSecond != nullptr ? OutSecond : OutTarget,
+        OutContext != nullptr ? OutContext : OutTarget,
+        OutStability != nullptr ? OutStability : OutTarget };
 
     for (uint32_t i = 0; i < kUavCount; ++i)
-        CreateUnorderedAccessView(_device, uavs[i], currentHeap.GetUavCPU(i), 0);
+        CreateUnorderedAccessView(_device, uavs[i] ? uavs[i] : uavs[0], currentHeap.GetUavCPU(i), 0);
 
-    if (!UploadNrConstants(_device, _constantBuffers[slot], InConstants))
+    if (!UploadNrConstants(_device, constants, InConstants))
     {
         LOG_ERROR("[{0}] Failed to create a constants buffer", _name);
         return false;
     }
 
-    if (!DlssNrGpuLifetime::Retain(_heapUses[slot], { currentHeap.GetHeapCSU(), _constantBuffers[slot],
-            _rootSignature, _detailReusePipelineState, In0, In1, In2, In3, In4, OutTarget, OutSecond, InHistoryDistrust })) return false;
+    if (!DlssNrGpuLifetime::Retain(use, { currentHeap.GetHeapCSU(), constants,
+            _rootSignature, _detailReusePipelineState, In0, In1, In2, In3, In4,
+            OutTarget, OutSecond, InHistoryDistrust, OutContext, InStability, OutStability })) return false;
 
     ID3D12DescriptorHeap* heaps[] = { currentHeap.GetHeapCSU() };
     InCmdList->SetDescriptorHeaps(_countof(heaps), heaps);
@@ -2917,13 +3071,8 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
 
 bool DlssNr_Dx12::GuidePreviewReady()
 {
-    if (!_guidePreviewPipelineFailed && _init && !_guidePreviewPipelineState)
-    {
-        if (!CreateComputePipeline(_device, &_guidePreviewPipelineState, dlssnr_guide_preview_cso,
-                                   sizeof(dlssnr_guide_preview_cso), nullptr))
-            _guidePreviewPipelineFailed = true;
-    }
-    return _init && _guidePreviewPipelineState != nullptr;
+    // Independent GPU preview pipelines are prepared only by GuideCapture's worker.
+    return false;
 }
 
 bool DlssNr_Dx12::DispatchGuidePreview(ID3D12GraphicsCommandList* list,
@@ -3018,12 +3167,12 @@ bool DlssNr_Dx12::DispatchSpatial(ID3D12GraphicsCommandList* InCmdList, const Dl
     };
 
     for (uint32_t i = 0; i < kSrvCount; ++i)
-        CreateShaderResourceView(_device, srvs[i], currentHeap.GetSrvCPU(i));
+        CreateShaderResourceView(_device, srvs[i] ? srvs[i] : srvs[0], currentHeap.GetSrvCPU(i));
 
-    ID3D12Resource* const uavs[kUavCount] = { Out0, Out1 != nullptr ? Out1 : Out0 };
+    ID3D12Resource* const uavs[kUavCount] = { Out0, Out1 != nullptr ? Out1 : Out0, Out0 };
 
     for (uint32_t i = 0; i < kUavCount; ++i)
-        CreateUnorderedAccessView(_device, uavs[i], currentHeap.GetUavCPU(i), 0);
+        CreateUnorderedAccessView(_device, uavs[i] ? uavs[i] : uavs[0], currentHeap.GetUavCPU(i), 0);
 
     if (!UploadNrConstants(_device, _constantBuffers[slot], InConstants))
     {
@@ -3076,12 +3225,12 @@ bool DlssNr_Dx12::DispatchResidualPass(ID3D12GraphicsCommandList* InCmdList,
     };
 
     for (uint32_t i = 0; i < kSrvCount; ++i)
-        CreateShaderResourceView(_device, srvs[i], currentHeap.GetSrvCPU(i));
+        CreateShaderResourceView(_device, srvs[i] ? srvs[i] : srvs[0], currentHeap.GetSrvCPU(i));
 
-    ID3D12Resource* const uavs[kUavCount] = { OutTarget, OutTarget };
+    ID3D12Resource* const uavs[kUavCount] = { OutTarget, OutTarget, OutTarget };
 
     for (uint32_t i = 0; i < kUavCount; ++i)
-        CreateUnorderedAccessView(_device, uavs[i], currentHeap.GetUavCPU(i), 0);
+        CreateUnorderedAccessView(_device, uavs[i] ? uavs[i] : uavs[0], currentHeap.GetUavCPU(i), 0);
 
     if (!UploadNrConstants(_device, _constantBuffers[slot], InConstants))
     {
@@ -3125,6 +3274,13 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     }
 
     ID3D12Resource* target = output;
+    const bool separateInput = colour != output;
+    if (separateInput && (!frame.FinishedPicture || !frame.IndependentCommands || frame.BeforeUpscale ||
+                          !NrPresentation::CompatibleColourInput(colour, output)))
+    {
+        ReportSkipOnce("the distinct colour input/output contract is unsupported");
+        return;
+    }
     // Bind before any subrect/normalization/packing changes the guide pointers.
     // Exact synchronous provenance only; it grants no resource admission rights.
     const auto* nativeInputObservation = native::NrInputObservation::Current(
@@ -3196,8 +3352,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     const auto width = active->width;
     const auto height = active->height;
     const bool cropColor = frame.BeforeUpscale && (width != desc.Width || height != desc.Height);
-    const bool targetSupportsUav =
-        cropColor || (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
+    const bool targetSupportsUav = cropColor || (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
     // One format decision for admission and allocation: the non-UAV resolve is copied back to the
     // exact game texture; a shader-only original uses canonical colour, or float for decoded HDR.
     const DXGI_FORMAT keepFormat = !targetSupportsUav ? desc.Format
@@ -3369,13 +3524,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // scaling) still lands on a sane single scale for this model, which -- like the manual slider --
     // only ever works at one uniform percentage, not a separate X/Y one.
 
-    const unsigned previewMode = std::min(cfg.DlssNrGuidePreview.value_or_default(), 4u);
-    PublishGuidePreview(previewMode ? "\xe7\xad\x89\xe5\xbe\x85\xe5\xbd\x93\xe5\x89\x8d\xe5\xb8\xa7\xe8\xbe\x93\xe5\x85\xa5\xef\xbc\x88NR \xe6\x9c\xaa\xe6\xb1\x82\xe5\x80\xbc\xe6\x97\xb6\xe4\xb8\x8d\xe5\x8f\xaf\xe7\x94\xa8\xef\xbc\x89" : "\xe9\xa2\x84\xe8\xa7\x88\xe5\x85\xb3\xe9\x97\xad");
-    if (!previewMode)
-    {
-        ParkNrResource(g_nr.guidePreview);
-        g_nr.guidePreviewAllocationFailed = false;
-    }
     float workScale = cfg.DlssNrWorkingScale.value_or_default();
     if (!frame.BeforeUpscale && cfg.DlssNrModelResolutionAuto.value_or_default() &&
         frame.RenderSubrectWidth > 0 && frame.OutputWidth > 0 &&
@@ -3464,9 +3612,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     }
     const unsigned requiredSlots = 26u + requestedPasses - 1u + layerLookSlots + (normalizeGuides ? 1u : 0u) +
         (frame.NativeSceneRoute && frame.FinishedPicture && !frame.BeforeUpscale ? 3u : 0u);
-    // Preview is optional: reserve its one extra ring slot only if capacity exists, never bypass NR for it.
-    const bool previewCapacity = !previewMode || HasDispatchCapacity(requiredSlots + 1u,
-                                      cfg.DlssNrLutFile.value_or_default().empty() ? 0u : 1u);
     if (!HasDispatchCapacity(requiredSlots, cfg.DlssNrLutFile.value_or_default().empty() ? 0u : 1u))
     {
         ReportSkipOnce("GPU descriptor slots are still in flight; bypassing this frame");
@@ -3546,9 +3691,13 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (g_nr.feature != nullptr && (resolutionChanged || tuningChanged || placementChanged))
     {
         LOG_INFO("DLSS-NR model rebuild requested: target {}x{} -> {}x{}, model {}x{} -> {}x{}, "
-                 "resolutionChanged={} tuningChanged={} placementChanged={}",
+                 "resolutionChanged={} tuningChanged={} placementChanged={} pid={} dispatch={} "
+                 "retiredEntries={} trackedRecordings={} registryHalted={} watchedOverflow={} watchedOverflowPeak={}",
                  g_nr.width, g_nr.height, width, height, g_nr.workWidth, g_nr.workHeight,
-                 modelWidth, modelHeight, resolutionChanged, tuningChanged, placementChanged);
+                 modelWidth, modelHeight, resolutionChanged, tuningChanged, placementChanged,
+                 GetCurrentProcessId(), g_frames, g_nrRetired.size(), g_nrGpuWork.Tracked(), g_nrGpuWork.Halted(),
+                 DlssNrWatchedLists::g_overflowCount.load(std::memory_order_acquire),
+                 DlssNrWatchedLists::g_overflowPeak.load(std::memory_order_relaxed));
         // R721 observes only actual preset differences at this render boundary.
         // Retirement and every real GPU owner below are untouched.
         if (GenshinSubstage::Runtime().PresetRequestPending())
@@ -4124,19 +4273,36 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     ResTrack_Dx12::HookLateNrQueue(device);
     if (g_gpuTime == nullptr)
-        g_gpuTime = std::make_unique<DlssNrGpuTime>(device, "total");
+        g_gpuTime = std::make_unique<DlssNrGpuTime>(device, "total", true);
 
     if (g_ngxTime == nullptr)
         g_ngxTime = std::make_unique<DlssNrGpuTime>(device, "model");
 
     if (g_gpuTime != nullptr)
-        g_gpuTime->Start(cmdList, State::Instance().frameCount, frame.SubmissionEpoch, g_frames,
+        g_gpuTime->Start(cmdList, recording, State::Instance().frameCount, frame.SubmissionEpoch, g_frames,
             GpuTimeline::Enabled() ? ReflexHooks::lastMarkerFrameId(RENDERSUBMIT_START) : 0);
+
+    if (separateInput)
+    {
+        const auto input = NrPresentation::PrepareColourInput(cmdList, colour,
+            (D3D12_RESOURCE_STATES)frame.InputArrivalState, output, outputArrival,
+            cfg.DlssNrHoldFrame.value_or_default() || !cfg.DlssNrLutFile.value_or_default().empty());
+        if (!input.resource)
+        {
+            if (g_gpuTime) g_gpuTime->End(cmdList);
+            ReportSkipOnce("the distinct colour input could not be prepared");
+            device->Release();
+            return;
+        }
+        target = input.resource;
+        targetState = input.state;
+    }
+    const bool readOnlyInput = target != output;
 
     // Copy just the live image, not the stale right/bottom margins. Do this only after model
     // creation/pending-submission early returns, and inside the measured GPU interval. The compact
     // texture lets every existing codec/compare/hold/capture path use unmodified pixel coordinates.
-    ID3D12Resource* const gameColor = target;
+    ID3D12Resource* const gameColor = output;
     if (cropColor)
     {
         TransitionTarget(D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -4654,9 +4820,44 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     encodeParams.Height = height;
 
     TransitionTarget(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    DispatchPass(cmdList, encodeParams, target, nullptr, nullptr, nullptr, exposureTex,
-                        g_nr.colorCopy, g_nr.hdrCopy);
+    if(frame.IndependentCommands) {
+        GuideCapture::SampleToken token;
+        if(GuideCapture::TryBeginSample(GuideCapture::Stream::Source,token)) {
+            struct CancelPreview {GuideCapture::SampleToken& token;~CancelPreview(){GuideCapture::CancelSample(token);}} cancel{token};
+            GuideCapture::Inputs capture;capture.colour=target;
+            capture.colourRect={0,0,width,height};capture.independentRecording=true;capture.colourHdr=isHdrBuffer;
+            capture.colourState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            auto stamp=DlssNrGuideObservation::Source(frame);
+            stamp.colourChoice="NR pre-encode colour";stamp.tick=GuideDiagnostics::Now();
+            stamp.colour=DlssNrGuideObservation::Resource(target,capture.colourRect);
+            auto* actual=static_cast<ID3D12GraphicsCommandList*>(DetailReuse::RealTemporalCommands(cmdList));
+            if(GuideCapture::TryRecord(token,actual,capture,stamp))DlssNrWatchedLists::Add(actual);
+        }
+    }
+    if (g_gpuTime) g_gpuTime->Mark(cmdList, DlssNrGpuTime::Point::EncodeBegin);
+    if (!DispatchPass(cmdList, encodeParams, target, nullptr, nullptr, nullptr, exposureTex,
+                      g_nr.colorCopy, g_nr.hdrCopy))
+    {
+        // Busy descriptors/upload failure recorded no current proxy. Never run
+        // the model on the previous source left in persistent scratch textures.
+        if (readOnlyInput) TransitionTarget((D3D12_RESOURCE_STATES)frame.InputArrivalState);
+        else FinishColor(false);
+        g_nr.reset = true;
+        ReportSkipOnce("the current colour encode could not be recorded");
+        if (g_gpuTime) g_gpuTime->End(cmdList);
+        device->Release();
+        return;
+    }
 
+    if (g_gpuTime) g_gpuTime->Mark(cmdList, DlssNrGpuTime::Point::EncodeEnd);
+    if (readOnlyInput)
+    {
+        // Encode kept the original in hdrCopy. Restore the real source, then
+        // resolve only into the private output; no source write or extra copy.
+        TransitionTarget((D3D12_RESOURCE_STATES)frame.InputArrivalState);
+        target = output;
+        targetState = outputArrival;
+    }
     if (targetSupportsUav)
         TransitionTarget(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     // The transitions double as the wait for the encode's writes.
@@ -4755,8 +4956,20 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             // to be harmless only because the old box-average never branched on either field.
             down.Passthrough = isHdrBuffer ? 0u : 1u;
             down.ReversibleMode = cfg.DlssNrReversibleMode.value_or_default();
-            DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr,
-                                g_nr.colorSmall, nullptr);
+            if (!DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr,
+                              g_nr.colorSmall, nullptr))
+            {
+                Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                FinishColor(false);
+                g_nr.reset = true;
+                ReportSkipOnce("the current model input resize could not be recorded");
+                if (g_gpuTime) g_gpuTime->End(cmdList);
+                device->Release();
+                return;
+            }
             Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
@@ -4778,6 +4991,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                                           : "the game's depth could not be made readable";
         LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
         FinishColor(false);
+        if (g_gpuTime) g_gpuTime->End(cmdList);
         device->Release();
         return;
     }
@@ -4853,75 +5067,51 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     ID3D12Resource* modelDepth = depthIn;
     ID3D12Resource* modelMotion = motionIn;
 
-    // Exact StarRail/ZZZ scene-source contract, separate from final-colour flow.
-    // No resource pointer or current jitter is used as a stable history identity.
-    static constexpr const char* sceneGuideGames[] = { "starrail.exe", "zenlesszonezero.exe" };
-    static const bool sceneGuideGame = DlssNrExeMatch::IsKnownGame(State::Instance().gameExe, sceneGuideGames);
-    static constexpr const char* scenePreparationGames[] = { "zenlesszonezero.exe" };
-    static const bool zzzSceneGuideGame = DlssNrExeMatch::IsKnownGame(State::Instance().gameExe, scenePreparationGames);
-    const bool sourceSceneIdentity = frame.NativeSceneRoute
-        ? frame.NativeBaseIdentityVerified && frame.NativeCurrentDepthVerified
-        : frame.SceneGuideSourceVerified && frame.SourceCaptureSerial != 0 && frame.SourceCaptureSerial != UINT64_MAX;
-    const bool sourceSceneRoute = sceneGuideGame && !vulkanGame && frame.FinishedPicture &&
-        !frame.BeforeUpscale && frame.IndependentCommands && !frame.FreshColorResetFallback && !spatial;
-    auto* sourceSceneMotion = frame.SceneGuideSourceVerified
+    // Resolve exact source facts independently of the executable name. Native
+    // endpoints keep their existing guides; retained sources may request the
+    // existing preparation pass. Neither request grants temporal authority.
+    const auto sceneRequest = DlssNr::SceneGuides::Requested(frame);
+    const bool retainedSceneSource = sceneRequest == DlssNr::SceneGuides::Request::RetainedSource;
+    auto* sourceSceneMotion = retainedSceneSource
         ? static_cast<ID3D12Resource*>(frame.SceneGuideMotion) : rawMotionIn;
-    const unsigned sourceMotionW = frame.SceneGuideSourceVerified ? frame.SceneMotionWidth : motionWidth;
-    const unsigned sourceMotionH = frame.SceneGuideSourceVerified ? frame.SceneMotionHeight : motionHeight;
-    const unsigned sourceMotionX = frame.SceneGuideSourceVerified ? frame.SceneMotionBaseX : frame.MotionSubrectBaseX;
-    const unsigned sourceMotionY = frame.SceneGuideSourceVerified ? frame.SceneMotionBaseY : frame.MotionSubrectBaseY;
-    const float sourceScaleX = frame.SceneGuideSourceVerified ? frame.SceneMvScaleX : frame.MvScaleX;
-    const float sourceScaleY = frame.SceneGuideSourceVerified ? frame.SceneMvScaleY : frame.MvScaleY;
-    // StarRail keeps its existing guide path: reuse already-read descriptors and
-    // coordinate facts. Only ZZZ needs the separately retained scene-motion view.
+    const unsigned sourceMotionW = retainedSceneSource ? frame.SceneMotionWidth : motionWidth;
+    const unsigned sourceMotionH = retainedSceneSource ? frame.SceneMotionHeight : motionHeight;
+    const unsigned sourceMotionX = retainedSceneSource ? frame.SceneMotionBaseX : frame.MotionSubrectBaseX;
+    const unsigned sourceMotionY = retainedSceneSource ? frame.SceneMotionBaseY : frame.MotionSubrectBaseY;
+    const float sourceScaleX = retainedSceneSource ? frame.SceneMvScaleX : frame.MvScaleX;
+    const float sourceScaleY = retainedSceneSource ? frame.SceneMvScaleY : frame.MvScaleY;
     auto sceneCoordinates = coordinateMapping;
-    D3D12_RESOURCE_DESC sourceMotionDesc = motionDesc;
-    if (zzzSceneGuideGame && sourceSceneRoute && frame.SceneGuideSourceVerified)
+    // Reuse descriptors on the native path; a typeless clone has its own actual
+    // readable descriptor. Retained motion is distinct from final-picture flow.
+    const auto sourceDepthDesc = rawDepthIn && rawDepthIn != depth ? rawDepthIn->GetDesc() : guideDesc;
+    auto sourceMotionDesc = rawMotionIn != motion ? rawMotionIn->GetDesc() : motionDesc;
+    if (retainedSceneSource)
     {
         sceneCoordinates = DlssNr::GuideCoordinates::Resolve(
             cfg.DlssNrDepthTextureFlipY.value_or_default(), cfg.DlssNrMotionTextureFlipY.value_or_default(),
             cfg.DlssNrMotionYInverted.value_or_default(), rawDepthIn != nullptr, false, false);
         sourceMotionDesc = sourceSceneMotion ? sourceSceneMotion->GetDesc() : D3D12_RESOURCE_DESC {};
     }
-    const auto sourceRegionFits = [](const D3D12_RESOURCE_DESC& d, unsigned x, unsigned y, unsigned w, unsigned h) {
-        return w && h && d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-            d.DepthOrArraySize == 1 && d.SampleDesc.Count == 1 &&
-            x < d.Width && y < d.Height && w <= d.Width - x && h <= d.Height - y;
-    };
-    const bool sourceSceneMetadata = sourceSceneRoute && sourceSceneIdentity &&
-        rawDepthIn && sourceSceneMotion && frame.NativeFeatureFlagsKnown && frame.NativeGuideMetadataKnown &&
-        frame.NativeMotionJitterKnown && !frame.NativeMotionVectorsJittered &&
-        (frame.NativeFeatureFlags & NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) != 0 &&
-        frame.NativeCurrentJitterKnown && std::isfinite(frame.NativeJitterX) && std::isfinite(frame.NativeJitterY) &&
-        std::abs(frame.NativeJitterX) <= 0.5f && std::abs(frame.NativeJitterY) <= 0.5f &&
-        frame.RenderSubrectWidth == sourceMotionW && frame.RenderSubrectHeight == sourceMotionH &&
-        guideWidth == frame.RenderSubrectWidth && guideHeight == frame.RenderSubrectHeight &&
-        sourceRegionFits(guideDesc, frame.DepthSubrectBaseX, frame.DepthSubrectBaseY, guideWidth, guideHeight) &&
-        sourceRegionFits(sourceMotionDesc, sourceMotionX, sourceMotionY, sourceMotionW, sourceMotionH) &&
-        std::isfinite(sourceScaleX) && std::isfinite(sourceScaleY) && sourceScaleX != 0 && sourceScaleY != 0 &&
-        frame.OutputWidth == width && frame.OutputHeight == height;
+    DlssNr::SceneGuides::Consumer sceneConsumer;
+    sceneConsumer.vulkanOrigin = vulkanGame; sceneConsumer.spatial = spatial;
+    sceneConsumer.pictureWidth = width; sceneConsumer.pictureHeight = height;
+    sceneConsumer.workWidth = workWidth; sceneConsumer.workHeight = workHeight;
+    sceneConsumer.sourceMotionLowResolution =
+        (frame.NativeFeatureFlags & NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) != 0;
+    sceneConsumer.depth = SceneGuideView(sourceDepthDesc, rawDepthIn != nullptr, false);
+    sceneConsumer.motion = SceneGuideView(sourceMotionDesc, sourceSceneMotion != nullptr, true);
+    sceneConsumer.depthRect = { frame.DepthSubrectBaseX, frame.DepthSubrectBaseY, guideWidth, guideHeight };
+    sceneConsumer.motionRect = { sourceMotionX, sourceMotionY, sourceMotionW, sourceMotionH };
+    sceneConsumer.scaleX = sourceScaleX; sceneConsumer.scaleY = sourceScaleY;
+    sceneConsumer.coordinates = sceneCoordinates;
+    const auto sceneAdmission = DlssNr::SceneGuides::Resolve(frame, sceneConsumer);
     bool sceneModelGuides = false, sceneModelMotionCanonical = false, sceneGeometry = false;
     unsigned scenePreparationFlags = 0;
     float scenePreparationPhaseX = 0.0f, scenePreparationPhaseY = 0.0f;
-    const char* sceneGuideGate = !sourceSceneRoute ? "outside-scene-route" :
-        !sourceSceneIdentity ? "source-identity" : !frame.NativeFeatureFlagsKnown ? "unknown-create-flags" :
-        !frame.NativeGuideMetadataKnown ? "unknown-source-guide-metadata" :
-        !frame.NativeCurrentJitterKnown ? "unknown-current-jitter" :
-        frame.NativeMotionVectorsJittered ? "jittered-motion-not-declared-canonical" :
-        !sourceSceneMetadata ? "source-extent-or-phase-contract" : "preparation-unavailable";
-    std::array<uint64_t, 23> sceneContract {};
-    if (sourceSceneMetadata && frame.NativeSceneRoute)
-    {
-        sceneGuideGate = "native-existing-guide-path";
-        sceneContract = { 1ull, frame.NativeFeatureFlags, guideWidth, guideHeight,
-            frame.DepthSubrectBaseX, frame.DepthSubrectBaseY, sourceMotionW, sourceMotionH,
-            sourceMotionX, sourceMotionY, DetailReuse::FloatBits(sourceScaleX), DetailReuse::FloatBits(sourceScaleY),
-            sceneCoordinates.key, uint64_t(guideDesc.Format), uint64_t(sourceMotionDesc.Format),
-            frame.RayReconstruction ? 1ull : 0ull, 0ull, frame.OutputWidth, frame.OutputHeight, 1ull };
-    }
-    // ZZZ alone prepares its retained scene guides. StarRail's deliberate F5-DS
-    // scheduling gets no new GPU dispatch, scratch, copy, queue, fence or slot work.
-    if (zzzSceneGuideGame && sourceSceneMetadata && frame.SceneGuideSourceVerified && !frame.NativeSceneRoute)
+    const char* sceneGuideGate = sceneAdmission.reason;
+    // Admission permits recording only. Allocation/descriptor/recording failure
+    // cannot publish prepared guides. The existing slot/queue/fence gates remain.
+    if (sceneAdmission.NeedsPreparation())
     {
         const auto ensureScene = [&](ID3D12Resource*& r, DXGI_FORMAT format) {
             if (r && (r->GetDesc().Width != workWidth || r->GetDesc().Height != workHeight ||
@@ -4942,14 +5132,14 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         prep.DepthBaseX = frame.DepthSubrectBaseX; prep.DepthBaseY = frame.DepthSubrectBaseY;
         prep.DepthInverted = frame.DepthInverted ? 1u : 0u;
         prep.MvScaleX = sourceScaleX; prep.MvScaleY = sourceScaleY;
-        prep.NativeMotionPhaseUvX = prep.NativeDepthPhaseUvX = frame.NativeJitterX / sourceMotionW;
-        prep.NativeMotionPhaseUvY = prep.NativeDepthPhaseUvY = frame.NativeJitterY / sourceMotionH;
+        prep.NativeMotionPhaseUvX = prep.NativeDepthPhaseUvX = sceneAdmission.phaseUvX;
+        prep.NativeMotionPhaseUvY = prep.NativeDepthPhaseUvY = sceneAdmission.phaseUvY;
         prep.SceneGuideFlags = (sceneCoordinates.depthRowsFlip ? 1u : 0u) |
             (sceneCoordinates.motionRowsFlip ? 2u : 0u) | (sceneCoordinates.vectorYNegated ? 4u : 0u) |
             (pictureFlow ? 8u : 0u);
         prep.ScenePictureWidth = width; prep.ScenePictureHeight = height;
         // The model keeps the existing two-component motion format. Four
-        // components are required only for ZZZ's separate conditional history view.
+        // components are required only for the separate conditional history view.
         if (ensureScene(g_nr.sceneGuideMotion, pictureFlow ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R32G32_FLOAT) &&
             ensureScene(g_nr.sceneGuideDepth, DXGI_FORMAT_R32_FLOAT) &&
             DispatchDetailReuse(cmdList, prep, workWidth, workHeight, modelInput, nullptr,
@@ -4969,25 +5159,18 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             sceneModelMotionCanonical = !frame.MotionIsPictureFlow;
             if (sceneModelMotionCanonical) modelMotion = g_nr.sceneGuideMotion;
             sceneGeometry = pictureFlow; // conditional veto, never picture-depth authority
-            sceneContract = { 1ull, frame.NativeFeatureFlags, guideWidth, guideHeight,
-                frame.DepthSubrectBaseX, frame.DepthSubrectBaseY, sourceMotionW, sourceMotionH,
-                sourceMotionX, sourceMotionY, DetailReuse::FloatBits(sourceScaleX), DetailReuse::FloatBits(sourceScaleY),
-                sceneCoordinates.key, uint64_t(guideDesc.Format), uint64_t(sourceMotionDesc.Format),
-                frame.RayReconstruction ? 1ull : 0ull, pictureFlow ? 1ull : 0ull,
-                frame.OutputWidth, frame.OutputHeight, frame.NativeSceneRoute ? 1ull : 2ull };
         }
+        else sceneGuideGate = "preparation-unavailable";
     }
     // Owner identity survives even a failed preparation. A source replacement
     // cannot reuse a different source's model/cohort history merely because its rects match.
-    if (sourceSceneRoute)
-    {
-        sceneContract[20] = frame.SceneGuideOwner[0];
-        sceneContract[21] = frame.SceneGuideOwner[1];
-        sceneContract[22] = frame.SceneGuideOwner[2];
-    }
+    const auto sceneContract = DlssNr::SceneGuides::MakeHistoryKey(
+        frame, sceneConsumer, sceneAdmission, sceneModelGuides, sceneGeometry);
     // A changed model guide convention requires one real reset, never a periodic TTL.
     // These are stable source facts; neither source ordinal nor varying current J is in this comparison.
-    if (sceneGuideGame && g_nr.sceneModelContract != sceneContract)
+    // Also clear a prior capability on leaving the route; executable identity
+    // cannot keep an old scene contract alive after its producer disappears.
+    if (g_nr.sceneModelContract != sceneContract)
     {
         g_nr.sceneModelContract = sceneContract;
         g_nr.reset = true;
@@ -5054,8 +5237,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     // Ordinary routes retain their existing full-frame ABI. Canonical scene MODEL
     // motion above is already in work pixels; native HISTORY separately keeps source units.
-    const bool sceneSourceUnits = sourceSceneRoute && sourceSceneIdentity && sourceSceneMetadata &&
-        !frame.MotionIsPictureFlow;
+    const bool sceneSourceUnits = sceneAdmission.Admitted() && !frame.MotionIsPictureFlow;
     const float mvToWorkX = sceneSourceUnits ? float(workWidth) / sourceMotionW :
         width != 0 ? float(workWidth) / width : 1.0f;
     const float mvToWorkY = sceneSourceUnits ? float(workHeight) / sourceMotionH :
@@ -5266,6 +5448,20 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     reuseFrame.device = device;
     reuseFrame.cfg = &cfg;
     reuseFrame.info = &reuseInfo;
+    reuseFrame.beforeUpscale = frame.BeforeUpscale;
+    reuseFrame.finishedPicture = frame.FinishedPicture;
+    reuseFrame.nativePreSrRoute = frame.NativePreSrRoute;
+    reuseFrame.preSrProducerQueueVerified = frame.NativePreSrRoute &&
+        frame.NativeBaseIdentityVerified && timingQueue != nullptr &&
+        timingQueue == frame.NativePresentQueueIdentity;
+    reuseFrame.independentFeedbackRequested = NrDetailHistoryPolicy::RequestsPresentedFeedback(
+        cfg.DlssNrPresentedTemporalDetail.value_or_default(), vulkanGame);
+    std::copy(std::begin(frame.NativePreSrOwner), std::end(frame.NativePreSrOwner), reuseFrame.preSrOwner.begin());
+    if (frame.NativePreSrRoute && frame.RenderSubrectWidth && frame.RenderSubrectHeight)
+    {
+        reuseFrame.currentRasterJitterUvX = frame.NativeJitterX / frame.RenderSubrectWidth;
+        reuseFrame.currentRasterJitterUvY = frame.NativeJitterY / frame.RenderSubrectHeight;
+    }
     reuseFrame.answerFormat = colourFormat;
     reuseFrame.workWidth = workWidth;
     reuseFrame.workHeight = workHeight;
@@ -5321,7 +5517,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // Native scene facts come from the capture / real-present handoff.
     // Unknown guide phase or queue must never be inferred from final-picture flags.
     reuseFrame.nativeTemporalRouteRequested = frame.NativeSceneRoute &&
-        frame.FinishedPicture && !frame.BeforeUpscale;
+        ((frame.FinishedPicture && !frame.BeforeUpscale) || frame.NativePreSrRoute);
     reuseFrame.pictureTemporalRouteRequested = frame.PictureTemporalRoute && frame.FinishedPicture &&
         !frame.BeforeUpscale && reuseFrame.orderedPictureQueue;
     // Recheck the actual consumer mapping after guide extraction. The producer proves only
@@ -5407,7 +5603,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         (reuseFrame.nativeTemporalRouteRequested || reuseFrame.pictureTemporalRouteRequested) &&
         cfg.DlssNrPresentedTemporalDetail.value_or_default();
     // Independent content policy only; never grants guide/queue/source authority.
-    // Keep Genshin's FinishedPicture mapping, feedback and shader path unchanged.
+    // Genshin's explicit presentation flag selects its separate anchor history.
     static constexpr const char* detailFeedbackGames[] = { "starrail.exe", "zenlesszonezero.exe" };
     static const bool detailFeedbackGame = DlssNrExeMatch::IsKnownGame(State::Instance().gameExe, detailFeedbackGames);
     reuseFrame.lightEditFeedback = detailFeedbackGame && reuseFrame.temporalRequested && !vulkanGame;
@@ -5438,7 +5634,14 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     phaseFacts.jitterX = frame.NativeJitterX; phaseFacts.jitterY = frame.NativeJitterY;
     phaseFacts.scaleX = frame.MvScaleX; phaseFacts.scaleY = frame.MvScaleY;
     phaseFacts.decodedScaleX = g_nr.guideMvScaleX; phaseFacts.decodedScaleY = g_nr.guideMvScaleY;
-    const auto nativePhase = DlssNr::NativeGuidePhase::Resolve(phaseFacts);
+    auto nativePhase = DlssNr::NativeGuidePhase::Resolve(phaseFacts);
+    if (nativePhase.verified && frame.NativePreSrRoute)
+    {
+        // Pre-SR Color and its guides share this raster phase. Only the separate
+        // feedback history converts to the previous accepted raster jitter.
+        nativePhase.motionX = nativePhase.motionY = nativePhase.depthX = nativePhase.depthY = 0;
+        nativePhase.reason = "current-ngx-pre-sr-raster-after-row-normalization";
+    }
     reuseFrame.nativeGuideContractVerified = nativePhase.verified;
     reuseFrame.baseIdentityVerified = frame.NativeBaseIdentityVerified ||
         pictureTemporalQualified || pictureFlowFeedbackQualified || pictureFlowReuseQualified;
@@ -5489,10 +5692,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // Producer cuts invalidate feedback even if the optional NR model reset policy is Off/Count.
     // This does not change frame.Reset or the model's own reset request.
     reuseFrame.modelReset = g_nr.reset || SceneCut::ResetRequested() ||
+        (frame.GenshinPresentPipeline && frame.Reset) ||
         ((pictureFeedbackQualified || pictureFlowReuseQualified) && frame.PictureTemporalReset);
     reuseFrame.edgeCompression = spatial; // the two do not run together; Reuse detail says so in the menu
     // A Tune step pins the white point (calibrationPinned); a Measure detail run copies and measures without pinning,
     // and measures Reuse bottleneck as it runs.
+    reuseFrame.fullModelRequired = frame.FullModelRequired;
     reuseFrame.blocked = calibrationPinned || g_nr.heldActive || frame.FreshColorResetFallback ||
         (GenshinNr::Scope::Current() != nullptr && !pictureFeedbackQualified);
     // Temporal identity belongs to a captured native base frame, not the model clock.
@@ -5535,6 +5740,26 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             uint64_t(reinterpret_cast<uintptr_t>(_lutTexture)) })
             reuseFrame.revision = reuseFrame.revision * 1000003ull ^ part;
     }
+    if (reuseFrame.independentFeedbackRequested)
+    {
+        for (const uint64_t part : std::array<uint64_t, 10> {
+                 cfg.DlssNrPresentedTemporalDurationMs.value_or_default(),
+                 cfg.DlssNrPresentedTemporalMaxAgeMs.value_or_default(),
+                 DetailReuse::FloatBits(cfg.DlssNrPresentedTemporalStrength.value_or_default()),
+                 DetailReuse::FloatBits(cfg.DlssNrPresentedTemporalDepthTolerance.value_or_default()),
+                 DetailReuse::FloatBits(cfg.DlssNrPresentedTemporalColourTolerance.value_or_default()),
+                 DetailReuse::FloatBits(cfg.DlssNrPresentedTemporalMotionTolerance.value_or_default()),
+                 DetailReuse::FloatBits(cfg.DlssNrPresentedTemporalNoiseFloor.value_or_default()),
+                 cfg.DlssNrPresentedTemporalStabilityMs.value_or_default(),
+                 DetailReuse::FloatBits(cfg.DlssNrPresentedTemporalStabilityFloor.value_or_default()),
+                 DetailReuse::FloatBits(cfg.DlssNrPresentedTemporalStabilityClamp.value_or_default()) })
+            reuseFrame.revision = reuseFrame.revision * 1000003ull ^ part;
+        const auto* sourceOwner = frame.NativePreSrRoute ? frame.NativePreSrOwner : frame.SceneGuideOwner;
+        for (unsigned n = 0; n < 3; ++n)
+            reuseFrame.revision = reuseFrame.revision * 1000003ull ^ sourceOwner[n];
+        if (frame.NativePreSrRoute)
+            reuseFrame.revision = reuseFrame.revision * 1000003ull ^ frame.SourceCaptureEpoch;
+    }
     DetailReuse::Plan reusePlan;
     {
         // BeforeModel establishes/reset the scalar accounting epoch before the
@@ -5547,6 +5772,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         }
         reusePlan = DetailReuse::BeforeModel(reuseFrame);
     }
+    DetailHistory::Before(reuseFrame);
     ID3D12Resource* const actualModelMotion = spatial || sceneModelMotionCanonical ? modelMotion : reusePlan.motion;
     const unsigned actualModelMotionBaseX = spatial || sceneModelMotionCanonical ? 0u : reusePlan.motionBaseX;
     const unsigned actualModelMotionBaseY = spatial || sceneModelMotionCanonical ? 0u : reusePlan.motionBaseY;
@@ -5600,151 +5826,14 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (reusePlan.resetModel)
         g_nr.reset = true;
 
-    // Record exact current inputs before Evaluate or reuse history/capture can change their contents.
-    // Reused frames explicitly preview the inputs that WOULD be evaluated; no extra model Evaluate.
-    bool guidePreviewRecorded = false;
-    ID3D12Resource* guidePreviewSource = nullptr;
-    DlssNrGuidePreviewConstants guidePreviewSample {};
-    const bool previewRawRequested = cfg.DlssNrGuidePreviewRaw.value_or_default();
-    const bool previewFlipRequested = cfg.DlssNrGuidePreviewFlipY.value_or_default();
+    // Preview storage is independent of the model target and NR descriptor ring.
     unsigned captureDebugView = 0;
-    if (previewMode && previewCapacity && GuidePreviewReady())
-    {
-        const bool raw = previewRawRequested;
-        ID3D12Resource* previewSource = previewMode == 1 ? target : previewMode == 2 ? modelInput :
-            previewMode == 3 ? (raw ? rawDepthIn : modelDepth) :
-                              (raw ? rawMotionIn : actualModelMotion);
-        DlssNrGuidePreviewConstants pc {};
-        pc.width = width; pc.height = height; pc.mode = previewMode;
-        pc.flipY = previewFlipRequested ? 1u : 0u;
-        pc.rawResource = raw ? 1u : 0u;
-        pc.depthInverted = g_nr.guideDepthInverted ? 1u : 0u;
-        pc.colourHdr = previewMode == 1 && isHdrBuffer ? 1u : 0u;
-        pc.colourWhite = std::isfinite(encodeParams.WhitePoint) ? std::max(encodeParams.WhitePoint, 0.0001f) : 1.0f;
-        const float gain = cfg.DlssNrGuidePreviewMotionGain.value_or_default();
-        pc.motionGain = std::isfinite(gain) ? std::clamp(gain, 0.01f, 4096.0f) : 16.0f;
-        std::string sourceName = previewMode == 1 ? "\xe9\xa2\x9c\xe8\x89\xb2\xef\xbc\x9a\xe6\x9c\xac\xe5\xb8\xa7\xe7\xbc\x96\xe7\xa0\x81\xe5\x89\x8d NR \xe8\xbe\x93\xe5\x85\xa5" :
-            previewMode == 2 ? "\xe9\xa2\x9c\xe8\x89\xb2\xef\xbc\x9a\xe9\xa6\x96\xe8\xbd\xae\xe6\xa8\xa1\xe5\x9e\x8b\xe4\xbb\xa3\xe7\x90\x86\xe8\xbe\x93\xe5\x85\xa5" : previewMode == 3 ?
-            (spatial && !raw ? "\xe6\xb7\xb1\xe5\xba\xa6\xef\xbc\x9a\xe6\xa8\xa1\xe5\x9e\x8b\xe5\x8e\x8b\xe7\xbc\xa9\xe8\xbe\x93\xe5\x85\xa5" : "\xe6\xb7\xb1\xe5\xba\xa6\xef\xbc\x9a\xe6\x9c\xac\xe5\xb8\xa7\xe5\x8e\x9f\xe5\xa7\x8b\xe8\xbe\x93\xe5\x85\xa5") :
-            raw ? "\xe8\xbf\x90\xe5\x8a\xa8\xef\xbc\x9a\xe6\x9c\xac\xe5\xb8\xa7\xe5\x8e\x9f\xe5\xa7\x8b\xe8\xb5\x84\xe6\xba\x90" : spatial ? "\xe8\xbf\x90\xe5\x8a\xa8\xef\xbc\x9a\xe6\xa8\xa1\xe5\x9e\x8b\xe5\x8e\x8b\xe7\xbc\xa9\xe8\xbe\x93\xe5\x85\xa5" :
-            reusePlan.motion != motionIn ? "\xe8\xbf\x90\xe5\x8a\xa8\xef\xbc\x9a\xe6\xa8\xa1\xe5\x9e\x8b\xe5\xae\x9e\xe9\x99\x85\xe5\x90\x88\xe6\x88\x90\xe5\x90\x91\xe9\x87\x8f" :
-            frame.MotionMatchesPicture ? "\xe8\xbf\x90\xe5\x8a\xa8\xef\xbc\x9a\xe5\xbd\x93\xe5\x89\x8d\xe6\x88\x90\xe5\x9b\xbe\xe6\xb5\x8b\xe9\x87\x8f\xe5\x90\x91\xe9\x87\x8f" : "\xe8\xbf\x90\xe5\x8a\xa8\xef\xbc\x9a\xe5\xbd\x93\xe5\x89\x8d\xe6\x8d\x95\xe8\x8e\xb7\xe5\x90\x91\xe9\x87\x8f";
-        // An ABI placeholder must never be shown as a captured current guide.
-        if (frame.FreshColorResetFallback && previewMode >= 3)
-            previewSource = nullptr;
-        if (previewSource)
-        {
-            const auto sd = previewSource->GetDesc();
-            // The shader declares Texture2D<float4>; reject incompatible views instead of guessing.
-            if (sd.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || sd.DepthOrArraySize != 1 ||
-                sd.SampleDesc.Count != 1 || (sd.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) != 0)
-                previewSource = nullptr;
-            else
-            {
-                pc.available = 1; pc.regionWidth = static_cast<unsigned>(sd.Width); pc.regionHeight = sd.Height;
-                if (!raw && previewMode == 3)
-                { pc.baseX = evalDepthX; pc.baseY = evalDepthY; pc.regionWidth = evalGuideW; pc.regionHeight = evalGuideH; }
-                if (!raw && previewMode == 4)
-                {
-                    pc.baseX = actualModelMotionBaseX;
-                    pc.baseY = actualModelMotionBaseY;
-                    pc.regionWidth = evalMotionW; pc.regionHeight = evalMotionH;
-                    pc.motionScaleX = evalMvScaleX / std::max(modelWidth, 1u);
-                    pc.motionScaleY = evalMvScaleY / std::max(modelHeight, 1u);
-                }
-                pc.baseX = std::min(pc.baseX, static_cast<unsigned>(sd.Width));
-                pc.baseY = std::min(pc.baseY, sd.Height);
-                pc.regionWidth = std::min(pc.regionWidth, static_cast<unsigned>(sd.Width) - pc.baseX);
-                pc.regionHeight = std::min(pc.regionHeight, sd.Height - pc.baseY);
-            }
-        }
-        if (g_nr.guidePreview)
-        {
-            const auto pd = g_nr.guidePreview->GetDesc();
-            if (pd.Width != width || pd.Height != height || pd.Format != desc.Format)
-                ParkNrResource(g_nr.guidePreview);
-        }
-        if (!g_nr.guidePreview && !g_nr.guidePreviewAllocationFailed)
-        {
-            g_nr.guidePreview = CreateScratch(device, desc.Format, width, height);
-            g_nr.guidePreviewAllocationFailed = !g_nr.guidePreview;
-        }
-        // Evidence only: these identities describe this recorded preview, not established game semantics.
-        const auto sourceDesc = previewSource ? previewSource->GetDesc() : D3D12_RESOURCE_DESC {};
-        DXGI_FORMAT previewViewFormat = DXGI_FORMAT_R32G32B32A32_FLOAT; // the actual null-SRV format
-        if (previewSource)
-        {
-            // Mirror Shader_Dx12::CreateShaderResourceView's view-format selection for this exact source.
-            switch (sourceDesc.Format)
-            {
-            case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS: previewViewFormat = sourceDesc.Format; break;
-            case DXGI_FORMAT_D32_FLOAT: previewViewFormat = DXGI_FORMAT_R32_FLOAT; break;
-            case DXGI_FORMAT_D24_UNORM_S8_UINT: previewViewFormat = DXGI_FORMAT_R24_UNORM_X8_TYPELESS; break;
-            case DXGI_FORMAT_D16_UNORM: previewViewFormat = DXGI_FORMAT_R16_UNORM; break;
-            default: previewViewFormat = TranslateTypelessFormats(sourceDesc.Format); break;
-            }
-        }
-        static unsigned long long previousPreviewEpoch = 0;
-        const auto presentCounter = State::Instance().frameCount;
-        const auto previewIdentity = std::format(
-            "submissionEpoch={} previousObservedPreviewEpoch={} dxgiPresentCounter={} nrDispatch={} "
-            "presentIdentity=UNKNOWN previousPictureIdentity=UNKNOWN source=0x{:X} resourceFormat={} "
-            "allocation={}x{} viewFormat={} view=Texture2D/mip0/levels{}/plane0 mode={} raw={} "
-            "rect={},{}+{}x{} XYscale={},{} gain={} depthDisplay={} flipY={} MotionMatchesPicture={} reversedZ={} "
-            "reused={} MotionIsPictureFlow={} DepthIsPictureAligned={} sourceOrdinal={} intervalUsed={} "
-            "nativePhaseVerified={} nativePhaseReason={} native_receipt={} generation={} sourceFrame={} picture={} mapping_serial={} content_version={} selected_source={} model_depth_resource={} preview_is_model_depth={} "
-            "motionDirection=UNKNOWN currentJitter=UNKNOWN previousJitter=UNKNOWN motionJitterIncluded=UNKNOWN",
-            frame.SubmissionEpoch, previousPreviewEpoch, presentCounter, g_frames,
-            reinterpret_cast<uintptr_t>(previewSource), static_cast<unsigned>(sourceDesc.Format),
-            sourceDesc.Width, sourceDesc.Height, static_cast<unsigned>(previewViewFormat),
-            previewSource ? (sourceDesc.MipLevels ? sourceDesc.MipLevels : UINT(-1)) : 1u,
-            previewMode, raw, pc.baseX, pc.baseY, pc.regionWidth, pc.regionHeight,
-            pc.motionScaleX, pc.motionScaleY, pc.motionGain, previewMode == 3 ? (raw ? "raw-Z" : "log-near") : "n/a",
-            pc.flipY, frame.MotionMatchesPicture,
-            frame.DepthInverted, reused, frame.MotionIsPictureFlow, frame.DepthIsPictureAligned,
-            DetailReuse::reuseEvidence.sourceOrdinal, DetailReuse::reuseEvidence.intervalUsed,
-            nativePhase.verified, nativePhase.reason,nativeInputObservation!=nullptr,
-            nativeInputObservation?nativeInputObservation->generation:0,nativeInputObservation?nativeInputObservation->sourceFrame:0,
-            nativeInputObservation?nativeInputObservation->pictureSerial:0,nativeInputObservation?nativeInputObservation->source.mapping:0,
-            nativeInputObservation?nativeInputObservation->source.version:0,nativeInputObservation?nativeInputObservation->source.selected:0,
-            reinterpret_cast<uintptr_t>(modelDepth),previewMode==3 && !raw && previewSource && previewSource==modelDepth);
-        previousPreviewEpoch = frame.SubmissionEpoch;
-        const auto savedState = targetState;
-        if (previewMode == 1 && previewSource) TransitionTarget(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        guidePreviewRecorded = DispatchGuidePreview(cmdList, pc, previewSource, g_nr.guidePreview);
-        guidePreviewSource = previewSource;
-        guidePreviewSample = pc;
-        if (previewMode == 1 && previewSource) TransitionTarget(savedState);
-        if (!guidePreviewRecorded) PublishGuidePreview("\xe9\xa2\x84\xe8\xa7\x88\xe4\xb8\x8d\xe5\x8f\xaf\xe7\x94\xa8\xef\xbc\x9a\xe8\xb5\x84\xe6\xba\x90\xe6\x88\x96\xe6\x8f\x8f\xe8\xbf\xb0\xe7\xac\xa6\xe4\xb8\x8d\xe5\x8f\xaf\xe7\x94\xa8\xef\xbc\x9bNR \xe7\x85\xa7\xe5\xb8\xb8\xe8\xbf\x90\xe8\xa1\x8c");
-        else if (!pc.available || !pc.regionWidth || !pc.regionHeight)
-            PublishGuidePreview(sourceName + "\xef\xbc\x9a\xe5\xbd\x93\xe5\x89\x8d\xe5\xb8\xa7\xe4\xb8\x8d\xe5\x8f\xaf\xe7\x94\xa8\xef\xbc\x88\xe6\xa3\x8b\xe7\x9b\x98\xe6\xa0\xbc\xef\xbc\x9b\xe6\x9c\xaa\xe8\xaf\xbb\xe5\x8f\x96\xe6\x97\xa7\xe8\xb5\x84\xe6\xba\x90\xef\xbc\x89");
-        else
-            PublishGuidePreview(sourceName + (reused ? "\xef\xbc\x9b\xe6\x9c\xac\xe5\xb8\xa7\xe5\xa4\x8d\xe7\x94\xa8\xef\xbc\x8c\xe6\xa8\xa1\xe5\x9e\x8b\xe6\x9c\xaa\xe6\xb1\x82\xe5\x80\xbc" : "\xef\xbc\x9b\xe6\xa8\xa1\xe5\x9e\x8b\xe6\xb1\x82\xe5\x80\xbc\xe5\x89\x8d\xe5\xbf\xab\xe7\x85\xa7") +
-                (raw ? "\xef\xbc\x9b\xe5\x8e\x9f\xe5\xa7\x8b\xe8\xb5\x84\xe6\xba\x90\xe5\x9d\x90\xe6\xa0\x87/\xe6\x95\xb0\xe5\x80\xbc" : "\xef\xbc\x9b\xe6\x9c\x89\xe6\x95\x88 NR \xe5\x9d\x90\xe6\xa0\x87") +
-                (pc.flipY ? "\xef\xbc\x9b\xe4\xbb\x85\xe9\xa2\x84\xe8\xa7\x88 Y \xe7\xbf\xbb\xe8\xbd\xac" : "\xef\xbc\x9b\xe9\xa2\x84\xe8\xa7\x88 Y \xe6\x9c\xaa\xe7\xbf\xbb\xe8\xbd\xac") +
-                (previewMode == 3 ? (raw ? "\xef\xbc\x9b\xe5\x8e\x9f\xe5\xa7\x8b\x20\x5a\x20\xe7\x81\xb0\xe5\xba\xa6" : "\xef\xbc\x9b\xe6\xb7\xb1\xe5\xba\xa6\xe5\xa2\x9e\xe5\xbc\xba\xe5\xaf\xb9\xe6\xaf\x94\xef\xbc\x9a\xe8\xbf\x91\xe4\xba\xae\xe8\xbf\x9c\xe6\x9a\x97\xef\xbc\x8c\xe9\x9d\x9e\xe7\xba\xbf\xe6\x80\xa7") : "") +
-                "; rect=" + std::to_string(pc.baseX) + "," + std::to_string(pc.baseY) + "+" +
-                std::to_string(pc.regionWidth) + "x" + std::to_string(pc.regionHeight) +
-                (previewMode == 4 ? "; XY scale=" + std::to_string(pc.motionScaleX) + "," + std::to_string(pc.motionScaleY) : ""));
-        // At most one record per second while enabled; full same-frame identity stays in the menu status.
-        static double lastPreviewLogMs = -1000.0;
-        const double previewNowMs = Util::MillisecondsNow();
-        if (previewNowMs - lastPreviewLogMs >= 1000.0)
-        {
-            LOG_INFO("DLSS-NR input preview identity: recorded={} {}; semantic labels UNKNOWN are not confirmed direction/jitter", 
-                     guidePreviewRecorded, previewIdentity);
-            lastPreviewLogMs = previewNowMs;
-        }
-        PublishGuidePreview(DlssNr::GuidePreviewStatus() + "; " + previewIdentity);
-    }
-    else if (previewMode)
-        PublishGuidePreview(previewCapacity ? "\xe9\xa2\x84\xe8\xa7\x88\xe4\xb8\x8d\xe5\x8f\xaf\xe7\x94\xa8\xef\xbc\x9a\xe7\x8b\xac\xe7\xab\x8b shader \xe5\x88\x9d\xe5\xa7\x8b\xe5\x8c\x96\xe5\xa4\xb1\xe8\xb4\xa5\xef\xbc\x9bNR \xe7\x85\xa7\xe5\xb8\xb8\xe8\xbf\x90\xe8\xa1\x8c" :
-                                             "\xe9\xa2\x84\xe8\xa7\x88\xe8\xb7\xb3\xe8\xbf\x87\xef\xbc\x9aGPU \xe6\x8f\x8f\xe8\xbf\xb0\xe7\xac\xa6\xe4\xbb\x8d\xe5\x9c\xa8\xe4\xbd\xbf\xe7\x94\xa8\xef\xbc\x9bNR \xe7\x85\xa7\xe5\xb8\xb8\xe8\xbf\x90\xe8\xa1\x8c");
 
     // The model's own time: the passes alone, so the detail reuse work above counts as surrounding work (and a reused
     // frame's model time is about zero).
+    if (g_gpuTime) g_gpuTime->Mark(cmdList, DlssNrGpuTime::Point::ModelBegin);
     if (g_ngxTime != nullptr)
-        g_ngxTime->Start(cmdList, State::Instance().frameCount, frame.SubmissionEpoch, g_frames);
+        g_ngxTime->Start(cmdList, recording, State::Instance().frameCount, frame.SubmissionEpoch, g_frames);
 
     // Dispatch-local scalars only: reuse must never export the preceding full frame's inputs.
     // Guide extents below are the invariant Evaluate arguments, not texture descriptor sizes.
@@ -5771,7 +5860,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         if (cfg.DlssNrKernelProfile.value_or_default() && !g_layerTime[pass])
             g_layerTime[pass] = std::make_unique<DlssNrGpuTime>(device, "layer");
         auto* layerTimer = cfg.DlssNrKernelProfile.value_or_default() ? g_layerTime[pass].get() : nullptr;
-        if (layerTimer) layerTimer->Start(cmdList, State::Instance().frameCount, frame.SubmissionEpoch, g_frames);
+        if (layerTimer) layerTimer->Start(cmdList, recording, State::Instance().frameCount, frame.SubmissionEpoch, g_frames);
         NrLayerGpuScope layerGpu { layerTimer, cmdList };
         void* const passFeature = pass == 0 ? g_nr.feature : g_nr.passFeature[pass];
         const bool passReset = g_nr.reset || SceneCut::ResetRequested() || (pass > 0 && g_nr.passNeedsReset[pass]);
@@ -5789,10 +5878,42 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // A temporary busy reuse recording must not toggle the model's bottleneck
         // history every other frame. Reserve full bottleneck evaluation for the
         // selected detail mode, even while its current frame uses fresh NR.
-        const bool detailModeSelected = cfg.DlssNrDetailReuse.value_or_default() &&
-            (cfg.DlssNrDetailReuseInterval.value_or_default() > 1 || cfg.DlssNrPresentedTemporalDetail.value_or_default());
-        const bool vitEveryFrame = frame.FreshColorResetFallback || detailModeSelected || reusePlan.active ||
+        const bool detailModeSelected = NrDetailHistoryPolicy::RequiresFullModelEvaluation(
+            cfg.DlssNrDetailReuse.value_or_default(), cfg.DlssNrDetailReuseInterval.value_or_default(),
+            cfg.DlssNrPresentedTemporalDetail.value_or_default());
+        const bool vitEveryFrame = frame.FullModelRequired || frame.FreshColorResetFallback || detailModeSelected || reusePlan.active ||
             State::Instance().api == Vulkan || GenshinNr::Scope::Current()!=nullptr;
+        // Sample the actual first-pass consumer after normalization, packing,
+        // and composed-motion selection. Borrowed game lists cannot run the sampler.
+        if (pass==0 && frame.IndependentCommands) {
+            GuideCapture::SampleToken previewToken;
+            const bool samplePreview=GuideCapture::TryBeginSample(GuideCapture::Stream::NrModel,previewToken);
+            const bool sampleOffline=GuideCapture::OfflineWanted(GuideCapture::Stream::NrModel);
+            struct CancelPreview {GuideCapture::SampleToken& token;~CancelPreview(){GuideCapture::CancelSample(token);}} cancelPreview{previewToken};
+            if(samplePreview||sampleOffline) {
+            GuideCapture::Inputs capture;
+            capture.colour=passInput; capture.depth=modelDepth; capture.motion=actualModelMotion;
+            capture.colourState=capture.depthState=capture.motionState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            capture.colourRect={0,0,modelWidth,modelHeight};
+            capture.depthRect={evalDepthX,evalDepthY,evalGuideW,evalGuideH};
+            capture.motionRect={actualModelMotionBaseX,actualModelMotionBaseY,evalMotionW,evalMotionH};
+            capture.motionToUvX=evalMvScaleX/modelWidth; capture.motionToUvY=evalMvScaleY/modelHeight;
+            capture.independentRecording=true;
+            auto stamp=DlssNrGuideObservation::Source(frame);
+            stamp.configuration=reuseFrame.revision; stamp.phaseVerified=nativePhase.verified;
+            stamp.depthFlip=depthTextureFlipY; stamp.motionFlip=motionTextureFlipY; stamp.yNegated=invertMotionY;
+            stamp.colour=DlssNrGuideObservation::Resource(passInput,capture.colourRect);
+            stamp.depth=DlssNrGuideObservation::Resource(modelDepth,capture.depthRect);
+            stamp.motion=DlssNrGuideObservation::Resource(actualModelMotion,capture.motionRect);
+            stamp.scaleX=evalMvScaleX; stamp.scaleY=evalMvScaleY;
+            stamp.tick=GuideDiagnostics::Now(); // capture time belongs to this exact recording
+            stamp.colourChoice="first model proxy";
+            auto* realCaptureList=static_cast<ID3D12GraphicsCommandList*>(DetailReuse::RealTemporalCommands(cmdList));
+            const bool previewRecorded=samplePreview&&GuideCapture::TryRecord(previewToken,realCaptureList,capture,stamp);
+            const bool offlineRecorded=sampleOffline&&GuideCapture::RecordOffline(GuideCapture::Stream::NrModel,realCaptureList,capture,stamp);
+            if(previewRecorded||offlineRecorded)DlssNrWatchedLists::Add(realCaptureList);
+            }
+        }
         DlssNrNative::BeginEvaluate(passFeature, passReset,
                                     vitEveryFrame ? 1u : std::clamp(cfg.DlssNrVitEvery.value_or_default(), 1u, 2u),
                                     vitEveryFrame ? 1u : std::clamp(cfg.DlssNrVitEveryPlain.value_or_default(), 1u, 2u),
@@ -5825,7 +5946,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         modelInputSample.lastResult = result;
         // Join the recorded preview to this actual call, including when preview is off.
         // Captured copies and declared mappings cannot establish the native texture's pixel orientation.
-        if (zzzSceneGuideGame && sourceSceneRoute && pass == 0)
+        if (retainedSceneSource && sceneAdmission.routeEligible && pass == 0)
         {
             static unsigned orientationLines = 0;
             static double lastOrientationMs = -1000.0;
@@ -5861,14 +5982,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     evalMotionW, evalMotionH, modelWidth, modelHeight, evalMvScaleX, evalMvScaleY,
                     g_nr.guideDepthInverted, sceneModelGuides, sceneModelMotionCanonical,
                     frame.MotionIsPictureFlow, frame.DepthIsPictureAligned);
-                const auto preview = std::format(
-                    "mode={} raw={} flipY={} recorded={} available={} source=0x{:X} rect={},{}+{}x{} readsModelDepth={}",
-                    previewMode, previewRawRequested, previewFlipRequested, guidePreviewRecorded,
-                    guidePreviewSample.available, reinterpret_cast<uintptr_t>(guidePreviewSource),
-                    guidePreviewSample.baseX, guidePreviewSample.baseY,
-                    guidePreviewSample.regionWidth, guidePreviewSample.regionHeight,
-                    guidePreviewRecorded && guidePreviewSample.available && previewMode == 3 &&
-                        !previewRawRequested && modelDepth && guidePreviewSource == modelDepth);
+                const auto preview = GuideCapture::PreviewStatus();
                 LOG_INFO("F6 NR depth orientation: pid={} epoch={} captureSerial={} captureEpoch={} dispatch={} pass={} result={} "
                          "input_scope=dlssnr_call_evaluate_v2 captured_copy=[{}] mapping=[{}] model=[{}] preview=[{}] "
                          "nativeRows=UNKNOWN cameraMatrices=not-model-arguments fgFlipAuthority=none "
@@ -5956,6 +6070,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 lookParams.Mode = DlssNrMode_LayerLook;
                 lookParams.Width = modelWidth;
                 lookParams.Height = modelHeight;
+                DlssNrLook::FillWorkingDomain(lookParams, encodeParams);
                 DlssNrLook::Fill(lookParams, layerLook);
                 // Borrow the actual Frame only inside NativeDriver's existing
                 // Nr Begin/End bracket. Disabled-mask layers perform no read or
@@ -6057,6 +6172,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         GenshinSubstage::Resource::Nr,GenshinSubstage::Domain::Ngx,static_cast<uint32_t>(result));
     if (g_ngxTime != nullptr)
         g_ngxTime->End(cmdList);
+    if (g_gpuTime) g_gpuTime->Mark(cmdList, DlssNrGpuTime::Point::ModelEnd);
     modelCpu.Stop();
 
     // A failed interpass clamp may leave a displayable successful prefix. Its
@@ -6068,8 +6184,83 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     {
         DlssNrCadence::StageScope afterCpu(DetailReuse::ledger, DlssNrCadence::Stage::ReuseAfter, cadenceIdentity);
         DetailReuse::AfterModel(reuseFrame, reusePlan, historyAnswerComplete, finalAnswer);
+        auto* const freshAnswer = finalAnswer;
+        if(!GuideCapture::HistoryDebugView()&&g_nr.historyDebug)
+        {ParkNrResource(g_nr.historyDebug);g_nr.historyDebugDevice=nullptr;g_nr.historyDebugQueue=nullptr;}
+        DetailHistory::After(reuseFrame, historyAnswerComplete, finalAnswer,CaptureHistoryDebug);
+        if (freshAnswer != finalAnswer)
+        {
+            const auto feedback = DetailHistory::Status();
+            DetailReuse::CaptureContribution(reuseFrame, freshAnswer, finalAnswer,
+                feedback.historySource, feedback.historyUsable);
+        }
     }
 
+    if (g_gpuTime) g_gpuTime->Mark(cmdList, DlssNrGpuTime::Point::HistoryEnd);
+    // Model-call success and history recording are separate observations. Neither
+    // CPU result nor queue ordering proves GPU completion or nonzero contribution.
+    GuideDiagnostics::ObserveConsumers([&] {
+    auto modelObservation=DlssNrGuideObservation::Source(frame);
+    modelObservation.configuration=reuseFrame.revision;
+    modelObservation.feature=reinterpret_cast<uintptr_t>(g_nr.feature);
+    modelObservation.owner=reuseFrame.owner;
+    modelObservation.depthFlip=depthTextureFlipY; modelObservation.motionFlip=motionTextureFlipY;
+    modelObservation.yNegated=invertMotionY; modelObservation.depthInverted=g_nr.guideDepthInverted;
+    modelObservation.opticalFlow=frame.MotionIsPictureFlow; modelObservation.phaseVerified=nativePhase.verified;
+    modelObservation.Set(GuideDiagnostics::Field::Phase,nativePhase.verified,true,GuideDiagnostics::Origin::ActualCall);
+    modelObservation.colour=DlssNrGuideObservation::Resource(modelInput,{0,0,modelWidth,modelHeight});
+    modelObservation.depth=DlssNrGuideObservation::Resource(modelDepth,{evalDepthX,evalDepthY,evalGuideW,evalGuideH});
+    modelObservation.motion=DlssNrGuideObservation::Resource(actualModelMotion,
+        {actualModelMotionBaseX,actualModelMotionBaseY,evalMotionW,evalMotionH});
+    modelObservation.scaleX=evalMvScaleX; modelObservation.scaleY=evalMvScaleY;
+    modelObservation.modelSuccess=!reused && historyAnswerComplete && modelInputSample.calls!=0;
+    modelObservation.accepted=modelInputSample.calls!=0;
+    modelObservation.stage=modelInputSample.calls?GuideDiagnostics::Stage::Recorded:GuideDiagnostics::Stage::Rejected;
+    modelObservation.reason=reused?"model skipped: history reuse":modelObservation.modelSuccess?
+        "model chain recorded successfully":"model chain failed or incomplete";
+    modelObservation.resetReason=reuseFrame.modelReset?"source/model reset":reusePlan.resetModel?"reuse realignment":"";
+    modelObservation.colourChoice="first model proxy";
+    DlssNrGuideObservation::Recorded(GuideDiagnostics::Consumer::NrModel,modelObservation,recording);
+    auto historyObservation=modelObservation;
+    historyObservation.colour=DlssNrGuideObservation::Resource(reuseFrame.modelInput,{0,0,workWidth,workHeight});
+    historyObservation.depth=DlssNrGuideObservation::Resource(reuseFrame.depth,
+        {reuseFrame.depthBaseX,reuseFrame.depthBaseY,reuseFrame.depthWidth,reuseFrame.depthHeight});
+    historyObservation.motion=DlssNrGuideObservation::Resource(reuseFrame.motion,
+        {reuseFrame.motionBaseX,reuseFrame.motionBaseY,reuseFrame.motionWidth,reuseFrame.motionHeight});
+    historyObservation.scaleX=reuseFrame.mvScaleX; historyObservation.scaleY=reuseFrame.mvScaleY;
+    historyObservation.historySource=DetailReuse::publishedOrdinal;
+    historyObservation.historyAvailable=DetailReuse::decision.historyUsable;
+    historyObservation.fusionRecorded=DetailReuse::temporalFusionRecorded;
+    const bool historyCaptureRecorded=DetailReuse::temporalRecording.pending && DetailReuse::temporalRecording.publish &&
+        DetailReuse::temporalRecording.commands==DetailReuse::RealTemporalCommands(cmdList) &&
+        DetailReuse::temporalRecording.ordinal==reuseFrame.frameNumber;
+    historyObservation.accepted=historyCaptureRecorded || historyObservation.fusionRecorded;
+    historyObservation.stage=historyObservation.accepted?GuideDiagnostics::Stage::Recorded:GuideDiagnostics::Stage::Rejected;
+    const auto historyStatus=DetailReuse::host.Status();
+    historyObservation.reason=historyObservation.fusionRecorded?"history fusion recorded; contribution unmeasured":
+        historyCaptureRecorded?"history source capture recorded; fusion not recorded":
+        !sceneAdmission.Admitted() && sceneAdmission.routeEligible?sceneGuideGate:
+        !nativePhase.verified && reuseFrame.nativeTemporalRouteRequested?nativePhase.reason:
+        !historyStatus.why.empty()?historyStatus.why:DetailReuse::historyReadiness;
+    if (reuseFrame.independentFeedbackRequested)
+    {
+        const auto feedback = DetailHistory::Status();
+        historyObservation.historySource = feedback.historySource;
+        historyObservation.historyAvailable = feedback.historyUsable;
+        historyObservation.fusionRecorded = feedback.recorded && feedback.historyUsable;
+        historyObservation.accepted = feedback.recorded;
+        historyObservation.stage = feedback.recorded ? GuideDiagnostics::Stage::Recorded : GuideDiagnostics::Stage::Rejected;
+        historyObservation.reason = feedback.recorded
+            ? (feedback.historyUsable ? "independent residual feedback recorded; pixel contribution unmeasured"
+                                      : "fresh detail seed recorded; no prior history accepted")
+            : feedback.reason;
+        historyObservation.colourChoice = frame.NativePreSrRoute ? "pre-SR raster residual history" : "canonical scene residual history";
+    }
+    // Rejected history does not become Completed just because the model's list did.
+    if (historyObservation.accepted)
+        DlssNrGuideObservation::Recorded(GuideDiagnostics::Consumer::NrHistory,historyObservation,recording);
+    else GuideDiagnostics::Publish(GuideDiagnostics::Consumer::NrHistory,historyObservation);
+    });
     g_nr.reset = false;
 
     // Compress screen edges: the packed model input and the model's answer back to the ordinary grid, both through the
@@ -6423,11 +6614,18 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
 
-        DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer, resolveOriginal, motionIn,
-                    exposureTex, resolveTarget, nullptr);
-        composed = true;
+        composed = DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer, resolveOriginal, motionIn,
+                                exposureTex, resolveTarget, nullptr);
+        if (!composed)
+        {
+            // The private output may still contain last frame. A CPU model
+            // success does not authorize publishing it after a failed resolve.
+            g_nr.reset = true;
+            DetailHistory::Invalidate();
+            ReportSkipOnce("the current final colour resolve could not be recorded");
+        }
 
-        if (!targetSupportsUav)
+        if (composed && !targetSupportsUav)
         {
             Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -6438,8 +6636,14 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_COPY_SOURCE,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
+        else if (!targetSupportsUav)
+        {
+            // Restore the same post-resolve state even when no write happened.
+            Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
 
-        if (CalibrationActive())
+        if (composed && CalibrationActive())
         {
             const D3D12_RESOURCE_STATES priorTargetState = targetState;
             TransitionTarget(D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -6471,7 +6675,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // upscaler produced it, and the edited frame is the output itself. The write happens a few
         // frames later, once the GPU is certainly past these copies -- this path has no fence of its
         // own.
-        if (g_capture.isActive())
+        if (composed && g_capture.isActive())
         {
             g_capture.record(cmdList, device, g_nr.colorCopy,
                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, target,
@@ -6506,6 +6710,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                   NgxResultName((unsigned int) result));
     }
 
+    if (g_gpuTime) g_gpuTime->Mark(cmdList, DlssNrGpuTime::Point::ResolveEnd);
     // On an evaluation failure, intermediate A/B inputs may still be readable. Restore both persistent
     // ping-pong surfaces to the UAV state the next frame starts from.
     MakeModelWritable(g_nr.output);
@@ -6519,6 +6724,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         MakeModelWritable(g_nr.passClampScratch2);
 
     DetailReuse::AfterResolve(cmdList);
+    DetailHistory::AfterResolve(cmdList);
 
     Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -6535,18 +6741,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
 
-    // All ordinary resolve, history and capture work is complete. Only the displayed target is replaced;
-    // no preview resource feeds the model or the reuse cadence on this or a later frame.
-    if (composed && guidePreviewRecorded)
-    {
-        Barrier(cmdList, g_nr.guidePreview, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        const auto priorState = targetState;
-        TransitionTarget(D3D12_RESOURCE_STATE_COPY_DEST);
-        cmdList->CopyResource(target, g_nr.guidePreview);
-        TransitionTarget(priorState);
-        Barrier(cmdList, g_nr.guidePreview, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    }
-
     // Failed evaluations leave the game's original image intact. A successful copy-back writes
     // only the active rectangle and restores both resources before DLSS consumes the image.
     FinishColor(composed);
@@ -6561,7 +6755,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         metadata.epoch = frame.SubmissionEpoch; metadata.dispatch = g_frames;
         metadata.encoding = frame.ColourEncoding ? frame.ColourEncoding : frame.ColourIsLinearHdr ? 1u : 2u;
         metadata.hdr = frame.ColourIsLinearHdr; metadata.debugView = captureDebugView;
-        metadata.guidePreview = composed && guidePreviewRecorded ? previewMode : 0u;
+        metadata.guidePreview = 0; // preview never replaces normal NR/SDK colour
         metadata.reused = reused; metadata.modelApplied = composed && cfg.DlssNrApplyModel.value_or_default();
         DlssNrCurrentOutput::Capture::Instance().Record(cmdList, device, gameColor, outputArrival,
             0, 0, width, height, metadata, recording, nullptr, nullptr, false,
@@ -6598,6 +6792,16 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             }
             for (const auto& sample : totalEvidence)
             {
+                static unsigned phaseLines = 0;
+                if (sample.intervalsKnown && phaseLines < 1024)
+                {
+                    ++phaseLines;
+                    const auto& ms = sample.intervalsMs;
+                    LOG_INFO("F6 NR GPU partition: sampleDispatch={} sampleEpoch={} queue=0x{:x} list=0x{:x} fenceTarget={} fenceCompleted={} total_ms={:.4f} before_encode_ms={:.4f} encode_ms={:.4f} model_prepare_ms={:.4f} model_ms={:.4f} history_ms={:.4f} resolve_ms={:.4f} finish_ms={:.4f} disjoint=true same_recording=true sampling=first3_then64 completion=existing_actual_queue_fence no_new_wait=true gpu_active_exclusive=UNKNOWN",
+                        sample.dispatch, sample.submissionEpoch, sample.queue, sample.list,
+                        sample.fenceTarget, sample.fenceCompleted, sample.milliseconds,
+                        ms[0], ms[1], ms[2], ms[3], ms[4], ms[5], ms[6]);
+                }
                 DetailReuse::RecordGpuTime(sample.milliseconds);
                 GpuTimeline::Publish(GpuTimeline::Stream::Nr, sample.reflexFrame, sample.beginQpcUs, sample.endQpcUs,
                     sample.timelineDevice);
@@ -6662,7 +6866,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 ++cadenceEvidenceLines;
                 const auto& account = DetailReuse::ledger;
                 const auto& reuse = DetailReuse::reuseEvidence;
+                const auto feedback = DetailHistory::Status();
                 LOG_INFO("DLSS-NR cadence recorded owner=0x{:x} config={} picture={} dispatch={} queue=0x{:x} list=0x{:x} listGen={} modelCalls={} modelFailures={} reuseFull={} reuseAccepted={} reuseRefused={} requested={} intervalUsed={} cacheReason={} sourceOrdinal={} sourceFenceTarget={} sourceFenceCompleted={} sourceQueueOrdered={} pendingRecordings={} targetFence={} slotInFlight={} bytesUpperBound={} exposureUnknown={} fenceUnknown={} slotBusy={} byteCap={} gpuCompletionSamples={} colourSize={}x{} workSize={}x{} motionRect={},{}+{}x{} modelMvScale={},{} reuseMvScale={},{} coordinateKey={} motionIsPictureFlow={} nativePhaseVerified={} historyReadSlot={} historyWriteSlot={} captureRecorded={} sourceOrdinal_scope=nr_reuse_source nativeSrJoin={} srGeneration={} srSourceFrame={} srPictureSerial={} "
+                    "detailFeedbackRequested={} detailFeedbackActive={} detailFeedbackHistoryUsable={} detailFeedbackRecorded={} detailFeedbackPublished={} detailFeedbackQueueOrdered={} detailFeedbackSource={} detailFeedbackReason={} detailFeedbackPending={} detailFeedbackBytes={} "
                     "historyReadiness={} recordingReadiness={} sourceFenceObject=0x{:x} orderedNativeQueue={} producerNativeGuideContract={} "
                     "feedbackRequested={} feedbackMode={} guideGate={} producerDepthGuides={} producerFlowGuides={} feedbackActive={} feedbackHistoryUsable={} feedbackFusionRecorded={} feedbackDurationMs={} feedbackCoeff={} feedbackMaxAgeMs={} feedbackStrengthLimit={} feedbackReset={} feedbackDepth={} completedRetirementsOnly={} "
                     "sceneModelGuides={} sceneModelMotion={} conditionalSceneGeometry={} sceneSource={} sceneGuideGate={} guideMappingVersion=1 "
@@ -6670,7 +6876,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     "modelLastPass={} modelLastResult={} modelOutcome={} modelPassesCompleted={} modelPassesPlanned={} historyAnswerComplete={} modelDepth=0x{:x} modelMV=0x{:x} "
                     "modelDepthRect={},{}+{}x{} modelMVRect={},{}+{}x{} modelSize={}x{} "
                     "modelInput_scope=last_actual_evaluate_this_dispatch modelGpuComplete=UNKNOWN "
-                    "sr_to_backbuffer_pixels=UNKNOWN presented=UNKNOWN queueWait=UNKNOWN gpuExclusive=UNKNOWN exportLine={}/64",
+                    "sr_to_backbuffer_pixels=UNKNOWN presented=UNKNOWN queueWait=UNKNOWN gpuExclusive=UNKNOWN "
+                    "watchedOverflow={} watchedOverflowPeak={} retiredEntries={} trackedRecordings={} registryHalted={} exportLine={}/64",
                     reuse.identity.owner, reuse.identity.config, reuse.identity.pictureOrdinal, g_frames,
                     reuse.identity.queue, reuse.identity.list, reuse.identity.listGeneration,
                     account.modelCalls, account.modelFailures, account.reuseFull, account.reuseAccepted,
@@ -6692,24 +6899,32 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     nativeInputObservation?nativeInputObservation->generation:0,
                     nativeInputObservation?nativeInputObservation->sourceFrame:0,
                     nativeInputObservation?nativeInputObservation->pictureSerial:0,
+                    feedback.requested, feedback.active, feedback.historyUsable,
+                    feedback.recorded, feedback.published, feedback.queueOrdered,
+                    feedback.historySource, feedback.reason, feedback.pending, feedback.bytes,
                     DetailReuse::historyReadiness, DetailReuse::recordingReadiness,
                     DetailReuse::sourceFenceIdentity,
                     reuseFrame.orderedNativeQueue, frame.NativeGuideContractVerified,
                     cfg.DlssNrPresentedTemporalDetail.value_or_default(),
+                    reuseFrame.independentFeedbackRequested ? "independent-full-model-residual" :
                     reuseFrame.sceneGeometryVerified ? "picture-flow-conditional-scene-geometry" :
                     reuseFrame.pictureFlowReuseVerified ? "picture-flow-source-interval-no-depth" :
                     reuseFrame.pictureFlowFeedbackVerified ? "picture-flow-colour-no-depth" :
                         pictureTemporalQualified ? "picture-depth" :
                         reuseFrame.nativeTemporalRouteRequested ? "native-depth" : "unqualified",
                     !cfg.DlssNrPresentedTemporalDetail.value_or_default() ? "not-requested" :
+                    reuseFrame.nativeTemporalRouteRequested ? (nativePhase.verified ? "native-qualified" : nativePhase.reason) :
                     pictureFeedbackQualified ? "qualified" :
                         !reuseFrame.pictureTemporalRouteRequested ? "ordinary-picture-route-unverified" :
                         !frame.PictureTemporalGuidesVerified && !frame.PictureFlowGuidesVerified &&
                             !frame.PictureFlowReuseGuidesVerified ? "producer-guide-contract-not-issued" :
                         "consumer-guide-coordinate-or-mode-unverified",
                     frame.PictureTemporalGuidesVerified, frame.PictureFlowGuidesVerified,
-                    reusePlan.active && reusePlan.temporal && reuseFrame.temporalRequested,
-                    DetailReuse::decision.historyUsable, DetailReuse::temporalFusionRecorded,
+                    reuseFrame.independentFeedbackRequested ? feedback.active :
+                        reusePlan.active && reusePlan.temporal && reuseFrame.temporalRequested,
+                    reuseFrame.independentFeedbackRequested ? feedback.historyUsable : DetailReuse::decision.historyUsable,
+                    reuseFrame.independentFeedbackRequested ? feedback.recorded && feedback.historyUsable :
+                        DetailReuse::temporalFusionRecorded,
                     std::min(cfg.DlssNrPresentedTemporalDurationMs.value_or_default(), Config::kPresentedTemporalDurationMaxMs),
                     DetailReuse::params.TemporalHistoryWeight,
                     cfg.DlssNrPresentedTemporalMaxAgeMs.value_or_default(),
@@ -6727,7 +6942,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     modelInputSample.motionBaseX, modelInputSample.motionBaseY,
                     modelInputSample.calls ? evalMotionW : 0u, modelInputSample.calls ? evalMotionH : 0u,
                     modelInputSample.calls ? modelWidth : 0u, modelInputSample.calls ? modelHeight : 0u,
-                    cadenceEvidenceLines);
+                    DlssNrWatchedLists::g_overflowCount.load(std::memory_order_acquire),
+                    DlssNrWatchedLists::g_overflowPeak.load(std::memory_order_relaxed),
+                    g_nrRetired.size(), g_nrGpuWork.Tracked(), g_nrGpuWork.Halted(), cadenceEvidenceLines);
             }
             const auto observe = [&](const char* scope, DlssNrGpuTime* timer,
                                      const std::vector<DlssNrGpuTime::Evidence>& fresh) {
@@ -6741,15 +6958,15 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 // Counts describe coverage, never a zero GPU duration for missing samples.
                 // Keep status after the sample budget is exhausted so suppression remains visible.
                 if (evidenceStatus)
-                    LOG_INFO("DLSS-NR GPU evidence status scope={} observeAppFrame={} observeEpoch={} observeDispatch={} fresh={} pending={} recorded={} submitted={} quarantined={} attempts={} sampled={} skipped={} reset={} abandoned={} completed={} invalid={} mapFailed={} frequencyFailed={} signalFailed={} deviceRemoved={} freshOverflow={} evidenceLines={} evidenceLimit={} evidenceSuppressed={}",
+                    LOG_INFO("DLSS-NR GPU evidence status scope={} observeAppFrame={} observeEpoch={} observeDispatch={} fresh={} pending={} recorded={} submitted={} quarantined={} attempts={} sampled={} skipped={} reset={} abandoned={} completed={} invalid={} mapFailed={} frequencyFailed={} signalFailed={} deviceRemoved={} freshOverflow={} evidenceLines={} evidenceLimit={} evidenceSuppressed={} missingReceipt={} awaitingReset={} completion=shared_recording_fence timer_signals=0",
                         scope, State::Instance().frameCount, frame.SubmissionEpoch, g_frames,
                         fresh.size(), status.pending, status.recorded, status.submitted, status.quarantined,
                         status.attempts, status.attempts - status.dropped, status.dropped, status.reset,
                         status.abandoned, status.completed, status.invalid, status.mapFailed,
                         status.frequencyFailed, status.signalFailed, status.deviceRemoved, status.freshOverflow,
-                        evidenceLines, evidenceLineLimit, evidenceSuppressed);
+                        evidenceLines, evidenceLineLimit, evidenceSuppressed, status.missingReceipt, status.awaitingReset);
                 for (const auto& sample : fresh)
-                    if ((sample.sequence <= 3 || sample.milliseconds >= 50.0) && emit())
+                    if ((sample.sequence <= 3 || sample.sequence % 64 == 0 || sample.milliseconds >= 50.0) && emit())
                         LOG_INFO("DLSS-NR GPU evidence completed scope={} observeAppFrame={} observeEpoch={} observeDispatch={} sampleAppFrame={} sampleEpoch={} sampleDispatch={} sameDispatch={} sequence={} beginTicks={} endTicks={} queueHz={} ms={:.4f} list=0x{:x} queue=0x{:x} fence=0x{:x} fenceTarget={} fenceCompleted={}",
                             scope, State::Instance().frameCount, frame.SubmissionEpoch, g_frames,
                             sample.appFrame, sample.submissionEpoch, sample.dispatch,
@@ -6801,10 +7018,32 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
 namespace DlssNr
 {
+bool UsesGenshinPresentPipeline()
+{
+    static const bool genshin = [] {
+        wchar_t path[32768] {};
+        const auto length = GetModuleFileNameW(nullptr, path, DWORD(std::size(path)));
+        if (!length || length >= std::size(path)) return false;
+        const auto* name = wcsrchr(path, L'\\');
+        name = name ? name + 1 : path;
+        return _wcsicmp(name, L"YuanShen.exe") == 0 || _wcsicmp(name, L"GenshinImpact.exe") == 0;
+    }();
+    return GameRouting::UseGenshinPresentPipeline(
+        genshin ? GameRouting::Identity::Genshin : GameRouting::Identity::Other,
+        Config::Instance()->DlssNrGenshinPresentPipeline.value_or_default());
+}
+
+namespace GenshinPresentation
+{
+NrPresentation::SourceClock sourceClock;
+GuideSourceMetadata::Ptr currentMetadata;
+NrPresentation::Source lastWrittenSource;
+uint64_t lastOutputOwner = 0, lastOutputQueue = 0;
+}
+
 std::string GuidePreviewStatus()
 {
-    std::lock_guard lock(g_guidePreviewStatusMutex);
-    return g_guidePreviewStatus;
+    return GuideCapture::PreviewStatus();
 }
 namespace Late { bool CaptureResidual(ID3D12GraphicsCommandList*, ID3D12Resource*, ID3D12Resource*, float, bool); }
 #include "DlssNr_DeferredSr.inl"
@@ -6883,7 +7122,7 @@ void CaptureCurrentPresentOutput(IDXGISwapChain* swapchain, ID3D12CommandQueue* 
     metadata.hdr = metadata.encoding == 1 || metadata.encoding == 4;
     metadata.modelApplicationKnown = false; metadata.selectionKnown = false;
     metadata.debugView = Config::Instance()->DlssNrDebugView.value_or_default();
-    metadata.guidePreview = Config::Instance()->DlssNrGuidePreview.value_or_default();
+    metadata.guidePreview = 0; // independent output preview only
     metadata.modelApplied = Config::Instance()->DlssNrEnabled.value_or_default() && Config::Instance()->DlssNrApplyModel.value_or_default();
     metadata.stage = "DX12-current-Present-backbuffer-after-NR-before-Opt-UI";
     // Copy-only private list: never register in the NR registry. Its own fence,
@@ -6901,9 +7140,10 @@ void CaptureCurrentPresentOutput(IDXGISwapChain* swapchain, ID3D12CommandQueue* 
     }
     ID3D12CommandList* lists[] { commands.Get() };
     const auto callbacksBefore = finishedPictureSubmitCallbacks;
+    const auto previewReceipt=FinishedPictureSubmitting(actualQueue,1,lists);
     actualQueue->ExecuteCommandLists(1, lists);
     if (finishedPictureSubmitCallbacks == callbacksBefore)
-        FinishedPictureSubmitted(actualQueue, 1, lists);
+        FinishedPictureSubmitted(actualQueue, 1, lists, previewReceipt);
     capture.SealOwned(commands.Get()); // private list has no other consumer or future execution
 }
 
@@ -6918,6 +7158,9 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
                       bool beforeUpscale, ID3D12CommandQueue* timingQueue, bool rayReconstruction,
                       unsigned long long submissionEpoch, UpscaleSource source = {})
 {
+    // The selected presentation adapter owns this source exclusively. Normal
+    // pre/post-SR selection must reach its actual Evaluate seam instead.
+    if (UsesGenshinPresentPipeline()) return;
     std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
     const Config& cfg = *Config::Instance();
     static uint32_t appliedColourEncoding = 0;
@@ -7194,8 +7437,9 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
     if(genshinNr && !genshinNr->Resources(output,depth,motion)) {
         ReportSkipOnce("Genshin NR resources changed after admission");return;
     }
-    unsigned int createFlags = 0;
-    params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &createFlags);
+    unsigned int createFlags = source.featureFlags;
+    if (!source.featureFlagsKnown)
+        params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &createFlags);
 
     DlssNrFrameInfo frame {};
     frame.DepthInverted = (createFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
@@ -7220,7 +7464,7 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
     // Color and Output may use different formats even though DLSS treats them as the same frame colour
     // space. Output is the stable authority across injection points; target is only a fallback for a
     // malformed parameter block.
-    ID3D12Resource* colourAuthority = output != nullptr ? output : target;
+    ID3D12Resource* colourAuthority = beforeUpscale ? target : (output != nullptr ? output : target);
     // Finished Picture decodes the screen, not this evaluate, and reports its own choice.
     if(!genshinNr)ApplyColourEncoding(frame, appliedColourEncoding,
                         (createFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0,
@@ -7242,19 +7486,35 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
             frame.Reset = gameReset != 0;
     }
 
-    // How much of the guides is real. See DlssNrFrameInfo -- zero means the game did not say.
-    params->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &frame.RenderSubrectWidth);
-    params->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, &frame.RenderSubrectHeight);
-    params->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, &frame.DepthSubrectBaseX);
-    params->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, &frame.DepthSubrectBaseY);
-    params->Get(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, &frame.MotionSubrectBaseX);
-    params->Get(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, &frame.MotionSubrectBaseY);
-
-    if (params->Get(NVSDK_NGX_Parameter_MV_Scale_X, &frame.MvScaleX) != NVSDK_NGX_Result_Success)
-        frame.MvScaleX = 1.0f;
-
-    if (params->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &frame.MvScaleY) != NVSDK_NGX_Result_Success)
-        frame.MvScaleY = 1.0f;
+    // Read numeric facts from this exact Evaluate and the live feature. Diagnostic
+    // observations are never a capability for source identity or GPU retirement.
+    EvaluateGuides::Read(frame, *params, source, depth, motion);
+    if (beforeUpscale && !genshinNr)
+    {
+        frame.NativePreSrRoute = true;
+        frame.NativeSceneRoute = true;
+        frame.NativePreSrOwner[0] = source.ngxHandle;
+        frame.NativePreSrOwner[1] = reinterpret_cast<uintptr_t>(source.virtualContext);
+        frame.NativePreSrOwner[2] = source.virtualGeneration;
+        // Use the actual producer's source clock. Counting only NR calls would
+        // hide skipped sources and pair one-frame MV with older history.
+        // Callers without a real source ordinal keep fresh NR.
+        frame.SourceCaptureSerial = submissionEpoch;
+        frame.SourceCaptureEpoch = source.virtualGeneration;
+        // DX11-on-12 supplies its actual producer queue. A native caller that
+        // only has a global queue hint keeps fresh NR until it proves an owner.
+        frame.NativePresentQueueIdentity = timingQueue;
+        // This call holds the live provider and its Color/guide parameters. A
+        // counter, a cached descriptor or a global queue cannot replace that.
+        frame.NativeBaseIdentityVerified = source.virtualContext != nullptr &&
+            source.virtualGeneration != 0 && source.virtualGeneration != UINT64_MAX &&
+            GetResource(params, NVSDK_NGX_Parameter_Color, "DLSSD.Color") == target &&
+            EvaluateGuides::Fits(target, 0, 0, frame.RenderSubrectWidth, frame.RenderSubrectHeight);
+        frame.NativeCurrentDepthVerified = frame.NativeBaseIdentityVerified &&
+            EvaluateGuides::Fits(depth, frame.DepthSubrectBaseX, frame.DepthSubrectBaseY,
+                frame.RenderSubrectWidth, frame.RenderSubrectHeight);
+        frame.NativeRouteConventionVerified = frame.NativeBaseIdentityVerified && frame.NativeGuideMetadataKnown;
+    }
 
     // Consume immutable source-frame/profile values rather than mutable provider flags.
     // The identity domain sets the actual encode/resolve passthrough path.
@@ -7581,7 +7841,27 @@ FollowGameStatus FollowGameExposureStatus()
 
 // Read every menu frame, so it does not take g_nrMutex (held through NR's whole recording): the status is published
 // at the end of each BeforeModel.
-DetailReuseInfo DetailReuseStatus() { return DetailReuse::Published(); }
+DetailReuseInfo DetailReuseStatus()
+{
+    // Menu reads a fixed published observation, never the NR mutex or GPU owner.
+    const auto feedback = DetailHistory::Published();
+    if (!feedback.requested)
+        return DetailReuse::Published();
+    auto result = DetailReuse::Published();
+    result.active = feedback.recorded;
+    result.full = feedback.full;
+    result.reused = 0; // persistent detail never skips a model evaluation
+    result.modelCalls = feedback.modelCalls;
+    result.modelFailures = feedback.modelFailures;
+    result.modelCallCountsKnown = feedback.modelCallCountsKnown;
+    result.feedbackSource = feedback.source;
+    result.feedbackConfiguration = feedback.configuration;
+    result.feedbackOwner = feedback.owner;
+    result.feedbackHistoryUsable = feedback.historyUsable;
+    result.baseFps = 0; // old interval cadence does not measure this independent route
+    result.why = feedback.reason;
+    return result;
+}
 
 // A copy published as each evaluate's scene-cut work ends (DlssNr_SceneCut.inl): the menu never waits for g_nrMutex.
 SceneCutInfo SceneCutStatus() { return SceneCut::Status(); }
@@ -7654,7 +7934,7 @@ void Shutdown()
     std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
     DlssNrCurrentOutput::Capture::Instance().Shutdown();
     DlssNr::ModelScalars::Invalidate(DlssNr::ModelScalars::Consumer::Dx12);
-    if (!DetailReuse::SafeToRelease())
+    if (!DetailReuse::SafeToRelease() || !DetailHistory::SafeToRelease())
     {
         LOG_WARN("DLSS-NR shutdown deferred: detail reuse submission is in flight or completion is unknown");
         return;
@@ -7716,6 +7996,7 @@ void Shutdown()
     }
 
     DetailReuse::Release();
+    DetailHistory::Release();
     SceneCut::Release();
 
     if (g_nr.passScratch != nullptr)
@@ -7950,10 +8231,11 @@ namespace DetailReuse
 {
 void RetireCompletedNativeRecordings(const Frame& f)
 {
-    // Only the actual StarRail independent endpoint can ask its pool owner to
+    // Only these actual independent endpoints can ask their pool owner to
     // close idle recordings. The current list is already recording and MUST be
     // excluded. Serial/epoch tie it to this source, not a physical FG Present.
-    if (!f.orderedNativeQueue || !f.info || !DlssNr::Late::IsStarRailProcess() ||
+    if (!f.orderedNativeQueue || !f.info ||
+        (!DlssNr::Late::IsStarRailProcess() && !f.info->GenshinPresentPipeline) ||
         !f.info->NativeSceneRoute || !f.info->IndependentCommands ||
         f.info->FreshColorResetFallback || !f.frameNumber || f.frameNumber == UINT64_MAX ||
         !f.info->SourceCaptureEpoch || f.info->SourceCaptureEpoch == UINT64_MAX)
@@ -7963,7 +8245,7 @@ void RetireCompletedNativeRecordings(const Frame& f)
     {
         if (!slot.dx11Bridge || slot.residualOnly || slot.quarantined || !slot.commands ||
             RealSubmittedCommands(slot.commands.Get()) != currentList ||
-            slot.serial != f.frameNumber || slot.frame.SourceCaptureSerial != f.frameNumber ||
+            (!f.info->GenshinPresentPipeline && slot.serial != f.frameNumber) || slot.frame.SourceCaptureSerial != f.frameNumber ||
             slot.frame.SourceCaptureEpoch != f.info->SourceCaptureEpoch || !slot.backBufferIdentity)
             continue;
         // The existing owner checks each idle slot's ORIGINAL final fence and

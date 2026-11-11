@@ -1,4 +1,5 @@
 ﻿#include "pch.h"
+#include <runtime/F6InputPolicy.h>
 #include <resource_tracking/DrawObservation_Dx11.h>
 #include <ui_mask/DrawUiMask.h>
 
@@ -537,9 +538,8 @@ bool BeforeGenshinDraw(ID3D11DeviceContext* context,uintptr_t diagnosticCaller,
         // Writer subscription is selected under the existing native owner lock.
         // Keep the actual draw metadata above even when optional collection is off.
     }
-    // Target-only hint after current demand and generic draw observations.
-    // Zero/unknown (including DrawAuto/Indirect) cannot enter the fast reject.
-    const bool knownNonTargetDraw=countKnown && count!=0 && count!=3;
+    // Geometry is draw metadata, not a proof that this is a non-upscaler pass.
+    // The native owner authenticates the current shader and resource schema.
     struct Guard { Guard(){ t_genshinCapture=true; } ~Guard(){ t_genshinCapture=false; } } guard;
     GenshinLegacy::OptionalDrawObserver optional;
     if(observationActive)optional.collect=+[](ID3D11DeviceContext* context)noexcept{
@@ -549,7 +549,7 @@ bool BeforeGenshinDraw(ID3D11DeviceContext* context,uintptr_t diagnosticCaller,
     if(!acquiredControls)inputsEnabled=Config::Instance()->EnableFsr2Inputs.value_or_default() &&
         Config::Instance()->UseFsr2Inputs.value_or_default();
     const auto action=GenshinLegacy::BeforeNativeDraw(context,count,inputsEnabled,countKnown,drawKind,
-        acquiredControls?&*acquiredControls:nullptr,knownNonTargetDraw,&optional);
+        acquiredControls?&*acquiredControls:nullptr,&optional);
     if(action!=GenshinFsr::NativeDrawAction::ContinueOriginal){
         GenshinReturnedRaster::BeforeUntrackedRaster(context,UntrackedDiagnostic(drawKind,GenshinReturnedRaster::UntrackedSite::BridgeHandled,diagnosticCaller,static_cast<unsigned>(action)));return true;}
     if(observationActive && optional.full)GenshinDepthMapping::Deferred::Outputs(context,false,true);
@@ -1262,12 +1262,15 @@ HRESULT STDMETHODCALLTYPE hkDepthMap(ID3D11DeviceContext* c,ID3D11Resource* r,UI
         if(FAILED(result) && gimiMap)gimi::runtime::VertexMapFailed(c,r,sub,gimiMap);
         return result;
     }
-    auto portableBefore=(!TrackingInternal()&&g_genshinInstalled.load())?GenshinDepthPortable::Before(c,r):nullptr;
-    { GenshinDepthPortable::MapInvalidation mapBoundary(r);
-      GenshinReturnedRaster::Invalidate(c,r,GenshinReturnedRaster::Boundary::Map,"Map"); }
+    const bool preserving=type==D3D11_MAP_WRITE || type==D3D11_MAP_READ_WRITE || type==D3D11_MAP_WRITE_NO_OVERWRITE;
+    auto portableBefore=(!TrackingInternal() && g_genshinInstalled.load() && preserving && !sub &&
+        !(flags&~D3D11_MAP_FLAG_DO_NOT_WAIT))?GenshinHookCpuTiming::ObserveWork(
+            GenshinHookCpuTiming::Stage::MapPreimage,[&]{return GenshinDepthPortable::Before(c,r);}):nullptr;
+    GenshinHookCpuTiming::ObserveWork(GenshinHookCpuTiming::Stage::MapInvalidate,[&]{
+        GenshinDepthPortable::MapInvalidation mapBoundary(r);
+        GenshinReturnedRaster::Invalidate(c,r,GenshinReturnedRaster::Boundary::Map,"Map"); });
     // Portable content invalidation follows successful writable Map below.
     // Replay/semantic/query invalidation at entry is deliberately unchanged.
-    GenshinDepthSemantic::Invalidate(c,r,true);
     const auto result=(!r && !TrackingInternal() && RefuseNullGenshinMap(c,r))?E_INVALIDARG:r448Hook.Original([&]{return o_DepthMap(c,r,sub,type,flags,mapped);});
     if(FAILED(result))
     {
@@ -1277,12 +1280,17 @@ HRESULT STDMETHODCALLTYPE hkDepthMap(ID3D11DeviceContext* c,ID3D11Resource* r,UI
     bool gimiCpuShadow=false;
     if(!TrackingInternal())
     {
-        GenshinCpuWriterProbe::Mapped(c,r,sub,type,mapped,result);
         // Only the existing successful whole WRITE_DISCARD shadow identifies
         // an isolated pure CB. Unmap must still return its exact payload receipt.
-        const bool isolatedCb=GenshinDepthSemantic::Mapped(c,r,sub,type,flags,mapped,result);
+        const bool isolatedCb=GenshinHookCpuTiming::ObserveWork(GenshinHookCpuTiming::Stage::MapSemantic,
+            [&]{return GenshinDepthSemantic::Mapped(c,r,sub,type,flags,mapped,result);});
         gimiCpuShadow=isolatedCb;
-        if(g_genshinInstalled.load())GenshinDepthPortable::Mapped(c,r,sub,type,flags,mapped,result,portableBefore);
+        if(g_genshinInstalled.load())GenshinHookCpuTiming::ObserveWork(GenshinHookCpuTiming::Stage::MapPortable,
+            [&]{GenshinDepthPortable::Mapped(c,r,sub,type,flags,mapped,result,portableBefore);});
+        // Observe the pointer actually returned to the application, including
+        // either CPU shadow. The driver pointer may be write-combined memory.
+        GenshinHookCpuTiming::ObserveWork(GenshinHookCpuTiming::Stage::MapProbe,
+            [&]{GenshinCpuWriterProbe::Mapped(c,r,sub,type,mapped,result);});
         if(type!=D3D11_MAP_READ && !isolatedCb)GenshinDepthMapping::ObserveNonRasterWrite(c);
     }
     if(gimiMap)gimi::runtime::ConstantMapped(c,r,sub,type,flags,mapped,result,gimiMap,gimiCpuShadow);
@@ -1307,10 +1315,14 @@ __declspec(noinline) void STDMETHODCALLTYPE hkDepthUnmap(ID3D11DeviceContext* c,
         if(gimiContent)gimiContent.Returned();
         return;
     }
-    GenshinReturnedRaster::Invalidate(c,r,GenshinReturnedRaster::Boundary::Unmap,"Unmap");
-    if(!TrackingInternal())GenshinCpuWriterProbe::BeforeUnmap(c,r,sub);
-    auto portable=GenshinDepthPortable::BeforeUnmap(c,r,sub);
-    auto semantic=GenshinDepthSemantic::Submission::Unmap(c,r,sub,diagnosticUploadCaller);
+    GenshinHookCpuTiming::ObserveWork(GenshinHookCpuTiming::Stage::UnmapInvalidate,
+        [&]{GenshinReturnedRaster::Invalidate(c,r,GenshinReturnedRaster::Boundary::Unmap,"Unmap");});
+    if(!TrackingInternal())GenshinHookCpuTiming::ObserveWork(GenshinHookCpuTiming::Stage::UnmapProbe,
+        [&]{GenshinCpuWriterProbe::BeforeUnmap(c,r,sub);});
+    auto portable=GenshinHookCpuTiming::ObserveWork(GenshinHookCpuTiming::Stage::UnmapPortable,
+        [&]{return GenshinDepthPortable::BeforeUnmap(c,r,sub);});
+    auto semantic=GenshinHookCpuTiming::ObserveWork(GenshinHookCpuTiming::Stage::UnmapSemantic,
+        [&]{return GenshinDepthSemantic::Submission::Unmap(c,r,sub,diagnosticUploadCaller);});
     r448Hook.Original([&]{return o_DepthUnmap(c,r,sub);});
     portable.Returned();
     const bool frozenCb=semantic.Returned();
@@ -2397,6 +2409,7 @@ bool PrepareCreatedContextQueries(ID3D11Device* device,GenshinQueryScope::Creati
 
 void Install(ID3D11Device* device, bool genshinBridge)
 {
+    if constexpr (F6InputPolicy::DirectDlssInputs) return;
     const bool depthFinder = Config::Instance()->DlssNrNativeDepthFinder.value_or_default();
     if (device == nullptr || (!depthFinder && !genshinBridge))
         return;

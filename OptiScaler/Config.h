@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <string_view>
 #include <vector>
+#include <runtime/ObservedSetting.h>
 
 namespace GenshinLegacy
 {
@@ -278,16 +279,20 @@ class Config
     // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) --- removable as one block -----------------
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
-    CustomOptional<bool> DlssNrEnabled { false };
+    FramePipeline::ObservedSetting<CustomOptional<bool>,bool> DlssNrEnabled { false };
+    FramePipeline::ObservedSetting<CustomOptional<bool>,bool> StarRailForceNRResident { false };
     // Run the NR pass on the upscaler's colour input, at render resolution, immediately before SR.
     // Off preserves the v0.2.0 post-upscale placement. Ray Reconstruction already denoises the frame
     // before either NR seam runs, so this has no effect while RR is active -- RR always forces
     // post-SR placement regardless of this setting.
-    CustomOptional<bool> DlssNrRunBeforeSr { false };
-    CustomOptional<bool> DlssNrFinishedPicture { false };
+    FramePipeline::ObservedSetting<CustomOptional<bool>,bool> DlssNrRunBeforeSr { false };
+    FramePipeline::ObservedSetting<CustomOptional<bool>,bool> DlssNrFinishedPicture { false };
+    // Preserve the existing Genshin presentation default. The shared placement
+    // selector disables this adapter for a real pre/post-SR comparison.
+    FramePipeline::ObservedSetting<CustomOptional<bool>,bool> DlssNrGenshinPresentPipeline { true };
     // Generate NR before SR, upscale its signed contribution with a private DLSS feature,
     // and apply it after the game's upscaler. Takes precedence over RunBeforeSR; opt-in.
-    CustomOptional<bool> DlssNrDeferredDlss { false };
+    FramePipeline::ObservedSetting<CustomOptional<bool>,bool> DlssNrDeferredDlss { false };
     CustomOptional<bool> DlssNrResidualFg { false }; // forced off: not read from the ini, not in the menu
     CustomOptional<uint32_t> DlssNrPrecision { 0 }; // 0 NVIDIA FP8 (default), 4 Experimental NVFP4 hybrid
     CustomOptional<uint32_t> DlssNrVitEvery { 2 };  // NVIDIA model: compute the ViT bottleneck every N-th frame (1 = always; 2 = every other frame, default), reuse it in between
@@ -301,14 +306,22 @@ class Config
     // reused frames differ less. 0 = off.
     CustomOptional<float> DlssNrDetailReuseSteady { 0.0f };
     CustomOptional<bool> DlssNrPresentedTemporalDetail { false }; // opt-in, current-picture D3D12 history only
-    // 0 uses a 0.75 blend; positive milliseconds are the 1/e history decay time
-    // between real full-model refreshes. Both obey strength and finite lineage lifetime.
+    // Zero disables long-detail carry. Positive milliseconds control its decay;
+    // the separate final stabilizer may run with long-detail duration set to zero.
     static constexpr uint32_t kPresentedTemporalDurationMaxMs = 2000;
     CustomOptional<uint32_t> DlssNrPresentedTemporalDurationMs { 0 };
     static constexpr uint32_t kPresentedTemporalMaxAgeMinMs = 16;
     static constexpr uint32_t kPresentedTemporalMaxAgeMaxMs = 5000;
     CustomOptional<uint32_t> DlssNrPresentedTemporalMaxAgeMs { 500 };
     CustomOptional<float> DlssNrPresentedTemporalStrength { 0.85f };
+    // Independent full-model thresholds; legacy interval-reuse knobs stay independent.
+    CustomOptional<float> DlssNrPresentedTemporalDepthTolerance { 0.08f };
+    CustomOptional<float> DlssNrPresentedTemporalColourTolerance { 0.08f };
+    CustomOptional<float> DlssNrPresentedTemporalMotionTolerance { 2.0f };
+    CustomOptional<float> DlssNrPresentedTemporalNoiseFloor { 0.01f };
+    CustomOptional<uint32_t> DlssNrPresentedTemporalStabilityMs { 0 };
+    CustomOptional<float> DlssNrPresentedTemporalStabilityFloor { 0.65f };
+    CustomOptional<float> DlssNrPresentedTemporalStabilityClamp { 0.08f };
     CustomOptional<bool> DlssNrGameMotionReuse { true };
     CustomOptional<bool> DlssNrMotionYInverted { false };
     CustomOptional<bool> DlssNrDepthTextureFlipY { false };
@@ -1184,14 +1197,14 @@ class Config
     CustomOptional<std::string> GimiNamespaceRoot { std::string{} };
     CustomOptional<std::string> GimiImportRoot { std::string{} };
     // HoYoShade observes the already loaded private core; disabled unless requested.
-    CustomOptional<bool> HoYoShadeEnabled { false };
+    FramePipeline::ObservedSetting<CustomOptional<bool>,bool> HoYoShadeEnabled { false };
     CustomOptional<int> HoYoShadeStage { 2 }; // 1=before SR, 2=before NR, 3=final output
     CustomOptional<bool> LoadCustomAmdxc64OnRdna2 { false };
     CustomOptional<bool> LoadAsiPlugins { false };
     CustomOptional<int> LateAsiPluginsDelay { 30 };
 
     // Frame Generation
-    CustomOptional<FGInput> FGInput { FGInput::NoFG };
+    FramePipeline::ObservedSetting<CustomOptional<FGInput>,FGInput> FGInput { FGInput::NoFG };
     CustomOptional<bool> ExternalFrameGeneration { false };
     CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };
     CustomOptional<bool, NoDefault> FGDLSSGAdaBlackwellKernels;
@@ -1199,10 +1212,10 @@ class Config
     CustomOptional<bool> FGDLSSGAdaFlipMeteringPatch { false };  // pin sl.dlss_g to software frame pacing
     // Ampere/Turing (SM86/SM75) MFG unlocker — sideloads the dlssg_for_sm86 proxy
     CustomOptional<bool> FGDLSSGAmpereMfgUnlock { false };
-    CustomOptional<int>  FGDLSSGAmpereMfgMaxFrames { 3 };       // 0-3: 0=runtime default (3X), 1=2X, 2=3X, 3=4X
+    CustomOptional<int>  FGDLSSGAmpereMfgMaxFrames { 3 };       // 0=legacy default (3 generated); 1..5 requested generated frames (2X..6X), bounded by runtime
     CustomOptional<std::string, NoDefault> FGDLSSGAmpereMfgKernelImage;     // Auto / PTX / Cubin
     CustomOptional<bool> FGDLSSGAmpereMfgHardwareBilinear { false };        // Optional approximate sampling (SM86 only)
-    CustomOptional<FGOutput> FGOutput { FGOutput::NoFG };
+    FramePipeline::ObservedSetting<CustomOptional<FGOutput>,FGOutput> FGOutput { FGOutput::NoFG };
     // Keeps Streamline from picking up the driver's OTA/downloaded plugins; only files in
     // OptiScaler/streamline are used for sl.* plugins and nvngx_dlssg.dll
     CustomOptional<bool> FGStreamlineIgnoreOTA { false };
@@ -1225,12 +1238,17 @@ class Config
     CustomOptional<FrameTimeSource> FTInput { FrameTimeSource::Input };
 
     // OptiFG
-    CustomOptional<bool> FGEnabled { false };
+    FramePipeline::ObservedSetting<CustomOptional<bool>,bool> FGEnabled { false };
+    FramePipeline::ObservedSetting<CustomOptional<bool>,bool> StarRailForceFGResident { false };
     CustomOptional<bool> FGUseMutexForSwapchain { true };
     CustomOptional<bool> FGMakeMVCopy { true };
     CustomOptional<bool> FGMakeDepthCopy { true };
     CustomOptional<bool> FGResourceFlip { false };
     CustomOptional<bool> FGResourceFlipOffset { false };
+    // Auto/missing inherits ResourceFlip; explicit false is a real override.
+    CustomOptional<bool, NoDefault> FGDepthTextureFlipY;
+    CustomOptional<bool, NoDefault> FGMotionTextureFlipY;
+    CustomOptional<bool, NoDefault> FGMotionYInverted;
     CustomOptional<bool> FGAlwaysCaptureFSRFGSwapchain { false };
 
     CustomOptional<int, NoDefault> FGRectLeft;
@@ -1295,6 +1313,7 @@ class Config
 
     // DLSSG
     CustomOptional<int> FGDLSSGInterpolationCount { 1 }; // For Opti's own SL instance
+    CustomOptional<uint32_t> FGDLSSGModelPreset { 0 }; // 0 = driver, 1-3 = DLSS FG preset A-C; process-local NVAPI override
     CustomOptional<bool> FGDLSSGUseGamesReflexMarkers { true };
     CustomOptional<int, NoDefault>
         FGDLSSGOverrideInterpolationCount; // For overriding game's value sent to SL, could be Nvngx FG, could be noFG

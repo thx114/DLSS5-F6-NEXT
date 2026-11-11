@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "GenshinFsrProfiles.h"
 #include "GenshinEngineProducer.h"
 #include "legacy/Fsr2FamilyTakeover.h"
 #include <cmath>
@@ -21,7 +22,7 @@ bool Producer::Observe(const il2cpp_callsite::RenderToken& token,const CaptureSo
     receipt_.ownerEpoch=ownerEpoch_;receipt_.shaderHash=source.shaderHash;receipt_.shaderIdentity=source.shaderIdentity;
     receipt_.resources={reinterpret_cast<uintptr_t>(source.resources[0]),reinterpret_cast<uintptr_t>(source.resources[1]),reinterpret_cast<uintptr_t>(source.resources[2])};
     receipt_.srvSlots=source.srvSlots;
-    if(source.shaderHash!=fsr2_family_takeover::k_accumulate_hash || !source.shaderIdentity || source.shaderDeviceEpoch!=deviceEpoch_)
+    if(!GenshinFsrProfiles::Accumulate(source.shaderHash) || !source.shaderIdentity || source.shaderDeviceEpoch!=deviceEpoch_)
     {receipt_.reason=Reason::UnknownPass;return false;}
     receipt_.knownLegacyPass=true;
     if(!source.resources[0] || !source.resources[1] || !source.resources[2] ||

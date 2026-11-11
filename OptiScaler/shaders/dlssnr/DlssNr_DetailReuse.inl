@@ -63,6 +63,7 @@ DlssNrDetailReuse::Host host { "DLSS-NR detail reuse" };
 DlssNrDetailReuse::Cadence& cadence = host.cadence;
 DlssNrDetailReuse::Decision& decision = host.decision;
 DlssNrDetailReuseConstants& params = host.params;
+DlssNrDetailReuse::InputContinuity observedInputs;
 
 // Two sets alternate except authenticated interval-1 picture feedback: all old reads finish before capture.
 ID3D12Resource* detail[2] = {};      // work size, RGBA16F: answer - input, a = valid
@@ -1008,6 +1009,9 @@ void RecordDebug(const Frame& f, bool filled)
 
 Plan BeforeModel(const Frame& f)
 {
+    // Keep the raw input endpoint through ALL early returns. A late completed
+    // capture cannot replace the intervening input that current one-step MV names.
+    const auto previousInput = observedInputs.Observe(f.frameNumber);
     Plan plan;
     plan.motion = f.motion;
     plan.motionBaseX = f.motionBaseX;
@@ -1017,6 +1021,22 @@ Plan BeforeModel(const Frame& f)
     temporalFusionRecorded = false;
     debugReady = debugReadable = false;
     CollectHistory();
+    if (f.independentFeedbackRequested)
+    {
+        // Explicit persistent feedback owns an independent, full-model history.
+        // Genshin's presentation route alone does not select it; validated guides
+        // may still use the configured legacy reuse path when feedback is off.
+        DiscardTemporalRecording();
+        // Once the old writer has retired, release its texture set through the
+        // existing real recording registry. Keeping both algorithms resident
+        // after an option switch needlessly doubles the history allocation.
+        if (PendingRecordings() == 0 && (detail[0] || detail[1] || colourDepth[0] ||
+            colourDepth[1] || temporalFused || estimate || steadied || composed))
+            ParkAll();
+        cadence.Drop(); decision = {}; params = {};
+        plan.resetModel = host.Finish(f, false, false, false);
+        return plan;
+    }
     bool orderedAdvance = AdvanceOrderedRecording(f);
     // Adjacency/contract changes must not be bypassed to move an old writer.
     // If that private native generation really finished, its owner can instead
@@ -1173,8 +1193,7 @@ Plan BeforeModel(const Frame& f)
     // including full-frame feedback/Spread/Steady, and capture a fresh model answer instead.
     // SourceCaptureSerial is the native source clock, independent from physical FG Presents.
     const bool singleSourceStep = f.orderedPictureQueue || f.nativeTemporalRouteRequested;
-    const bool matchingOrdinal = publishedOrdinal < f.frameNumber &&
-        (!singleSourceStep || f.frameNumber - publishedOrdinal == 1);
+    const bool matchingOrdinal = previousInput.Matches(publishedOrdinal, f.frameNumber, singleSourceStep);
     const bool matchingContract = historyPublished && publishedContract == Contract(f);
     const bool matchingHistory = historyPublished && matchingOrdinal && matchingContract && !f.modelReset;
     // Observation only: the existing CacheReason also covers ordinal failures.
@@ -1338,6 +1357,33 @@ Plan BeforeModel(const Frame& f)
 // Interval-1 only: detail is cohort A; estimate is cohort B, not transient
 // motion scratch. temporalFused (signed float) is reused for each moved
 // estimate, then for the display. Neither cohort reads the displayed blend.
+void CaptureContribution(const Frame& f, ID3D12Resource* fresh, ID3D12Resource* fused,
+                         uint64_t source = publishedOrdinal, bool available = decision.historyUsable)
+{
+    GuideCapture::SampleToken previewToken;
+    const bool preview=GuideCapture::HistoryDebugView()==0&&GuideCapture::TryBeginSample(GuideCapture::Stream::History,previewToken);
+    const bool offline=GuideCapture::OfflineSampleDue(GuideCapture::Stream::History);
+    struct Cancel {GuideCapture::SampleToken& token;~Cancel(){GuideCapture::CancelSample(token);}} cancel{previewToken};
+    if ((!preview&&!offline) || !f.info || !f.info->IndependentCommands || !fresh || !fused || fresh==fused)
+        return;
+    GuideCapture::Inputs input;
+    input.independentRecording=true;
+    input.colour=fused; input.contribution=fresh; input.compareFreshAnswer=true;
+    input.colourRect={0,0,f.workWidth,f.workHeight};
+    input.colourState=input.contributionState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    auto stamp=DlssNrGuideObservation::Source(*f.info);
+    stamp.configuration=f.revision;stamp.owner=f.owner;stamp.feature=reinterpret_cast<uintptr_t>(g_nr.feature);
+    stamp.historySource=source;stamp.historyAvailable=available;
+    stamp.fusionRecorded=true;stamp.accepted=true;stamp.stage=GuideDiagnostics::Stage::Recorded;
+    stamp.colour=DlssNrGuideObservation::Resource(fused,input.colourRect);
+    stamp.reason="history fusion recorded; awaiting measured fresh/fused RGB difference";
+    stamp.colourChoice="actual fused model answer versus same-frame fresh model answer";
+    auto* list=static_cast<ID3D12GraphicsCommandList*>(RealTemporalCommands(f.cmdList));
+    const bool recorded=preview&&GuideCapture::TryRecord(previewToken,list,input,stamp);
+    const bool captured=offline&&GuideCapture::RecordOffline(GuideCapture::Stream::History,list,input,stamp);
+    if(recorded||captured)DlssNrWatchedLists::Add(list);
+}
+
 void AfterModelHandoff(const Frame& f, ID3D12Resource*& finalAnswer)
 {
     if (!decision.captureHistory) return;
@@ -1428,6 +1474,7 @@ void AfterModelHandoff(const Frame& f, ID3D12Resource*& finalAnswer)
     temporalFusedReadable = true;
     temporalFusionRecorded = decision.historyUsable && params.TemporalHistoryWeight > 0.0f &&
         params.TemporalHandoffResetMask != 3u;
+    if(temporalFusionRecorded)CaptureContribution(f,finalAnswer,temporalFused);
     finalAnswer = temporalFused;
 }
 
@@ -1465,6 +1512,7 @@ void AfterModelTemporal(const Frame& f, const Plan& plan, bool succeeded, ID3D12
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             temporalFusedReadable = true;
             temporalFusionRecorded = true;
+            CaptureContribution(f,finalAnswer,temporalFused);
             finalAnswer = temporalFused;
         }
         else temporalEstimateReady = false;
@@ -1742,6 +1790,7 @@ void Release()
     publishedGeneration = 0; publishedQueueOrdered = false;
     producerOwners = {}; producerOwnerNext = 0;
     historyPublished = false; publishedOrdinal = publishedFence = 0;
+    observedInputs.Reset();
     publishedFenceOwner.Reset();
     sourceFenceIdentity = 0;
     historyReadiness = "no-history"; recordingReadiness = "no-recording";

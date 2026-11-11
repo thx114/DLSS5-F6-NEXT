@@ -14,6 +14,7 @@
 #include <shaders/dlssnr/DlssNr_ProxyCurve.h>
 
 #include <SimpleIni.h>
+#include <framegen/dlssg/AmpereMfgLoader.h>
 
 static CSimpleIniA ini;
 
@@ -159,6 +160,7 @@ bool Config::Reload(std::filesystem::path iniPath)
         // Frame Generation
         {
             FGEnabled.set_from_config(readBool("FrameGen", "Enabled"));
+            StarRailForceFGResident.set_from_config(readBool("FrameGen", "StarRailForceResident"));
             ExternalFrameGeneration.set_from_config(readBool("FrameGen", "External"));
             FGDLSSGAdaMfgUnlock.set_from_config(readBool("DLSSG", "AdaMfgUnlock"));
             FGDLSSGAdaBlackwellKernels.set_from_config(readBool("DLSSG", "AdaBlackwellKernels"));
@@ -177,7 +179,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             FGDLSSGAmpereMfgUnlock.set_from_config(readBool("DLSSG", "AmpereMfgUnlock"));
             FGDLSSGAmpereMfgMaxFrames.set_from_config(readInt("DLSSG", "AmpereMfgMaxFrames"));
             if (FGDLSSGAmpereMfgMaxFrames.has_value() &&
-                (FGDLSSGAmpereMfgMaxFrames.value() < 0 || FGDLSSGAmpereMfgMaxFrames.value() > 3))
+                (FGDLSSGAmpereMfgMaxFrames.value() < 0 || FGDLSSGAmpereMfgMaxFrames.value() > AmpereMfgLoader::MaximumGeneratedRequest))
                 FGDLSSGAmpereMfgMaxFrames.reset();
 
             if (auto ampereKernel = readString("DLSSG", "AmpereMfgKernelImage"); ampereKernel.has_value())
@@ -338,6 +340,9 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             FGResourceFlip.set_from_config(readBool("OptiFG", "ResourceFlip"));
             FGResourceFlipOffset.set_from_config(readBool("OptiFG", "ResourceFlipOffset"));
+            FGDepthTextureFlipY.set_from_config(readBool("OptiFG", "DepthTextureFlipY"));
+            FGMotionTextureFlipY.set_from_config(readBool("OptiFG", "MotionTextureFlipY"));
+            FGMotionYInverted.set_from_config(readBool("OptiFG", "MotionYInverted"));
 
             FGAlwaysCaptureFSRFGSwapchain.set_from_config(readBool("OptiFG", "AlwaysCaptureFSRFGSwapchain"));
         }
@@ -361,6 +366,10 @@ bool Config::Reload(std::filesystem::path iniPath)
             if (FGDLSSGInterpolationCount.has_value() &&
                 (FGDLSSGInterpolationCount.value() < 1 || FGDLSSGInterpolationCount.value() > 6))
                 FGDLSSGInterpolationCount.reset();
+
+            FGDLSSGModelPreset.set_from_config(readUInt("DLSSG", "ModelPreset"));
+            if (FGDLSSGModelPreset.has_value() && FGDLSSGModelPreset.value() > 3)
+                FGDLSSGModelPreset.reset();
 
             FGDLSSGUseGamesReflexMarkers.set_from_config(readBool("DLSSG", "UseGamesReflexMarkers"));
 
@@ -447,8 +456,10 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
             DlssNrEnabled.set_from_config(readBool("DlssNr", "Enabled"));
+            StarRailForceNRResident.set_from_config(readBool("DlssNr", "StarRailForceResident"));
             DlssNrRunBeforeSr.set_from_config(readBool("DlssNr", "RunBeforeSR"));
             DlssNrFinishedPicture.set_from_config(readBool("DlssNr", "FinishedPicture"));
+            DlssNrGenshinPresentPipeline.set_from_config(readBool("DlssNr", "GenshinPresentPipeline"));
             DlssNrDeferredDlss.set_from_config(readBool("DlssNr", "DeferredDLSS"));
             // ResidualFG and ResidualFGApproxCamera are no longer read: NR every second frame through NVIDIA Frame
             // Generation is off for good, whatever an old ini says.
@@ -476,6 +487,33 @@ bool Config::Reload(std::filesystem::path iniPath)
             if (DlssNrPresentedTemporalStrength.has_value())
                 DlssNrPresentedTemporalStrength = std::isfinite(DlssNrPresentedTemporalStrength.value())
                     ? std::clamp(DlssNrPresentedTemporalStrength.value(), 0.0f, 0.95f) : 0.85f;
+            DlssNrPresentedTemporalDepthTolerance.set_from_config(readFloat("DlssNr", "PresentedTemporalDepthTolerance"));
+            if (DlssNrPresentedTemporalDepthTolerance.has_value())
+                DlssNrPresentedTemporalDepthTolerance = std::isfinite(DlssNrPresentedTemporalDepthTolerance.value())
+                    ? std::clamp(DlssNrPresentedTemporalDepthTolerance.value(), 0.0f, 1.0f) : 0.08f;
+            DlssNrPresentedTemporalColourTolerance.set_from_config(readFloat("DlssNr", "PresentedTemporalColourTolerance"));
+            if (DlssNrPresentedTemporalColourTolerance.has_value())
+                DlssNrPresentedTemporalColourTolerance = std::isfinite(DlssNrPresentedTemporalColourTolerance.value())
+                    ? std::clamp(DlssNrPresentedTemporalColourTolerance.value(), 0.005f, 0.5f) : 0.08f;
+            DlssNrPresentedTemporalMotionTolerance.set_from_config(readFloat("DlssNr", "PresentedTemporalMotionTolerance"));
+            if (DlssNrPresentedTemporalMotionTolerance.has_value())
+                DlssNrPresentedTemporalMotionTolerance = std::isfinite(DlssNrPresentedTemporalMotionTolerance.value())
+                    ? std::clamp(DlssNrPresentedTemporalMotionTolerance.value(), 0.05f, 32.0f) : 2.0f;
+            DlssNrPresentedTemporalNoiseFloor.set_from_config(readFloat("DlssNr", "PresentedTemporalNoiseFloor"));
+            if (DlssNrPresentedTemporalNoiseFloor.has_value())
+                DlssNrPresentedTemporalNoiseFloor = std::isfinite(DlssNrPresentedTemporalNoiseFloor.value())
+                    ? std::clamp(DlssNrPresentedTemporalNoiseFloor.value(), 0.0f, 0.1f) : 0.01f;
+            DlssNrPresentedTemporalStabilityMs.set_from_config(readUInt("DlssNr", "PresentedTemporalStabilityMs"));
+            if (DlssNrPresentedTemporalStabilityMs.has_value())
+                DlssNrPresentedTemporalStabilityMs = std::clamp(DlssNrPresentedTemporalStabilityMs.value(), 0u, 2000u);
+            DlssNrPresentedTemporalStabilityFloor.set_from_config(readFloat("DlssNr", "PresentedTemporalStabilityFloor"));
+            if (DlssNrPresentedTemporalStabilityFloor.has_value())
+                DlssNrPresentedTemporalStabilityFloor = std::isfinite(DlssNrPresentedTemporalStabilityFloor.value())
+                    ? std::clamp(DlssNrPresentedTemporalStabilityFloor.value(), 0.0f, 1.0f) : 0.65f;
+            DlssNrPresentedTemporalStabilityClamp.set_from_config(readFloat("DlssNr", "PresentedTemporalStabilityClamp"));
+            if (DlssNrPresentedTemporalStabilityClamp.has_value())
+                DlssNrPresentedTemporalStabilityClamp = std::isfinite(DlssNrPresentedTemporalStabilityClamp.value())
+                    ? std::clamp(DlssNrPresentedTemporalStabilityClamp.value(), 0.001f, 0.5f) : 0.08f;
             DlssNrMotionYInverted.set_from_config(readBool("DlssNr", "MotionYInverted"));
             DlssNrDepthTextureFlipY.set_from_config(readBool("DlssNr", "DepthTextureFlipY"));
             DlssNrMotionTextureFlipY.set_from_config(readBool("DlssNr", "MotionTextureFlipY"));
@@ -1387,8 +1425,10 @@ void Config::LoadGenshinControls()
 {
     std::lock_guard<std::recursive_mutex> guard(genshinControlsMutex_);
     genshinControls_.settings=GenshinLegacy::LoadControls(ini);
-    const char* timing=ini.GetValue("Dx11FsrBridge","HookCpuTiming",nullptr);
-    genshinControls_.hookCpuTiming=timing && (std::string_view(timing)=="true" || GenshinLegacy::ParseControl<int>(timing,0)!=0);
+    // Detailed diagnostics belong to this process, not the rendering profile.
+    // Reload must also preserve the user's current session toggle. Older INIs
+    // may contain HookCpuTiming=true; leave those files intact but do not resume
+    // heavy diagnostics silently at the next game launch.
     ++genshinControls_.epoch;genshinControlsRevision_.Publish(genshinControls_.epoch);
 }
 
@@ -1556,6 +1596,7 @@ void Config::WriteSettings(Sink& target, const GenshinLegacy::Settings& genshinS
             adaUnlock = false;
 
         target.SetValue("FrameGen", "Enabled", GetBoolValue(this->FGEnabled.value_for_config()).c_str());
+        target.SetValue("FrameGen", "StarRailForceResident", GetBoolValue(this->StarRailForceFGResident.value_for_config()).c_str());
         target.SetValue("FrameGen", "External", GetBoolValue(this->ExternalFrameGeneration.value_for_config_or(false) || ampereUnlock).c_str());
         target.SetValue("DLSSG", "AdaMfgUnlock", GetBoolValue(adaUnlock).c_str());
         target.SetValue("DLSSG", "AdaBlackwellKernels", GetBoolValue(this->FGDLSSGAdaBlackwellKernels.value_for_config()).c_str());
@@ -1697,6 +1738,8 @@ void Config::WriteSettings(Sink& target, const GenshinLegacy::Settings& genshinS
     {
         target.SetValue("DLSSG", "InterpolationCount",
                      GetIntValue(this->FGDLSSGInterpolationCount.value_for_config()).c_str());
+        target.SetValue("DLSSG", "ModelPreset",
+                     GetIntValue(this->FGDLSSGModelPreset.value_for_config()).c_str());
         target.SetValue("DLSSG", "UseGamesReflexMarkers",
                      GetBoolValue(this->FGDLSSGUseGamesReflexMarkers.value_for_config()).c_str());
         target.SetValue("DLSSG", "OverrideInterpolationCount",
@@ -1756,6 +1799,9 @@ void Config::WriteSettings(Sink& target, const GenshinLegacy::Settings& genshinS
         target.SetValue("OptiFG", "ResourceFlip", GetBoolValue(this->FGResourceFlip.value_for_config()).c_str());
         target.SetValue("OptiFG", "ResourceFlipOffset",
                      GetBoolValue(this->FGResourceFlipOffset.value_for_config()).c_str());
+        target.SetValue("OptiFG", "DepthTextureFlipY", GetBoolValue(this->FGDepthTextureFlipY.value_for_config()).c_str());
+        target.SetValue("OptiFG", "MotionTextureFlipY", GetBoolValue(this->FGMotionTextureFlipY.value_for_config()).c_str());
+        target.SetValue("OptiFG", "MotionYInverted", GetBoolValue(this->FGMotionYInverted.value_for_config()).c_str());
 
         target.SetValue("OptiFG", "AlwaysCaptureFSRFGSwapchain",
                      GetBoolValue(this->FGAlwaysCaptureFSRFGSwapchain.value_for_config()).c_str());
@@ -1835,7 +1881,9 @@ void Config::WriteSettings(Sink& target, const GenshinLegacy::Settings& genshinS
 
     // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
     target.SetValue("DlssNr", "Enabled", GetBoolValue(this->DlssNrEnabled.value_for_config()).c_str());
+    target.SetValue("DlssNr", "StarRailForceResident", GetBoolValue(this->StarRailForceNRResident.value_for_config()).c_str());
     target.SetValue("DlssNr", "FinishedPicture", GetBoolValue(this->DlssNrFinishedPicture.value_for_config()).c_str());
+    target.SetValue("DlssNr", "GenshinPresentPipeline", GetBoolValue(this->DlssNrGenshinPresentPipeline.value_for_config()).c_str());
     target.SetValue("DlssNr", "RunBeforeSR",
                  GetBoolValue(this->DlssNrRunBeforeSr.value_for_config()).c_str());
     target.SetValue("DlssNr", "DeferredDLSS",
@@ -1850,6 +1898,13 @@ void Config::WriteSettings(Sink& target, const GenshinLegacy::Settings& genshinS
     target.SetValue("DlssNr", "PresentedTemporalDurationMs", GetIntValue(this->DlssNrPresentedTemporalDurationMs.value_for_config()).c_str());
     target.SetValue("DlssNr", "PresentedTemporalMaxAgeMs", GetIntValue(this->DlssNrPresentedTemporalMaxAgeMs.value_for_config()).c_str());
     target.SetValue("DlssNr", "PresentedTemporalStrength", GetFloatValue(this->DlssNrPresentedTemporalStrength.value_for_config()).c_str());
+    target.SetValue("DlssNr", "PresentedTemporalDepthTolerance", GetFloatValue(this->DlssNrPresentedTemporalDepthTolerance.value_for_config()).c_str());
+    target.SetValue("DlssNr", "PresentedTemporalColourTolerance", GetFloatValue(this->DlssNrPresentedTemporalColourTolerance.value_for_config()).c_str());
+    target.SetValue("DlssNr", "PresentedTemporalMotionTolerance", GetFloatValue(this->DlssNrPresentedTemporalMotionTolerance.value_for_config()).c_str());
+    target.SetValue("DlssNr", "PresentedTemporalNoiseFloor", GetFloatValue(this->DlssNrPresentedTemporalNoiseFloor.value_for_config()).c_str());
+    target.SetValue("DlssNr", "PresentedTemporalStabilityMs", GetIntValue(this->DlssNrPresentedTemporalStabilityMs.value_for_config()).c_str());
+    target.SetValue("DlssNr", "PresentedTemporalStabilityFloor", GetFloatValue(this->DlssNrPresentedTemporalStabilityFloor.value_for_config()).c_str());
+    target.SetValue("DlssNr", "PresentedTemporalStabilityClamp", GetFloatValue(this->DlssNrPresentedTemporalStabilityClamp.value_for_config()).c_str());
     target.SetValue("DlssNr", "MotionYInverted", GetBoolValue(this->DlssNrMotionYInverted.value_for_config()).c_str());
     target.SetValue("DlssNr", "DepthTextureFlipY", GetBoolValue(this->DlssNrDepthTextureFlipY.value_for_config()).c_str());
     target.SetValue("DlssNr", "MotionTextureFlipY", GetBoolValue(this->DlssNrMotionTextureFlipY.value_for_config()).c_str());
@@ -2549,8 +2604,7 @@ void Config::WriteSettings(Sink& target, const GenshinLegacy::Settings& genshinS
     }
 
     GenshinLegacy::SaveControls(target, genshinSettings);
-    {std::lock_guard guard(genshinControlsMutex_);
-        target.SetValue("Dx11FsrBridge","HookCpuTiming",genshinControls_.hookCpuTiming?"true":"false");}
+    // Hook CPU diagnostics are session-only; do not persist or remove legacy keys.
 
     // Old configs, just delete them
     {

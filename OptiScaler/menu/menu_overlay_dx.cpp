@@ -8,6 +8,7 @@
 #include "menu_overlay_base.h"
 #include "menu_overlay_dx.h"
 #include "MenuHotpathContext.h"
+#include "PreviewOutputCache.h"
 #include <wrapped/wrapped_swapchain.h>
 
 #include <Util.h>
@@ -18,6 +19,8 @@
 #include <native/NativeDriverDx12.h>
 #include <native/NativeDriverDx11.h>
 #include <genshin/GenshinDepthProvider.h>
+#include <runtime/F6InputPolicy.h>
+#include <runtime/GuideCapture.h>
 
 #include <imgui/imgui_impl_dx11.h>
 #include <imgui/imgui_impl_dx12.h>
@@ -351,7 +354,9 @@ struct OverlayGpuCompletion
         // authorize Reset, backend writes, cleanup, or a replacement generation.
         CompletionUnknown = true;
         ID3D12CommandList* lists[] = { list };
+        const auto previewReceipt = GuideCapture::Executing(Queue, 1, lists);
         Queue->ExecuteCommandLists(1, lists);
+        GuideCapture::Submitted(Queue, 1, lists, previewReceipt);
         if (writtenBackbuffer != UINT_MAX) NoteOverlayWrite(writtenBackbuffer);
         const UINT64 value = Next;
         const HRESULT hr = Queue->Signal(Fence, value);
@@ -382,7 +387,9 @@ struct OverlayGpuCompletion
         ID3D12CommandList* lists[] = { list };
         {
             MenuCpuSpan span(MenuCpuStage::Execute);
+            const auto previewReceipt = GuideCapture::Executing(Queue, 1, lists);
             Queue->ExecuteCommandLists(1, lists);
+            GuideCapture::Submitted(Queue, 1, lists, previewReceipt);
         }
         if (writtenBackbuffer != UINT_MAX) NoteOverlayWrite(writtenBackbuffer);
         const UINT64 value = Next;
@@ -529,6 +536,11 @@ static OverlayGpuCompletion g_overlayGpuCompletion;
 // Allocator, closed command list and ImGui VB/IB slot share one exact fence.
 // These are output slots, independent of swapchain backbuffer indices and FG.
 static ID3D12GraphicsCommandList* g_menuFrameLists[NUM_BACK_BUFFERS] = {};
+static std::array<bool, NUM_BACK_BUFFERS> g_menuPreviewReaders {};
+// Like failed-Signal menu generations, retain uncertain GPU storage through
+// process teardown. Only explicit exact-fence cleanup may release its texture.
+static auto& g_menuPreviewOutput = *new MenuPreview::OutputCache;
+
 static UINT64 g_menuFrameLastUse[NUM_BACK_BUFFERS] = {};
 static UINT g_menuFrameNext = 0;
 static bool g_menuTextureDrainPending = false;
@@ -871,11 +883,25 @@ static void CleanupRenderTargetDx12(bool clearQueue, bool allowDrain = false)
         }
         return;
     }
+    // Fence completion ends GPU use; successful Reset separately ends replay
+    // of each exact preview reader before this renderer generation is released.
+    for (UINT slot = 0; slot < NUM_BACK_BUFFERS; ++slot)
+    {
+        if (!g_menuPreviewReaders[slot]) continue;
+        if (!g_menuFrameLists[slot] || !g_commandAllocators[slot] ||
+            FAILED(g_commandAllocators[slot]->Reset()) ||
+            FAILED(g_menuFrameLists[slot]->Reset(g_commandAllocators[slot], nullptr)))
+            return; // Keep this generation and retry through the current entry.
+        GuideCapture::Reset(g_menuFrameLists[slot]);
+        g_menuFrameLists[slot]->Close();
+        g_menuPreviewReaders[slot] = false;
+    }
     const bool pendingClearQueue = g_overlayClearQueuePending.exchange(false, std::memory_order_acq_rel);
     clearQueue = clearQueue || pendingClearQueue;
     g_overlayCleanupPending.store(false, std::memory_order_release);
 
     ClearOutputMenuSnapshot();
+    g_menuPreviewOutput.Retire(); // CanRetire and reader Reset proved this generation is no longer executable.
     g_menuTextureDrainPending = false;
     g_pd3dCommandList = nullptr;
     for (UINT slot = 0; slot < NUM_BACK_BUFFERS; ++slot)
@@ -1022,12 +1048,17 @@ static void RenderImGui_DX11(IDXGISwapChain* pSwapChain)
 
             // A real DX11 backend owns both the SRV and its last GPU read.
             // The provider admits only Genshin and the exact producer context.
-            GenshinDepthProvider::BeginPreviewDraw(g_pd3dDeviceContext);
+            if constexpr (F6InputPolicy::FsrBridgeEnabled)
+                GenshinDepthProvider::BeginPreviewDraw(g_pd3dDeviceContext);
             struct RawDepthPreviewDraw
             {
                 ID3D11DeviceContext* context;
                 bool recorded = false;
-                ~RawDepthPreviewDraw() { GenshinDepthProvider::EndPreviewDraw(context, recorded); }
+                ~RawDepthPreviewDraw()
+                {
+                    if constexpr (F6InputPolicy::FsrBridgeEnabled)
+                        GenshinDepthProvider::EndPreviewDraw(context, recorded);
+                }
             } rawDepthPreview { g_pd3dDeviceContext };
             bool drawUi;
             {
@@ -1059,7 +1090,7 @@ static void RenderImGui_DX11(IDXGISwapChain* pSwapChain)
 }
 
 static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain, bool physicalOutputMenu,
-                             bool resumedGenshinContext)
+                             bool resumedGenshinContext, const bool sealedPreviewOutput)
 {
     bool drawMenu = false;
     IDXGISwapChain3* pSwapChain = nullptr;
@@ -1243,18 +1274,48 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain, bool physicalOutpu
             MenuCpuSpan span(MenuCpuStage::UiBuild);
             drawUi = MenuOverlayBase::RenderMenu();
         }
-        if (!drawUi)
+        // Close the replay lifetime of completed preview reads even after Off
+        // or a mode change. Without this, a hidden menu could pin all three
+        // snapshot slots forever and never acquire a new mode to drive Reset.
+        const bool pendingPreviewReaders = std::any_of(g_menuPreviewReaders.begin(),g_menuPreviewReaders.end(),
+            [](bool pending){return pending;});
+        const auto previewQueueState = pendingPreviewReaders ? g_overlayGpuCompletion.Poll() : OverlayGpuCompletion::State::Unknown;
+        if (previewQueueState == OverlayGpuCompletion::State::Ready ||
+            previewQueueState == OverlayGpuCompletion::State::Busy)
+        {
+            const auto completed = g_overlayGpuCompletion.Fence->GetCompletedValue();
+            if (completed != UINT64_MAX)
+                for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
+                    if (g_menuPreviewReaders[i] && completed >= g_menuFrameLastUse[i] &&
+                        g_menuFrameLists[i] && g_commandAllocators[i] &&
+                        SUCCEEDED(g_commandAllocators[i]->Reset()) &&
+                        SUCCEEDED(g_menuFrameLists[i]->Reset(g_commandAllocators[i], nullptr)))
+                    {
+                        GuideCapture::Reset(g_menuFrameLists[i]);
+                        g_menuFrameLists[i]->Close();
+                        g_menuPreviewReaders[i] = false;
+                    }
+        }
+        GuideCapture::PreviewSnapshot previewSnapshot;
+        g_menuPreviewOutput.Select(GuideCapture::GetPreviewDemand(), sealedPreviewOutput);
+        const bool hasPreview = sealedPreviewOutput && GuideCapture::TryAcquireCompleted(previewSnapshot);
+        if (hasPreview) g_menuPreviewOutput.NeedsRefresh(previewSnapshot);
+        const bool previewDemand = hasPreview || g_menuPreviewOutput.HasImage();
+        if(!sealedPreviewOutput&&GuideCapture::PreviewActive())
+            GuideCapture::PreviewUnavailable("Preview awaits authenticated physical output after SDK input seal");
+        if (!drawUi && !previewDemand)
         {
             cpu.NoUi = true;
             g_presentResult->Decision = "frame-no-ui-demand";
             pSwapChain->Release();
             return;
         }
+        if (drawUi)
         {
             MenuCpuSpan span(MenuCpuStage::ImGuiRender);
             ImGui::Render();
         }
-        ImDrawData* drawData = ImGui::GetDrawData();
+        ImDrawData* drawData = drawUi ? ImGui::GetDrawData() : nullptr;
         bool sharedTexturesNeedUpdate = false;
         if (drawData != nullptr && drawData->Textures != nullptr)
             for (ImTextureData* texture : *drawData->Textures)
@@ -1277,7 +1338,7 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain, bool physicalOutpu
                     (texture->Status == ImTextureStatus_WantDestroy && texture->UnusedFrames >= NUM_BACK_BUFFERS))
                     ImGui_ImplDX12_UpdateTexture(texture);
         }
-        if (!HasBackbufferDraws(drawData))
+        if (!previewDemand && !HasBackbufferDraws(drawData))
         {
             cpu.NoDraws = true;
             g_presentResult->Decision = "frame-no-draws";
@@ -1287,6 +1348,8 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain, bool physicalOutpu
         UINT frameSlot;
         {
             MenuCpuSpan span(MenuCpuStage::SlotSelect);
+            // Preview acquisition must not disable the existing bounded recovery
+            // for FPS/menu draws. Cached output needs no additional reader slot.
             frameSlot = SelectMenuFrameSlot();
         }
         if (frameSlot == UINT_MAX)
@@ -1325,6 +1388,7 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain, bool physicalOutpu
             return;
         }
         auto* list = g_menuFrameLists[frameSlot];
+        GuideCapture::Reset(list); // actual successful Reset above, never CPU completion
         g_pd3dCommandList = list; // Exclude only this actual menu list in draw/resource hooks.
         // Preserve the ordinary preview's former whole-generation completion
         // boundary. Physical outputs previously never recorded this shared copy.
@@ -1338,10 +1402,17 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain, bool physicalOutpu
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         list->ResourceBarrier(1, &barrier);
         list->OMSetRenderTargets(1, &g_mainRenderTargetDescriptor[backbuffer], FALSE, nullptr);
+        // Independent physical-output pass; normal NR/SDK targets stay intact.
+        // The fullscreen snapshot is drawn first, with the menu above it.
+        bool previewReaderRecorded = false;
+        const bool previewDrawn = previewDemand && g_menuPreviewOutput.Record(device, list,
+            g_mainRenderTargetResource[backbuffer], hasPreview ? &previewSnapshot : nullptr, previewReaderRecorded);
+        if (previewReaderRecorded) g_menuPreviewReaders[frameSlot] = true;
         list->SetDescriptorHeaps(1, &g_pd3dSrvDescHeap);
-        bool slotAccepted = false;
-        const bool written = RenderWithBackbufferReceipt(drawData, [&](ImDrawData* data)
+        bool slotAccepted = true;
+        const bool uiWritten = drawUi && RenderWithBackbufferReceipt(drawData, [&](ImDrawData* data)
         { slotAccepted = ImGui_ImplDX12_RenderDrawDataForSlot(data, list, frameSlot); });
+        const bool written = previewDrawn || uiWritten;
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
         list->ResourceBarrier(1, &barrier);
@@ -1351,6 +1422,7 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain, bool physicalOutpu
         cpu.DrawReceipt = written;
         if (FAILED(closed) || !slotAccepted)
         {
+            g_menuPreviewOutput.DiscardRecording();
             g_presentResult->Decision = "frame-record-failed";
             pSwapChain->Release();
             return;
@@ -1362,7 +1434,11 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain, bool physicalOutpu
         cpu.Submitted = submitted;
         cpu.SubmitFailed = !submitted;
         g_presentResult->Decision = submitted ? "frame-slot-submitted" : "frame-slot-submit-failed";
-        if (submitted) g_menuFrameNext = (frameSlot + 1) % NUM_BACK_BUFFERS;
+        if (submitted) {
+            if (previewDrawn) g_menuPreviewOutput.NoteSubmitted();
+            g_menuFrameNext = (frameSlot + 1) % NUM_BACK_BUFFERS;
+        }
+        else g_menuPreviewOutput.DiscardRecording();
     }
 
     pSwapChain->Release();
@@ -1446,6 +1522,10 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
     if (pSwapChain == nullptr || pDevice == nullptr || (Flags & DXGI_PRESENT_TEST) != 0)
         return;
+    // Capture route permission before any menu callbacks can edit the FG
+    // request. A selected FG source remains excluded even when requested Off;
+    // authenticated physical-output callers supply waitForOutputMenu themselves.
+    const bool sealedPreviewOutput = waitForOutputMenu || State::Instance().activeFgOutput == FGOutput::NoFG;
     // D3D12's finder closes its frame with the native input step (NativeMotionDx12::OnPresent / OnFGPresent). Under
     // Dx11wDx12SC the D3D11 finder's frame is closed by NativeMotionDx11::OnFGPresent instead: frame generation's present
     // still reaches here, and a second close in the same frame sees no draws and resets every candidate's warm-up.
@@ -1802,7 +1882,7 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (_dx11Device)
             RenderImGui_DX11(pSwapChain);
         else if (_dx12Device)
-            RenderImGui_DX12(pSwapChain, waitForOutputMenu, resumedGenshinContext);
+            RenderImGui_DX12(pSwapChain, waitForOutputMenu, resumedGenshinContext, sealedPreviewOutput);
     }
 
     // release used objects

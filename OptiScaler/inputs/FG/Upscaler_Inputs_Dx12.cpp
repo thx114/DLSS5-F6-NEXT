@@ -4,11 +4,11 @@
 #include <hudfix/Hudfix_Dx12.h>
 #include <resource_tracking/ResTrack_dx12.h>
 #include "shaders/depth_scale/DS_Dx12.h"
-#include "MathUtils.h"
+#include "UpscalerFrameParameters.h"
+#include <runtime/F6InputPolicy.h>
 #include <framegen/dlssg/FgDepthContract.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
 
-using namespace OptiMath;
 static DS_Dx12* DepthScale = nullptr;
 
 void UpscalerInputsDx12::Init(ID3D12Device* device)
@@ -33,97 +33,31 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
                                       IFeature_Dx12* feature)
 {
     if (!InCmdList || !InParameters || !feature) return {};
-    if (dlssg::depth_contract::Game()==GameRouting::Identity::Genshin &&
+    if (F6InputPolicy::FsrBridgeEnabled && dlssg::depth_contract::Game()==GameRouting::Identity::Genshin &&
         State::Instance().activeFgInput==FGInput::Upscaler &&
         State::Instance().activeFgOutput==FGOutput::DLSSG) return {}; // Sealed Present adapter only.
     if (native::OpticalFgNrEnabled() && feature->GetUpscalerType() != Upscaler::Optical) return {};
 
     Hudfix_Dx12::SetSkipStatus(true);
 
-    // FSR Camera values
-    float cameraNear = 0.0f;
-    float cameraFar = 0.0f;
-    float cameraVFov = 0.0f;
-    float meterFactor = 0.0f;
-    float mvScaleX = 0.0f;
-    float mvScaleY = 0.0f;
-    float jitterX = 0.0f;
-    float jitterY = 0.0f;
-
-    float tempCameraNear = 0.0f;
-    float tempCameraFar = 0.0f;
-
     auto& state = State::Instance();
     auto& cfg = *Config::Instance();
-    const auto& ngxParams = *InParameters;
-
-    ngxParams.Get(OptiKeys::FSR_NearPlane, &tempCameraNear);
-    ngxParams.Get(OptiKeys::FSR_FarPlane, &tempCameraFar);
-
-    if (!cfg.FsrUseFsrInputValues.value_or_default() || (tempCameraNear == 0.0f && tempCameraFar == 0.0f))
-    {
-        if (feature->DepthInverted())
-        {
-            cameraFar = cfg.FsrCameraNear.value_or_default();
-            cameraNear = cfg.FsrCameraFar.value_or_default();
-        }
-        else
-        {
-            cameraFar = cfg.FsrCameraFar.value_or_default();
-            cameraNear = cfg.FsrCameraNear.value_or_default();
-        }
-    }
-    else
-    {
-        cameraNear = tempCameraNear;
-        cameraFar = tempCameraFar;
-    }
-
-    if (!cfg.FsrUseFsrInputValues.value_or_default() ||
-        ngxParams.Get(OptiKeys::FSR_CameraFovVertical, &cameraVFov) != NVSDK_NGX_Result_Success)
-    {
-        if (cfg.FsrVerticalFov.has_value())
-            cameraVFov = GetRadiansFromDeg(cfg.FsrVerticalFov.value());
-        else if (cfg.FsrHorizontalFov.value_or_default() > 0.0f)
-        {
-            const float hFovRad = GetRadiansFromDeg(cfg.FsrHorizontalFov.value());
-            cameraVFov =
-                GetVerticalFovFromHorizontal(hFovRad, (float) feature->TargetWidth(), (float) feature->TargetHeight());
-        }
-        else
-            cameraVFov = GetRadiansFromDeg(60);
-    }
-
-    if (!cfg.FsrUseFsrInputValues.value_or_default())
-        ngxParams.Get(OptiKeys::FSR_ViewSpaceToMetersFactor, &meterFactor);
-
-    State::Instance().lastFsrCameraFar = cameraFar;
-    State::Instance().lastFsrCameraNear = cameraNear;
+    const auto frame = fg_inputs::ReadFrameParameters(
+        *InParameters, *feature, cfg, state.lastFGFrameTime,
+        { OptiKeys::FSR_NearPlane, OptiKeys::FSR_FarPlane, OptiKeys::FSR_CameraFovVertical,
+          OptiKeys::FSR_ViewSpaceToMetersFactor });
+    state.lastFsrCameraFar = frame.cameraFar.value;
+    state.lastFsrCameraNear = frame.cameraNear.value;
 
     auto fg = State::Instance().currentFG;
 
     if (fg == nullptr || State::Instance().activeFgInput != FGInput::Upscaler || _device == nullptr)
         return {};
 
-    FG_Constants fgConstants {};
-    fgConstants.displayWidth = feature->DisplayWidth();
-    fgConstants.displayHeight = feature->DisplayHeight();
+    auto fgConstants = fg_inputs::MakeFgConstants<FG_Constants, FG_Flags>(frame);
 
-    if (feature->IsHdr())
-        fgConstants.flags |= FG_Flags::Hdr;
-
-    if (feature->DepthInverted())
-        fgConstants.flags |= FG_Flags::InvertedDepth;
-
-    if (feature->JitteredMV())
-        fgConstants.flags |= FG_Flags::JitteredMVs;
-
-    if (!feature->LowResMV())
-        fgConstants.flags |= FG_Flags::DisplayResolutionMVs;
-
-    if (Config::Instance()->FGAsync.value_or_default())
-        fgConstants.flags |= FG_Flags::Async;
-
+    // Source admission remains an edge contract. A common scalar request does
+    // not replace the native game's selected, synchronous source scope.
     auto* own=dynamic_cast<DLSSG_Dx12*>(fg);
     const bool nativeZzz=own && own->OwnsNativeZzzSource();
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> selectedList;
@@ -151,36 +85,28 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
     }
     if (!nativeZzz) fg->EvaluateState(_device, fgConstants);
 
-    int reset = 0;
-    InParameters->Get(NVSDK_NGX_Parameter_Reset, &reset);
-
-    InParameters->Get(NVSDK_NGX_Parameter_MV_Scale_X, &mvScaleX);
-    InParameters->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &mvScaleY);
-    InParameters->Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &jitterX);
-    InParameters->Get(NVSDK_NGX_Parameter_Jitter_Offset_Y, &jitterY);
-
     const bool checkedSource=own && own->OwnsUpscalerDepthContract();
-    const bool checkedZzz=checkedSource &&
-        dlssg::depth_contract::Game()==GameRouting::Identity::ZenlessZoneZero;
-    if (checkedZzz && !nativeZzz && fg->Mutex.getOwner()==2)
+    if (checkedSource && !nativeZzz && fg->Mutex.getOwner()==2)
     {
         fg->Mutex.lock(4);
         fg->Mutex.unlockThis(4);
     }
     auto inputExecution=nativeZzz ? own->BeginNativeUpscalerInputs(_device,fgConstants) :
-        checkedZzz ? fg->GuardExecution(FGExecutionScope::Inputs) : FGExecutionGuard{};
-    if (checkedZzz && (!fg->CanSubmitInputs() || (nativeZzz && !own->OwnsNativeZzzSource()))) return {};
+        checkedSource ? fg->GuardExecution(FGExecutionScope::Inputs) : FGExecutionGuard{};
+    if (checkedSource && (!fg->CanSubmitInputs() || (nativeZzz && !own->OwnsNativeZzzSource()))) return {};
     const auto previousFrame=fg->FrameCount();
     const auto startedFrame=fg->StartNewFrame();
-    if (checkedZzz && (!fg->CanSubmitInputs() || startedFrame==previousFrame)) return {};
+    if (checkedSource && (!fg->CanSubmitInputs() || startedFrame==previousFrame)) return {};
 
-    auto aspectRatio = (float) feature->DisplayWidth() / (float) feature->DisplayHeight();
-    fg->SetCameraValues(cameraNear, cameraFar, cameraVFov, aspectRatio, meterFactor);
-    fg->SetFrameTimeDelta(State::Instance().lastFGFrameTime);
-    fg->SetMVScale(mvScaleX, mvScaleY);
-    fg->SetJitter(jitterX, jitterY);
-    fg->SetReset(reset);
-    fg->SetInterpolationRect(feature->DisplayWidth(), feature->DisplayHeight());
+    fg_inputs::ApplyFrameParameters(*fg, frame);
+    if (checkedSource)
+    {
+        // The actual selected feature's observed source ordinal, before this
+        // Evaluate. Do not add one or substitute a provider/SDK token for it.
+        const auto source=feature->FrameCount();
+        own->ObserveUpscalerGuideSource(static_cast<IFeature*>(feature),InParameters,
+            source>0?static_cast<UINT64>(source):0);
+    }
 
     Hudfix_Dx12::UpscaleStart();
 
@@ -190,7 +116,7 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
         State::Instance().currentSwapchain != nullptr)
     {
         // Wait for present
-        if (!checkedZzz && fg->Mutex.getOwner() == 2)
+        if (!checkedSource && fg->Mutex.getOwner() == 2)
         {
             LOG_TRACE("Waiting for present!");
             fg->Mutex.lock(4);
@@ -205,15 +131,11 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
 
         LOG_DEBUG("(FG) copy buffers for fgUpscaledImage[{}], frame: {}", frameIndex, fg->FrameCount());
 
-        ID3D12Resource* paramVelocity = nullptr;
-        if (InParameters->Get(NVSDK_NGX_Parameter_MotionVectors, &paramVelocity) != NVSDK_NGX_Result_Success)
-            InParameters->Get(NVSDK_NGX_Parameter_MotionVectors, (void**) &paramVelocity);
+        auto* paramVelocity = fg_inputs::ReadResource<ID3D12Resource>(*InParameters, NVSDK_NGX_Parameter_MotionVectors);
 
         if (checkedSource)
         {
-            ID3D12Resource* realDepth=nullptr;
-            if (InParameters->Get(NVSDK_NGX_Parameter_Depth,&realDepth)!=NVSDK_NGX_Result_Success)
-                InParameters->Get(NVSDK_NGX_Parameter_Depth,(void**)&realDepth);
+            auto* realDepth = fg_inputs::ReadResource<ID3D12Resource>(*InParameters, NVSDK_NGX_Parameter_Depth);
             const bool published=own->SetUpscalerGuidePair(static_cast<IFeature*>(feature),commandList,InParameters,realDepth,paramVelocity,
                 feature->RenderWidth(),feature->RenderHeight(),
                 feature->LowResMV()?feature->RenderWidth():feature->TargetWidth(),
@@ -251,9 +173,7 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
             fg->SetResource(&setResource);
         }
 
-        ID3D12Resource* paramDepth = nullptr;
-        if (InParameters->Get(NVSDK_NGX_Parameter_Depth, &paramDepth) != NVSDK_NGX_Result_Success)
-            InParameters->Get(NVSDK_NGX_Parameter_Depth, (void**) &paramDepth);
+        auto* paramDepth = fg_inputs::ReadResource<ID3D12Resource>(*InParameters, NVSDK_NGX_Parameter_Depth);
 
         if (paramDepth != nullptr)
         {
@@ -312,11 +232,14 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
 }
 
 void UpscalerInputsDx12::UpscaleEnd(ID3D12GraphicsCommandList* InCmdList, NVSDK_NGX_Parameter* InParameters,
-                                    IFeature_Dx12* feature)
+                                    IFeature_Dx12* feature, bool succeeded,
+                                    const DLSSG_Dx12::UpscalerColourSourcePtr& colourSource,
+                                    ID3D12Resource* evaluatedOutput)
 {
     if (native::OpticalFgNrEnabled() && feature->GetUpscalerType() != Upscaler::Optical) return;
 
     Hudfix_Dx12::SetSkipStatus(false);
+    if (!succeeded) return; // A failed Evaluate cannot publish a colour candidate.
     if (feature->GetUpscalerType() == Upscaler::Optical) return; // final picture includes HUD; no raw HUDLess tag
 
     auto fg = State::Instance().currentFG;
@@ -331,11 +254,20 @@ void UpscalerInputsDx12::UpscaleEnd(ID3D12GraphicsCommandList* InCmdList, NVSDK_
         if (Config::Instance()->FGHUDFix.value_or_default())
         {
             // For signal after mv & depth copies
-            Hudfix_Dx12::UpscaleEnd(feature->FrameCount(), State::Instance().lastFGFrameTime);
+            Hudfix_Dx12::UpscaleEnd(colourSource ? colourSource->Frame() : feature->FrameCount(),
+                State::Instance().lastFGFrameTime);
 
-            ID3D12Resource* output = nullptr;
-            if (InParameters->Get(NVSDK_NGX_Parameter_Output, &output) != NVSDK_NGX_Result_Success)
-                InParameters->Get(NVSDK_NGX_Parameter_Output, (void**) &output);
+            if (auto* own=dynamic_cast<DLSSG_Dx12*>(fg); own && own->OwnsUpscalerDepthContract())
+            {
+                own->CaptureUpscalerHudless(colourSource,InCmdList,evaluatedOutput,
+                    (D3D12_RESOURCE_STATES)Config::Instance()->OutputResourceBarrier.value_or(
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+                return;
+            }
+
+            auto* output = fg_inputs::ReadResource<ID3D12Resource>(*InParameters, NVSDK_NGX_Parameter_Output);
+            if (output == nullptr)
+                return;
 
             ResourceInfo info {};
             auto desc = output->GetDesc();

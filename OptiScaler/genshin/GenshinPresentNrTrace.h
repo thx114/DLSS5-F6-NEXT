@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <Windows.h>
+#include <runtime/F6InputPolicy.h>
 #include <d3d11.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
@@ -127,6 +128,7 @@ struct Store {
 };
 inline Store& Data(){static auto* s=new Store;return *s;}
 inline bool IsGenshinProcess() noexcept {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return false;
     static const bool match=[] {wchar_t b[MAX_PATH]{};if(!GetModuleFileNameW(nullptr,b,MAX_PATH))return false;
         const wchar_t* p=wcsrchr(b,L'\\');p=p?p+1:b;
         return _wcsicmp(p,L"YuanShen.exe")==0 || _wcsicmp(p,L"GenshinImpact.exe")==0;}();return match;

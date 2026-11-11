@@ -17,6 +17,7 @@ NativeProducer::~NativeProducer()
             DrawUiMask::Observe(_held[slot]->input.uiMask,DrawUiMask::Consumer::Nr,DrawUiMask::Lifecycle::Quarantined,
                 reinterpret_cast<uintptr_t>(this),_held[slot]->inputEpoch,0);
         _flow.release(); _trust.release();
+        _prepGpu.release(); // the real final fence is unproved; retain query/readback owners too
         _domain.release();
         for (auto& hold : _held) hold.release();
         _queue.Detach(); _device.Detach(); // retain the exact in-flight device/queue as well
@@ -63,6 +64,8 @@ bool NativeProducer::CanRetire() const
 
 void NativeProducer::SealHeldFinalSubmission(UINT slot) noexcept
 {
+    if(slot<kRing && _prepGpu && !_quarantined)
+        _prepGpu->Submitted(slot,_queue.Get(),_fence,_values[slot]);
     // Existing successful final exits only; no intermediate producer/filter tail.
     if(slot<kRing && _held[slot] && _values[slot])
         DrawUiMask::Observe(_held[slot]->input.uiMask,DrawUiMask::Consumer::Nr,DrawUiMask::Lifecycle::Submitted,
@@ -285,7 +288,8 @@ void NativeProducer::ResetGuides()
 }
 
 NativeProducer::Result NativeProducer::Run(ID3D12CommandQueue* queue, const FrameInput& input, const Options& options,
-                                           const ApplyFn& apply, FrameOutput& output)
+                                           const ApplyFn& apply, FrameOutput& output,
+                                           NativeProducerCpuTiming::Frame* timing)
 {
     HeldAccessScope heldAccess(_heldAccessActive);
     struct MaskExit {
@@ -409,7 +413,13 @@ NativeProducer::Result NativeProducer::Run(ID3D12CommandQueue* queue, const Fram
         Reset();
 
     const UINT slot = (UINT) (_frame % kRing);
-    if (!WaitFor(_values[slot])) { _quarantined = true; output.uncertain = true; result.stoppedAt = "allocator completion"; return result; }
+    bool allocatorReady = false;
+    {
+        auto waitTiming = NativeProducerCpuTiming::Measure(timing, NativeProducerCpuTiming::Stage::AllocatorWait);
+        allocatorReady = WaitFor(_values[slot]);
+    }
+    if (!allocatorReady) { _quarantined = true; output.uncertain = true; result.stoppedAt = "allocator completion"; return result; }
+    if(_prepGpu)_prepGpu->Poll(slot,queue,_fence,result.completedPrepGpu);
 
     if(_held[slot] && _values[slot])
         DrawUiMask::Observe(_held[slot]->input.uiMask,DrawUiMask::Consumer::Nr,DrawUiMask::Lifecycle::Completed,
@@ -460,6 +470,9 @@ NativeProducer::Result NativeProducer::Run(ID3D12CommandQueue* queue, const Fram
 
     ID3D12GraphicsCommandList* list = _list;
     ID3D12CommandAllocator* activeAllocator = _allocators[slot];
+    const bool prepTiming=(_frame&7)==0 && _prepGpu && _prepGpu->Init(_device.Get(),queue,*_domain) &&
+        _prepGpu->Begin(slot,queue,{input.frame,input.depthEpoch,input.depthGeneration,input.depthSourceFrame,
+            input.depthPictureSerial,reinterpret_cast<uintptr_t>(input.picture)});
     bool beforeSrSplit = false;
     struct BeforeSrExit {
         NativeProducer& owner; bool& split; Result& result; FrameOutput& output;
@@ -492,9 +505,11 @@ NativeProducer::Result NativeProducer::Run(ID3D12CommandQueue* queue, const Fram
     const OpticalFlowDx12::Encoding encoding = input.colorSpace == ColorSpace::ScRgb ? OpticalFlowDx12::Encoding::ScRgb
                                                : input.colorSpace == ColorSpace::Pq  ? OpticalFlowDx12::Encoding::Pq
                                                                                      : OpticalFlowDx12::Encoding::Srgb;
+    if(prepTiming)_prepGpu->Stamp(slot,0,list);
     const bool recorded =
         _flow->Dispatch(list, input.picture, input.pictureFormat, flowDepth ? input.depth[0] : nullptr,
                         flowDepth ? input.depthView : DXGI_FORMAT_UNKNOWN, input.depthReversed, encoding);
+    if(prepTiming)_prepGpu->Stamp(slot,1,list);
 
     result.detectorRan = recorded;
     result.detectorFailed = !recorded;
@@ -603,6 +618,7 @@ NativeProducer::Result NativeProducer::Run(ID3D12CommandQueue* queue, const Fram
         }
     }
 
+    if(prepTiming)_prepGpu->Stamp(slot,2,list);
     if (result.sceneCut)
     {
         if (_guideCutSerial != UINT64_MAX) ++_guideCutSerial;
@@ -649,6 +665,7 @@ NativeProducer::Result NativeProducer::Run(ID3D12CommandQueue* queue, const Fram
         else result.depthObservation.guide = NrInputObservation::GuideDepth::GuideBuildFailed;
     }
 
+    if(prepTiming){_prepGpu->Stamp(slot,3,list);_prepGpu->Resolve(slot,list);}
     // HoYoShade owns a separate ReShade command list and submits it from the
     // consumer callback. Keep the producer's read state alive until that list
     // and the actual NR consumer have both run. Other consumers retain the

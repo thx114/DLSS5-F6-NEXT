@@ -2,15 +2,16 @@
 #include <native/OpticalFgNrPolicy.h>
 #include "Upscaler_Inputs_Dx11wDx12.h"
 
-#include "MathUtils.h"
+#include "UpscalerFrameParameters.h"
+#include <runtime/F6InputPolicy.h>
 #include <framegen/dlssg/FgDepthContract.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
+#include <upscalers/IFeature_Dx11wDx12.h>
 #include <Util.h>
 
 #include <with_dx12/with_dx12.h>
 #include "shaders/depth_scale/DS_Dx12.h"
 
-using namespace OptiMath;
 static DS_Dx12* DepthScaleDx11wDx12 = nullptr;
 
 static bool PrepareFgResourceCache(NVSDK_NGX_Parameter* parameters, UINT64 frameKey)
@@ -77,74 +78,23 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
 
     if (InParameters == nullptr || feature == nullptr)
         return;
-    if (dlssg::depth_contract::Game()==GameRouting::Identity::Genshin &&
+    if (F6InputPolicy::FsrBridgeEnabled && dlssg::depth_contract::Game()==GameRouting::Identity::Genshin &&
         State::Instance().activeFgInput==FGInput::Upscaler &&
         State::Instance().activeFgOutput==FGOutput::DLSSG) return; // Sealed bridge remains independent.
 
-    // FSR Camera values
-    float cameraNear = 0.0f;
-    float cameraFar = 0.0f;
-    float cameraVFov = 0.0f;
-    float meterFactor = 0.0f;
-    float mvScaleX = 0.0f;
-    float mvScaleY = 0.0f;
-    float jitterX = 0.0f;
-    float jitterY = 0.0f;
-
-    float tempCameraNear = 0.0f;
-    float tempCameraFar = 0.0f;
-
     auto& cfg = *Config::Instance();
-    const auto& ngxParams = *InParameters;
-
-    ngxParams.Get(OptiKeys::FSR_NearPlane, &tempCameraNear);
-    ngxParams.Get(OptiKeys::FSR_FarPlane, &tempCameraFar);
-
-    if (!cfg.FsrUseFsrInputValues.value_or_default() || (tempCameraNear == 0.0f && tempCameraFar == 0.0f))
-    {
-        if (feature->DepthInverted())
-        {
-            cameraFar = cfg.FsrCameraNear.value_or_default();
-            cameraNear = cfg.FsrCameraFar.value_or_default();
-        }
-        else
-        {
-            cameraFar = cfg.FsrCameraFar.value_or_default();
-            cameraNear = cfg.FsrCameraNear.value_or_default();
-        }
-    }
-    else
-    {
-        cameraNear = tempCameraNear;
-        cameraFar = tempCameraFar;
-    }
-
-    if (!cfg.FsrUseFsrInputValues.value_or_default() ||
-        ngxParams.Get(OptiKeys::FSR_CameraFovVertical, &cameraVFov) != NVSDK_NGX_Result_Success)
-    {
-        if (cfg.FsrVerticalFov.has_value())
-            cameraVFov = GetRadiansFromDeg(cfg.FsrVerticalFov.value());
-        else if (cfg.FsrHorizontalFov.value_or_default() > 0.0f)
-        {
-            const float hFovRad = GetRadiansFromDeg(cfg.FsrHorizontalFov.value());
-            cameraVFov =
-                GetVerticalFovFromHorizontal(hFovRad, (float) feature->TargetWidth(), (float) feature->TargetHeight());
-        }
-        else
-            cameraVFov = GetRadiansFromDeg(60);
-    }
-
-    if (!cfg.FsrUseFsrInputValues.value_or_default())
-        ngxParams.Get(OptiKeys::FSR_ViewSpaceToMetersFactor, &meterFactor);
-
-    State::Instance().lastFsrCameraFar = cameraFar;
-    State::Instance().lastFsrCameraNear = cameraNear;
+    const auto frame = fg_inputs::ReadFrameParameters(
+        *InParameters, *feature, cfg, State::Instance().lastFGFrameTime,
+        { OptiKeys::FSR_NearPlane, OptiKeys::FSR_FarPlane, OptiKeys::FSR_CameraFovVertical,
+          OptiKeys::FSR_ViewSpaceToMetersFactor });
+    State::Instance().lastFsrCameraFar = frame.cameraFar.value;
+    State::Instance().lastFsrCameraNear = frame.cameraNear.value;
 
     if (State::Instance().activeFgInput != FGInput::Upscaler || _dx12Device == nullptr)
         return;
 
-    // F5-DS checks the prepared source before EvaluateState/NewFrame.
-    // Other games already used this same cache preparation and failure path.
+    // The interop adapter must prepare/reuse the actual source cache before
+    // EvaluateState/NewFrame. Common scalar parameters cannot certify it.
     const auto prepareInputs = [&]() {
         if (feature->IsWithDx12())
             return ReusePreparedUpscalerCacheForFg(Dx11WithDx12::GetLastPreparedUpscalerFrameId());
@@ -164,34 +114,9 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
     if (fg == nullptr)
         return;
 
-    FG_Constants fgConstants {};
-    fgConstants.displayWidth = feature->DisplayWidth();
-    fgConstants.displayHeight = feature->DisplayHeight();
-
-    if (feature->IsHdr())
-        fgConstants.flags |= FG_Flags::Hdr;
-
-    if (feature->DepthInverted())
-        fgConstants.flags |= FG_Flags::InvertedDepth;
-
-    if (feature->JitteredMV())
-        fgConstants.flags |= FG_Flags::JitteredMVs;
-
-    if (!feature->LowResMV())
-        fgConstants.flags |= FG_Flags::DisplayResolutionMVs;
-
-    if (Config::Instance()->FGAsync.value_or_default())
-        fgConstants.flags |= FG_Flags::Async;
+    auto fgConstants = fg_inputs::MakeFgConstants<FG_Constants, FG_Flags>(frame);
 
     fg->EvaluateState(_dx12Device, fgConstants);
-
-    int reset = 0;
-    InParameters->Get(NVSDK_NGX_Parameter_Reset, &reset);
-
-    InParameters->Get(NVSDK_NGX_Parameter_MV_Scale_X, &mvScaleX);
-    InParameters->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &mvScaleY);
-    InParameters->Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &jitterX);
-    InParameters->Get(NVSDK_NGX_Parameter_Jitter_Offset_Y, &jitterY);
 
     if (fg->Mutex.getOwner() == 2)
     {
@@ -202,15 +127,39 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
 
     auto inputExecution = fg->GuardExecution(FGExecutionScope::Inputs);
     if (!fg->CanSubmitInputs()) return;
-    fg->StartNewFrame();
+    const auto previousFrame = fg->FrameCount();
+    const auto startedFrame = fg->StartNewFrame();
+    if (!fg->CanSubmitInputs() || startedFrame == previousFrame) return;
 
-    auto aspectRatio = (float) feature->DisplayWidth() / (float) feature->DisplayHeight();
-    fg->SetCameraValues(cameraNear, cameraFar, cameraVFov, aspectRatio, meterFactor);
-    fg->SetFrameTimeDelta(State::Instance().lastFGFrameTime);
-    fg->SetMVScale(mvScaleX, mvScaleY);
-    fg->SetJitter(jitterX, jitterY);
-    fg->SetReset(reset);
-    fg->SetInterpolationRect(feature->DisplayWidth(), feature->DisplayHeight());
+    fg_inputs::ApplyFrameParameters(*fg, frame);
+
+    uintptr_t evaluatedOutput=0;
+    if (auto* own=dynamic_cast<DLSSG_Dx12*>(fg); own && own->OwnsUpscalerDepthContract())
+    {
+        GuideDiagnostics::Resource colour;
+        auto* output=fg_inputs::ReadResource<ID3D11Resource>(*InParameters,NVSDK_NGX_Parameter_Output);
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        if (output && SUCCEEDED(output->QueryInterface(IID_PPV_ARGS(&texture))))
+        {
+            D3D11_TEXTURE2D_DESC desc{};texture->GetDesc(&desc);
+            colour={true,static_cast<UINT>(desc.Format),desc.Width,desc.Height,{0,0,desc.Width,desc.Height}};
+            evaluatedOutput=reinterpret_cast<uintptr_t>(texture.Get());
+        }
+        // This callback is after the real successful DX11 Evaluate. The cache
+        // preparation ordinal is independent of provider/Reflex/SDK frame IDs.
+        auto* bridge=dynamic_cast<IFeature_Dx11wDx12*>(feature);
+        auto raw=bridge?bridge->CurrentInputMetadata():GuideSourceMetadata::Ptr{};
+        // The existing cache validation below authenticates this live call's
+        // resources. Metadata cannot grant the cache or recording admission.
+        if(raw) {
+            const auto* depth=fg_inputs::ReadResource<ID3D11Resource>(*InParameters,NVSDK_NGX_Parameter_Depth);
+            const auto* motion=fg_inputs::ReadResource<ID3D11Resource>(*InParameters,NVSDK_NGX_Parameter_MotionVectors);
+            if(raw->inputDepth!=reinterpret_cast<uintptr_t>(depth)||
+                raw->inputMotion!=reinterpret_cast<uintptr_t>(motion))raw.reset();
+        }
+        own->ObserveUpscalerGuideSource(static_cast<IFeature*>(feature),InParameters,
+            Dx11WithDx12::GetLastPreparedUpscalerFrameId(),colour,std::move(raw));
+    }
 
     if (State::Instance().isShuttingDown || !fg->IsActive() || !Config::Instance()->FGEnabled.value_or_default() ||
         State::Instance().currentSwapchain == nullptr)
@@ -233,11 +182,8 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
     {
         // Resolve only live current NGX resources to the same interface saved
         // by PrepareTextureFrom11To12. Never dereference an old SourceTexture.
-        ID3D11Resource* sourceDepth=nullptr;ID3D11Resource* sourceMotion=nullptr;
-        if (InParameters->Get(NVSDK_NGX_Parameter_Depth,&sourceDepth)!=NVSDK_NGX_Result_Success)
-            InParameters->Get(NVSDK_NGX_Parameter_Depth,(void**)&sourceDepth);
-        if (InParameters->Get(NVSDK_NGX_Parameter_MotionVectors,&sourceMotion)!=NVSDK_NGX_Result_Success)
-            InParameters->Get(NVSDK_NGX_Parameter_MotionVectors,(void**)&sourceMotion);
+        auto* sourceDepth = fg_inputs::ReadResource<ID3D11Resource>(*InParameters, NVSDK_NGX_Parameter_Depth);
+        auto* sourceMotion = fg_inputs::ReadResource<ID3D11Resource>(*InParameters, NVSDK_NGX_Parameter_MotionVectors);
         Microsoft::WRL::ComPtr<ID3D11Texture2D> sourceDepthTexture,sourceMotionTexture;
         if (sourceDepth) sourceDepth->QueryInterface(IID_PPV_ARGS(&sourceDepthTexture));
         if (sourceMotion) sourceMotion->QueryInterface(IID_PPV_ARGS(&sourceMotionTexture));
@@ -250,12 +196,15 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
             own->RejectUpscalerGuideSource("selected-sr-cache-source-mismatch");
             return;
         }
-        own->SetUpscalerGuidePair(static_cast<IFeature*>(feature),cmdList,InParameters,paramDepth,paramVelocity,
+        const bool tagged=own->SetUpscalerGuidePair(static_cast<IFeature*>(feature),cmdList,InParameters,paramDepth,paramVelocity,
             feature->RenderWidth(),feature->RenderHeight(),
             feature->LowResMV()?feature->RenderWidth():feature->TargetWidth(),
             feature->LowResMV()?feature->RenderHeight():feature->TargetHeight(),
             (D3D12_RESOURCE_STATES)cfg.DepthResourceBarrier.value_or(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-            (D3D12_RESOURCE_STATES)cfg.MVResourceBarrier.value_or(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+            (D3D12_RESOURCE_STATES)cfg.MVResourceBarrier.value_or(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+            evaluatedOutput);
+        if (dlssg::depth_contract::Game()==GameRouting::Identity::Genshin)
+            own->SealDx11GuideInputs(tagged,_dx12CommandQueue);
         return;
     }
 

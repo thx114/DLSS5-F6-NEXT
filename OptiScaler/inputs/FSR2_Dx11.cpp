@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <runtime/F6InputPolicy.h>
 #include "FSR2_Dx11.h"
 #include "FSR2_Dx11_Internal.h"
 #include "GenshinFsrContract.h"
@@ -394,6 +395,7 @@ static FfxErrorCode ffxFsr2GetRenderResolutionFromQualityMode_Dx11(uint32_t* ren
 
 void HookFSR2Dx11ExeInputs()
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     LOG_INFO("Trying to hook FSR2 Dx11 methods");
 
     DetourTransactionBegin();

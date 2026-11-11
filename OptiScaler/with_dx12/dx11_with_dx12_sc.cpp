@@ -16,6 +16,7 @@
 #include <with_dx12/dx11_with_dx12_sync.h>
 
 #include <hooks/FG_Hooks.h>
+#include <hooks/Streamline_Hooks.h>
 #include <menu/menu_overlay_dx.h>
 #include <native/NativeDriverDx11.h>
 #include <native/NativeLowLatency.h>
@@ -192,14 +193,80 @@ PrivateCopySlotSelection SelectRetiredPrivateCopySlot(UINT preferred, ID3D12Fenc
     return selection;
 }
 
+// Private copy wait receipt begin
+namespace PrivateCopyOrdering
+{
+// One CPU submission receipt, scoped to a single private-copy transaction.
+// It proves queue order for one exact writer, never GPU completion or reuse.
+class SubmittedWait final
+{
+    const void* queue_ = nullptr;
+    const void* fence_ = nullptr;
+    uint64_t value_ = 0;
+    HRESULT result_ = E_PENDING;
+    bool submitting_ = false, reentered_ = false;
+
+    void Clear() noexcept
+    {
+        queue_ = fence_ = nullptr;
+        value_ = 0;
+        result_ = E_PENDING;
+    }
+
+  public:
+    SubmittedWait() = default;
+    SubmittedWait(const SubmittedWait&) = delete;
+    SubmittedWait& operator=(const SubmittedWait&) = delete;
+
+    template<typename Submit>
+    HRESULT Order(const void* queue, const void* fence, uint64_t value, Submit&& submit)
+    {
+        if (submitting_)
+        {
+            reentered_ = true;
+            Clear();
+            return E_UNEXPECTED;
+        }
+        if (!queue || !fence || !value || value == UINT64_MAX)
+        {
+            Clear();
+            return E_INVALIDARG;
+        }
+        if (queue_ == queue && fence_ == fence && value_ == value && SUCCEEDED(result_))
+            return result_;
+
+        Clear();
+        submitting_ = true;
+        reentered_ = false;
+        struct Finish { bool& submitting; ~Finish() { submitting = false; } } finish { submitting_ };
+        const auto result = submit();
+        if (reentered_) return E_UNEXPECTED;
+        if (SUCCEEDED(result))
+        {
+            queue_ = queue;
+            fence_ = fence;
+            value_ = value;
+            result_ = result;
+        }
+        return result;
+    }
+};
+}
+// Private copy wait receipt end
+
 struct PrivateCopySlotOverride
 {
     const void* owner;
     UINT slot;
-    const PrivateCopySlotOverride* previous;
+    PrivateCopySlotOverride* previous;
+    PrivateCopyOrdering::SubmittedWait wait;
+    // Keep comparison identities alive until this transaction leaves the stack.
+    // Neither reference is a resource-retirement receipt.
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> waitQueue;
+    Microsoft::WRL::ComPtr<ID3D12Fence> waitFence;
 };
 
-thread_local const PrivateCopySlotOverride* activePrivateCopySlot = nullptr;
+thread_local PrivateCopySlotOverride* activePrivateCopySlot = nullptr;
 
 struct ScopedPrivateCopySlot
 {
@@ -209,11 +276,36 @@ struct ScopedPrivateCopySlot
         activePrivateCopySlot = &value;
     }
     ~ScopedPrivateCopySlot() { activePrivateCopySlot = value.previous; }
+    ScopedPrivateCopySlot(const ScopedPrivateCopySlot&) = delete;
+    ScopedPrivateCopySlot& operator=(const ScopedPrivateCopySlot&) = delete;
 };
 
 UINT ResolvePrivateCopySlot(const void* owner, UINT nativeSlot)
 {
     return activePrivateCopySlot && activePrivateCopySlot->owner == owner ? activePrivateCopySlot->slot : nativeSlot;
+}
+
+HRESULT OrderPrivateCopyWait(const void* owner, ID3D12CommandQueue* queue, ID3D12Fence* fence, UINT64 value)
+{
+    if (!queue || !fence) return E_INVALIDARG;
+    const auto submit = [&] { return queue->Wait(fence, value); };
+    auto* scope = activePrivateCopySlot;
+    if (!scope || scope->owner != owner) return submit(); // Generic interop and lifecycle keep real calls.
+    // Acquire call-local pins only after Order accepts submission. A reentrant
+    // call must not replace the outer call's owners before its Wait returns.
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> submittedQueue;
+    Microsoft::WRL::ComPtr<ID3D12Fence> submittedFence;
+    const auto result = scope->wait.Order(queue, fence, value, [&] {
+        submittedQueue = queue;
+        submittedFence = fence;
+        return submittedQueue->Wait(submittedFence.Get(), value);
+    });
+    if (SUCCEEDED(result) && submittedQueue)
+    {
+        scope->waitQueue = std::move(submittedQueue);
+        scope->waitFence = std::move(submittedFence);
+    }
+    return result;
 }
 
 // Armed only around this authenticated Genshin private-copy transaction.
@@ -378,31 +470,16 @@ bool IsSame(IDXGISwapChain* swapchain, UINT bufferCount, UINT width, UINT height
            resolvedHeight == desc.BufferDesc.Height && resolvedFormat == desc.BufferDesc.Format && flags == desc.Flags;
 }
 
-struct FgResizeArgs
+// Match PrepareDx12InteropDesc/Desc1 for every DX12 presenter, including DLSSG.
+// Only XeFG's flag preservation remains a game quirk. The native resize below
+// always receives the game's untouched arguments.
+Dx11InteropSwapchain::ResizeArgs ResizeArgsForFg(IDXGISwapChain* fgSwapChain, UINT bufferCount,
+                                                DXGI_FORMAT format, UINT flags)
 {
-    UINT bufferCount;
-    DXGI_FORMAT format;
-    UINT flags;
-};
-
-// What the game's resize becomes for the FG swapchain. With the XeFGBridgeResizeAsCreated quirk, the same changes as
-// when the bridge created it (DxgiFactory_Hooks' PrepareDx12InteropDesc): an SRGB format as its UNORM one, and fewer
-// than 2 buffers as the count it has. Under XeFG the flags are the swapchain's own, since FGHooks::hkResizeBuffers
-// keeps them anyway, so a resize that only differs there is skipped too. Without the quirk, the game's values as-is.
-FgResizeArgs ResizeArgsForFg(IDXGISwapChain* fgSwapChain, UINT bufferCount, DXGI_FORMAT format, UINT flags)
-{
-    FgResizeArgs args { bufferCount, format, flags };
+    auto args = Dx11InteropSwapchain::PresenterResizeArgs(bufferCount, format, flags);
 
     if (!State::Instance().gameQuirks[GameQuirk::XeFGBridgeResizeAsCreated])
         return args;
-
-    if (args.format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
-        args.format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    else if (args.format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
-        args.format = DXGI_FORMAT_B8G8R8A8_UNORM;
-
-    if (args.bufferCount == 1)
-        args.bufferCount = 0;
 
     DXGI_SWAP_CHAIN_DESC desc {};
     if (State::Instance().activeFgOutput == FGOutput::XeFG && fgSwapChain != nullptr &&
@@ -420,8 +497,9 @@ FgResizeArgs ResizeArgsForFg(IDXGISwapChain* fgSwapChain, UINT bufferCount, DXGI
 
 Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Device* pDevice, HWND hWnd, UINT flags,
                          std::unique_ptr<GenshinVisibleChild> visibleChild, bool nativeParentRoute,
-                         bool sourceFrameLatencyOwner)
-    : _nativeParentRoute(nativeParentRoute),
+                         bool sourceFrameLatencyOwner, std::optional<UINT> applicationFlags)
+    : SwapchainHookBoundary(OperationsFor<Dx11wDx12SC>()),
+      _nativeParentRoute(nativeParentRoute),
       _sourceFrameLatencyOwner(sourceFrameLatencyOwner && !nativeParentRoute && real != nullptr && fgSC != nullptr),
       _starRailF5DsTransport(_sourceFrameLatencyOwner && StarRailF5Ds::Selected()),
       _visibleChild(std::move(visibleChild)), _real(real), _fgSwapChain(fgSC), _refcount(1),
@@ -433,6 +511,14 @@ Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Devi
     _visibleProvider = _visibleChild ? State::Instance().currentFG : nullptr;
     _id = ++scCount;
     _lastFlags = flags;
+    // The factory must supply the application's descriptor BEFORE any SDK or
+    // factory overrides. The existing flags parameter alone is effective data.
+    _frameLatencyFlags.requestedKnown = applicationFlags.has_value();
+    _frameLatencyFlags.requested = applicationFlags.value_or(0);
+    if (applicationFlags) {
+        StreamlineHooks::RecordFrameLatencyApplicationFlags(_real,*applicationFlags);
+        StreamlineHooks::RecordFrameLatencyApplicationFlags(_fgSwapChain,*applicationFlags);
+    }
 
     // Exclusive fullscreen on XeFG's swapchain behind this bridge leaves every following Present failing with
     // DXGI_ERROR_INVALID_CALL (seen in Prey and Blair Witch, both D3D11 through Dx11wDx12). Default to the existing
@@ -490,6 +576,7 @@ Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Devi
     State::Instance().swapchainInteropApi = SwapchainInteropApi::Dx11wDx12;
 
     _RefreshCachedSwapchainDesc();
+    _RefreshFrameLatencyFlags();
     if (_nativeParentRoute)
     {
         // Both sealed R625 factories pass a newly created, unexposed native
@@ -733,6 +820,14 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
         return _real->Present(SyncInterval, Flags);
     }
 
+    // A failed provider resize may have destroyed its fake backbuffers even
+    // when a later GetBuffer returns S_OK/a raw buffer. Do not copy, run NR/FG
+    // or Present on that unvalidated chain. In this route _real belongs to a
+    // hidden HWND, so its S_OK would NOT establish visible native fallback.
+    // Recovery requires a real successful resize; no owners are retired here.
+    if (const auto failure = _fgResizeStatus.Failure(); FAILED(failure))
+        return failure;
+
     if (_starRailF5DsTransport)
     {
         const auto sourceFailure = _sourceDeviceFailure.load(std::memory_order_acquire);
@@ -775,20 +870,26 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     const bool genshinSender=genshinFgPresent.MatchesNative(_real,_dx11Device);
     if(genshinSender)NativeMotionDx11::OnFGPresent(_real,_dx11Device);
 
-    if (!_CopyDx11BackBufferToShared(dx11Index))
+    auto* colourOwner=dynamic_cast<DLSSG_Dx12*>(_fg);
+    const auto colourSource=colourOwner && State::Instance().currentFG==colourOwner ?
+        colourOwner->CurrentUpscalerColourSource() : DLSSG_Dx12::UpscalerColourSourcePtr{};
+    CopySlotAdmission copyAdmission;
+    if (!_CopyDx11BackBufferToShared(dx11Index, copyAdmission))
         return DXGI_ERROR_DEVICE_REMOVED;
 
     if (!_WaitDx11ThenDx12())
         return DXGI_ERROR_DEVICE_REMOVED;
 
-    if (!_CopyDx11SharedToDx12FGBackBuffer(dx11Index))
+    ComPtr<ID3D12Resource> copiedColour;
+    if (!_CopyDx11SharedToDx12FGBackBuffer(dx11Index, copyAdmission,copiedColour.GetAddressOf()))
         return DXGI_ERROR_DEVICE_REMOVED;
+    const auto copiedValue=_lastInteropCopyFenceValue;
 
     // Overwrites the raw copy just made above with native input's processed picture, when that option is on; a no-op
     // otherwise. Runs here, before FG takes the frame: this is the only present this game gets once Dx11wDx12SC
     // exists, so it is also where the D3D11 depth finder's own frame close has to happen (NativeMotionDx11::
     // OnFGPresent does that), same placement rule Story F used on the D3D12 side.
-    if (!genshinSender)
+    if (!genshinSender && !DlssNr::UsesGenshinPresentPipeline())
     {
         native::nrfilter::OpticalInputScope inputSource(_real, _dx11Device);
         _ApplyNativeInputToFGBackBuffer();
@@ -813,9 +914,16 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
         native::nrfilter::BridgeScope nrFilterSource(_real, _dx11Device, dx11Index,
             _fgSwapChain, WithDx12::GetD3D12CommandQueue(), nrPresentQueue, State::Instance().frameCount,
             _dx12CommandQueue, _copyFence, _lastInteropCopyFenceValue);
-        return DlssNr::ApplyToFinishedPictureDx11Bridge(_fgSwapChain, nrPresentQueue, WithDx12::GetD3D12CommandQueue(), genshinFgPresent.NativeReturn());
+        return DlssNr::ApplyToFinishedPictureDx11Bridge(_fgSwapChain, nrPresentQueue, WithDx12::GetD3D12CommandQueue(),
+            genshinFgPresent.NativeReturn(), colourSource ? colourSource->SourceMetadata() : GuideSourceMetadata::Ptr{});
     }();
     if (HoYoShade::ColorConsumers(_fgSwapChain) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
+    // The real interop Wait above orders this exact copy on nrPresentQueue.
+    // An optional native overwrite has a different receipt/source, so it cannot
+    // borrow the selected NGX source's colour identity.
+    if (colourOwner && State::Instance().currentFG==colourOwner && copiedValue==_lastInteropCopyFenceValue)
+        colourOwner->JoinUpscalerFinalColour(colourSource,_fgSwapChain,nrPresentQueue,bridgeOutcome,
+            copiedColour.Get(),_copyFence,copiedValue);
     GenshinBridgeFg::PresentScope::Finished(bridgeOutcome);
     nrPresentCpu.Finish();
 
@@ -905,7 +1013,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetBuffer(UINT Buffer, REFIID riid, void*
     return _real != nullptr ? _real->GetBuffer(Buffer, riid, ppSurface) : DXGI_ERROR_DEVICE_REMOVED;
 }
 
-HRESULT STDMETHODCALLTYPE Dx11wDx12SC::SetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget)
+HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookSetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget)
 {
     LOG_DEBUG("Dx11wDx12SC SetFullscreenState: {}, target: {:X}, caller: {}", Fullscreen, (size_t) pTarget,
               Util::WhoIsTheCaller(_ReturnAddress()));
@@ -932,7 +1040,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::SetFullscreenState(BOOL Fullscreen, IDXGI
     return _real != nullptr ? _real->SetFullscreenState(Fullscreen, pTarget) : DXGI_ERROR_DEVICE_REMOVED;
 }
 
-HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetFullscreenState(BOOL* pFullscreen, IDXGIOutput** ppTarget)
+HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookGetFullscreenState(BOOL* pFullscreen, IDXGIOutput** ppTarget)
 {
     if (_nativeParentRoute) return _real->GetFullscreenState(pFullscreen, ppTarget);
     if (_fgSwapChain != nullptr)
@@ -953,7 +1061,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc)
     return result;
 }
 
-HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat,
+HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat,
                                                      UINT SwapChainFlags)
 {
     if ((_sourceCopyUncertain.load(std::memory_order_acquire) || native::nrfilter::HasUncertainCopy(_nrCopyAllocatorFenceValues))) return DXGI_ERROR_WAS_STILL_DRAWING;
@@ -973,11 +1081,14 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
         const auto hr=_real ? (_real->ResizeBuffers(BufferCount,Width,Height,NewFormat,SwapChainFlags)) : DXGI_ERROR_DEVICE_REMOVED;
         if(SUCCEEDED(hr)){
             if (NewFormat != DXGI_FORMAT_UNKNOWN && NewFormat != _bufferFormat) _nativeColorSpaceKnown = false;
-            _RefreshCachedSwapchainDesc();State::Instance().scChanged=true;
+            _RefreshCachedSwapchainDesc();_RefreshFrameLatencyFlags();State::Instance().scChanged=true;
             State::Instance().SCAllowTearing=(SwapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)!=0;}
         return hr;
     }
 
+
+    if (const auto failure = _fgResizeStatus.RecoveryFailure(Config::Instance()->FGSkipResizeBuffers.value_or_default());
+        FAILED(failure)) return failure;
 
     // Reserve capture admission BEFORE late Reset, exactly as R610. The
     // reservation outlives both actual native and child resize calls.
@@ -999,7 +1110,8 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
     auto lifecycleExecution = lifecycleOwner != nullptr ? lifecycleOwner->GuardExecution(FGExecutionScope::Lifecycle) : FGExecutionGuard {};
     auto fgArgs = ResizeArgsForFg(_fgSwapChain, BufferCount, NewFormat, SwapChainFlags);
     if (_visibleChild) fgArgs.flags &= ~DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-    const bool skipFgResize = IsSame(_fgSwapChain, fgArgs.bufferCount, Width, Height, fgArgs.format, fgArgs.flags);
+    const bool skipFgResize = _fgResizeStatus.CanSkipResize() &&
+        IsSame(_fgSwapChain, fgArgs.bufferCount, Width, Height, fgArgs.format, fgArgs.flags);
     if (!skipFgResize && lifecycleOwner != nullptr && !lifecycleOwner->PrepareForSwapchainChange())
         return DXGI_ERROR_WAS_STILL_DRAWING;
     GenshinBridgeFg::Collect(); // successful provider drain receipts can release both backbuffers before Resize
@@ -1067,11 +1179,17 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
 
-    if (SUCCEEDED(realResult) && (_visibleChild || SUCCEEDED(fgResult)))
+    _RefreshFrameLatencyFlags();
+    _fgResizeStatus.Complete(realResult, fgResult, !skipFgResize && _fgSwapChain != nullptr);
+    if (SUCCEEDED(realResult) && FAILED(fgResult))
+        LOG_ERROR("DX12 presenter resize failed: {:X}; interop Present blocked until successful resize. Hidden DX11 source is not a visible fallback",
+                  (UINT) fgResult);
+
+    if (SUCCEEDED(realResult))
     {
         _RefreshCachedSwapchainDesc();
 
-        if (Config::Instance()->FGEnabled.value_or_default())
+        if (SUCCEEDED(fgResult) && Config::Instance()->FGEnabled.value_or_default())
         {
             State::Instance().fgResetCapturedResources = true;
             State::Instance().fgOnlyUseCapturedResources = false;
@@ -1098,7 +1216,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
     return FAILED(realResult) ? realResult : fgResult;
 }
 
-HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters)
+HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters)
 {
     if (_nativeParentRoute)
     {
@@ -1258,8 +1376,30 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetMaximumFrameLatency(UINT* pMaxLatency)
     return _real2 != nullptr ? _real2->GetMaximumFrameLatency(pMaxLatency) : DXGI_ERROR_DEVICE_REMOVED;
 }
 
+void Dx11wDx12SC::_RefreshFrameLatencyFlags()
+{
+    DXGI_SWAP_CHAIN_DESC native {}, provider {};
+    const bool nativeKnown=_real && SUCCEEDED(_real->GetDesc(&native));
+    const bool providerKnown=_fgSwapChain && SUCCEEDED(_fgSwapChain->GetDesc(&provider));
+    std::lock_guard lock(_frameLatencyMutex);
+    _frameLatencyFlags.nativeKnown=nativeKnown;
+    _frameLatencyFlags.effectiveNative=nativeKnown ? native.Flags : 0;
+    _frameLatencyFlags.providerKnown=providerKnown;
+    _frameLatencyFlags.effectiveProvider=providerKnown ? provider.Flags : 0;
+}
+
 HANDLE STDMETHODCALLTYPE Dx11wDx12SC::GetFrameLatencyWaitableObject(void)
 {
+    const auto caller = StreamlineHooks::FrameLatencyCaller(_ReturnAddress());
+    const bool sdkLoaded = StreamlineHooks::DlssgPluginLoaded();
+    framegen::latency::Flags flags;
+    { std::lock_guard lock(_frameLatencyMutex);flags=_frameLatencyFlags; }
+    const auto target = framegen::latency::Select(flags, caller, sdkLoaded,
+        _real2 != nullptr, _fgSwapChain != nullptr, _nativeParentRoute);
+    StreamlineHooks::ReportFrameLatencyAccess(this, flags, caller, sdkLoaded, target);
+    if (target == framegen::latency::Target::None) return nullptr;
+    if (target == framegen::latency::Target::Native) return _real2->GetFrameLatencyWaitableObject();
+    if (target == framegen::latency::Target::Provider) return _fgSwapChain->GetFrameLatencyWaitableObject();
     if (_nativeParentRoute) return _real2 ? _real2->GetFrameLatencyWaitableObject() : nullptr;
     if ((!_sourceFrameLatencyOwner || _starRailF5DsTransport) && _fgSwapChain != nullptr)
         return _fgSwapChain->GetFrameLatencyWaitableObject();
@@ -1305,7 +1445,7 @@ UINT STDMETHODCALLTYPE Dx11wDx12SC::GetCurrentBackBufferIndex(void)
     return _currentFakeIndex;
 }
 
-HRESULT STDMETHODCALLTYPE Dx11wDx12SC::CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace,
+HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookCheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace,
                                                               UINT* pColorSpaceSupport)
 {
     if (_nativeParentRoute) return _real3 ? _real3->CheckColorSpaceSupport(ColorSpace, pColorSpaceSupport) : E_NOINTERFACE;
@@ -1316,7 +1456,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::CheckColorSpaceSupport(DXGI_COLOR_SPACE_T
                              : DXGI_ERROR_DEVICE_REMOVED;
 }
 
-HRESULT STDMETHODCALLTYPE Dx11wDx12SC::SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace)
+HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookSetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace)
 {
     if (_nativeParentRoute) {
         NativeCall call(*this);
@@ -1376,12 +1516,15 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
             _real->ResizeBuffers(BufferCount,Width,Height,Format,SwapChainFlags)) : DXGI_ERROR_DEVICE_REMOVED;
         if(SUCCEEDED(hr)){
             if (Format != DXGI_FORMAT_UNKNOWN && Format != _bufferFormat) _nativeColorSpaceKnown = false;
-            _RefreshCachedSwapchainDesc();State::Instance().scChanged=true;
+            _RefreshCachedSwapchainDesc();_RefreshFrameLatencyFlags();State::Instance().scChanged=true;
             State::Instance().SCAllowTearing=(SwapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)!=0;}
         return hr;
     }
 
     if (_real3 == nullptr) return ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
+
+    if (const auto failure = _fgResizeStatus.RecoveryFailure(Config::Instance()->FGSkipResizeBuffers.value_or_default());
+        FAILED(failure)) return failure;
 
     // Reserve capture admission BEFORE late Reset, exactly as R610. The
     // reservation outlives both actual native and child resize calls.
@@ -1404,7 +1547,8 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
     auto lifecycleExecution = lifecycleOwner != nullptr ? lifecycleOwner->GuardExecution(FGExecutionScope::Lifecycle) : FGExecutionGuard {};
     auto fgArgs = ResizeArgsForFg(_fgSwapChain, BufferCount, Format, SwapChainFlags);
     if (_visibleChild) fgArgs.flags &= ~DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-    const bool skipFgResize = IsSame(_fgSwapChain, fgArgs.bufferCount, Width, Height, fgArgs.format, fgArgs.flags);
+    const bool skipFgResize = _fgResizeStatus.CanSkipResize() &&
+        IsSame(_fgSwapChain, fgArgs.bufferCount, Width, Height, fgArgs.format, fgArgs.flags);
     if (!skipFgResize && lifecycleOwner != nullptr && !lifecycleOwner->PrepareForSwapchainChange())
         return DXGI_ERROR_WAS_STILL_DRAWING;
     GenshinBridgeFg::Collect(); // successful provider drain receipts can release both backbuffers before Resize
@@ -1473,11 +1617,17 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers1 results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
 
-    if (SUCCEEDED(realResult) && (_visibleChild || SUCCEEDED(fgResult)))
+    _RefreshFrameLatencyFlags();
+    _fgResizeStatus.Complete(realResult, fgResult, !skipFgResize && _fgSwapChain != nullptr);
+    if (SUCCEEDED(realResult) && FAILED(fgResult))
+        LOG_ERROR("DX12 presenter resize failed: {:X}; interop Present blocked until successful resize. Hidden DX11 source is not a visible fallback",
+                  (UINT) fgResult);
+
+    if (SUCCEEDED(realResult))
     {
         _RefreshCachedSwapchainDesc();
 
-        if (Config::Instance()->FGEnabled.value_or_default())
+        if (SUCCEEDED(fgResult) && Config::Instance()->FGEnabled.value_or_default())
         {
             State::Instance().fgResetCapturedResources = true;
             State::Instance().fgOnlyUseCapturedResources = false;
@@ -1496,7 +1646,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
     return FAILED(realResult) ? realResult : fgResult;
 }
 
-HRESULT STDMETHODCALLTYPE Dx11wDx12SC::SetHDRMetaData(DXGI_HDR_METADATA_TYPE Type, UINT Size, void* pMetaData)
+HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookSetHDRMetaData(DXGI_HDR_METADATA_TYPE Type, UINT Size, void* pMetaData)
 {
     if (_nativeParentRoute) {
         NativeCall call(*this);
@@ -2010,8 +2160,9 @@ bool Dx11wDx12SC::_RequestSharedBackBuffer(UINT index, bool reuseReturnedSnapsho
     return true;
 }
 
-bool Dx11wDx12SC::_CopyDx11BackBufferToShared(UINT index)
+bool Dx11wDx12SC::_CopyDx11BackBufferToShared(UINT index, CopySlotAdmission& admission)
 {
+    admission.Clear();
     const UINT copySlot=ResolvePrivateCopySlot(this,_currentFakeIndex);
     CallerCpuTrace::Scope callerCpuScope(CallerCpuTrace::Op::Dx11Copy, this, reinterpret_cast<uint64_t>(_handle), State::Instance().frameCount);
     if (copySlot >= _sharedDx11BackBufferCopies.size() ||
@@ -2023,40 +2174,31 @@ bool Dx11wDx12SC::_CopyDx11BackBufferToShared(UINT index)
     if (_dx11Context == nullptr || _real == nullptr)
         return RecordPrivateCopyFailure(this, "Dx11CopyContextUnavailable");
 
-    // R868-B: copySlot names BOTH this shared texture and the D3D12 list that
-    // last read it. Retire that exact submitted reader BEFORE Resolve/CopyResource
-    // can write, not merely before the later allocator Reset. Its DX11 writer
-    // was already flushed before its saved D3D12 Signal; no future-queue Wait
-    // is introduced here. Keep the existing bounded CPU completion wait.
+    // Keep StarRail's source timeline boundary separate from common GPU reuse.
     if (_sourceFrameLatencyOwner)
     {
         if (_sourceCopyUncertain.load(std::memory_order_acquire) || _sharedFenceValue >= UINT64_MAX - 1 || _copyFenceValue >= UINT64_MAX - 1)
             return RecordPrivateCopyFailure(this, "SourceCopyTimelineUnavailable");
-        if (!_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues))
-            return RecordPrivateCopyFailure(this, "SourceCopyReaderNotRetired");
     }
+
+    // Interop shared writer admission begin
+    // Move the existing allocator retirement BEFORE the shared texture write.
+    // Both name this exact slot's previous D3D12 reader. The native-parent
+    // optional route keeps its nonblocking Busy policy inside the same helper.
+    // The local proof is consumed at Reset below; no second completion wait.
+    if (_sourceCopyUncertain.load(std::memory_order_acquire) || !_copyFence || !_copyFenceEvent ||
+        copySlot >= _copyAllocators.size() || !_copyAllocators[copySlot] ||
+        !_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues))
+        return RecordPrivateCopyFailure(this, "CopyReaderNotRetired");
+    admission.Record(this, &_copyAllocatorFenceValues, _copyFence, _copyAllocators[copySlot],
+                     copySlot, _copyAllocatorFenceValues[copySlot]);
+    // Interop shared writer admission end
 
     // Re-read selected consumers at the real copy boundary, including changes
     // since import. Restore a distinct shadow target before the original copy.
     if (_sharedBackBufferIsReturnedSnapshot[copySlot] && !_CanReuseReturnedSnapshot() &&
         !_RequestSharedBackBuffer(index, false))
         return false;
-
-    // The D3D12 interop list may still read this slot's shared D3D11 texture.
-    // Check before CopyResource, not later at allocator reset, so Busy can never
-    // overwrite a live input while removing the old whole-ring Present drain.
-    if (_nativeParentRoute && GenshinBridgeFg::PresentScope::Current() &&
-        copySlot < _copyAllocatorFenceValues.size())
-    {
-        const auto pending = _copyAllocatorFenceValues[copySlot];
-        if (pending)
-        {
-            if (!_copyFence) { _visibleReceipt.reason = "CopyFenceUnavailable"; return RecordPrivateCopyFailure(this, "CopyFenceUnavailable"); }
-            const auto completed = _copyFence->GetCompletedValue();
-            if (completed == UINT64_MAX) { _visibleReceipt.reason = "CopyFenceFailed"; return RecordPrivateCopyFailure(this, "CopyFenceFailed", S_OK, completed); }
-            if (completed < pending) { _visibleReceipt.reason = "CopySlotBusy"; return RecordPrivateCopyFailure(this, "CopySlotBusy", S_OK, completed); }
-        }
-    }
 
     ID3D11Texture2D* sourceTexture = nullptr;
     CallerCpuTrace::Scope getBufferCpu(CallerCpuTrace::Op::Dx11CopyGetBuffer, this, reinterpret_cast<uint64_t>(_handle), State::Instance().frameCount, index);
@@ -2161,11 +2303,11 @@ bool Dx11wDx12SC::_WaitDx11ThenDx12()
     GenshinTransport::ObserveOutputFlush(_dx11Context4);
     flushCpu.Finish();
 
-    // Keep the original producer-queue handoff for generic interop and
-    // lifecycle retirement. Native-parent FG additionally waits this exact
-    // signalled value on its actual color-writing presenting queue.
+    // Keep the producer-queue handoff, including lifecycle retirement. The
+    // private transaction shares this exact submitted order with the color
+    // writer below; a different presenting queue still needs its own Wait.
     CallerCpuTrace::Scope queueWaitCpu(CallerCpuTrace::Op::CopyQueueWaitSubmit, this, reinterpret_cast<uint64_t>(_handle), State::Instance().frameCount, copySlot, waitValue);
-    result = _dx12CommandQueue->Wait(_dx12SharedFence, waitValue);
+    result = OrderPrivateCopyWait(this, _dx12CommandQueue, _dx12SharedFence, waitValue);
     queueWaitCpu.Finish();
     if (FAILED(result))
     {
@@ -2176,6 +2318,21 @@ bool Dx11wDx12SC::_WaitDx11ThenDx12()
     return true;
 }
 
+void Dx11wDx12SC::_ReportCopyFenceFault(const char* phase,UINT slot,UINT64 target,UINT64 completed,DWORD waitResult) noexcept
+{
+    const auto lastError=GetLastError();
+    const auto dx12=_dx12Device?_dx12Device->GetDeviceRemovedReason():E_POINTER;
+    const auto dx11=_dx11Device?_dx11Device->GetDeviceRemovedReason():E_POINTER;
+    auto& reported=FAILED(dx12)||FAILED(dx11)?_copyDeviceFaultReported:_copyFenceFaultReported;
+    if(!reported.exchange(true,std::memory_order_relaxed))try {
+        LOG_ERROR("F6 copy fence fault: pid={} phase={} frame={} slot={} configured_copy_queue={} fence={} "
+            "target={} completed={} wait_result={} dx12_removed={:X} dx11_removed={:X} "
+            "max_is_not_complete=true observation_only=true",
+            GetCurrentProcessId(),phase,State::Instance().frameCount,slot,reinterpret_cast<uintptr_t>(_dx12CommandQueue),
+            reinterpret_cast<uintptr_t>(_copyFence),target,completed,waitResult,static_cast<UINT>(dx12),static_cast<UINT>(dx11));
+    }catch(...){}
+    SetLastError(lastError);
+}
 bool Dx11wDx12SC::_WaitForCopyAllocator(UINT slot, std::vector<UINT64>& fenceValues)
 {
     if (_sourceFrameLatencyOwner && (_sourceCopyUncertain.load(std::memory_order_acquire) || _copyFence == nullptr || _copyFenceEvent == nullptr))
@@ -2200,8 +2357,9 @@ bool Dx11wDx12SC::_WaitForCopyAllocator(UINT slot, std::vector<UINT64>& fenceVal
         return true;
 
     const auto completedValue = _copyFence->GetCompletedValue();
-    if ((_nativeParentRoute || _sourceFrameLatencyOwner) && completedValue == UINT64_MAX)
+    if (completedValue == UINT64_MAX)
     {
+        _ReportCopyFenceFault("copy-fence-invalid",slot,fenceValue,completedValue,WAIT_FAILED);
         if (_sourceFrameLatencyOwner) _sourceCopyUncertain.store(true, std::memory_order_release);
         return RecordPrivateCopyFailure(this, "CopyFenceFailed", S_OK, completedValue);
     }
@@ -2211,7 +2369,10 @@ bool Dx11wDx12SC::_WaitForCopyAllocator(UINT slot, std::vector<UINT64>& fenceVal
     // The native-parent FG ring is optional work. Never stall the render thread
     // to reuse a live slot; the caller distinguishes Busy from terminal failure.
     if (_nativeParentRoute && GenshinBridgeFg::PresentScope::Current())
+    {
+        _visibleReceipt.reason = "CopySlotBusy"; // Preserve the caller's nonterminal native Busy branch.
         return RecordPrivateCopyFailure(this, "CopySlotBusy", S_OK, completedValue);
+    }
 
     auto result = _copyFence->SetEventOnCompletion(fenceValue, _copyFenceEvent);
     if (FAILED(result))
@@ -2242,22 +2403,38 @@ bool Dx11wDx12SC::_WaitForCopyAllocator(UINT slot, std::vector<UINT64>& fenceVal
     }
     if (waitResult != WAIT_OBJECT_0)
     {
+        _ReportCopyFenceFault("copy-wait-failed",slot,fenceValue,_copyFence->GetCompletedValue(),waitResult);
         LOG_ERROR("copy allocator fence wait failed. slot {}, fence {}, completed {}, waitResult {:X}", slot,
                   fenceValue, _copyFence->GetCompletedValue(), waitResult);
         return RecordPrivateCopyFailure(this, "CopyAllocatorWaitFailed", S_OK, completedValue);
     }
 
-    if (_nativeParentRoute || _sourceFrameLatencyOwner) {
-        const auto actual = _copyFence->GetCompletedValue();
-        if (_sourceFrameLatencyOwner && actual == UINT64_MAX) _sourceCopyUncertain.store(true, std::memory_order_release);
-        return (actual != UINT64_MAX && actual >= fenceValue) ? true :
-            RecordPrivateCopyFailure(this, actual == UINT64_MAX ? "CopyFenceFailed" : "CopyAllocatorCompletionNotRetired", S_OK, actual);
-    }
-    return true;
+    const auto actual = _copyFence->GetCompletedValue();
+    if(actual==UINT64_MAX||actual<fenceValue)
+        _ReportCopyFenceFault("copy-wait-not-complete",slot,fenceValue,actual,waitResult);
+    if (_sourceFrameLatencyOwner && actual == UINT64_MAX) _sourceCopyUncertain.store(true, std::memory_order_release);
+    return (actual != UINT64_MAX && actual >= fenceValue) ? true :
+        RecordPrivateCopyFailure(this, actual == UINT64_MAX ? "CopyFenceFailed" : "CopyAllocatorCompletionNotRetired", S_OK, actual);
 }
 
-bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
+bool Dx11wDx12SC::_WaitForCopyAllocator(UINT slot, std::vector<UINT64>& fenceValues, CopySlotAdmission& admission)
 {
+    // Consume only the caller's exact pre-write proof. A changed timeline,
+    // ring/allocator/fence or slot cannot be repaired by waiting after writing.
+    if (_sourceCopyUncertain.load(std::memory_order_acquire) || slot >= fenceValues.size() ||
+        slot >= _copyAllocators.size())
+    {
+        admission.Clear();
+        return RecordPrivateCopyFailure(this, "CopyAdmissionUnavailable");
+    }
+    return admission.Consume(this, &fenceValues, _copyFence, _copyAllocators[slot], slot, fenceValues[slot]) ? true :
+        RecordPrivateCopyFailure(this, "CopyAdmissionChanged");
+}
+
+bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index, CopySlotAdmission& admission,
+                                               ID3D12Resource** copiedColour)
+{
+    if (copiedColour) *copiedColour=nullptr;
     const UINT copySlot=ResolvePrivateCopySlot(this,_currentFakeIndex);
     CallerCpuTrace::Scope callerCpuScope(CallerCpuTrace::Op::InteropCopy, this, reinterpret_cast<uint64_t>(_handle), State::Instance().frameCount);
     if (_copyAllocators.empty() || _copyCommandLists.empty() || _dx12CommandQueue == nullptr || _copyFence == nullptr ||
@@ -2290,7 +2467,7 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
     if (allocator == nullptr)
         return RecordPrivateCopyFailure(this, "CopyAllocatorUnavailable");
 
-    if (!_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues))
+    if (!_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues, admission))
     {
         if (_nativeParentRoute && GenshinBridgeFg::PresentScope::Current() &&
             copySlot < _copyAllocatorFenceValues.size() && _copyAllocatorFenceValues[copySlot] && _copyFence &&
@@ -2375,11 +2552,11 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
 
     if (_nativeParentRoute)
     {
-        // Exact same D3D11 Signal/Flush value produced by _WaitDx11ThenDx12.
-        // Its legacy producer-queue wait remains; that wait cannot order a
-        // backbuffer write on a different queue. Pin before a partial failure.
+        // Reuse only the exact successful Wait from this private transaction.
+        // Same-queue order already covers this writer; another queue/fence/value
+        // must submit a real Wait. Pin before a potentially partial failure.
         _interopPresentQueue = colorQueue;
-        result = colorQueue->Wait(_dx12SharedFence, _sharedFenceValue - 1);
+        result = OrderPrivateCopyWait(this, colorQueue, _dx12SharedFence, _sharedFenceValue - 1);
         if (FAILED(result)) return RecordPrivateCopyFailure(this, "ColorPresentSharedFenceWaitFailed", result);
     }
     ID3D12CommandList* lists[] = { _copyCommandLists[copySlot] };
@@ -2403,24 +2580,31 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
     if (FAILED(result))
     {
         LOG_ERROR("interop copy fence signal failed: {:X}", (UINT) result);
-        if (_sourceFrameLatencyOwner)
-        {
-            // Execute accepted a reader, but neither an old slot receipt nor a
-            // later higher signal can prove it retired. Pin the actual wrapper,
-            // shared source/list/allocator/queue/fence and exact destination.
-            _sourceCopyUncertain.store(true, std::memory_order_release);
-            _copyAllocatorFenceValues[copySlot] = UINT64_MAX;
-            AddRef();
-            auto* uncertainBackBuffer = fgBackBuffer.Detach();
-            HoYoShade::QuarantineColor(_fgSwapChain, colorQueue, _dx12Device,
-                uncertainBackBuffer, State::Instance().frameCount ? State::Instance().frameCount : 1);
-        }
+        // Interop uncertain submission begin
+        // Execute accepted a reader on the actual color queue. No old slot
+        // receipt, later signal or provider mode change can retire that work.
+        // Retain the wrapper's real shared source/list/allocator/fence, and pin
+        // the borrowed queue/device plus exact acquired destination explicitly.
+        // This is GPU lifetime denial only; it grants no StarRail/native rights.
+        _sourceCopyUncertain.store(true, std::memory_order_release);
+        _copyAllocatorFenceValues[copySlot] = UINT64_MAX;
+        _lastInteropCopyFenceValue = 0;
+        AddRef();
+        colorQueue->AddRef();
+        _dx12Device->AddRef();
+        auto* uncertainBackBuffer = fgBackBuffer.Detach();
+        HoYoShade::QuarantineColor(_fgSwapChain, colorQueue, _dx12Device,
+            uncertainBackBuffer, State::Instance().frameCount ? State::Instance().frameCount : 1);
+        // Interop uncertain submission end
         return RecordPrivateCopyFailure(this, "CopyFenceSignalFailed", result);
     }
 
     if(snapshotLease)snapshotLease->SubmittedRead12(_copyFence,signalValue);
     _copyAllocatorFenceValues[copySlot] = signalValue;
     _lastInteropCopyFenceValue = signalValue;
+    // Scope-local reference only, returned after the actual successful Signal.
+    // It does not outlive this Present or replace allocator/SDK retirement.
+    if (copiedColour) { fgBackBuffer->AddRef(); *copiedColour=fgBackBuffer.Get(); }
     if (auto* scope = GenshinBridgeFg::PresentScope::Current(); scope && copySlot < _genshinFgImports.size())
         scope->Copied(_genshinFgImports[copySlot], _openedDx11BackBuffers[copySlot], fgBackBuffer.Get(),
                       fgIndex, _copyFence, signalValue);
@@ -3141,7 +3325,7 @@ HRESULT Dx11wDx12SC::_PresentNativeVisible(UINT sync, UINT flags, const DXGI_PRE
     };
     const auto nativeFallback = [&]() -> HRESULT {
         nativeFrame.menuFallback_ = true;
-        _visibleChild->Hide();
+        _visibleChild->SuspendDisplayForNativeFallback();
         GenshinBridgeFg::Revoke();
         if(auto* provider=dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG))provider->SuspendGenshinPresent();
         return nativePresent();
@@ -3151,7 +3335,7 @@ HRESULT Dx11wDx12SC::_PresentNativeVisible(UINT sync, UINT flags, const DXGI_PRE
         // suspended, but an absent optional input is not provider teardown and
         // must not erase the last genuinely submitted predecessor.
         nativeFrame.menuFallback_ = true;
-        _visibleChild->Hide();
+        _visibleChild->SuspendDisplayForNativeFallback();
         GenshinBridgeFg::PresentScope::Skip();
         GenshinBridgeFg::Revoke(false);
         return nativePresent();
@@ -3172,10 +3356,10 @@ HRESULT Dx11wDx12SC::_PresentNativeVisible(UINT sync, UINT flags, const DXGI_PRE
         _visibleReceipt.width,_visibleReceipt.height,_visibleReceipt.dpi))) {
         _visibleReceipt.reason="OwnerSnapshotNotCurrent";return nativeFallback();
     }
-    // Close SDK/raw admission before native production, but DO NOT skip that
-    // production: PrepareGameMotion needs every actual camera predecessor,
-    // including pictures that will not be submitted to the SDK during drain.
-    const bool outputDrain=_visibleChild->YieldForOutputReveal();
+    // Service the prior output's real tail/owner ACK at this boundary, then
+    // consume THIS source normally. Display handoff must not spend an input
+    // frame or create a gap in the SDK/camera predecessor chain.
+    _visibleChild->ServiceOutputReveal();
     GenshinLegacy::OnPresent(_dx11Device); capturePolled = true;
     _fg = State::Instance().currentFG;
     GenshinBridgeFg::PresentScope scope(_real, _dx11Context, _fgSwapChain, _fg, _dx12Device, _dx12CommandQueue);
@@ -3211,18 +3395,6 @@ HRESULT Dx11wDx12SC::_PresentNativeVisible(UINT sync, UINT flags, const DXGI_PRE
     if (!scope.HasCapturedFrame()) {
         _visibleReceipt.reason = "NoAuthenticatedCameraOrGuides";
         return nativeIneligible();
-    }
-    if(outputDrain) {
-        // OnFGPresent already performed this frame's exact native guide/NR
-        // Capture -> Return -> Publish and closed depth once. Do not rerun the
-        // natural producer, prepare a provider frame or copy to its backbuffer.
-        // Retire only this scope's unused receipt through its real producer tail.
-        if(!scope.FinishOutputDrain()) {
-            _visibleReceipt.reason="OutputDrainReceiptMismatch";return nativeIneligible();
-        }
-        nativeFrame.menuFallback_=true;
-        _visibleReceipt.reason="SdkOutputRevealDrain";
-        return nativePresent();
     }
     if (!_InitInteropObjects()) {_visibleReceipt.reason="InteropInitializationRefused";return nativeFallback();}
     const UINT index=_GetDx11BackBufferIndexForPresent();_visibleReceipt.index=index;
@@ -3269,10 +3441,11 @@ HRESULT Dx11wDx12SC::_PresentNativeVisible(UINT sync, UINT flags, const DXGI_PRE
             ScopedPrivateCopySlot privateSlot(this,slotSelection.slot);
             sharedReady=_RequestSharedBackBuffer(index);
             if(sharedReady) {
+                CopySlotAdmission copyAdmission;
                 copyStage=failure.stage="Dx11BackBufferToShared";
-                copied=_CopyDx11BackBufferToShared(index);
+                copied=_CopyDx11BackBufferToShared(index,copyAdmission);
                 if(copied){copyStage=failure.stage="Dx11ToDx12Sync";copied=_WaitDx11ThenDx12();}
-                if(copied){copyStage=failure.stage="SharedToFgCopy";copied=_CopyDx11SharedToDx12FGBackBuffer(index);}
+                if(copied){copyStage=failure.stage="SharedToFgCopy";copied=_CopyDx11SharedToDx12FGBackBuffer(index,copyAdmission);}
                 if(copied){copyStage=failure.stage="PresentQueueWait";copied=_WaitForInteropCopyOnPresentQueue();}
             }
         }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <d3d11.h>
 #include "legacy/Fsr2FamilyTakeover.h"
@@ -45,6 +46,8 @@ public:
     // Existing locked capture Present only, after HookCpuTiming publishes its
     // control epoch. current proves the live capture owner/device/thread/config;
     // it does not authorize a cache hit or GPU work. First/changed frames baseline.
+    // Also publishes HookCpuTiming::ReadFsrHudSnapshot independently of Debug:
+    // real metadata/Current binding ratios and sampled confirmed-hook host wall.
     void PresentShaderCacheMetrics(ID3D11DeviceContext* context,ID3D11Device* device,
         uint64_t deviceEpoch,uint64_t configEpoch,uint64_t ownerEpoch,bool current)const noexcept;
     // Only the successful CreatePixelShader return callback supplies this evidence.
@@ -64,7 +67,7 @@ void Revoke()noexcept;
 Shader Read(ID3D11Device* device,ID3D11PixelShader* shader,uint64_t deviceEpoch)noexcept;
 // Actual bound-object observations only: never synthesize missing bytecode.
 enum class ReadState : uint32_t { NotInspected, Ready, MissingOwner, WrongContextDevice,
-    NoPixelShader, WrongShaderDevice, MissingRecord, InvalidRecord, WrongEpoch, ProfileUnavailable };
+    NoPixelShader, WrongShaderDevice, MissingRecord, InvalidRecord, WrongEpoch, ProfileUnavailable, UnstableComparison };
 struct ReadObservation
 {
     ReadState state=ReadState::NotInspected;
@@ -73,7 +76,7 @@ struct ReadObservation
     HRESULT privateDataResult=S_OK;
     // On a CPU cache hit, the fields above describe the last successful full
     // validation, not fresh GetDevice/GetPrivateData calls for this draw.
-    bool metadataCached=false;
+    bool metadataCached=false,bindingCached=false;
     uint64_t metadataGeneration=0;
 };
 // The first successful full Read of our StoreReturned record locks its CPU
@@ -89,6 +92,22 @@ struct ReadObservation
 Shader Read(ID3D11Device* device,ID3D11PixelShader* shader,uint64_t deviceEpoch,ReadObservation* observation)noexcept;
 Shader Current(ID3D11DeviceContext* context,ID3D11Device* device,uint64_t deviceEpoch,
                ReadObservation* observation=nullptr)noexcept;
+// One bounded same-call comparison. Scalars only; no retained COM/sample history.
+struct CurrentComparison {
+    ReadObservation cached{},actual{};
+    uint64_t cachedHash=0,cachedIdentity=0,cachedBytes=0,actualHash=0,actualIdentity=0,actualBytes=0;
+    std::array<uintptr_t,5> dispatchBefore{},dispatchAfter{};
+    uint64_t sequenceBefore=0,sequenceAfter=0;
+    bool stable=false,mismatch=false,coverageRefused=false;
+};
+// Independently reads PS and its project record, bypassing both CPU caches.
+// Only a stable mismatch can refuse optional public coverage. The returned
+// truth is local to this invocation and still needs every ordinary capture gate.
+// Scalar probing allocates no profile. A stable correction to the exact NR
+// shader uses the ordinary authenticated Read to preserve consumer capability.
+Shader CompareCurrent(ID3D11DeviceContext* context,ID3D11Device* device,uint64_t deviceEpoch,
+                      ReadObservation& observation,CurrentComparison& comparison)noexcept;
+
 enum class Reason { Disabled,UnknownShader,NotPre,NoReplacement,WrongOwner,Expired,Ready,Skipped };
 struct State
 {
@@ -99,7 +118,7 @@ struct State
     void Notify(const Shader& shader,uintptr_t d,uintptr_t c,uint64_t epoch,bool success,uint64_t now)noexcept
     {
         Reset();
-        if(success && shader.Known() && shader.hash==fsr2_family_takeover::k_accumulate_hash && d && c && epoch && now)
+        if(success && shader.Known() && GenshinFsrProfiles::SkipPrepasses(shader.hash) && d && c && epoch && now)
         {device=d;context=c;ownerEpoch=epoch;deviceEpoch=shader.deviceEpoch;shaderIdentity=shader.identity;tick=now;replaced=true;}
     }
     Reason Admit(const Shader& shader,uintptr_t d,uintptr_t c,uint64_t epoch,uint32_t count,

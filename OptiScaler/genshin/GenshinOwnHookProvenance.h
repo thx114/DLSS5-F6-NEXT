@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "GenshinNativeQueryProvenance.h"
+#include <runtime/F6InputPolicy.h>
 
 namespace GenshinNativeQuery::Own {
 struct Slot final {
@@ -21,6 +22,7 @@ class Batch final {
     const detail::FactoryPredecessor* predecessors_=nullptr;unsigned predecessorCount_=0;
     LONG error_=NO_ERROR;bool begun_=false,finished_=false;
     bool ReleaseProtection(bool committed)noexcept {
+        if constexpr (!F6InputPolicy::FsrBridgeEnabled) return true;
         bool good=detail::FactoryLeaseAccess::Restore(protection_);
         for(unsigned i=0;predecessors_ && i<(std::min)(predecessorCount_,3u);++i){const auto& r=predecessors_[i];if(!r.captured)continue;
             unsigned ownSize=0;
@@ -48,7 +50,7 @@ public:
         :predecessors_(predecessors),predecessorCount_(predecessorCount) {
         error_=GenshinNativeQuery::Begin(requirement);begun_=error_==NO_ERROR;
         if(begun_)error_=DetourUpdateThread(GetCurrentThread());
-        if(error_==NO_ERROR && !detail::FactoryLeaseAccess::Prepare(protection_,this,predecessors,predecessorCount)){
+        if(F6InputPolicy::FsrBridgeEnabled && error_==NO_ERROR && !detail::FactoryLeaseAccess::Prepare(protection_,this,predecessors,predecessorCount)){
             GenshinNativeQuery::Revoke();error_=ERROR_INVALID_DATA;
         }
     }

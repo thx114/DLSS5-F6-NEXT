@@ -2,6 +2,8 @@
 // The private helper must declare its integration dependencies at global scope.
 } // namespace DlssNr (resumed below)
 #include <native/NrConsumerFilter.h>
+#include <runtime/NrResident.h>
+#include <runtime/F6InputPolicy.h>
 namespace DlssNr
 {
 namespace Late
@@ -10,6 +12,8 @@ using Microsoft::WRL::ComPtr;
 struct Slot
 {
     ComPtr<ID3D12Resource> depth, motion, linear, encoded, residual, zeroMotionUpload;
+    ComPtr<ID3D12Resource> presentWork; // reset from this raw Present, never a prior NR result
+    uint64_t genshinAttempt = 0;
     ComPtr<ID3D12Fence> fence;
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> commands;
@@ -32,6 +36,7 @@ struct Slot
 std::array<Slot, 4> slots;
 // Separate from capture slots: no stale capture content or producer fence is borrowed.
 std::array<Slot, 4> freshColorSlots;
+FramePipeline::NrResident::Recovery residentRecovery;
 struct NativeSizing
 {
     bool valid = false;
@@ -44,6 +49,7 @@ NativeSizing nativeSizing;
 bool freshColorActive = false;
 ComPtr<ID3D12Device> device;
 uint64_t serial = 0, successes = 0, stillRendering = 0;
+uint64_t sourceDiagnosticGeneration = 1; // passive calibration isolation across same-size resize attempts
 uint64_t nativeCaptureAttempt = 0, nativeCaptureAttemptEpoch = 0;
 bool loggedCrossQueue = false;
 inline constexpr const char* pausedForGameFg = "Paused while the game's own frame generation is on.";
@@ -83,6 +89,13 @@ bool Finished(const Slot& slot)
 std::unique_ptr<OpticalFlowDx12> pictureFlow;
 std::unique_ptr<TrustMaskDx12> pictureTrust;
 ComPtr<ID3D12CommandQueue> pictureQueue;
+// Allocation identity is separate from the last endpoint: route changes must
+// not relabel old flow textures as belonging to a new shape/queue.
+ComPtr<ID3D12CommandQueue> pictureFlowQueue;
+D3D12_RESOURCE_DESC pictureFlowDesc {};
+uint64_t pictureFlowSourceEpoch = 0;
+uintptr_t pictureFlowOwner = 0;
+uint32_t pictureFlowEncoding = 0;
 struct PictureCompletion { ComPtr<ID3D12Fence> fence; uint64_t value = 0; };
 std::array<PictureCompletion, 4> pictureCompletion;
 uint64_t pictureSequence = 0;
@@ -156,6 +169,15 @@ bool IsStarRailProcess()
         return _wcsicmp(name ? name + 1 : path, L"StarRail.exe") == 0;
     }();
     return starRail;
+}
+
+bool ForceNRResident()
+{
+    const auto& cfg = *Config::Instance();
+    return FramePipeline::NrResident::Requested(IsStarRailProcess(), cfg.StarRailForceNRResident.ObservedValue(),
+        cfg.DlssNrEnabled.ObservedValue(), native::OpticalFgNrEnabled()) &&
+        FramePipeline::NrResident::PlacementSupported(cfg.DlssNrFinishedPicture.ObservedValue(),
+            cfg.DlssNrRunBeforeSr.ObservedValue(), cfg.DlssNrDeferredDlss.ObservedValue());
 }
 
 bool IsZzzProcess()
@@ -286,14 +308,22 @@ void InvalidateZzzSource()
     zzzPicture.ordinal = 0;
 }
 
-bool BridgeContinuationEnabled()
+bool DirectDlssSceneBridgeEnabled()
 {
-    return IsStarRailProcess() && !native::OpticalFgNrEnabled();
+    // The F6 input policy admits only real NGX Evaluate calls. The optional
+    // optical producer has its own explicit picture-flow contract.
+    return F6InputPolicy::DirectDlssInputs && !F6InputPolicy::FsrBridgeEnabled &&
+        !native::OpticalFgNrEnabled();
 }
 
-// Physical/generated Presents may advance the global clock on another thread
-// between native SR capture and this source picture's bridge handoff. Only the
-// actual StarRail bridge endpoint consumes a source epoch. Keep it separate
+bool BridgeContinuationEnabled()
+{
+    return DirectDlssSceneBridgeEnabled() || (IsStarRailProcess() && !native::OpticalFgNrEnabled());
+}
+
+// Physical/generated Presents cannot identify an NGX source picture; some
+// interop routes never advance the global DX12 clock. Only the actual source
+// bridge endpoint consumes a source epoch. Keep it separate
 // from frame.SubmissionEpoch, filter endpoint epochs and real GPU fences.
 uint64_t bridgeSourceEpoch = 1;
 uint64_t CaptureEpoch(bool dx11Bridge)
@@ -312,22 +342,16 @@ bool PictureComplete(const PictureCompletion& c)
 bool PictureHistoryReady(ID3D12CommandQueue* queue, const D3D12_RESOURCE_DESC& desc)
 {
     if (pictureQuarantined) return false;
-    const bool changed = pictureQueue.Get() != queue || pictureWidth != desc.Width ||
-                         pictureHeight != desc.Height || pictureFormat != desc.Format;
+    const bool changed = pictureFlowQueue.Get() != queue || pictureFlowDesc.Width != desc.Width ||
+                         pictureFlowDesc.Height != desc.Height || pictureFlowDesc.Format != desc.Format;
     if (changed)
     {
         // Shape/queue changes cannot release any texture still read by a submitted list.
-        for (auto& c : pictureCompletion)
-        {
-            if (PictureComplete(c)) continue;
-            HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-            if (!event) return false;
-            const bool done = SUCCEEDED(c.fence->SetEventOnCompletion(c.value, event)) &&
-                              WaitForSingleObject(event, 5000) == WAIT_OBJECT_0;
-            CloseHandle(event);
-            if (!done) return false;
-        }
+        for (const auto& c : pictureCompletion)
+            if (!PictureComplete(c)) return false; // defer, never stall Present on a shape change
         pictureFlow.reset(); pictureTrust.reset();
+        pictureFlowQueue = queue; pictureFlowDesc = desc;
+        pictureFlowSourceEpoch = 0; pictureFlowOwner = 0;
         pictureQueue = queue; pictureWidth = desc.Width; pictureHeight = desc.Height; pictureFormat = desc.Format;
         pictureCompletion = {}; pictureSequence = 0;
     }
@@ -587,7 +611,23 @@ Slot* Acquire(ID3D12GraphicsCommandList* cmd, bool dx11Bridge = false)
     for (auto& slot : slots)
     {
         slot.nrFilter.CollectDepth(); // retire completed Readers; stable GPU pool entries stay cached
-        if (!slot.pending && Finished(slot)) { next = &slot; break; }
+        if (!slot.pending && !slot.quarantined && Finished(slot))
+        {
+            if (UsesGenshinPresentPipeline() && slot.backBufferIdentity)
+            {
+                // Close THIS completed private generation before recapturing
+                // into its guide/scratch textures, not after their next write.
+                const auto identity = DetailReuse::RealSubmittedCommands(slot.commands.Get());
+                if (!g_nrGpuWork.CanResetRecording(identity)) continue;
+                if (FAILED(slot.allocator->Reset()) || FAILED(slot.commands->Reset(slot.allocator.Get(), nullptr)))
+                { slot.quarantined = true; continue; }
+                FinishedPictureResetCommandList(identity);
+                slot.backBufferIdentity = 0;
+                if (FAILED(slot.commands->Close())) { slot.quarantined = true; continue; }
+            }
+            next = &slot;
+            break;
+        }
     }
     if (!next)
     {
@@ -695,7 +735,7 @@ void PopulateNativeSceneContract(DlssNrFrameInfo& frame, const Slot& slot, uint6
 void Capture(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, bool rr, bool dx11Bridge = false,
              unsigned retainedFlags = 0, bool retainedFlagsKnown = false, UpscaleSource source = {})
 {
-    const bool nativeCapture = dx11Bridge && IsStarRailProcess();
+    const bool nativeCapture = dx11Bridge && (DirectDlssSceneBridgeEnabled() || IsStarRailProcess());
     const auto attempt = nativeCapture ? ++nativeCaptureAttempt : 0;
     if (nativeCapture) nativeCaptureAttemptEpoch = CaptureEpoch(dx11Bridge);
     if (!params) return;
@@ -710,7 +750,13 @@ void Capture(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, bool r
     }
     // Depth is optional: NR runs without it.
     if (!motion || !output)
-    { Cancel(); Say("Waiting for the game's movement data."); return; }
+    {
+        // Missing SR guides revoke capture admission, not independently measured
+        // raw-picture flow or the resident model/scratch allocation.
+        if (!dx11Bridge || !ForceNRResident()) Cancel();
+        Say("Waiting for the game's movement data.");
+        return;
+    }
     auto* next = Acquire(cmd, dx11Bridge);
     if (!next) return;
     auto& slot = *next;
@@ -733,10 +779,56 @@ void Capture(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, bool r
         // The copy returns to COPY_DEST after the late dispatch.
     }
     slot.frame = {};
+    slot.genshinAttempt = 0;
     auto& frame = slot.frame;
+    frame.GuideObservationTick=GuideDiagnostics::Now();
     frame.SceneGuideOwner[0] = source.ngxHandle;
     frame.SceneGuideOwner[1] = reinterpret_cast<uintptr_t>(source.virtualContext);
     frame.SceneGuideOwner[2] = source.virtualGeneration;
+    // Only facts made at this producer boundary, never a diagnostic Store
+    // snapshot or another feature's retained interpretation.
+    const bool rawBoundary=source.rawMetadata&&
+        source.rawMetadata->feature==source.ngxHandle&&
+        source.rawMetadata->context==reinterpret_cast<uintptr_t>(source.virtualContext)&&
+        source.rawMetadata->generation==source.virtualGeneration&&
+        source.rawMetadata->translatedDepth==reinterpret_cast<uintptr_t>(depth)&&
+        source.rawMetadata->translatedMotion==reinterpret_cast<uintptr_t>(motion)&&
+        source.rawMetadata->rr==rr;
+    if(rawBoundary)frame.RawSourceMetadata=source.rawMetadata;
+    if(rawBoundary)
+    {
+        const auto& raw=*source.rawMetadata;
+        frame.GuideObservationTick=raw.tick;frame.GuideProvenance=raw.provenance;
+        frame.NativeFeatureFlags=raw.flags;frame.NativeFeatureFlagsKnown=raw.flagsKnown;
+        frame.NativeMotionJitterKnown=raw.flagsKnown;frame.NativeMotionVectorsJittered=raw.jittered;
+        frame.NativeCurrentJitterKnown=raw.jitterKnown;
+        frame.NativeJitterX=raw.jitterX;frame.NativeJitterY=raw.jitterY;
+        frame.DepthInverted=raw.depthInverted;frame.MotionVectorsLowResolution=raw.lowRes;
+        frame.RayReconstruction=raw.rr;
+        frame.OutputWidth=raw.outputWidth;frame.OutputHeight=raw.outputHeight;
+        frame.RenderSubrectWidth=raw.renderWidth;frame.RenderSubrectHeight=raw.renderHeight;
+        frame.DepthSubrectBaseX=raw.depth.region.x;frame.DepthSubrectBaseY=raw.depth.region.y;
+        frame.MotionSubrectBaseX=raw.motion.region.x;frame.MotionSubrectBaseY=raw.motion.region.y;
+        frame.MvScaleX=raw.scaleX;frame.MvScaleY=raw.scaleY;
+        // Preserve NR's original metadata gate; the descriptor itself grants no
+        // route, phase, recording or retirement authority. Jitter is separate.
+        frame.NativeGuideMetadataKnown=raw.flagsKnown;
+        for(unsigned i=0;i<raw.provenance.fields.size();++i) {
+            if(i==static_cast<unsigned>(GuideMetadata::Field::JitterX)||
+               i==static_cast<unsigned>(GuideMetadata::Field::JitterY))continue;
+            frame.NativeGuideMetadataKnown &= raw.provenance.fields[i].valid;
+        }
+        frame.NativeGuideMetadataKnown &=
+            raw.provenance.fields[static_cast<unsigned>(GuideMetadata::Field::DepthBounds)].value==1 &&
+            raw.provenance.fields[static_cast<unsigned>(GuideMetadata::Field::MotionBounds)].value==1;
+        const auto known=[&](GuideMetadata::Field field){return raw.provenance.fields[static_cast<unsigned>(field)].valid;};
+        slot.filterDepthRegion={frame.DepthSubrectBaseX,frame.DepthSubrectBaseY,
+            frame.RenderSubrectWidth,frame.RenderSubrectHeight,known(GuideMetadata::Field::RenderWidth)&&
+            known(GuideMetadata::Field::RenderHeight)&&known(GuideMetadata::Field::DepthX)&&known(GuideMetadata::Field::DepthY)};
+        unsigned gameReset=0;params->Get(NVSDK_NGX_Parameter_Reset,&gameReset);frame.Reset=gameReset!=0;
+    }
+    else
+    {
     unsigned flags = 0, gameReset = 0;
     int parameterFlags = 0; // same parameter type used by IFeature::SetInitParameters
     // The bridge passes the retained create flags, not an invented evaluate-time zero.
@@ -767,32 +859,77 @@ void Capture(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, bool r
     const bool heightKnown = params->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, &frame.RenderSubrectHeight) == NVSDK_NGX_Result_Success;
     const bool depthXKnown = params->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, &frame.DepthSubrectBaseX) == NVSDK_NGX_Result_Success;
     const bool depthYKnown = params->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, &frame.DepthSubrectBaseY) == NVSDK_NGX_Result_Success;
+    using MetadataField = GuideMetadata::Field;
+    using MetadataOrigin = GuideMetadata::Origin;
+    auto& provenance = frame.GuideProvenance;
+    provenance.Set(MetadataField::CreateFlags, flags, frame.NativeFeatureFlagsKnown,
+        dx11Bridge || sourceFlagsKnown ? MetadataOrigin::RetainedFeature : MetadataOrigin::Evaluate);
+    const bool extentKnown = GuideMetadata::RenderExtent(frame.RenderSubrectWidth, frame.RenderSubrectHeight,
+        widthKnown, heightKnown, source.renderWidth, source.renderHeight, source.renderExtentKnown);
+    const auto extentOrigin = widthKnown && heightKnown ? MetadataOrigin::Evaluate : MetadataOrigin::RetainedFeature;
+    provenance.Set(MetadataField::RenderWidth, frame.RenderSubrectWidth, extentKnown, extentOrigin);
+    provenance.Set(MetadataField::RenderHeight, frame.RenderSubrectHeight, extentKnown, extentOrigin);
+    const bool resolvedDepthX = GuideMetadata::OptionalBase(frame.DepthSubrectBaseX, depthXKnown, rr);
+    const bool resolvedDepthY = GuideMetadata::OptionalBase(frame.DepthSubrectBaseY, depthYKnown, rr);
+    provenance.Set(MetadataField::DepthX, frame.DepthSubrectBaseX, resolvedDepthX,
+        depthXKnown ? MetadataOrigin::Evaluate : MetadataOrigin::ApiDefault);
+    provenance.Set(MetadataField::DepthY, frame.DepthSubrectBaseY, resolvedDepthY,
+        depthYKnown ? MetadataOrigin::Evaluate : MetadataOrigin::ApiDefault);
+    provenance.Set(MetadataField::JitterX, jitterX, jitterXKnown && std::isfinite(jitterX), MetadataOrigin::Evaluate);
+    provenance.Set(MetadataField::JitterY, jitterY, jitterYKnown && std::isfinite(jitterY), MetadataOrigin::Evaluate);
     // Preserve only the Get results already needed by NR. Bounds/descriptor
     // work for the filter remains lazy inside its selected snapshot path.
-    const bool depthRegionKnown = widthKnown && heightKnown && depthXKnown && depthYKnown;
+    const bool depthRegionKnown = extentKnown && resolvedDepthX && resolvedDepthY;
     slot.filterDepthRegion = {frame.DepthSubrectBaseX, frame.DepthSubrectBaseY,
                              frame.RenderSubrectWidth, frame.RenderSubrectHeight, depthRegionKnown};
-    bool regionsKnown = widthKnown && heightKnown && depthXKnown && depthYKnown;
-    regionsKnown &= params->Get(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, &frame.MotionSubrectBaseX) == NVSDK_NGX_Result_Success;
-    regionsKnown &= params->Get(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, &frame.MotionSubrectBaseY) == NVSDK_NGX_Result_Success;
+    const bool motionXKnown = params->Get(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, &frame.MotionSubrectBaseX) == NVSDK_NGX_Result_Success;
+    const bool motionYKnown = params->Get(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, &frame.MotionSubrectBaseY) == NVSDK_NGX_Result_Success;
+    const bool resolvedMotionX = GuideMetadata::OptionalBase(frame.MotionSubrectBaseX, motionXKnown, rr);
+    const bool resolvedMotionY = GuideMetadata::OptionalBase(frame.MotionSubrectBaseY, motionYKnown, rr);
+    provenance.Set(MetadataField::MotionX, frame.MotionSubrectBaseX, resolvedMotionX,
+        motionXKnown ? MetadataOrigin::Evaluate : MetadataOrigin::ApiDefault);
+    provenance.Set(MetadataField::MotionY, frame.MotionSubrectBaseY, resolvedMotionY,
+        motionYKnown ? MetadataOrigin::Evaluate : MetadataOrigin::ApiDefault);
+    const bool regionsKnown = extentKnown && resolvedDepthX && resolvedDepthY && resolvedMotionX && resolvedMotionY;
     const bool scaleXKnown = params->Get(NVSDK_NGX_Parameter_MV_Scale_X, &frame.MvScaleX) == NVSDK_NGX_Result_Success;
     const bool scaleYKnown = params->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &frame.MvScaleY) == NVSDK_NGX_Result_Success;
     const bool scalesKnown = scaleXKnown && scaleYKnown && std::isfinite(frame.MvScaleX) && std::isfinite(frame.MvScaleY) &&
                              frame.MvScaleX != 0.0f && frame.MvScaleY != 0.0f;
     const auto motionWidth = frame.MotionVectorsLowResolution ? frame.RenderSubrectWidth : frame.OutputWidth;
     const auto motionHeight = frame.MotionVectorsLowResolution ? frame.RenderSubrectHeight : frame.OutputHeight;
-    frame.NativeGuideMetadataKnown = frame.NativeFeatureFlagsKnown && regionsKnown && scalesKnown &&
-        NativeRegionFits(slot.depth.Get(), frame.DepthSubrectBaseX, frame.DepthSubrectBaseY,
-                         frame.RenderSubrectWidth, frame.RenderSubrectHeight) &&
-        NativeRegionFits(slot.motion.Get(), frame.MotionSubrectBaseX, frame.MotionSubrectBaseY, motionWidth, motionHeight);
+    provenance.Set(MetadataField::ScaleX, frame.MvScaleX, scaleXKnown && std::isfinite(frame.MvScaleX) && frame.MvScaleX!=0, MetadataOrigin::Evaluate);
+    provenance.Set(MetadataField::ScaleY, frame.MvScaleY, scaleYKnown && std::isfinite(frame.MvScaleY) && frame.MvScaleY!=0, MetadataOrigin::Evaluate);
+    const bool depthBounds = NativeRegionFits(slot.depth.Get(), frame.DepthSubrectBaseX, frame.DepthSubrectBaseY,
+                         frame.RenderSubrectWidth, frame.RenderSubrectHeight);
+    const bool motionBounds = NativeRegionFits(slot.motion.Get(), frame.MotionSubrectBaseX, frame.MotionSubrectBaseY, motionWidth, motionHeight);
+    provenance.Set(MetadataField::DepthBounds, depthBounds, true, MetadataOrigin::ActualCall);
+    provenance.Set(MetadataField::MotionBounds, motionBounds, true, MetadataOrigin::ActualCall);
+    frame.NativeGuideMetadataKnown = frame.NativeFeatureFlagsKnown && regionsKnown && scalesKnown && depthBounds && motionBounds;
+    }
+    const auto motionWidth=frame.MotionVectorsLowResolution?frame.RenderSubrectWidth:frame.OutputWidth;
+    const auto motionHeight=frame.MotionVectorsLowResolution?frame.RenderSubrectHeight:frame.OutputHeight;
     // Route/phase permission is established only after matching this capture to the real base.
     frame.ColourIsLinearHdr = false;
     frame.IndependentCommands = true;
     frame.FinishedPicture = true;
     frame.FrameGenerationInput = dx11Bridge; // preserve the spatial/FG safety gate
     frame.OutputArrivalState = D3D12_RESOURCE_STATE_PRESENT;
-    frame.SubmissionEpoch = State::Instance().frameCount;
+    // The DX11 interop source need not enter a wrapped DX12 source Present.
+    // Physical/generated output clocks cannot certify its current NGX capture.
+    frame.SubmissionEpoch = dx11Bridge ? CaptureEpoch(true) : State::Instance().frameCount;
     Arm(slot, cmd);
+    if (dx11Bridge && UsesGenshinPresentPipeline() && rawBoundary)
+        slot.genshinAttempt = GenshinPresentation::sourceClock.Attempt();
+    GuideDiagnostics::ObserveConsumers([&] {
+    auto observation=DlssNrGuideObservation::Source(frame);
+    observation.colour=DlssNrGuideObservation::Resource(output,{0,0,frame.OutputWidth,frame.OutputHeight});
+    observation.depth=DlssNrGuideObservation::Resource(slot.depth.Get(),
+        {frame.DepthSubrectBaseX,frame.DepthSubrectBaseY,frame.RenderSubrectWidth,frame.RenderSubrectHeight});
+    observation.motion=DlssNrGuideObservation::Resource(slot.motion.Get(),
+        {frame.MotionSubrectBaseX,frame.MotionSubrectBaseY,motionWidth,motionHeight});
+    observation.colourChoice="upscaler scene output (capture received)";
+    GuideDiagnostics::Publish(GuideDiagnostics::Consumer::NrModel,observation);
+    });
     slot.zzzAttempt = slot.zzzOrdinal = 0;
     slot.zzzSource = {};
     slot.zzzOutput = 0;
@@ -897,17 +1034,20 @@ void FinishedPictureResetCommandList(ID3D12CommandList* cmd)
     // Nearly every reset is of a list NR never recorded on: no lock for those (DlssNr_WatchedLists.h)
     cmd = DetailReuse::RealSubmittedCommands(cmd); // match the canonical recording generation
     const void* list = cmd;
+    GuideCapture::Reset(static_cast<ID3D12GraphicsCommandList*>(cmd));
     if (!DlssNrWatchedLists::Any(1, &list) && !DlssNrCurrentOutput::Capture::Instance().Watches(DetailReuse::RealSubmittedCommands(cmd))) return;
 
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
     DlssNrWatchedLists::Remove(1, &list);
     g_nrGpuWork.ResetRecording(cmd);
+    DlssNrGuideObservation::Poll();
     DlssNrCurrentOutput::Capture::Instance().Reset(DetailReuse::RealSubmittedCommands(cmd));
     if (g_gpuTime) g_gpuTime->ResetRecording(cmd);
     if (g_ngxTime) g_ngxTime->ResetRecording(cmd);
     for (auto& timer : g_layerTime) if (timer) timer->ResetRecording(cmd);
     // Reuse's coverage readbacks: a recording thrown away frees its slot, since no fence will ever be signalled for it.
     DetailReuse::ResetRecording(cmd);
+    DetailHistory::ResetRecording(cmd);
     SceneCut::ResetRecording(cmd); // the scene-cut flag's readbacks, the same way
     if (!Late::tracking.load()) return;
     for (auto& slot : Late::slots)
@@ -916,6 +1056,26 @@ void FinishedPictureResetCommandList(ID3D12CommandList* cmd)
             Late::RetireCapture(slot, Late::CaptureEpoch(slot.dx11Bridge && !slot.residualOnly), Late::pictureOwner);
             slot.done = slot.ready - 1; // discarded recording: no GPU signal was promised
         }
+}
+
+HRESULT RetireFinishedPictureRecording(ID3D12GraphicsCommandList* cmd, ID3D12CommandAllocator* allocator)
+{
+    std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
+    if (!DlssNrGpuLifetime::SameDevice(cmd, allocator)) return E_INVALIDARG;
+    auto* identity = DetailReuse::RealSubmittedCommands(cmd);
+    // The owner's fence drain is necessary but cannot stand in for another
+    // actual execution retained by NR. Poll the exact recording, never a view.
+    if (!g_nrGpuWork.CanResetRecording(identity)) return E_PENDING;
+    auto result = allocator->Reset();
+    if (FAILED(result)) return result;
+    result = cmd->Reset(allocator, nullptr);
+    if (FAILED(result)) return result;
+    FinishedPictureResetCommandList(identity); // idempotent with the real Reset hook
+    if (g_nrGpuWork.Watches(identity)) return E_FAIL;
+    result = cmd->Close(); // leave an empty, closed list; never submit it
+    if (FAILED(result)) return result;
+    TickNrRetired();
+    return S_OK;
 }
 
 namespace Late
@@ -976,8 +1136,13 @@ bool WaitForFinishedPicture()
     // The owned Late endpoint takes its matching PresentScope before GetBuffer.
     // Keep inspecting generations even if NR/tracking has since been disabled.
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
+    if (UsesGenshinPresentPipeline()) {
+        GenshinPresentation::sourceClock.Invalidate();
+        GenshinPresentation::lastWrittenSource = {};
+    }
     // Resize may replace every buffer even when its dimensions are unchanged.
     // Restart only preparation eligibility; all existing waits/owners remain below.
+    ++Late::sourceDiagnosticGeneration; // no resource or work-admission authority
     if (Late::IsZzzProcess()) { Late::zzzPreparation.Restart(); Late::InvalidateZzzSource(); }
     if (Late::pictureQuarantined) return false;
     constexpr size_t ownedCount = std::tuple_size_v<decltype(Late::slots)> +
@@ -1114,11 +1279,13 @@ static void FinishedPictureSubmittedReal(ID3D12CommandQueue* queue, UINT count, 
     if (!DlssNrWatchedLists::Any(count, watched) && !captureWatched) return;
 
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
+
     // Never unwatch an executable tracked generation between callbacks: another
     // thread's real Execute must not slip through a transient Remove/Add window.
     for (UINT i = 0; i < count; ++i)
         if (!g_nrGpuWork.Watches(lists[i])) DlssNrWatchedLists::Remove(1, watched + i);
     g_nrGpuWork.Submitted(queue, count, lists);
+    DlssNrGuideObservation::Poll();
     // Keep observing this executable generation until an actual successful Reset,
     // even after its first fence completes and even when detail reuse is disabled.
     for (UINT i = 0; i < count; ++i)
@@ -1129,6 +1296,7 @@ static void FinishedPictureSubmittedReal(ID3D12CommandQueue* queue, UINT count, 
     for (auto& timer : g_layerTime) if (timer) timer->Submitted(queue, count, lists);
     // Reuse's coverage readbacks: a copy is safe to read once the list it was recorded on has been executed.
     DetailReuse::Submitted(queue, count, lists);
+    DetailHistory::Submitted(queue, count, lists);
     SceneCut::Submitted(queue, count, lists); // the scene-cut flag's readbacks, the same way
     if (!Late::tracking.load()) return;
     for (auto& slot : Late::slots)
@@ -1151,8 +1319,26 @@ static void FinishedPictureSubmittedReal(ID3D12CommandQueue* queue, UINT count, 
 }
 
 thread_local uint64_t finishedPictureSubmitCallbacks = 0;
+GuideCapture::ExecutionReceipt FinishedPictureSubmitting(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
+{
+    GuideCapture::ExecutionReceipt receipt;
+    if(!queue||!lists)return receipt;
+    ID3D12CommandQueue* realQueue=nullptr;
+    if(Util::CheckForRealObject(__FUNCTION__,queue,(IUnknown**)&realQueue))queue=realQueue;
+    std::array<ID3D12CommandList*,16> realLists{};
+    for(UINT offset=0;offset<count;){
+        const UINT batch=(std::min)(count-offset,static_cast<UINT>(realLists.size()));
+        for(UINT i=0;i<batch;++i)realLists[i]=DetailReuse::RealSubmittedCommands(lists[offset+i]);
+        const auto part=GuideCapture::Executing(queue,batch,realLists.data());
+        for(size_t n=0;n<receipt.preview.size();++n)if(part.preview[n])receipt.preview[n]=part.preview[n];
+        for(size_t n=0;n<receipt.offline.size();++n)if(part.offline[n])receipt.offline[n]=part.offline[n];
+        offset+=batch;
+    }
+    return receipt;
+}
 uint64_t FinishedPictureSubmissionCallbacks() noexcept { return finishedPictureSubmitCallbacks; }
-void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
+void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists,
+                              const GuideCapture::ExecutionReceipt& receipt)
 {
     ++finishedPictureSubmitCallbacks;
     if (queue == nullptr || lists == nullptr) return;
@@ -1167,6 +1353,9 @@ void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12Comma
         const UINT batch = (std::min)(count - offset, static_cast<UINT>(realLists.size()));
         for (UINT i = 0; i < batch; ++i)
             realLists[i] = DetailReuse::RealSubmittedCommands(lists[offset + i]);
+        // Sampler ownership is independent of NR watchers (including FG-only
+        // recordings and a delayed post arriving after successful Reset).
+        GuideCapture::Submitted(queue,batch,realLists.data(),receipt);
         FinishedPictureSubmittedReal(queue, batch, realLists.data());
         offset += batch;
     }
@@ -1177,11 +1366,19 @@ void FinishedPictureColorSpace(IDXGISwapChain* swapchain, DXGI_COLOR_SPACE_TYPE 
     swapchain->SetPrivateData(Late::colorSpaceKey, sizeof(colorSpace), &colorSpace);
 }
 
+#include "DlssNr_GenshinPresentation.inl"
+
 static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue, bool dx11Bridge,
                                           ID3D12CommandQueue* orderedProducerQueue = nullptr,
                                           const GenshinPresentNr::ReturnedPicture* nativeReturned = nullptr)
 {
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
+    const bool resident = Late::ForceNRResident();
+    // Only the source bridge owns recovery. Child Presents cannot consume it.
+    if (dx11Bridge) Late::residentRecovery.Enable(resident);
+    FramePipeline::NrResident::Recovery unrelatedRecovery;
+    FramePipeline::NrResident::Recovery::Attempt residentAttempt(
+        dx11Bridge ? Late::residentRecovery : unrelatedRecovery);
     Late::finishedPictureOutcome = {};
     Late::finishedPictureOutcome.presentEpoch = State::Instance().frameCount;
     Late::finishedPictureOutcome.endpointSerial = ++Late::finishedPictureEndpointSerial;
@@ -1261,10 +1458,10 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
         Late::finishedPictureOutcome.submissionSerial=nativeReturned->Serial();
         return;
     }
-    // ZZZ can stop selecting an old native/fallback slot after a route or
-    // cadence change. Close completed private generations independently of
-    // reuse selection so they cannot permanently block a model rebuild.
-    if (!dx11Bridge && Late::IsZzzProcess() && g_nr.feature == nullptr && !g_nrRetired.empty())
+    // Every endpoint can leave an owned private list idle after reconfiguration.
+    // Close only completed private generations; never a borrowed capture list.
+    // This must advance while focused, independently of which slot is selected.
+    if (g_nr.feature == nullptr && !g_nrRetired.empty())
         Late::RetireCompletedPrivateRecordings();
     // A physical/generated interop Present is not a new StarRail source picture.
     // Reject that generic entry before it can erase the bridge's coverage.
@@ -1281,8 +1478,9 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
         Late::finishedPictureOutcome.reason=FinishedPictureReason::SubmissionFailed;
         return; // failed submission resources stay pinned
     }
-    if (!Config::Instance()->DlssNrFinishedPicture.value_or_default() ||
-        !Config::Instance()->DlssNrEnabled.value_or_default())
+    const bool diagnosticOnly=dx11Bridge && GuideCapture::Wanted(GuideCapture::Stream::Source) && !Config::Instance()->DlssNrEnabled.ObservedValue();
+    if ((!Config::Instance()->DlssNrFinishedPicture.value_or_default() ||
+        !Config::Instance()->DlssNrEnabled.ObservedValue()) && !diagnosticOnly)
     {
         Late::finishedPictureOutcome.reason=FinishedPictureReason::Disabled;
         if (!dx11Bridge && Late::IsZzzProcess()) Late::zzzPreparation.Restart();
@@ -1305,8 +1503,22 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
     Late::ComPtr<ID3D12Device> currentDevice;
     if (FAILED(swapchain->QueryInterface(IID_PPV_ARGS(&sc))) ||
         FAILED(sc->GetBuffer(sc->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&color))) ||
-        FAILED(queue->GetDevice(IID_PPV_ARGS(&currentDevice))) || currentDevice != Late::device) {
+        FAILED(queue->GetDevice(IID_PPV_ARGS(&currentDevice))) ||
+        (Late::device && currentDevice != Late::device)) {
         Late::finishedPictureOutcome.reason=FinishedPictureReason::InvalidEndpoint;return;
+    }
+    if (!Late::device)
+    {
+        // Start before the first successful DLSS capture using this real source endpoint.
+        if (!resident || !dx11Bridge || !orderedProducerQueue ||
+            FAILED(currentDevice->GetDeviceRemovedReason())) return;
+        Late::ComPtr<ID3D12Device> colorDevice, producerDevice;
+        if (FAILED(color->GetDevice(IID_PPV_ARGS(&colorDevice))) ||
+            FAILED(orderedProducerQueue->GetDevice(IID_PPV_ARGS(&producerDevice))) ||
+            colorDevice != currentDevice || producerDevice != currentDevice) return;
+        Late::device = currentDevice;
+        Late::tracking.store(true);
+        ResTrack_Dx12::HookLateNrQueue(Late::device.Get());
     }
     Late::finishedPictureOutcome.swapchain = DlssNrFgTrace::Identity(swapchain);
     Late::finishedPictureOutcome.color = DlssNrFgTrace::Identity(color.Get());
@@ -1338,9 +1550,11 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
     const bool pq = screenChoice.screen == Screen::Pq;
     const bool scrgb = screenChoice.screen == Screen::Scrgb;
     const auto epoch = State::Instance().frameCount;
-    const bool residualOnly = Config::Instance()->DlssNrRunBeforeSr.value_or_default() ||
-                              Config::Instance()->DlssNrDeferredDlss.value_or_default();
+    const bool residualOnly = !diagnosticOnly && (Config::Instance()->DlssNrRunBeforeSr.value_or_default() ||
+                              Config::Instance()->DlssNrDeferredDlss.value_or_default());
     const bool nativeStarRail = dx11Bridge && !residualOnly && Late::IsStarRailProcess();
+    const bool directDlssScene = dx11Bridge && !residualOnly && Late::DirectDlssSceneBridgeEnabled();
+    const bool bridgeScene = nativeStarRail || directDlssScene;
     const bool nativeZzz = !dx11Bridge && !residualOnly && Late::IsZzzProcess();
     const bool zzzReceiptRoute = nativeZzz && Late::zzzSource.routeActive;
     const auto captureEpoch = zzzReceiptRoute ? Late::zzzSource.ordinal :
@@ -1397,7 +1611,7 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
         Late::bridgeCoverage = {};
     std::array<FinishedInput, std::tuple_size_v<decltype(Late::slots)>> inputs {};
     uint64_t latestNativeSerial = 0;
-    if (nativeStarRail)
+    if (bridgeScene)
         for (const auto& current : Late::slots)
             if (current.pending && current.dx11Bridge && !current.residualOnly &&
                 current.sourceEpoch == captureEpoch)
@@ -1427,7 +1641,7 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
                                                          dx11Bridge && orderedProducer != nullptr,
                                                          slot.producerQueue.Get() == orderedProducer);
         const bool nativeIdentity = Late::NativeCaptureIdentityMatches(slot, captureEpoch, bridgeOrdered);
-        inputs[i] = { (!nativeStarRail || (nativeIdentity && slot.serial == latestNativeSerial)) && slot.dx11Bridge == dx11Bridge && slot.residualOnly == residualOnly && slot.frame.OutputWidth == desc.Width &&
+        inputs[i] = { (!bridgeScene || (nativeIdentity && slot.serial == latestNativeSerial)) && slot.dx11Bridge == dx11Bridge && slot.residualOnly == residualOnly && slot.frame.OutputWidth == desc.Width &&
                           slot.frame.OutputHeight == desc.Height,
                       slot.serial, slot.producerQueue.Get() == presentQueue || bridgeOrdered, slot.fence->GetCompletedValue(),
                       slot.ready };
@@ -1448,15 +1662,23 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
             LOG_INFO("DLSS-NR bridge continuity: presents={} missing={} notReady={} applied={} bypass={} epoch={}",
                      bridgePresents, bridgeMissing, bridgeNotReady, bridgeRan, bridgeBypass, epoch);
     }
-    const bool freshColorFallback =
-        (pick == FinishedPick::None || (pick == FinishedPick::NotReady && nativeZzz)) &&
-        ((nativeStarRail && persistentBridge && orderedProducer != nullptr) || nativeZzz);
+    const bool orderedFreshColor = (nativeStarRail && persistentBridge && orderedProducer != nullptr) || nativeZzz;
+    const auto residentInput = pick == FinishedPick::None ? FramePipeline::NrResident::Input::Missing :
+        inputs[index].completed == UINT64_MAX ? FramePipeline::NrResident::Input::DeviceRemoved :
+        pick == FinishedPick::Ready ? FramePipeline::NrResident::Input::Ready : FramePipeline::NrResident::Input::Pending;
+    const bool freshColorFallback = FramePipeline::NrResident::UseFreshColor(
+        residentInput, resident || nativeZzz, true, orderedFreshColor);
     Late::Slot* selected = nullptr;
     if (pick == FinishedPick::None || (pick == FinishedPick::NotReady && freshColorFallback))
     {
-        if (nativeFreshColorRoute) { Late::reset = true; Late::bridgeCoverage = {}; }
+        if (nativeFreshColorRoute)
+        {
+            if (!resident || !Late::freshColorActive) Late::reset = true;
+            Late::bridgeCoverage = {};
+        }
         if (freshColorFallback)
-            selected = Late::AcquireFreshColor(DlssNrFgTrace::Identity(swapchain), desc, presentQueue, dx11Bridge, nativeZzz);
+            selected = Late::AcquireFreshColor(DlssNrFgTrace::Identity(swapchain), desc, presentQueue, dx11Bridge,
+                                               nativeZzz || resident);
         if (!selected)
         {
             if (nativeFreshColorRoute) Late::Say("NR bypass: no current capture and no safe fresh-color slot/sizing.");
@@ -1500,14 +1722,15 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
         for (auto& other : Late::slots)
             if (other.submitted && other.serial <= slot.serial)
                 other.pending = false;
-    // ZZZ source gaps can leave the last history writer on a different, now
+    // Source gaps can leave the last history writer on a different, now
     // idle private list. Its GPU fence may be complete while the executable
     // generation is still open: adjacent-source Advance must reject the gap,
     // and Collect must retain the real owners until a successful Reset.
     // Close only completed old private lists through the existing lifecycle.
     // The selected list is reset normally below; producer/game lists are never
     // reset here. History compatibility/adjacency and every GPU gate stay intact.
-    if (nativeZzz && !freshColorFallback && DetailReuse::PendingRecordings() != 0)
+    if (!freshColorFallback && (DetailReuse::PendingRecordings() != 0 ||
+                               DetailHistory::PendingRecordings() != 0))
         Late::RetireCompletedPrivateRecordings(&slot);
     // Claim before any private recording/uncertain queue work. NotReady returns
     // above may retry; a recorded/failing source may not run twice on child Presents.
@@ -1518,7 +1741,7 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
         // orders genuine current-color work (bridge upload + Wait included).
         // Only full FinishedPicture NR consumes this color; residual mode
         // already evaluated NR elsewhere and keeps its previous contract.
-        (!slot.residualOnly && !slot.nrFilter.BeforeNr(swapchain, queue, color.Get(),
+        (!diagnosticOnly && !slot.residualOnly && !slot.nrFilter.BeforeNr(swapchain, queue, color.Get(),
             screenSdr, epoch, dx11Bridge, orderedProducerQueue,
             {(!freshColorFallback && slot.frame.SourceCaptureSerial == slot.serial &&
               slot.frame.SourceCaptureEpoch == slot.frame.SubmissionEpoch) ? slot.depth.Get() : nullptr,
@@ -1540,6 +1763,79 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
     // recording. R591 retains it when dispatched; resize never dereferences it.
     slot.backBufferIdentity = reinterpret_cast<uintptr_t>(static_cast<IUnknown*>(color.Get()));
     auto* cmd = slot.commands.Get();
+    // The compound condition above proved this exact private Reset succeeded.
+    FinishedPictureResetCommandList(DetailReuse::RealTemporalCommands(cmd)); // actual Reset fallback, idempotent with hook
+    if (!freshColorFallback && !slot.residualOnly && GuideCapture::OfflineWanted(GuideCapture::Stream::Source)) {
+        GuideCapture::Inputs inputs;
+        inputs.colour=color.Get(); inputs.depth=slot.depth.Get(); inputs.motion=slot.motion.Get();
+        inputs.colourState=D3D12_RESOURCE_STATE_PRESENT;
+        inputs.depthState=inputs.motionState=D3D12_RESOURCE_STATE_COPY_DEST;
+        inputs.colourRect={0,0,(unsigned)desc.Width,desc.Height};
+        inputs.depthRect={slot.frame.DepthSubrectBaseX,slot.frame.DepthSubrectBaseY,
+            slot.frame.RenderSubrectWidth,slot.frame.RenderSubrectHeight};
+        const auto mw=slot.frame.MotionVectorsLowResolution?slot.frame.RenderSubrectWidth:slot.frame.OutputWidth;
+        const auto mh=slot.frame.MotionVectorsLowResolution?slot.frame.RenderSubrectHeight:slot.frame.OutputHeight;
+        inputs.motionRect={slot.frame.MotionSubrectBaseX,slot.frame.MotionSubrectBaseY,mw,mh};
+        inputs.motionToUvX=mw?slot.frame.MvScaleX/mw:0; inputs.motionToUvY=mh?slot.frame.MvScaleY/mh:0;
+        inputs.independentRecording=true;
+        auto diagnosticFrame=slot.frame;
+        if(bridgeScene){
+            diagnosticFrame.NativeSceneRoute=true;
+            Late::PopulateNativeSceneContract(diagnosticFrame,slot,captureEpoch,desc,presentQueue,orderedProducer);
+        }
+        auto stamp=DlssNrGuideObservation::Source(diagnosticFrame);
+        stamp.colour=DlssNrGuideObservation::Resource(inputs.colour,inputs.colourRect);
+        stamp.depth=DlssNrGuideObservation::Resource(inputs.depth,inputs.depthRect);
+        stamp.motion=DlssNrGuideObservation::Resource(inputs.motion,inputs.motionRect);
+        stamp.configuration=stamp.configuration*1000003ull^Late::sourceDiagnosticGeneration;
+        for (uint64_t part : {uint64_t(desc.Width),uint64_t(desc.Height),uint64_t(desc.Format),
+                uint64_t(pq),uint64_t(scrgb),uint64_t(reinterpret_cast<uintptr_t>(presentQueue))})
+            stamp.configuration=stamp.configuration*1000003ull^part;
+        for (auto* resource : {inputs.depth,inputs.motion}) {
+            const auto shape=resource?resource->GetDesc():D3D12_RESOURCE_DESC{};
+            for (uint64_t part : {uint64_t(shape.Width),uint64_t(shape.Height),uint64_t(shape.Format),
+                    uint64_t(shape.Dimension),uint64_t(shape.DepthOrArraySize),uint64_t(shape.SampleDesc.Count)})
+                stamp.configuration=stamp.configuration*1000003ull^part;
+        }
+        const auto& captureConfig=*Config::Instance();
+        for (uint64_t part : {uint64_t(captureConfig.DlssNrDepthTextureFlipY.value_or_default()),
+                uint64_t(captureConfig.DlssNrMotionTextureFlipY.value_or_default()),
+                uint64_t(captureConfig.DlssNrMotionYInverted.value_or_default())})
+            stamp.configuration=stamp.configuration*1000003ull^part;
+        // Source data is raw: these are no applied row/sign operations.
+        stamp.depthFlip=stamp.motionFlip=stamp.yNegated=false;
+        stamp.phaseVerified=false;
+        stamp.tick=GuideDiagnostics::Now(); // actual sampling-record time, never completion time
+        stamp.colourChoice="current before-NR scene";
+        stamp.reason += stamp.addressPhaseKnown?"; canonical colour/raw raster guide phase declared":
+            "; calibration unavailable: colour/guide address phase unknown";
+        // Unknown scalar/rect fields remain unknown; capture is observational and
+        // must not replace absent fields with allocation extents or unit vectors.
+        // Unknown metadata can still expose current color, but never pretend a
+        // default rect or unknown vector units are a calibrated current guide.
+        if (!slot.frame.NativeGuideMetadataKnown) {
+            inputs.depth=nullptr; inputs.motion=nullptr;
+            stamp.depth.present=stamp.motion.present=false;
+        }
+        auto* realCaptureList=static_cast<ID3D12GraphicsCommandList*>(DetailReuse::RealTemporalCommands(cmd));
+        if (GuideCapture::RecordOffline(GuideCapture::Stream::Source,realCaptureList,inputs,stamp))
+            DlssNrWatchedLists::Add(realCaptureList); // includes source-only model-warmup recordings
+    }
+    if(diagnosticOnly){
+        // A diagnostics-only recording reads the exact current source and its
+        // retained guides. It never evaluates NR, runs filters, or writes colour.
+        if(FAILED(cmd->Close())){slot.quarantined=true;Late::finishedPictureOutcome.reason=FinishedPictureReason::RecordingFailed;return;}
+        ID3D12CommandList* lists[]{cmd};slot.done=slot.ready+1;
+        const auto callbacks=finishedPictureSubmitCallbacks;
+        const auto previewReceipt=FinishedPictureSubmitting(queue,1,lists);queue->ExecuteCommandLists(1,lists);
+        slot.submitted=true;
+        if(callbacks==finishedPictureSubmitCallbacks)FinishedPictureSubmitted(queue,1,lists,previewReceipt);
+        if(FAILED(queue->Signal(slot.fence.Get(),slot.done))){slot.quarantined=true;Late::finishedPictureOutcome.reason=FinishedPictureReason::SubmissionFailed;return;}
+        slot.pending=false;Late::reset=true;
+        Late::finishedPictureOutcome.result=FinishedPictureResult::NoWrite;
+        Late::finishedPictureOutcome.reason=FinishedPictureReason::Disabled;
+        return;
+    }
     if (freshColorFallback) Late::RecordZeroMotion(slot);
     if (!g_compose)
         g_compose = std::make_unique<DlssNr_Dx12>("Neural Rendering", Late::device.Get());
@@ -1548,7 +1844,7 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
     bool pictureRecorded = false;
     bool pictureUpdated = false;
     bool pictureFlowValid = false, pictureGuidesBuilt = false;
-    bool effectiveModelReset = false, effectiveNativeAuthority = false;
+    bool effectiveModelReset = false, effectiveNativeAuthority = false, residentFlow = false;
     // This is the source picture before fg->Present(), not an SDK child-frame
     // callback. The successful source capture, exact endpoint/shape and actual
     // producer readiness were checked above; feedback only reads THIS raw color.
@@ -1601,7 +1897,7 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
         frame.ColourEncodingForced = !screenChoice.choice.automatic;
         // Absolute display encodings: 203-nit reference white, in 80-nit scRGB units.
         frame.WhitePointOverride = (pq || scrgb) ? 203.0f / 80.0f : 0.0f;
-        frame.Reset |= Late::reset;
+        frame.Reset |= Late::reset || residentAttempt.ResetRequired();
         // Slot selection uses the source-picture epoch above. Model creation and
         // cadence use this endpoint's committed lists even while SR is stopped.
         frame.SubmissionEpoch = persistentBridge ? modelEpoch : epoch;
@@ -1650,21 +1946,22 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
             frame.SourceCaptureSerial = captureEpoch;
             frame.SourceCaptureEpoch = captureEpoch;
         }
-        if (nativeStarRail)
+        if (bridgeScene)
         {
             const auto owner = DlssNrFgTrace::Identity(swapchain);
             if (Late::pictureOwner != owner || Late::pictureQueue.Get() != presentQueue ||
                 Late::pictureWidth != desc.Width || Late::pictureHeight != desc.Height ||
-                Late::pictureFormat != desc.Format || Late::pictureLastBridgePresent + 1 != bridgePresent)
+                Late::pictureFormat != desc.Format || Late::pictureLastBridgePresent + 1 != bridgePresent ||
+                (resident && Late::freshColorActive && !freshColorFallback))
                 frame.Reset = true;
-            // This is the selected StarRail native presented base endpoint. Keep route identity
+            // This is the selected NGX source and its corresponding presented base. Keep route identity
             // independent from guide/metadata validity so caller-v5 can choose the native core
             // fail-closed path even when the scene guide contract is unknown.
             frame.NativeSceneRoute = true;
             if (!freshColorFallback)
                 Late::PopulateNativeSceneContract(frame, slot, captureEpoch, desc, presentQueue, orderedProducer);
-            // Fallback keeps NativeSceneRoute but no identity/guide authority. Reset is
-            // unconditional; zeros satisfy the model ABI, not a claim of static motion.
+            // Reset-only fallback has no native authority. Measured current-picture
+            // flow below may replace its ABI zeros, without issuing native identity.
         }
         const bool zzzHistoryChanged = nativeZzz && (Late::pictureQueue.Get() != presentQueue ||
             Late::pictureWidth != desc.Width || Late::pictureHeight != desc.Height ||
@@ -1672,15 +1969,20 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
         // ZZZ measures the actual final color here, before NR mutates it. Scene
         // depth keeps its independent SR subrect and encoding for the model; it
         // never qualifies postprocess/HUD depth; any geometry veto is separate.
-        if (!nativeStarRail && (slot.dx11Bridge || zzzFlowRequested) && colorReady &&
+        const bool residentFlowRequested = resident && freshColorFallback && !(desc.Width & 1) && !(desc.Height & 1);
+        if (((!bridgeScene && (slot.dx11Bridge || zzzFlowRequested)) || residentFlowRequested) && colorReady &&
             Late::PictureHistoryReady(presentQueue, desc))
         {
             const auto owner = DlssNrFgTrace::Identity(swapchain);
             const bool zzzGap = nativeZzz && (zzzHistoryChanged || !Late::zzzPicture.ordinal ||
                 Late::zzzPicture.ordinal + 1 != captureEpoch || Late::zzzPicture.source != slot.zzzSource ||
                 Late::zzzPicture.encoding != frame.ColourEncoding || slot.frame.Reset);
-            if (Late::pictureOwner != owner || (nativeZzz ? zzzGap :
-                Late::pictureLastBridgePresent + 1 != bridgePresent))
+            const bool flowReset = residentFlowRequested ?
+                (!Late::freshColorActive || Late::pictureFlowOwner != owner || !Late::pictureFlowSourceEpoch ||
+                 Late::pictureFlowSourceEpoch + 1 != captureEpoch || Late::pictureFlowEncoding != frame.ColourEncoding) :
+                Late::pictureOwner != owner || (nativeZzz ? zzzGap :
+                    Late::pictureLastBridgePresent + 1 != bridgePresent);
+            if (flowReset)
             {
                 Late::TraceResetReason(Late::pictureOwner != owner ? "picture-owner-changed" : "picture-endpoint-gap",
                                        Late::endpointGapEvents, slot);
@@ -1701,7 +2003,7 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
             pictureUpdated = flowRan; // a successful warm-up also updates the current raw picture
             pictureFlowValid = flowRan && Late::pictureFlow->FlowValid();
             if (flowRan && Late::pictureFlow->FlowValid() &&
-                (!nativeZzz || Late::pictureFlow->SceneCutFlag()))
+                ((!nativeZzz && !residentFlowRequested) || Late::pictureFlow->SceneCutFlag()))
             {
                 TrustMaskDx12::Inputs in {};
                 in.flow = Late::pictureFlow->Flow();
@@ -1721,6 +2023,15 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
                     frame.MvScaleX = 1.0f; frame.MvScaleY = 1.0f;
                     frame.HistoryDistrust = Late::pictureTrust->Mask();
                     pictureGuidesBuilt = true;
+                    if (residentFlowRequested)
+                    {
+                        // Current raw-color flow, no native depth/capture identity.
+                        // Full model only: issue no detail/output reuse authority.
+                        modelDepth = nullptr;
+                        FramePipeline::NrResident::UseMeasuredFlow(frame,
+                            Late::reset || residentAttempt.ResetRequired() || flowReset);
+                        residentFlow = true;
+                    }
                     if (nativeZzz)
                     {
                         // BuildGuides replaces motion only. Keep the current source's
@@ -1819,12 +2130,13 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
     Late::finishedPictureOutcome.fence=slot.fence;
     Late::finishedPictureOutcome.fenceValue=slot.done;
     const auto observedBeforeSubmit = finishedPictureSubmitCallbacks;
+    const auto previewReceipt=FinishedPictureSubmitting(queue,1,lists);
     queue->ExecuteCommandLists(1, lists);
     slot.submitted = true; // fresh-colour lists have no capture submission hook to mark them
     // The global hook may already have delivered this exact execution. Calling
     // twice would turn one producer into a replay and discard its publication.
     if (finishedPictureSubmitCallbacks == observedBeforeSubmit)
-        FinishedPictureSubmitted(queue, 1, lists); // queues without the global submit hook
+        FinishedPictureSubmitted(queue, 1, lists,previewReceipt); // queues without the global submit hook
     if (FAILED(queue->Signal(slot.fence.Get(), slot.done)))
     {
         Late::finishedPictureOutcome.result = FinishedPictureResult::FailedUncertain;
@@ -1849,6 +2161,14 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
         {
             Late::pictureLastBridgePresent = bridgePresent;
             Late::pictureOwner = DlssNrFgTrace::Identity(swapchain);
+            if (resident)
+            {
+                // A model warmup may still submit a valid raw-color sample. A
+                // skipped/failed flow never advances this independent source clock.
+                Late::pictureFlowSourceEpoch = captureEpoch;
+                Late::pictureFlowOwner = DlssNrFgTrace::Identity(swapchain);
+                Late::pictureFlowEncoding = (uint32_t) screenChoice.choice.encoding;
+            }
             if (nativeZzz)
             {
                 Late::zzzPicture.ordinal = captureEpoch;
@@ -1859,7 +2179,7 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
     }
     // Fallback must not overwrite the flow owner's actual allocation/queue shape:
     // the next measured picture must drain/recreate it through PictureHistoryReady.
-    if (nativeFreshColorRoute && (!nativeZzz || !Late::pictureFlow))
+    if (bridgeScene || (nativeFreshColorRoute && (!nativeZzz || !Late::pictureFlow)))
     {
         Late::pictureOwner = DlssNrFgTrace::Identity(swapchain);
         Late::pictureQueue = presentQueue;
@@ -1867,6 +2187,14 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
         Late::pictureLastBridgePresent = bridgePresent;
     }
     const bool ran = slot.residualOnly ? appliedResidual : g_nr.successfulDispatches > before;
+    if (directDlssScene && (bridgePresents <= 3 || bridgePresents % 300 == 0))
+        LOG_INFO("F6 NR direct NGX scene: sourceEpoch={} modelEpoch={} captureSerial={} captureEpoch={} "
+                 "sourceQueue={} presentQueue={} color={} depth={} motion={} ran={} motionSource=NGX "
+                 "pictureFlowSubstitution=false pixelAcceptance=UNKNOWN",
+            captureEpoch, modelEpoch, slot.serial, slot.frame.SourceCaptureEpoch,
+            reinterpret_cast<uintptr_t>(slot.producerQueue.Get()), reinterpret_cast<uintptr_t>(presentQueue),
+            reinterpret_cast<uintptr_t>(color.Get()), reinterpret_cast<uintptr_t>(slot.depth.Get()),
+            reinterpret_cast<uintptr_t>(slot.motion.Get()), ran);
     Late::finishedPictureOutcome.submissionSerial = slot.serial;
     Late::finishedPictureOutcome.fenceValue = slot.done;
     if (ran)
@@ -1887,9 +2215,10 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
 
     }
     if (freshColorFallback) Late::bridgeCoverage = {};
-    else Late::CommitBridgeCoverage(slot, persistentBridge, ran, pictureUpdated || nativeStarRail, DlssNrFgTrace::Identity(swapchain));
+    else Late::CommitBridgeCoverage(slot, persistentBridge, ran, pictureUpdated || bridgeScene, DlssNrFgTrace::Identity(swapchain));
     // Native recovery must not inherit a model history evaluated without current guides.
-    Late::reset = !ran || freshColorFallback;
+    residentAttempt.Submitted(ran, !freshColorFallback || residentFlow);
+    Late::reset = !ran || (freshColorFallback && !residentFlow);
     static uint64_t freshColorRuns = 0, nativeRuns = 0, continuityBypasses = 0;
     freshColorRuns += ran && freshColorFallback;
     nativeRuns += ran && nativeStarRail && !freshColorFallback;
@@ -1906,11 +2235,13 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
                  effectiveNativeAuthority, effectiveModelReset);
     }
     if (freshColorFallback && ran && (freshColorRuns == 1 || freshColorRuns % 300 == 0))
-        LOG_INFO("DLSS-NR fresh-color continuity: game={} runs={} source=current-backbuffer depth=none motion=explicit-zero temporalReset=true",
-                 nativeZzz ? "ZZZ" : "StarRail", freshColorRuns);
+        LOG_INFO("DLSS-NR fresh-color continuity: game={} runs={} source=current-backbuffer depth=none motion={} temporalReset={} forceResident={}",
+                 nativeZzz ? "ZZZ" : "StarRail", freshColorRuns,
+                 residentFlow ? "current-picture-flow" : "explicit-zero", effectiveModelReset, resident);
     Late::freshColorActive = freshColorFallback;
     const char* endpointStatus = !Config::Instance()->DlssNrApplyModel.value_or_default() ? "NR changes are hidden." :
         ran ? (slot.residualOnly ? "Applying the pre-SR changes to the finished picture." :
+        residentFlow ? "Applying NR to current color with measured picture flow (no native depth)." :
         freshColorFallback ? "Applying NR to current color; temporal history reset (native guides unavailable)." :
         "Applying NR to the finished picture.") : "Preparing NR for the finished picture.";
     // Route oscillation is counted above with a bounded log rate, not one line per present.
@@ -1925,6 +2256,13 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
 FinishedPictureOutcome ApplyToFinishedPicture(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue)
 {
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
+    if (UsesGenshinPresentPipeline()) {
+        // The DX11 wrapper owns the source Present before FG. Physical and
+        // generated SDK callbacks have no permission to record another NR pass.
+        FinishedPictureOutcome result;
+        result.reason = FinishedPictureReason::InvalidEndpoint;
+        return result;
+    }
     ApplyToFinishedPictureInternal(swapchain, queue, false);
     return Late::finishedPictureOutcome;
 }
@@ -1935,7 +2273,7 @@ bool CaptureFinishedPictureDx11Bridge(ID3D12GraphicsCommandList* cmd, ID3D12Comm
 {
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
     const auto rejectCapture = [] {
-        if (Late::IsStarRailProcess())
+        if (Late::DirectDlssSceneBridgeEnabled() || Late::IsStarRailProcess())
         {
             // A newer failed offer invalidates an older same-epoch capture without
             // releasing or recycling any recorded/submitted resource.
@@ -1946,8 +2284,11 @@ bool CaptureFinishedPictureDx11Bridge(ID3D12GraphicsCommandList* cmd, ID3D12Comm
         return false;
     };
     const auto& cfg = *Config::Instance();
-    if (!cfg.DlssNrEnabled.value_or_default() || !cfg.DlssNrFinishedPicture.value_or_default() ||
-        cfg.DlssNrRunBeforeSr.value_or_default() || cfg.DlssNrDeferredDlss.value_or_default() ||
+    const bool diagnosticOnly=!cfg.DlssNrEnabled.ObservedValue() && GuideCapture::Wanted(GuideCapture::Stream::Source);
+    const bool fixedPresent = UsesGenshinPresentPipeline();
+    if ((!diagnosticOnly && (!cfg.DlssNrEnabled.ObservedValue() || (!fixedPresent &&
+        (!cfg.DlssNrFinishedPicture.value_or_default() || cfg.DlssNrRunBeforeSr.value_or_default() ||
+         cfg.DlssNrDeferredDlss.value_or_default())))) ||
         State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx11wDx12 || !cmd || !queue || !params ||
         cmd->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT || queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
         return rejectCapture();
@@ -1977,11 +2318,14 @@ void FinishedPictureDx11BridgeOutputHandoff(ID3D12CommandQueue* queue, ID3D12Gra
 
 FinishedPictureOutcome ApplyToFinishedPictureDx11Bridge(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue,
                                      ID3D12CommandQueue* orderedProducerQueue,
-                                     const GenshinPresentNr::ReturnedPicture* nativeReturned)
+                                     const GenshinPresentNr::ReturnedPicture* nativeReturned,
+                                     GuideSourceMetadata::Ptr selectedSource)
 {
     // Return this exact invocation under the owning lock, including invalid,
     // disabled, no-input and uncertain paths. Never reuse a later generic result.
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
+    if (UsesGenshinPresentPipeline())
+        return GenshinPresentation::Apply(swapchain, queue, orderedProducerQueue, selectedSource);
     ApplyToFinishedPictureInternal(swapchain, queue, true, orderedProducerQueue, nativeReturned);
     // This entry follows the actual source copy/order, before hidden, physical
     // or generated Presents. A skipped NR picture also consumes its boundary.
@@ -2016,6 +2360,7 @@ bool ApplyNativeInput(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* cmd,
                       bool depthReversed, bool reset,
                       DXGI_COLOR_SPACE_TYPE colorSpace, D3D12_RESOURCE_STATES pictureState, unsigned long long epoch, bool opticalFgNr, const GenshinPresentNr::Scope* genshinSender)
 {
+    if (UsesGenshinPresentPipeline()) return false;
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
     if (!Config::Instance()->DlssNrFinishedPicture.value_or_default() ||
         !Config::Instance()->DlssNrEnabled.value_or_default())
@@ -2176,9 +2521,17 @@ bool ApplyNativeInput(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* cmd,
     DlssNrNative::SetPrecision(Config::Instance()->DlssNrPrecision.value_or_default());
     const auto before = g_nr.successfulDispatches;
     const auto modelCallsBefore=DetailReuse::ledger.modelCalls;
+    const auto modelEpochBefore=DetailReuse::ledger.epoch;
     g_compose->Dispatch(cmd, color, depth, motion, color, frame, queue);
-    if(auto* r=GenshinPresentNrTrace::Current()) {r->modelSeq=GenshinPresentNrTrace::Sequence();r->modelObserved=true;
-        r->modelCalls=DetailReuse::ledger.modelCalls-modelCallsBefore;}
+    // Dispatch may start a new cadence epoch after a scene/configuration change.
+    // Counters from different epochs cannot be subtracted. Keep that observation
+    // explicitly unknown instead of wrapping an unsigned count or claiming zero calls.
+    const bool modelCallsKnown=modelEpochBefore.owner==DetailReuse::ledger.epoch.owner &&
+        modelEpochBefore.config==DetailReuse::ledger.epoch.config &&
+        DetailReuse::ledger.modelCalls>=modelCallsBefore;
+    const auto modelCalls=modelCallsKnown?DetailReuse::ledger.modelCalls-modelCallsBefore:0;
+    if(auto* r=GenshinPresentNrTrace::Current()) {r->modelSeq=GenshinPresentNrTrace::Sequence();r->modelObserved=modelCallsKnown;
+        r->modelCalls=modelCalls;}
     const bool ran = g_nr.successfulDispatches > before;
     const auto* inputObservation = native::NrInputObservation::Current(queue, cmd, color, depth, motion,
                                                                       historyDistrust, epoch);
@@ -2187,7 +2540,7 @@ bool ApplyNativeInput(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* cmd,
     if (inputReporter.Sample(depthObservation, depth != nullptr, ran))
         LOG_INFO("R849 NR actual input: pid={} epoch={} generation={} sourceFrame={} picture={} "
                  "depth={} motion={} source_depth={} guide_depth={} acquired_count={} paired={} "
-                 "matched_driver={} model_composed={} model_calls={} integration_depth_contract=optional "
+                 "matched_driver={} model_composed={} model_calls={} model_calls_known={} integration_depth_contract=optional "
                  "input_scope=ApplyNativeInput raw_or_fg_preview=false submission=UNKNOWN",
                  GetCurrentProcessId(), epoch, inputObservation ? inputObservation->generation : 0,
                  inputObservation ? inputObservation->sourceFrame : 0,
@@ -2195,7 +2548,7 @@ bool ApplyNativeInput(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* cmd,
                  native::NrInputObservation::Text(depthObservation.source),
                  native::NrInputObservation::Text(depthObservation.guide), depthObservation.acquiredCount,
                  depthObservation.paired, inputObservation != nullptr, ran,
-                 DetailReuse::ledger.modelCalls - modelCallsBefore);
+                 modelCalls,modelCallsKnown);
     Late::bridgeCoverage = {};
     Late::reset = !ran;
     Late::Say(!Config::Instance()->DlssNrApplyModel.value_or_default() ? "NR changes are hidden." :
@@ -2242,6 +2595,7 @@ bool EnsureFgTexture(Microsoft::WRL::ComPtr<ID3D12Resource>& texture, ID3D12Devi
 // HUD/alpha. Write both real inputs back before FG, without replacing parameters.
 bool ApplyToFgInput(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params)
 {
+    if (UsesGenshinPresentPipeline()) return false;
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
     if (!Late::ComposeOnGameFg() || !Late::PausedForGameFrameGeneration() || !cmdList || !params ||
         NativeInputBlockedBySwapChainInterop())

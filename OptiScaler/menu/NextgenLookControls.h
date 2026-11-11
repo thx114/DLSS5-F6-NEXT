@@ -8,6 +8,26 @@
 // A template lets the headless fixture compile this exact renderer without GPU/provider headers.
 namespace NextgenLookControls
 {
+// Raw input/model/difference views return before the final Look resolve. A
+// deliberate Look edit should show its result; merely visiting a page must not
+// change the selected diagnostic view or enable NR.
+template<class ConfigType, class Option, class Value>
+inline void CommitEdit(ConfigType* config, Option& option, const Value& value)
+{
+    option = value;
+    config->DlssNrDebugView = uint32_t{0};
+}
+
+template<class ConfigType> inline void RenderPreviewNotice(ConfigType* config)
+{
+    if (config->DlssNrDebugView.value_or_default() == 0u) return;
+    const auto tr = [](const char* cn, const char* en) { return NextgenUi::English() ? en : cn; };
+    MenuText::TextWrapped("%s", tr("当前显示 NR 诊断预览，最终 Look 不可见。调整 Look 参数时会返回最终效果。",
+        "An NR diagnostic view is active; final Look is hidden. Editing Look returns to the final result."));
+    if (MenuText::SmallButton(tr("查看最终效果###lookFinalView", "Show final result###lookFinalView")))
+        config->DlssNrDebugView = uint32_t{0};
+}
+
 inline bool EnableCheckbox(const char* label, bool* enabled)
 {
     const std::string stable = std::string(label) + "###f5LookEnabled";
@@ -16,7 +36,9 @@ inline bool EnableCheckbox(const char* label, bool* enabled)
 
 template<class ConfigType> inline void Render(ConfigType* config)
 {
+    if (!config) return;
     const auto tr = [](const char* cn, const char* en) { return NextgenUi::English() ? en : cn; };
+    RenderPreviewNotice(config);
     MenuText::SeparatorText(tr("第一层 Look", "Layer 1 Look"));
     if (!ImGui::CollapsingHeader(tr("第一层 Look 参数###f5Look", "Layer 1 Look parameters###f5Look"),
         ImGuiTreeNodeFlags_DefaultOpen)) return;
@@ -58,10 +80,10 @@ template<class ConfigType> inline void Render(ConfigType* config)
         const std::string label = std::string(tr(control.cn, control.en)) + "###value";
         if (MenuText::SliderFloat(label.c_str(), &value, control.low, control.high, "%.2f", ImGuiSliderFlags_AlwaysClamp,
                                  control.unlimited ? tr("不限", "Unlimited") : nullptr) && std::isfinite(value))
-            *control.option = std::clamp(value, control.low, control.high);
+            CommitEdit(config, *control.option, std::clamp(value, control.low, control.high));
         ImGui::SameLine();
         if (MenuText::SmallButton(tr("重置###reset", "Reset###reset"), !NextgenSliderStyle::IsDefault(value, control.neutral)))
-            *control.option = control.neutral;
+            CommitEdit(config, *control.option, control.neutral);
         ImGui::PopID();
     }
 }
@@ -77,6 +99,7 @@ template<class ConfigType> inline void RenderLayer(ConfigType* config, unsigned 
         return;
     }
     const auto tr = [](const char* cn, const char* en) { return NextgenUi::English() ? en : cn; };
+    RenderPreviewNotice(config);
     ImGui::PushID("globalLayerLook"); ImGui::PushID(static_cast<int>(layer));
     const std::string title=(NextgenUi::English()?"Layer "+std::to_string(layer+1)+" Look":
         "第 "+std::to_string(layer+1)+" 层 Look")+"###layerLook";
@@ -88,7 +111,7 @@ template<class ConfigType> inline void RenderLayer(ConfigType* config, unsigned 
         {
             bool enabled=storage.DlssNrLookMode.value_or_default();
             if (EnableCheckbox(tr("启用本层 Look", "Enable Look for this layer"),&enabled))
-                storage.DlssNrLookMode=enabled;
+                CommitEdit(config, storage.DlssNrLookMode, enabled);
         }
         unsigned inherit=std::min(storage.inherit.value_or_default(),2u);
         if (layer>0)
@@ -96,7 +119,7 @@ template<class ConfigType> inline void RenderLayer(ConfigType* config, unsigned 
             int source=static_cast<int>(inherit);
             if (ImGui::Combo(tr("参数来源","Parameter source"),&source,
                 tr("本层独立参数\0继承第一层参数\0继承上一层参数\0","Local\0Inherit layer 1\0Inherit previous layer\0")))
-                storage.inherit=inherit=static_cast<unsigned>(source);
+                CommitEdit(config, storage.inherit, inherit=static_cast<unsigned>(source));
         }
         MenuText::SeparatorText(tr("本层 Look 的 UI 遮罩请求", "UI mask request for this Look"));
         unsigned uiMask = DlssNr::LayerLook::BoundUiMask(storage.uiMask.value_or_default());
@@ -107,7 +130,7 @@ template<class ConfigType> inline void RenderLayer(ConfigType* config, unsigned 
         {
             if (choice != 0) ImGui::SameLine();
             if (ImGui::RadioButton(maskLabels[choice], uiMask == choice))
-                storage.uiMask = uiMask = choice;
+                CommitEdit(config, storage.uiMask, uiMask = choice);
         }
         ImGui::PopID();
         const bool protectsUi = DlssNr::LayerLook::ResolveUiMask(*config, layer);
@@ -124,7 +147,7 @@ template<class ConfigType> inline void RenderLayer(ConfigType* config, unsigned 
                 "Override individual parameters; the rest follow the source. Reset restores inheritance and keeps local values."));
         if (ImGui::Button(tr("重置本层参数","Reset layer parameters")))
         {
-            storage.overrides = overrides = 0u;
+            CommitEdit(config, storage.overrides, overrides = 0u);
             if (!inherited)
                 DlssNr::LayerLook::Visit(storage, [](unsigned i, auto& option) {
                     option = DlssNr::LayerLook::Parameters[i].neutral;
@@ -144,7 +167,7 @@ template<class ConfigType> inline void RenderLayer(ConfigType* config, unsigned 
                     // alone must not jump to a dormant/default local value.
                     if (local) option = effective.values[i];
                     overrides = local ? overrides | bit : overrides & ~bit;
-                    storage.overrides = overrides;
+                    CommitEdit(config, storage.overrides, overrides);
                     effective = DlssNr::LayerLook::Resolve(*config, layer);
                 }
                 ImGui::SameLine();
@@ -152,7 +175,7 @@ template<class ConfigType> inline void RenderLayer(ConfigType* config, unsigned 
             ImGui::BeginDisabled(!local);
             float value = effective.values[i];
             if (MenuText::SliderFloat(tr(p.cn,p.en),&value,p.low,p.high,"%.2f",ImGuiSliderFlags_AlwaysClamp) && std::isfinite(value))
-                option = DlssNr::LayerLook::Bound(value, p);
+                CommitEdit(config, option, DlssNr::LayerLook::Bound(value, p));
             ImGui::EndDisabled();
             ImGui::SameLine();
             if (ImGui::SmallButton(tr("重置","Reset")))
@@ -160,9 +183,9 @@ template<class ConfigType> inline void RenderLayer(ConfigType* config, unsigned 
                 if (inherited)
                 {
                     overrides &= ~bit;
-                    storage.overrides = overrides;
+                    CommitEdit(config, storage.overrides, overrides);
                 }
-                else option = p.neutral;
+                else CommitEdit(config, option, p.neutral);
             }
             ImGui::PopID();
         });
@@ -172,6 +195,8 @@ template<class ConfigType> inline void RenderLayer(ConfigType* config, unsigned 
 
 template<class ConfigType> inline void RenderGlobal(ConfigType* config,unsigned /*activePassCount*/,bool allowIndependent)
 {
+    if (!config) return;
+    RenderPreviewNotice(config);
     if (!allowIndependent)
     {
         MenuText::TextWrapped("%s", NextgenUi::English()
@@ -183,7 +208,7 @@ template<class ConfigType> inline void RenderGlobal(ConfigType* config,unsigned 
     MenuText::SeparatorText(tr("Look 设置","Look settings"));
     bool independent=config->DlssNrLayerLookMode.value_or_default();
     if (MenuText::Checkbox(tr("逐层独立 Look###globalLayerMode","Independent per-layer Look###globalLayerMode"),&independent))
-        config->DlssNrLayerLookMode=independent;
+        CommitEdit(config, config->DlssNrLayerLookMode, independent);
     MenuText::TextWrapped("%s",tr("第一层始终启用；其他已启用处理层可单独开关或继承参数。此设置不启用 NR 处理层。",
         "Layer 1 is always on. Other active passes have separate enable/inheritance controls; this does not enable NR passes."));
     MenuText::TextWrapped("%s", independent

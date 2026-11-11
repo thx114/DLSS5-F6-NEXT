@@ -107,7 +107,7 @@ check("if (dispatched && beginSource()) return PresentAction::Consume;" in decis
 run_present = body(contract, "Result RunPresent(")
 check("action==PresentAction::UnsafeFailure ? unsafeResult : basePresent()" in run_present, "safe base path does not preserve actual original Present result")
 gate_start = fg_present.index("const auto nativeZzzAction=dlssg::zzz::ResolvePresent(")
-gate = fg_present[gate_start:fg_present.index("GenshinHookCpuTiming::Scope sdkPresentTiming", gate_start)]
+gate = fg_present[gate_start:fg_present.index("const bool collectSdkPresent=", gate_start)]
 check("nativeZzzSourceAttempted,!nativeZzzSourceFailed," in gate and "nativeZzzBasePresentSafe,[&]" in gate, "actual SDK boundary omits attempt, Dispatch result or pending Off state")
 base_gate = fg_present[fg_present.index("const bool nativeZzzBasePresentSafe="):gate_start]
 check("state.currentFG==nativeZzzDlssg && nativeZzzDlssg->NativeGuideBasePresentSafe()" in base_gate, "inactive base path does not inspect exact provider before SDK Present")
@@ -129,14 +129,22 @@ original_present_paths = """if (starRailSourceFailed)
         result = DXGI_ERROR_INVALID_CALL; // Unknown input cannot consume stale guides.
     else
         result = dlssg::zzz::RunPresent(nativeZzzAction,DXGI_ERROR_INVALID_CALL,[&]() -> HRESULT {
-            if (pPresentParameters == nullptr)
-                return o_FGSCPresent(This, SyncInterval, Flags);
-            return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, effectivePresentParameters);
+            return ObserveFgSdkPresent(collectSdkPresent,[&]() -> HRESULT {
+                if (pPresentParameters == nullptr)
+                    return o_FGSCPresent(This, SyncInterval, Flags);
+                return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, effectivePresentParameters);
+            },&starRailSdkWall);
         });"""
 check(original_present_paths in fg_present, "unattempted Present no longer follows original Present/Present1 paths")
 gap = body(provider, "bool DLSSG_Dx12::PrepareNativeGuideGapPresent(")
 safe = body(provider, "bool DLSSG_Dx12::NativeGuideGapSafe(")
-check("_nativeGapOffProof.Ensure(owner,localViewport" in gap and "setOptions && setOptions(viewport,options)==sl::Result::eOk" in gap, "Off success is fabricated rather than actual SDK result")
+check("_nativeGapOffProof.Ensure(owner,localViewport" in gap and
+      "setOptions && StreamlineHooks::SubmitDlssgOptions(setOptions,viewport,options)==sl::Result::eOk" in gap,
+      "Off success is fabricated rather than actual serialized SDK result")
+submit_options = body(sl, "sl::Result StreamlineHooks::SubmitDlssgOptions(")
+check("result=setOptions(viewport,options);" in submit_options and
+      "g_dlssgStateQueries.SubmitOptions(" in submit_options and "return result;" in submit_options,
+      "serialized Off path does not return the actual SDK result")
 check("options.mode=sl::DLSSGMode::eOff;" in gap and "eRetainResourcesWhenOff" in gap, "gap does not actually send Off+retain")
 check("CurrentInputOwner()==owner" in gap and "static_cast<uint32_t>(viewport)==localViewport" in gap, "Off publication not bound to current owner and provider viewport")
 check("OwnsNativeZzzSource()" in safe and "!CanSubmitInputs()" in safe and "_nativeGuideFailed" in safe and "_zzzSCFailed" in safe, "Off hides failed/teardown/foreign native route")
@@ -154,9 +162,9 @@ check("accepted && !pending && owner==value && viewport==localViewport" in proof
 check("const bool unchanged=pending;" in proof and "accepted=unchanged && succeeded && stillSafe();" in proof, "reentrant options can publish stale Off success")
 check(proof.index("Invalidate();\n        pending=true;") < proof.index("const bool succeeded=setOff();"), "Off publication does not invalidate old proof first")
 provider_dispatch = body(provider, "bool DLSSG_Dx12::Dispatch(")
-options_start = provider_dispatch.index("const auto result = SetStarRailDispatchOptions(")
-options_call = provider_dispatch[options_start:provider_dispatch.index("}, &optionsSubmitted);", options_start)]
-check(options_call.index("_nativeGapOffProof.Invalidate();") < options_call.index("return StreamlineProxy::DLSSGSetOptions()(viewport, options);"), "On/options call can reuse stale Off through failed constants/partial options")
+options_start = provider_dispatch.index("const auto outcome = SetDispatchOptions(_dlssgOptionsAck,")
+options_call = provider_dispatch[options_start:provider_dispatch.index("const bool optionsSubmitted = outcome.submitted;", options_start)]
+check(options_call.index("_nativeGapOffProof.Invalidate();") < options_call.index("return setOptions ? StreamlineHooks::SubmitDlssgOptions(setOptions,viewport,options)"), "On/options call can reuse stale Off through failed constants/partial options")
 check("_nativeGapOffProof.Invalidate();" in body(provider, "void DLSSG_Dx12::Deactivate(") and "_nativeGapOffProof.Invalidate();" in body(provider, "bool DLSSG_Dx12::DisableRetainedProvider("), "owner teardown/options changes preserve stale native gap proof")
 submitted = body(provider, "void DLSSG_Dx12::NativeGuidesSubmitted(")
 check("FAILED(queue->Signal(use.fence.Get(),use.value))" in submitted and "_nativeGuideFailed=true;" in submitted and "_managedRetained=true;" in submitted, "native Signal failure loses actual full owner retention")

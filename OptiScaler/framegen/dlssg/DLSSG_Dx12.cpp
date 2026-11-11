@@ -1,16 +1,25 @@
 #include "pch.h"
+#include <runtime/F6InputPolicy.h>
+#include <with_dx12/dx11_with_dx12.h>
+#include <runtime/GuideCapture.h>
+#include <runtime/GuideSourceMetadata.h>
+#include <dlssnr/DlssNrFeature_Dx12.h>
 #include <ui_mask/DrawUiMask.h>
 
 #include <native/OpticalFgNrPolicy.h>
 
 #include "DLSSG_Dx12.h"
+#include <framegen/GuideOrientation.h>
 #include <hooks/SwapchainCreateRule.h>
 #include "StarRailF5DsPolicy.h"
+#include <runtime/StarRailResidencyPolicy.h>
 #include "FgDepthContract.h"
 #include <resource_tracking/ResTrack_dx12.h>
 #include <cmath>
 #include <bit>
 #include <string_view>
+#include <utility>
+#include <iterator>
 #include <inputs/GenshinFsrContract.h>
 #include <genshin/GenshinHookCpuTiming.h>
 #include <inputs/FG/GenshinBridge_Present_Dx12.h>
@@ -38,6 +47,12 @@ static std::atomic<bool> g_dlssgTeardownQuarantined { false };
 
 // Used by current-frame guide validation in Dispatch before its definition.
 static bool SameGenshinComOwner(IUnknown* left, IUnknown* right);
+static uintptr_t UpscalerColourIdentity(IUnknown* object)
+{
+    Microsoft::WRL::ComPtr<IUnknown> identity;
+    return object && SUCCEEDED(object->QueryInterface(IID_PPV_ARGS(&identity))) ?
+        reinterpret_cast<uintptr_t>(identity.Get()) : 0;
+}
 // Keep startup and sparse steady-state detail without six emitted Debug lines
 // on every Genshin frame. Generic routes retain their existing logging.
 static bool DetailedGenshinFrameLog(UINT64 frame) { return frame <= 32 || frame % 300 == 1; }
@@ -175,24 +190,11 @@ bool DLSSG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
         return false;
     }
 
-    sl::DLSSGState dlssgState {};
-    sl::DLSSGOptions dlssgOptions {};
-    const auto queryState = [&]() {
-        std::lock_guard continuityLock(_inputContinuityMutex);
-        return StreamlineProxy::DLSSGGetState()(viewport, dlssgState, &dlssgOptions);
-    };
-    if (queryState() == sl::Result::eOk)
-    {
-        _maxInterpolationCount = std::max(dlssgState.numFramesToGenerateMax, MfgUnlock::UnlockedMax());
-        LOG_INFO("Max supported interpolations: {}", dlssgState.numFramesToGenerateMax);
-
-        _supportsDMFG = dlssgState.bIsDynamicMFGSupported == sl::Boolean::eTrue;
-    }
-
     SetCommandQueue(FG_ResourceType::Depth, cmdQueue);
     _swapChain = *swapChain;
     framegen::final_output::BindInput(_finalOutputProvider, _swapChain);
     RememberGenshinPresentQueue(_swapChain, cmdQueue);
+    RefreshProviderCapabilities(); // Read-only query after binding the actual owner.
     _hwnd = desc->OutputWindow;
     DxgiFactoryHooks::NoteCreateStatus(result, _swapChain, State::Instance().currentFGSwapchain != nullptr
         ? State::Instance().currentFGSwapchain : _swapChain, desc);
@@ -324,24 +326,11 @@ bool DLSSG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmd
         }
     }
 
-    sl::DLSSGState dlssgState {};
-    sl::DLSSGOptions dlssgOptions {};
-    const auto queryState = [&]() {
-        std::lock_guard continuityLock(_inputContinuityMutex);
-        return StreamlineProxy::DLSSGGetState()(viewport, dlssgState, &dlssgOptions);
-    };
-    if (queryState() == sl::Result::eOk)
-    {
-        _maxInterpolationCount = std::max(dlssgState.numFramesToGenerateMax, MfgUnlock::UnlockedMax());
-        LOG_INFO("Max supported interpolations: {}", dlssgState.numFramesToGenerateMax);
-
-        _supportsDMFG = dlssgState.bIsDynamicMFGSupported == sl::Boolean::eTrue;
-    }
-
     SetCommandQueue(FG_ResourceType::Depth, cmdQueue);
     _swapChain = *swapChain;
     framegen::final_output::BindInput(_finalOutputProvider, _swapChain);
     RememberGenshinPresentQueue(_swapChain, cmdQueue);
+    RefreshProviderCapabilities();
     _hwnd = hwnd;
     DxgiFactoryHooks::NoteCreateStatus(result, _swapChain, State::Instance().currentFGSwapchain != nullptr
         ? State::Instance().currentFGSwapchain : _swapChain);
@@ -360,6 +349,7 @@ void DLSSG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
 
     _device = device;
     CreateObjects(device);
+    RefreshProviderCapabilities(); // Creation can precede swapchain/device binding.
 
     if (_isActive)
     {
@@ -406,6 +396,7 @@ bool DLSSG_Dx12::CanRetainForInputGap() const
 
 dlssg::InputOwner DLSSG_Dx12::CurrentInputOwner() const
 {
+    const auto orientation = framegen::ResolveGuideOrientation(*Config::Instance());
     return {(uintptr_t) _device, (uintptr_t) _gameCommandQueue, _inputOwnerEpoch, _width, _height,
             (uint32_t) Config::Instance()->FGDLSSGInterpolationCount.value_or_default(),
             (uint32_t) Config::Instance()->FGDLSSGForceDMFG.value_or_default(),
@@ -416,10 +407,9 @@ dlssg::InputOwner DLSSG_Dx12::CurrentInputOwner() const
                 ((uint32_t) _constants.flags[FG_Flags::JitteredMVs] << 2) |
                 ((uint32_t) _constants.flags[FG_Flags::DisplayResolutionMVs] << 3) |
                 ((uint32_t) _constants.flags[FG_Flags::Async] << 4),
-            (uint32_t) Config::Instance()->FGResourceFlip.value_or_default(),
+            orientation.Key(),
             (uint32_t) Config::Instance()->FGEnableDepthScale.value_or_default(),
-            Config::Instance()->FGResourceFlip.value_or_default() ?
-                (uint32_t)Config::Instance()->FGResourceFlipOffset.value_or_default() : 0u,
+            (uint32_t)orientation.UsesOffset(),
             Config::Instance()->FGEnableDepthScale.value_or_default() ?
                 std::bit_cast<uint32_t>(Config::Instance()->FGDepthScaleMax.value_or_default()) : 0u};
 }
@@ -438,10 +428,10 @@ bool DLSSG_Dx12::SuspendForInputGap()
         _starRailDispatchPending = false;
         return SuppressStarRailGapForPresent();
     }
-    InvalidateStarRailOptions();
+    InvalidateDispatchOptions();
     auto options = _lastRunningOptions;
     options.mode = sl::DLSSGMode::eOff; // Other selected SR routes retain their policy.
-    auto result = StreamlineProxy::DLSSGSetOptions()(viewport, options);
+    auto result = StreamlineHooks::SubmitDlssgOptions(StreamlineProxy::DLSSGSetOptions(),viewport,options);
     if (result != sl::Result::eOk) return false;
 
     // FrameToken is a finite SDK ring entry: reacquire for this observed real frame,
@@ -470,6 +460,7 @@ UINT64 DLSSG_Dx12::StartNewFrame()
     // Serialize frame increment, ready bits and ring recycling with Dispatch/SetResource.
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (_hookRetiring) return _frameCount;
+    PollGuideObservations();
     // The exact Genshin DX11 bridge has one Present-owned clock. Ordinary
     // upscaler callbacks cannot advance/recycle that ring a second time.
     for (const auto& retained : _genshinInputs)
@@ -585,6 +576,13 @@ bool DLSSG_Dx12::IsStarRailF5DsOwner() const
     return IsStarRailUiOwner() && StarRailF5Ds::Selected();
 }
 
+bool DLSSG_Dx12::ForceStarRailFgResident() const
+{
+    // Independent of NR. An option cannot authenticate a producer, override a
+    // real owner/configuration change, or authorize a provider without depth.
+    return Config::Instance()->StarRailForceFGResident.ObservedValue() && IsStarRailF5DsOwner();
+}
+
 int DLSSG_Dx12::SelectStarRailF5DsFrame(UINT64& frame)
 {
     // F5-DS GetDispatchIndex/GetIndexWillBeDispatched selection, without its
@@ -613,43 +611,71 @@ bool DLSSG_Dx12::PresentStarRailInputGap()
 {
     if (!IsStarRailF5DsOwner() || !_haveRunningOptions ||
         !(CurrentInputOwner() == _runningInputOwner)) return false;
-    if (_inputContinuity.Held()) return SuppressStarRailGapForPresent();
-    if (_starRailPresentCounted) return true; // Present() already counted this actual SDK boundary.
-    // Exact old Present() threshold. The early Prepare call does not count.
-    // No old guides are retagged/redispatched during these display-only gaps.
-    if ((_fgFramePresentId - _lastFGFramePresentId) > 3)
-        return SuspendForInputGap();
-    ++_fgFramePresentId;
-    _starRailPresentCounted = true;
-    return true;
+    // This provider requires current depth + motion. Forced mode keeps the
+    // session/GPU allocations but sends Off+retain at the FIRST absent-source
+    // boundary. The SDK then presents this original, with no old FG output
+    // redispatched during the default route's four-Present grace period.
+    using StarRailResidency::FgGapAction;
+    switch (StarRailResidency::SelectFgGapAction(ForceStarRailFgResident(), _inputContinuity.Held(),
+        _starRailPresentCounted, _fgFramePresentId - _lastFGFramePresentId))
+    {
+    case FgGapAction::SuppressHeld: return SuppressStarRailGapForPresent();
+    case FgGapAction::Suspend: return SuspendForInputGap();
+    case FgGapAction::AlreadyCounted: return true;
+    case FgGapAction::CountPresent:
+        ++_fgFramePresentId;
+        _starRailPresentCounted = true;
+        return true;
+    }
+    return false;
 }
 
 bool DLSSG_Dx12::SuppressStarRailGapForPresent()
 {
-    if (_starRailGapOffAccepted) return true;
+    if (_starRailGapSuppressing) return false;
     if (!IsStarRailContinuousOwner() || !_inputContinuity.Held() || !_haveRunningOptions ||
         !_inputContinuity.OwnerMatches(CurrentInputOwner()) ||
         !(CurrentInputOwner() == _runningInputOwner)) return false;
-    InvalidateStarRailOptions(); // A later resume must really send On, even if Off/tagging fails.
+    const auto owner = CurrentInputOwner();
+    const auto frame = _frameCount;
+    const auto generation = _inputContinuity.SourceGeneration();
+    const auto lifecycle = _providerOptionsLifecycle;
+    const auto current = [&]() {
+        return !_hookRetiring && !_ownerChanging && !_teardownPending && !_teardownCompleting &&
+            !_teardownQuarantined && !g_dlssgTeardownQuarantined.load() && !_starRailUiFailed &&
+            IsStarRailContinuousOwner() && _haveRunningOptions && _inputContinuity.Held() &&
+            _inputContinuity.SourceClockValid() && _inputContinuity.OwnerMatches(owner) &&
+            owner == CurrentInputOwner() && owner == _runningInputOwner && frame == _frameCount &&
+            generation == _inputContinuity.SourceGeneration() && lifecycle == _providerOptionsLifecycle;
+    };
+    _starRailGapSuppressing = true;
+    struct FinishSuppression { bool& active; ~FinishSuppression() { active = false; } } finish {_starRailGapSuppressing};
     auto options = _lastRunningOptions;
     options.mode = sl::DLSSGMode::eOff;
     options.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff;
-    const auto setOptions = StreamlineProxy::DLSSGSetOptions();
-    if (!setOptions || setOptions(viewport, options) != sl::Result::eOk) return false;
-
-    // F5-DS's counter-qualified no-guide boundary, retaining owner safety.
-    // NR consumption is independent; null tags cannot retire GPU readers.
-    uint32_t id = static_cast<uint32_t>(_frameCount);
-    sl::FrameToken* token = nullptr;
-    const auto getToken = StreamlineProxy::GetNewFrameToken();
-    const auto setTags = StreamlineProxy::SetTagForFrame();
-    if (!getToken || !setTags || getToken(token, &id) != sl::Result::eOk || !token) return false;
-    sl::ResourceTag tags[4] {};
-    tags[0].type = sl::kBufferTypeDepth;
-    tags[1].type = sl::kBufferTypeMotionVectors;
-    tags[2].type = sl::kBufferTypeHUDLessColor;
-    tags[3].type = sl::kBufferTypeUIColorAndAlpha;
-    if (setTags(*token, viewport, tags, 4, nullptr) != sl::Result::eOk) return false;
+    if (!StarRailResidency::SuppressFgGap(_starRailGapOffAccepted, current,
+        [&]() {
+            InvalidateDispatchOptions(); // Resume must really send On, even after a partial failure.
+            const auto setOptions = StreamlineProxy::DLSSGSetOptions();
+            return setOptions && StreamlineHooks::SubmitDlssgOptions(setOptions,viewport,options) == sl::Result::eOk;
+        }, [&]() {
+            // Reacquire a token only for the actual observed source ordinal.
+            // Never truncate/wrap an unknown source into another SDK frame.
+            if (!frame || frame > UINT32_MAX) return false;
+            uint32_t id = static_cast<uint32_t>(frame);
+            sl::FrameToken* token = nullptr;
+            const auto getToken = StreamlineProxy::GetNewFrameToken();
+            const auto setTags = StreamlineProxy::SetTagForFrame();
+            if (!getToken || !setTags || getToken(token, &id) != sl::Result::eOk || !token ||
+                static_cast<uint32_t>(*token) != id || !current()) return false;
+            sl::ResourceTag tags[4] {};
+            tags[0].type = sl::kBufferTypeDepth;
+            tags[1].type = sl::kBufferTypeMotionVectors;
+            tags[2].type = sl::kBufferTypeHUDLessColor;
+            tags[3].type = sl::kBufferTypeUIColorAndAlpha;
+            return setTags(*token, viewport, tags, 4, nullptr) == sl::Result::eOk;
+        })) return false;
+    if (_starRailGapOffAccepted) return true; // Only Off was cached; THIS frame's null tags just succeeded.
     // F5-DS leaves Reflex running during input gaps. User Off and real
     // resize/device teardown still use the existing complete Off recipe.
     _starRailGapOffAccepted = true;
@@ -657,84 +683,147 @@ bool DLSSG_Dx12::SuppressStarRailGapForPresent()
     State::Instance().dlssgDetectedInterpolationCount = 0;
     ReflexHooks::setDlssgFrameCount(0);
     if (!_starRailUiGap)
-        LOG_INFO("R957 StarRail F5-DS input gap: SDK Off+retain, Reflex retained; owner/slots/NR retained, frame {}; no synthetic guide dispatch, displayed output UNKNOWN", _frameCount);
+        LOG_INFO("StarRail FG input gap: forced_resident={} SDK Off+retain, Reflex retained; owner/slots retained, frame {}; no synthetic guide dispatch, displayed output UNKNOWN",
+            ForceStarRailFgResident(), _frameCount);
     return true;
 }
 
-// Compare the GUID fields explicitly: neither SDK option padding nor an
-// unknown extension/callback lifetime participates in a cache key.
-static bool SameOptionStructType(const sl::StructType& a, const sl::StructType& b)
-{
-    if (a.data1 != b.data1 || a.data2 != b.data2 || a.data3 != b.data3) return false;
-    for (unsigned i = 0; i < 8; ++i)
-        if (a.data4[i] != b.data4[i]) return false;
-    return true;
-}
-
-static bool CacheableStarRailOptions(const sl::DLSSGOptions& o)
-{
-    return o.next == nullptr && o.structVersion == sl::kStructVersion5 &&
-        SameOptionStructType(o.structType, sl::DLSSGOptions::s_structType) &&
-        o.onErrorCallback == nullptr && o.mode != sl::DLSSGMode::eOff;
-}
-
-static bool SameStarRailOptions(const sl::DLSSGOptions& a, const sl::DLSSGOptions& b)
-{
-    // Complete payload for the explicitly supported v5, including default fields.
-    // Header/extension/callback eligibility is checked before any copy or hit.
-    return a.mode == b.mode && a.numFramesToGenerate == b.numFramesToGenerate &&
-        a.flags == b.flags && a.dynamicResWidth == b.dynamicResWidth &&
-        a.dynamicResHeight == b.dynamicResHeight && a.numBackBuffers == b.numBackBuffers &&
-        a.mvecDepthWidth == b.mvecDepthWidth && a.mvecDepthHeight == b.mvecDepthHeight &&
-        a.colorWidth == b.colorWidth && a.colorHeight == b.colorHeight &&
-        a.colorBufferFormat == b.colorBufferFormat && a.mvecBufferFormat == b.mvecBufferFormat &&
-        a.depthBufferFormat == b.depthBufferFormat && a.hudLessBufferFormat == b.hudLessBufferFormat &&
-        a.uiBufferFormat == b.uiBufferFormat && a.bReserved15 == b.bReserved15 &&
-        a.queueParallelismMode == b.queueParallelismMode &&
-        a.enableUserInterfaceRecomposition == b.enableUserInterfaceRecomposition &&
-        a.dynamicTargetFrameRate == b.dynamicTargetFrameRate;
-}
-
-static bool CacheableStarRailOptions(const sl::ReflexOptions& o)
-{
-    return o.next == nullptr && o.structVersion == sl::kStructVersion1 &&
-        SameOptionStructType(o.structType, sl::ReflexOptions::s_structType) &&
-        o.mode != sl::ReflexMode::eOff;
-}
-
-static bool SameStarRailOptions(const sl::ReflexOptions& a, const sl::ReflexOptions& b)
-{
-    return a.mode == b.mode && a.frameLimitUs == b.frameLimitUs &&
-        a.useMarkersToOptimize == b.useMarkersToOptimize && a.virtualKey == b.virtualKey &&
-        a.idThread == b.idThread;
-}
-
-void DLSSG_Dx12::InvalidateStarRailOptions()
-{
-    _starRailDlssgOptions.valid = _starRailReflexOptions.valid = false;
-    _starRailOptionsScopeValid = false;
-    // Saturate rather than allow a recursive publication ticket to recur.
-    if (_starRailOptionsSerial != UINT64_MAX) ++_starRailOptionsSerial;
-}
-
-void DLSSG_Dx12::PrepareStarRailOptionsCache(int index)
+dlssg::options::ProviderOwner DLSSG_Dx12::CurrentProviderOwner() const
 {
     const auto& state = State::Instance();
-    if (!IsStarRailContinuousOwner() || !_device || !_gameCommandQueue || !_swapChain ||
-        !StreamlineProxy::IsD3D12Inited() || _starRailOptionsSerial == UINT64_MAX ||
-        (state.gameQuirks & GameQuirk::CreateSLOnThe2ndDevice) ||
-        viewport.next != nullptr || viewport.structVersion != sl::kStructVersion1 ||
-        !SameOptionStructType(viewport.structType, sl::ViewportHandle::s_structType))
+    const auto setOptions = StreamlineProxy::DLSSGSetOptions();
+    const auto getState = StreamlineProxy::DLSSGGetState();
+    // The game's wrapper can rewrite both the request and reported maximum.
+    // It is not this self-owned provider's capability authority.
+    const bool direct = !StreamlineHooks::IsWrappedDlssgInterface(setOptions, getState) &&
+        dlssg::options::Schema(viewport, sl::kStructVersion1);
+    return { _genshinOwnerGeneration, _providerOptionsLifecycle,
+        reinterpret_cast<uintptr_t>(_device), reinterpret_cast<uintptr_t>(_gameCommandQueue),
+        reinterpret_cast<uintptr_t>(_swapChain), reinterpret_cast<uintptr_t>(StreamlineProxy::Module()),
+        reinterpret_cast<uintptr_t>(state.optiSlDLSSG),
+        direct ? reinterpret_cast<uintptr_t>(setOptions) : 0,
+        direct ? reinterpret_cast<uintptr_t>(getState) : 0,
+        static_cast<uint32_t>(viewport), _width, _height };
+}
+
+void DLSSG_Dx12::InvalidateDispatchOptions()
+{
+    _dispatchOptions.Invalidate();
+    _dlssgOptionsAck.valid = _reflexOptionsAck.valid = false;
+    _generationState.InvalidateApplied();
+    _framesToInterpolate = 0;
+}
+
+void DLSSG_Dx12::InvalidateProviderCapabilities()
+{
+    InvalidateDispatchOptions();
+    if (_providerOptionsLifecycle != UINT64_MAX) ++_providerOptionsLifecycle;
+    _generationState.InvalidateCapability();
+    _maxInterpolationCount = 0;
+    _supportsDMFG = false;
+}
+
+sl::Result DLSSG_Dx12::QueryProviderState(sl::DLSSGState& actualState, framegen::DlssgStateQueryReason reason)
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    if (_providerStateQueryActive || _dispatchOptions.InFlight())
     {
-        InvalidateStarRailOptions();
-        return; // All other owners and unknown schemas keep their original calls.
+        InvalidateDispatchOptions();
+        return sl::Result::eErrorInvalidState;
     }
-    StarRailOptionsScope scope {};
-    scope.ownerEpoch = _inputOwnerEpoch;
+    const auto owner = CurrentProviderOwner();
+    if (!owner.Known() || !StreamlineProxy::IsD3D12Inited())
+    {
+        _generationState.InvalidateCapability();
+        _maxInterpolationCount = 0;
+        _supportsDMFG = false;
+        InvalidateDispatchOptions();
+        return sl::Result::eErrorMissingOrInvalidAPI;
+    }
+    _providerStateQueryActive = true;
+    struct Finish
+    {
+        DLSSG_Dx12& provider;
+        bool completed=false;
+        ~Finish()
+        {
+            provider._providerStateQueryActive=false;
+            if (!completed)
+            {
+                provider._generationState.InvalidateCapability();
+                provider._maxInterpolationCount=0;
+                provider._supportsDMFG=false;
+                provider.InvalidateDispatchOptions();
+            }
+        }
+    } finish { *this };
+    const auto serial = _dispatchOptions.Serial();
+    const auto previousMax = _generationState.Maximum(owner);
+    const auto previousRawMax = _generationState.rawMaxGenerated;
+    const auto previousDynamic = _generationState.dynamicSupported;
+    // nullptr makes this a query, never an implicit Off/SetOptions transaction.
+    framegen::DlssgStateSample sample;
+    const auto result = StreamlineHooks::QueryDlssgState(StreamlineProxy::DLSSGGetState(),
+        viewport,actualState,nullptr,reason,&sample);
+    // Observe this existing consumptive query; never issue a diagnostics query.
+    try
+    {
+        auto& observation=_guideObservations[GetIndex()];
+        if (observation.frame==_frameCount && observation.sourceTick &&
+            serial==_dispatchOptions.Serial() && owner==CurrentProviderOwner())
+        {
+            auto& snapshot=observation.snapshot;
+            snapshot.sdkQueryObserved=true;snapshot.sdkQueryResult=static_cast<int>(result);
+            snapshot.sdkQueryTick=GuideDiagnostics::Now();snapshot.sdkStatusKnown=result==sl::Result::eOk;
+            snapshot.sdkQuerySequence=sample.querySequence;
+            snapshot.sdkPreviousQueryTick=sample.previousQueryEndNs/1000000;
+            snapshot.sdkQueryBeginNs=sample.queryBeginNs;snapshot.sdkQueryEndNs=sample.queryEndNs;
+            snapshot.sdkPreviousQueryEndNs=sample.previousQueryEndNs;
+            snapshot.sdkIntervalKnown=sample.counterIntervalKnown;
+            if(snapshot.sdkStatusKnown){snapshot.sdkStatus=static_cast<uint32_t>(actualState.status);
+                snapshot.sdkPresentedInterval=actualState.numFramesActuallyPresented;}
+            PublishGuideObservation(GetIndex(),snapshot.stage,"SDK GetState observed; presented count is query-interval data, generated identity unknown");
+        }
+    }catch(...){}
+    _generationState.Observe(owner, actualState, result,
+        serial == _dispatchOptions.Serial() && owner == CurrentProviderOwner());
+    _maxInterpolationCount = static_cast<int>(_generationState.Maximum(CurrentProviderOwner()));
+    _supportsDMFG = _generationState.Current(CurrentProviderOwner()) && _generationState.dynamicSupported;
+    if (!_generationState.Current(owner) || previousMax != _generationState.Maximum(owner) ||
+        previousRawMax != _generationState.rawMaxGenerated ||
+        previousDynamic != _generationState.dynamicSupported || actualState.status != sl::DLSSGStatus::eOk)
+        InvalidateDispatchOptions();
+    finish.completed=true;
+    // Keep the raw SDK result in GenerationState. Callers must not consume
+    // returned fences/capability after an unknown schema or recursive owner loss.
+    return result == sl::Result::eOk && !_generationState.Current(owner) ? sl::Result::eErrorInvalidState : result;
+}
+
+void DLSSG_Dx12::RefreshProviderCapabilities()
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    if (_generationState.Current(CurrentProviderOwner()) || !CurrentProviderOwner().Known()) return;
+    sl::DLSSGState state {};
+    const auto result = QueryProviderState(state,framegen::DlssgStateQueryReason::CapabilityCold);
+    LOG_INFO("F6 FG capability: owner={} lifecycle={} result={} known={} raw_max_generated={} selectable_max_generated={} dynamic_supported={}; generated=UNKNOWN",
+        _genshinOwnerGeneration, _providerOptionsLifecycle, static_cast<int>(result),
+        _generationState.capabilityKnown, _generationState.rawMaxGenerated, _maxInterpolationCount, _supportsDMFG);
+}
+
+dlssg::options::Scope DLSSG_Dx12::CurrentDispatchScope(int index) const
+{
+    const auto& state = State::Instance();
+    dlssg::options::Scope scope {};
+    scope.provider = CurrentProviderOwner();
+    scope.input = CurrentInputOwner();
     scope.sourceGeneration = _inputContinuity.SourceGeneration();
-    scope.viewport = static_cast<uint32_t>(viewport);
-    scope.width = _width; scope.height = _height;
-    scope.displayWidth = _constants.displayWidth; scope.displayHeight = _constants.displayHeight;
+    scope.reflexPlugin = reinterpret_cast<uintptr_t>(state.optiSlReflex);
+    scope.reflexSetOptions = reinterpret_cast<uintptr_t>(StreamlineProxy::ReflexSetOptions());
+    scope.inputPath = static_cast<uint32_t>(state.activeFgInput);
+    scope.outputPath = static_cast<uint32_t>(state.activeFgOutput);
+    scope.interop = static_cast<uint32_t>(state.swapchainInteropApi);
+    scope.scheduling = static_cast<uint32_t>(IsStarRailF5DsOwner() ?
+        dlssg::options::SubmissionPolicy::EveryDispatch : dlssg::options::SubmissionPolicy::OnChange);
     scope.guideFlags = (uint32_t)_constants.flags[FG_Flags::Hdr] |
         ((uint32_t)_constants.flags[FG_Flags::InvertedDepth] << 1) |
         ((uint32_t)_constants.flags[FG_Flags::JitteredMVs] << 2) |
@@ -743,65 +832,51 @@ void DLSSG_Dx12::PrepareStarRailOptionsCache(int index)
         ((uint32_t)_constants.flags[FG_Flags::InfiniteDepth] << 5);
     scope.consumers = (uint32_t)!_noHudless[index] | ((uint32_t)!_noUi[index] << 1) |
         ((uint32_t)!_noDistortionField[index] << 2);
-    scope.providerCap = _maxInterpolationCount;
+    scope.providerCap = _generationState.rawMaxGenerated;
     scope.forceReflex = (uint32_t)Config::Instance()->FN_ForceReflex.value_or_default();
-    scope.colorSpace = state.outputColorSpace.dxgiColorSpace;
+    scope.colorSpace = static_cast<uint32_t>(state.outputColorSpace.dxgiColorSpace);
     scope.transfer = (uint32_t)state.outputColorSpace.transfer;
     scope.primaries = (uint32_t)state.outputColorSpace.primaries;
     scope.range = (uint32_t)state.outputColorSpace.range;
     scope.colorModel = (uint32_t)state.outputColorSpace.model;
     scope.colorSpaceValid = state.outputColorSpace.valid;
-    scope.flip = Config::Instance()->FGResourceFlip.value_or_default();
-    scope.depthScale = Config::Instance()->FGEnableDepthScale.value_or_default();
-    if (!_starRailOptionsScopeValid || !(scope == _starRailOptionsScope))
-    {
-        InvalidateStarRailOptions();
-        _starRailOptionsScope = scope;
-        _starRailOptionsScopeValid = _starRailOptionsSerial != UINT64_MAX;
-    }
+    scope.enabled = Config::Instance()->FGEnabled.value_or_default();
+    scope.markers = ReflexHooks::gameIsSendingMarkers();
+    scope.boost = native::lowlatency::WantsBoostForFrameGeneration();
+    scope.sharedSdk = state.gameCalledSlInit;
+    scope.external = state.externalFrameGeneration;
+    scope.secondDevice = state.gameQuirks[GameQuirk::CreateSLOnThe2ndDevice];
+    return scope;
 }
 
 template<typename Options, typename Submit>
-sl::Result DLSSG_Dx12::SetStarRailDispatchOptions(StarRailOptionsCache<Options>& cache,
-    const Options& options, UINT64 sourceFrame, bool force, Submit&& submit, bool* submitted)
+dlssg::options::Submission DLSSG_Dx12::SetDispatchOptions(dlssg::options::Acknowledgement<Options>& cache,
+    const dlssg::options::Scope& scope, int index, const Options& options,
+    UINT64 sourceFrame, bool force, Submit&& submit)
 {
-    if (submitted) *submitted = false;
-    if (IsStarRailF5DsOwner())
+    const auto frame = _frameCount;
+    const auto current = [&] {
+        const auto& state = State::Instance();
+        return CanSubmitInputs() && _isActive && frame == _frameCount && !state.isShuttingDown &&
+            !state.fgChanged && state.currentFG == this && scope == CurrentDispatchScope(index);
+    };
+    // Eligibility depends on SDK/input ownership, not a game name. Shared game
+    // SDKs, second-device quirks and wrapped Reflex retain real calls every time.
+    const bool cacheable = scope.provider.Known() && scope.reflexPlugin && scope.reflexSetOptions &&
+        scope.input.epoch && scope.input.epoch != UINT64_MAX && scope.sourceGeneration != UINT64_MAX &&
+        StreamlineProxy::IsD3D12Inited() && sourceFrame == frame &&
+        !scope.external && !scope.sharedSdk && !scope.secondDevice &&
+        !StreamlineHooks::IsWrappedReflexInterface(StreamlineProxy::ReflexSetOptions());
+    try
     {
-        InvalidateStarRailOptions();
-        if (submitted) *submitted = true;
-        return submit(); // F5-DS: each actual Dispatch submits SDK options.
+        return _dispatchOptions.Apply(cache, scope, options, sourceFrame, cacheable, force,
+            static_cast<dlssg::options::SubmissionPolicy>(scope.scheduling), current, std::forward<Submit>(submit));
     }
-    const bool cacheable = _starRailOptionsScopeValid && sourceFrame == _frameCount &&
-        _starRailOptionsScope.ownerEpoch == _inputOwnerEpoch &&
-        _starRailOptionsScope.sourceGeneration == _inputContinuity.SourceGeneration() &&
-        IsStarRailContinuousOwner() && CacheableStarRailOptions(options);
-    // This is the real source frame selected by Dispatch, not a call counter or
-    // an SDK generated-output count. Same-frame retries cannot age a keepalive.
-    constexpr UINT64 keepaliveSourceFrames = 600;
-    if (cacheable && !force && cache.valid && SameStarRailOptions(options, cache.options) &&
-        sourceFrame >= cache.sourceFrame && sourceFrame - cache.sourceFrame < keepaliveSourceFrames)
-        return sl::Result::eOk; // The identical request was actually acknowledged in this scope.
-
-    cache.valid = false; // Failure (including keepalive failure) must retry next eligible call.
-    if (!cacheable) InvalidateStarRailOptions();
-    if (_starRailOptionsSerial != UINT64_MAX) ++_starRailOptionsSerial;
-    const auto serial = _starRailOptionsSerial;
-    if (submitted) *submitted = true;
-    const auto result = submit();
-    if (cacheable && result == sl::Result::eOk && serial != UINT64_MAX &&
-        serial == _starRailOptionsSerial && _starRailOptionsScopeValid &&
-        sourceFrame == _frameCount && _starRailOptionsScope.ownerEpoch == _inputOwnerEpoch &&
-        _starRailOptionsScope.sourceGeneration == _inputContinuity.SourceGeneration() &&
-        IsStarRailContinuousOwner())
+    catch (...)
     {
-        cache.options = options; // Only the known pointer-free schema may be copied.
-        cache.sourceFrame = sourceFrame;
-        cache.valid = true;
+        InvalidateDispatchOptions();
+        throw;
     }
-    else
-        cache.valid = false; // A recursive success cannot certify a later outer failure/transition.
-    return result;
 }
 
 void DLSSG_Dx12::FailStarRailUiFrame()
@@ -928,7 +1003,25 @@ bool DLSSG_Dx12::WaitForUIAllocator(UINT index)
 bool DLSSG_Dx12::SubmitUICommandList(UINT index)
 {
     if (_starRailUiFailed || !CanSubmitInputs()) return false;
-    if (!IsStarRailUiOwner()) return IFGFeature_Dx12::SubmitUICommandList(index);
+    if (!IsStarRailUiOwner())
+    {
+        if (index>=std::size(_uiCommandListResetted) || !_uiCommandListResetted[index]) return true;
+        if (_uiCloseFailed[index] || !_gameCommandQueue || !_uiFence || _uiFenceValue>=UINT64_MAX-1) return false;
+        _uiAllocatorFenceValues[index]=++_uiFenceValue;
+        const auto closeResult=_uiCommandList[index]->Close();
+        if (FAILED(closeResult)) { _uiCloseFailed[index]=true; return false; }
+        const auto callbacks=DlssNr::FinishedPictureSubmissionCallbacks();
+        const auto previewReceipt=DlssNr::FinishedPictureSubmitting(_gameCommandQueue,1,
+            (ID3D12CommandList**)&_uiCommandList[index]);
+        _gameCommandQueue->ExecuteCommandLists(1,(ID3D12CommandList**)&_uiCommandList[index]);
+        if (callbacks==DlssNr::FinishedPictureSubmissionCallbacks())
+            DlssNr::FinishedPictureSubmitted(_gameCommandQueue,1,
+                (ID3D12CommandList**)&_uiCommandList[index],previewReceipt);
+        _uiCommandListResetted[index]=false; // Execute cannot be replayed after a failed Signal.
+        if (FAILED(_gameCommandQueue->Signal(_uiFence,_uiAllocatorFenceValues[index]))) return false;
+        ObserveGuideSubmission(index,_uiFence,_uiAllocatorFenceValues[index]);
+        return true;
+    }
     if (index >= BUFFER_COUNT || !_uiCommandListResetted[index]) return true;
     if (_uiCloseFailed[index] || _uiFenceValue >= UINT64_MAX - 1)
     {
@@ -945,6 +1038,7 @@ bool DLSSG_Dx12::SubmitUICommandList(UINT index)
         FailStarRailUiFrame();
         return false;
     }
+    ObserveGuideSubmission(index,_uiFence,_uiAllocatorFenceValues[index]);
     return true;
 }
 
@@ -1040,19 +1134,65 @@ bool DLSSG_Dx12::CanSubmitInputs()
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
     return !_hookRetiring && !_ownerChanging && !_teardownCompleting && !_teardownPending && !_teardownQuarantined &&
-        !g_dlssgTeardownQuarantined.load() && !_starRailUiBusy && !_starRailUiFailed &&
+        !g_dlssgTeardownQuarantined.load() && !_unretainedOffPending &&
+        _reflexOwnership != ReflexOwnership::ReleasePending && !_starRailUiBusy && !_starRailUiFailed &&
         _inputContinuity.SourceClockValid();
+}
+
+std::shared_ptr<framegen::DlssgPacingLifetime> DLSSG_Dx12::PacingLifetime()
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    const auto& state=State::Instance();
+    if (state.currentFG!=this || state.isShuttingDown || !_isActive || IsPaused() ||
+        !CanSubmitInputs() || !StreamlineProxy::IsD3D12Inited() ||
+        !StreamlineProxy::RawGetNewFrameToken() || !StreamlineProxy::ReflexSleep() ||
+        !StreamlineProxy::PCLSetMarker())
+    {
+        _pacingLifetime->CloseAdmission();
+        return {};
+    }
+    return _pacingLifetime->OpenAdmission() ? _pacingLifetime : nullptr;
+}
+
+template<typename Options, typename Submit>
+dlssg::options::Submission DLSSG_Dx12::SetReleaseOptions(const Options& options, Submit&& submit)
+{
+    // Called under continuity, including after logical FG was turned off.
+    // Do not require CanSubmitInputs/current source eligibility for release.
+    const auto owner = CurrentProviderOwner();
+    const auto inputEpoch = _inputOwnerEpoch;
+    const auto selected = State::Instance().currentFG;
+    const auto reflexPlugin = State::Instance().optiSlReflex;
+    const auto reflexApi = StreamlineProxy::ReflexSetOptions();
+    const auto current = [&] {
+        return (!selected || selected == this) && selected == State::Instance().currentFG &&
+            owner == CurrentProviderOwner() &&
+            inputEpoch == _inputOwnerEpoch && reflexPlugin == State::Instance().optiSlReflex &&
+            reflexApi == StreamlineProxy::ReflexSetOptions() && !_teardownQuarantined &&
+            !g_dlssgTeardownQuarantined.load() && !_providerStateQueryActive && _pacingLifetime->Idle();
+    };
+    try
+    {
+        return _dispatchOptions.Release(options, current, std::forward<Submit>(submit));
+    }
+    catch (...)
+    {
+        InvalidateDispatchOptions();
+        throw;
+    }
 }
 
 bool DLSSG_Dx12::DisableRetainedProvider()
 {
     _nativeGapOffProof.Invalidate();
-    InvalidateStarRailOptions();
     auto options = _lastRunningOptions;
     options.mode = sl::DLSSGMode::eOff;
     options.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff;
     const auto setOptions = StreamlineProxy::DLSSGSetOptions();
-    const auto result = setOptions ? setOptions(viewport, options) : sl::Result::eErrorMissingOrInvalidAPI;
+    const auto outcome = SetReleaseOptions(options, [&] {
+        return setOptions ? StreamlineHooks::SubmitDlssgOptions(setOptions,viewport,options) : sl::Result::eErrorMissingOrInvalidAPI;
+    });
+    const auto result = outcome.Result();
     _teardownOffAccepted = result == sl::Result::eOk;
     if (!_teardownOffAccepted)
         LOG_ERROR("F5 FG teardown: Off+retain failed, result {} ({}); submissions blocked",
@@ -1060,41 +1200,56 @@ bool DLSSG_Dx12::DisableRetainedProvider()
     return _teardownOffAccepted;
 }
 
-void DLSSG_Dx12::RetryGenshinReflexOff()
+void DLSSG_Dx12::RetryReflexOff()
 {
-    if (_genshinReflexOwnership != GenshinReflexOwnership::ReleasePending ||
+    if (_reflexOwnership != ReflexOwnership::ReleasePending ||
         State::Instance().currentFG != this) return; // Never disable a replacement provider's mode.
     const auto setOptions = StreamlineProxy::ReflexSetOptions();
     if (!setOptions)
     {
-        if (!_genshinReflexOffReported)
+        if (!_reflexOffReported)
             LOG_WARN("F5 Genshin Reflex Off pending: SDK entry unavailable; retry at existing Present boundary");
-        _genshinReflexOffReported = true;
+        _reflexOffReported = true;
         return;
     }
     sl::ReflexOptions options {};
     options.mode = sl::ReflexMode::eOff;
     options.frameLimitUs = 0; // Release only this provider's SDK options, not the upstream NVAPI cap.
     options.useMarkersToOptimize = false;
-    const auto result = setOptions(options);
+    const auto outcome = SetReleaseOptions(options, [&] { return setOptions(options); });
+    const auto result = outcome.Result();
     if (result != sl::Result::eOk)
     {
-        if (!_genshinReflexOffReported)
+        if (!_reflexOffReported)
             LOG_WARN("F5 Genshin Reflex Off pending: SDK result {}; retry at existing Present boundary", (int)result);
-        _genshinReflexOffReported = true;
+        _reflexOffReported = true;
         return;
     }
-    _genshinReflexOwnership = GenshinReflexOwnership::None;
-    _genshinReflexOffReported = false;
+    _reflexOwnership = ReflexOwnership::None;
+    _reflexOffReported = false;
     LOG_INFO("F5 Genshin Reflex Off: SDK accepted mode=eOff frame_limit_us=0 markers=false; driver state UNKNOWN");
 }
 
 void DLSSG_Dx12::Deactivate()
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
-    _nativeGapOffProof.Invalidate();
-    InvalidateStarRailOptions();
+    _pacingLifetime->CloseAdmission();
     const bool wasActive = _isActive || _waitingNewFrameData || _inputContinuity.Held();
+    const bool releaseOwnerChanged = _deactivationOwner != CurrentProviderOwner() ||
+        _deactivationInputEpoch != _inputOwnerEpoch;
+    if (!_dispatchOptions.Deactivate(wasActive || _haveRunningOptions || releaseOwnerChanged, _deactivationRequested, [&] {
+        InvalidateDispatchOptions();
+        ++_inputOwnerEpoch;
+        _teardownOffAccepted = false;
+    }))
+    {
+        // A same-owner duplicate must neither advance input epoch nor revoke
+        // an in-flight Off. Existing safe boundaries retry pending releases.
+        return;
+    }
+    _deactivationOwner = CurrentProviderOwner();
+    _deactivationInputEpoch = _inputOwnerEpoch;
+    _nativeGapOffProof.Invalidate();
     _starRailDispatchPending = false;
     _starRailRecordingGeneration = 0;
     _starRailGapOffAccepted = false;
@@ -1103,12 +1258,15 @@ void DLSSG_Dx12::Deactivate()
     _starRailUiBusy = _starRailUiGap = false;
     _inputContinuity.Clear();
     _haveRunningOptions = false;
-    ++_inputOwnerEpoch;
     _isActive = false;
     // IsActive also includes the input-gap flag. Off/recreate must leave the
     // retained provider inactive, even without another upscaler frame.
     _waitingNewFrameData = false;
     if (_teardownQuarantined) return;
+    // Publish every release intent before entering either SDK. If FG Off
+    // throws, the next safe boundary must still know that Reflex needs Off.
+    if (wasActive || _reflexOwnership != ReflexOwnership::None)
+        _reflexOwnership = ReflexOwnership::ReleasePending;
     // An explicit teardown must drain even SC work recorded before the first
     // successful provider Dispatch; normal SC polling does not deactivate FG.
     if (_zzzSCCompletion && HasZzzSCWork()) _managedRetained = true;
@@ -1120,45 +1278,52 @@ void DLSSG_Dx12::Deactivate()
         {
             _teardownPending = true;
             DisableRetainedProvider();
-            LOG_INFO("F5 FG teardown requested: Off+retain, owner {:X}, frame {}", (size_t)_gameCommandQueue, _frameCount);
+            LOG_INFO("F5 FG teardown requested: Off+retain, owner {:X}, frame {}, off_accepted={}",
+                (size_t)_gameCommandQueue, _frameCount, _teardownOffAccepted);
         }
     }
     else if (wasActive)
     {
-        sl::DLSSGOptions options {};
-        options.mode = sl::DLSSGMode::eOff;
-        options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
-        StreamlineProxy::DLSSGSetOptions()(viewport, options);
+        _unretainedOffPending = true;
+        RetryUnretainedProviderOff();
     }
-    if (_genshinReflexOwnership != GenshinReflexOwnership::None)
-    {
-        // Do not lose an unsuccessful SDK Off when the logical-active flags above
-        // are cleared, or when independent GPU retirement finishes successfully.
-        _genshinReflexOwnership = GenshinReflexOwnership::ReleasePending;
-        RetryGenshinReflexOff();
-    }
-    else if (wasActive)
-    {
-        sl::ReflexOptions reflexConst {};
-        reflexConst.mode = sl::ReflexMode::eOff;
-        reflexConst.useMarkersToOptimize = false;
-        StreamlineProxy::ReflexSetOptions()(reflexConst);
-    }
+    if (_reflexOwnership == ReflexOwnership::ReleasePending)
+        RetryReflexOff();
+}
+
+void DLSSG_Dx12::RetryUnretainedProviderOff()
+{
+    if (!_unretainedOffPending) return;
+    sl::DLSSGOptions options {};
+    options.mode = sl::DLSSGMode::eOff;
+    options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
+    const auto setOptions = StreamlineProxy::DLSSGSetOptions();
+    const auto outcome = SetReleaseOptions(options, [&] {
+        return setOptions ? StreamlineHooks::SubmitDlssgOptions(setOptions,viewport,options) : sl::Result::eErrorMissingOrInvalidAPI;
+    });
+    if (outcome.confirmed) _unretainedOffPending = false;
 }
 
 bool DLSSG_Dx12::CompletePendingTeardown()
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
-    if (_teardownQuarantined || g_dlssgTeardownQuarantined.load() || _teardownCompleting) return false;
+    // A live Sleep owns CPU/SDK lifetime only. Leave its locks available and
+    // retry Off/free at the next real boundary; never wait under continuity.
+    if (!_pacingLifetime->Idle())
+        return !_teardownPending && !_unretainedOffPending &&
+            _reflexOwnership!=ReflexOwnership::ReleasePending && !_hookRetiring && !_ownerChanging;
+    if (_teardownQuarantined || g_dlssgTeardownQuarantined.load() || _teardownCompleting ||
+        _dispatchOptions.InFlight() || _providerStateQueryActive) return false;
     _teardownCompleting = true;
     struct FinishCompletion { bool& active; ~FinishCompletion() { active = false; } } finish { _teardownCompleting };
     // SDK mode release can still be pending after GPU retirement is complete.
     // Its result never grants resource retirement or blocks the existing safe drain.
-    RetryGenshinReflexOff();
+    RetryReflexOff();
+    RetryUnretainedProviderOff();
     // The real Present hook calls this after FinishWork, including skipped
     // frames. Pending zero receipts cannot depend on another authenticated frame.
     CheckGenshinPendingInputs();
-    if (!_teardownPending) {CollectGenshinInputs();return true;}
+    if (!_teardownPending) {CollectGenshinInputs();return !_unretainedOffPending;}
     if (_nativeGuideFailed) {QuarantineFailedTeardown();return false;}
     // The UI/presenting-queue drain cannot retire an external native recording.
     // Require its successful Reset plus actual producer completion, with no wait.
@@ -1229,7 +1394,13 @@ bool DLSSG_Dx12::CompletePendingTeardown()
                     _uiCloseFailed[i] = true;
                 else
                 {
+                    const auto callbacks=DlssNr::FinishedPictureSubmissionCallbacks();
+                    const auto previewReceipt=DlssNr::FinishedPictureSubmitting(drain.queue.Get(),1,
+                        (ID3D12CommandList**)&_uiCommandList[i]);
                     drain.queue->ExecuteCommandLists(1, (ID3D12CommandList**)&_uiCommandList[i]);
+                    if(callbacks==DlssNr::FinishedPictureSubmissionCallbacks())
+                        DlssNr::FinishedPictureSubmitted(drain.queue.Get(),1,
+                            (ID3D12CommandList**)&_uiCommandList[i],previewReceipt);
                     _uiCommandListResetted[i] = false; // Execute survives a failed Signal.
                 }
             }
@@ -1260,6 +1431,9 @@ bool DLSSG_Dx12::CompletePendingTeardown()
             return false;
         }
         drain.phase = TeardownDrain::Phase::Polling;
+        LOG_INFO("F6 FG teardown host drain submitted: queue={:X} fence={:X} target={} asynchronous={}; retirement pending",
+            reinterpret_cast<uintptr_t>(drain.queue.Get()), reinterpret_cast<uintptr_t>(drain.fence.Get()),
+            drain.value, drain.asynchronous);
     }
     // Qualified later Presents do not Execute, Signal, increment, register an event or wait.
     // Every slot and owner stays retained until this exact target completes.
@@ -1292,11 +1466,15 @@ bool DLSSG_Dx12::CompletePendingTeardown()
         QuarantineFailedTeardown();
         return false;
     }
+    if (drain.phase != TeardownDrain::Phase::HostComplete)
+        LOG_INFO("F6 FG teardown host drain complete: queue={:X} fence={:X} target={} completed={}; entering SDK FreeResources, SDK release pending",
+            reinterpret_cast<uintptr_t>(drain.queue.Get()), reinterpret_cast<uintptr_t>(drain.fence.Get()),
+            drain.value, completed);
     drain.phase = TeardownDrain::Phase::HostComplete;
     const auto waitValue = drain.value;
     // NVIDIA official sample's public host-queue contract. This is not a claim
     // that private SL worker queues are exposed or individually waited by F5.
-    InvalidateStarRailOptions(); // An SDK resource generation never inherits an option hit.
+    InvalidateProviderCapabilities(); // An SDK resource generation never inherits configuration/capability.
     const auto freeResult = StreamlineProxy::FreeResources()(sl::kFeatureDLSS_G, viewport);
     if (_teardownQuarantined) return false;
     if (freeResult != sl::Result::eOk)
@@ -1367,6 +1545,8 @@ bool DLSSG_Dx12::CompletePendingTeardown()
             _frameResources[i].erase(type); _resourceReady[i].erase(type);
         }
         _guideTags[i][0]={};_guideTags[i][1]={};
+        _upscalerColourSources[i].reset();_upscalerFinalColours[i].reset();
+        _upscalerColourSucceeded[i]=false;_upscalerPendingHudless[i]={};
     }
     _guideContractOwned=false;
     for (auto& use:_nativeGuideUses) use={}; // Native recordings already physically retired above.
@@ -1450,7 +1630,9 @@ FGHookRetirementResult DLSSG_Dx12::CompletePendingTeardownForHook(bool terminal)
 bool DLSSG_Dx12::PrepareForSwapchainChange(bool terminal)
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
-    InvalidateStarRailOptions();
+    _pacingLifetime->CloseAdmission();
+    if (!_pacingLifetime->Idle()) return false;
+    InvalidateProviderCapabilities();
     if (_hookRetiring || _teardownCompleting || g_dlssgTeardownQuarantined.load()) return false;
     if (!_managedRetained && !_teardownPending && !_teardownQuarantined &&
         (!_zzzSCCompletion || !HasZzzSCWork())) return true;
@@ -1463,7 +1645,9 @@ bool DLSSG_Dx12::PrepareForSwapchainChange(bool terminal)
 void DLSSG_Dx12::QuarantineFailedTeardown()
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
+    _pacingLifetime->CloseAdmission();
     if (_teardownQuarantined) return;
+    InvalidateProviderCapabilities();
     _teardownQuarantined = true;
     g_dlssgTeardownQuarantined.store(true);
     _isActive = false;
@@ -1503,6 +1687,7 @@ void DLSSG_Dx12::QuarantineFailedTeardown()
         work.device.Detach(); work.queue.Detach(); work.fence.Detach();
         work.backbuffer.Detach(); work.ui.Detach(); work.hudless.Detach();
         dlssgFence[i] = nullptr;
+        _dx11GuideInputs[i][0].Detach(); _dx11GuideInputs[i][1].Detach();
         _guideDepthScale[i].release(); // Preserve descriptors/constants/buffer after uncertain submission.
         _guideFlip[i][0].release();_guideFlip[i][1].release();
         auto& native=_nativeGuideUses[i];
@@ -1528,6 +1713,8 @@ bool DLSSG_Dx12::Shutdown()
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
 
+    _pacingLifetime->CloseAdmission();
+    if (!_pacingLifetime->Idle()) return false;
     if (_teardownCompleting) return false;
     Deactivate();
     if (!CompletePendingTeardownForTermination())
@@ -1559,6 +1746,7 @@ bool DLSSG_Dx12::OwnsDepthContract() const
 
 bool DLSSG_Dx12::RefuseDepthContract(const char* stage, bool publicationStarted)
 {
+    PublishGuideObservation(GetIndex(),GuideDiagnostics::Stage::Rejected,stage);
     const auto now=GetTickCount64();
     if (_depthContractRows<64 && (_depthContractRows<3 ||
         (stage!=_depthContractStage && now-_depthContractLogTick>=1000)))
@@ -1603,6 +1791,7 @@ bool DLSSG_Dx12::RefuseDepthContract(const char* stage, bool publicationStarted)
         // Do not create _managedRetained merely because validation failed.
         if (!_depthSourceGap)
         {
+            InvalidateDispatchOptions(); // Every Off revokes any shared On acknowledgement.
             auto options=_lastRunningOptions;
             options.mode=sl::DLSSGMode::eOff;
             options.flags|=sl::DLSSGFlags::eRetainResourcesWhenOff;
@@ -1616,7 +1805,7 @@ bool DLSSG_Dx12::RefuseDepthContract(const char* stage, bool publicationStarted)
             tags[2].type=sl::kBufferTypeHUDLessColor; tags[3].type=sl::kBufferTypeUIColorAndAlpha;
             // No real origin means no invented null-tag frame. Off+retain
             // revokes consumption without releasing the recorded GPU owners.
-            if (StreamlineProxy::DLSSGSetOptions()(viewport,options)!=sl::Result::eOk ||
+            if (StreamlineHooks::SubmitDlssgOptions(StreamlineProxy::DLSSGSetOptions(),viewport,options)!=sl::Result::eOk ||
                 (frameKnown && (!(nativeZzz ? dlssg::zzz::TokenFor(id,token,StreamlineProxy::GetNewFrameToken()) :
                     StreamlineProxy::GetNewFrameToken()(token,&id)==sl::Result::eOk && token) ||
                     StreamlineProxy::SetTagForFrame()(*token,viewport,tags,4,nullptr)!=sl::Result::eOk)))
@@ -1638,7 +1827,8 @@ bool DLSSG_Dx12::RefuseDepthContract(const char* stage, bool publicationStarted)
 
 bool DLSSG_Dx12::OwnsUpscalerDepthContract() const
 {
-    return OwnsDepthContract() && dlssg::depth_contract::Game()!=GameRouting::Identity::Genshin;
+    return OwnsDepthContract() &&
+        (!F6InputPolicy::FsrBridgeEnabled || dlssg::depth_contract::Game()!=GameRouting::Identity::Genshin);
 }
 
 bool DLSSG_Dx12::OwnsNativeZzzSource() const
@@ -1654,6 +1844,271 @@ void DLSSG_Dx12::RejectUpscalerGuideSource(const char* stage)
     if (OwnsUpscalerDepthContract() && CanSubmitInputs()) RefuseDepthContract(stage,false);
 }
 
+void DLSSG_Dx12::PublishGuideObservation(int slot, GuideDiagnostics::Stage stage, const char* reason) noexcept
+{
+    try
+    {
+        if (slot<0 || static_cast<size_t>(slot)>=std::size(_guideObservations)) return;
+        auto& observation=_guideObservations[slot];
+        auto& snapshot=observation.snapshot;
+        // A new refused input cannot acquire the previous ring occupant's ID.
+        if (stage==GuideDiagnostics::Stage::Rejected && observation.frame!=_frameCount)
+        {
+            snapshot={};observation.frame=_frameCount;
+            observation.sourceTick=GuideDiagnostics::Now();
+            snapshot.owner=_genshinOwnerGeneration;
+            snapshot.epoch=_inputContinuity.SourceGeneration();
+            snapshot.configuration=_guideObservationConfiguration;
+        }
+        snapshot.stage=stage;snapshot.reason=reason;snapshot.tick=observation.sourceTick;
+        for (unsigned field=0;field<=static_cast<unsigned>(GuideDiagnostics::Field::JitterY);++field)
+            if (!snapshot.fields[field].valid)
+            {
+                snapshot.reason+="; missing=";snapshot.reason+=GuideDiagnostics::FieldNames[field];
+            }
+        if (stage==GuideDiagnostics::Stage::Rejected) snapshot.accepted=false;
+        // SDK eOk, options On and interval-presented counts cannot distinguish
+        // enabled interpolation from SDK flush/suppression. Keep it unknown.
+        snapshot.sdkStateKnown=false;snapshot.generatedIdentityKnown=false;
+        GuideDiagnostics::Publish(GuideDiagnostics::Consumer::Fg,snapshot);
+    }
+    catch (...) {} // Diagnostic allocation failures cannot fail SR/FG.
+}
+
+void DLSSG_Dx12::PollGuideObservations() noexcept
+{
+    for (UINT slot=0;slot<std::size(_guidePendingCompletions);++slot)
+    {
+        auto& observation=_guidePendingCompletions[slot];
+        if (!observation.submitted || observation.completed || !observation.fence ||
+            !observation.value || observation.value==UINT64_MAX) continue;
+        const auto done=observation.fence->GetCompletedValue();
+        if (done==UINT64_MAX || done<observation.value) continue;
+        observation.completed=true;
+        try
+        {
+            auto snapshot=observation.snapshot;
+            // Completion may be polled much later. It must not rejuvenate the
+            // source's age or make an old same-source snapshot look fresh.
+            snapshot.stage=GuideDiagnostics::Stage::Completed;
+            snapshot.tick=observation.sourceTick;
+            snapshot.reason="guide producer GPU completed; SDK input processing/generation unknown; "+snapshot.reason;
+            GuideDiagnostics::Publish(GuideDiagnostics::Consumer::Fg,std::move(snapshot));
+        }
+        catch (...) {}
+        observation.fence.Reset();
+    }
+}
+
+void DLSSG_Dx12::ObserveGuideSubmission(UINT slot, ID3D12Fence* fence, UINT64 value) noexcept
+{
+    if (slot>=std::size(_guideObservations) || !fence || !value || value==UINT64_MAX) return;
+    auto& observation=_guideObservations[slot];
+    const auto& depth=_guideTags[slot][0];const auto& motion=_guideTags[slot][1];
+    // GetUICommandList can submit a different pending slot. Attribute that
+    // actual Execute to its original source, never the newest callback.
+    // A colour-only preview UI Execute is not the native guide producer.
+    if (fence==_uiFence && (depth.input.cmdList!=_uiCommandList[slot] ||
+        motion.input.cmdList!=_uiCommandList[slot])) return;
+    if (!depth.accepted || !motion.accepted || depth.frame!=observation.frame ||
+        motion.frame!=observation.frame || depth.generation!=observation.snapshot.epoch ||
+        motion.generation!=observation.snapshot.epoch || !(depth.owner==motion.owner)) return;
+    observation.fence=fence;observation.value=value;observation.submitted=true;
+    observation.snapshot.submission=value;
+    PublishGuideObservation(slot,GuideDiagnostics::Stage::Submitted,
+        "guide producer Execute returned and actual owner Signal succeeded; GPU pending");
+    try { _guidePendingCompletions[slot]=observation; } catch (...) {}
+}
+
+void DLSSG_Dx12::ObserveUpscalerGuideSource(IFeature* feature, const NVSDK_NGX_Parameter* parameters,
+    UINT64 sourceFrame, const GuideDiagnostics::Resource& colour,GuideSourceMetadata::Ptr rawSource)
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    try
+    {
+        PollGuideObservations();
+        const auto owner=CurrentInputOwner();
+        const auto featureId=feature && feature->Handle() ? feature->Handle()->Id : 0;
+        if (!_guideObservationConfiguration || !(owner==_guideObservationOwner) || featureId!=_guideObservationFeature)
+        {
+            if (_guideObservationConfiguration!=UINT64_MAX) ++_guideObservationConfiguration;
+            _guideObservationOwner=owner;_guideObservationFeature=featureId;
+        }
+        auto& observation=_guideObservations[GetIndex()];
+        observation={};
+        observation.sourceTick=GuideDiagnostics::Now();
+        _upscalerColourSources[GetIndex()].reset();
+        _upscalerColourSucceeded[GetIndex()]=false;
+        _upscalerFinalColours[GetIndex()].reset();
+        _upscalerPendingHudless[GetIndex()]={};
+        _guideUiTagFrame[GetIndex()]=0;_guideUiTagGeneration[GetIndex()]=0;
+        auto& snapshot=observation.snapshot;
+        observation.frame=_frameCount;snapshot.source=sourceFrame;snapshot.feature=featureId;
+        snapshot.epoch=_inputContinuity.SourceGeneration();snapshot.owner=_genshinOwnerGeneration;
+        snapshot.configuration=_guideObservationConfiguration;
+        snapshot.colour=colour;
+        snapshot.colourChoice=colour.present ?
+            "current successful Evaluate output identity; final present-colour match unverified" :
+            "final present-colour source not observed";
+        using Field=GuideDiagnostics::Field;
+        using Origin=GuideDiagnostics::Origin;
+        snapshot.rawSource=std::move(rawSource);
+        if(snapshot.rawSource)
+        {
+            const auto& raw=*snapshot.rawSource;
+            for(unsigned i=0;i<raw.provenance.fields.size();++i){
+                const auto& value=raw.provenance.fields[i];
+                snapshot.Set(static_cast<Field>(i),value.value,value.valid,static_cast<Origin>(value.origin));
+            }
+            snapshot.motionJitterKnown=raw.flagsKnown;
+            snapshot.motionJittered=raw.jittered;
+            snapshot.depthInverted=raw.depthInverted;
+            // Independent FG clocks and colour-join identity remain untouched.
+            // No claim about final colour phase follows from NGX jitter facts.
+        }
+        else
+        {
+        snapshot.Set(Field::CreateFlags,feature?feature->GetFeatureFlags():0,
+            feature && feature->GetFeatureFlagsKnown(),Origin::RetainedFeature);
+        const auto scalar=[&](Field field,const char* key,auto initial)
+        {
+            auto value=initial;
+            const bool known=parameters && parameters->Get(key,&value)==NVSDK_NGX_Result_Success &&
+                std::isfinite(static_cast<double>(value));
+            snapshot.Set(field,known?static_cast<double>(value):0,known,Origin::Evaluate);
+        };
+        scalar(Field::RenderWidth,NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width,UINT{});
+        scalar(Field::RenderHeight,NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height,UINT{});
+        scalar(Field::DepthX,NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X,UINT{});
+        scalar(Field::DepthY,NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y,UINT{});
+        scalar(Field::MotionX,NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X,UINT{});
+        scalar(Field::MotionY,NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y,UINT{});
+        scalar(Field::ScaleX,NVSDK_NGX_Parameter_MV_Scale_X,float{});
+        scalar(Field::ScaleY,NVSDK_NGX_Parameter_MV_Scale_Y,float{});
+        scalar(Field::JitterX,NVSDK_NGX_Parameter_Jitter_Offset_X,float{});
+        scalar(Field::JitterY,NVSDK_NGX_Parameter_Jitter_Offset_Y,float{});
+        }
+        const auto evaluate=GuideDiagnostics::CurrentEvaluation();
+        auto facts=GuideDiagnostics::TraceFacts(snapshot,FrameTrace::Kind::GuideSourceObserved);
+        facts.api=evaluate.api;facts.evaluateOrdinal=evaluate.ordinal;facts.apiFeature=evaluate.feature;
+        facts.context=evaluate.context;
+        GuideDiagnostics::Observe(GuideDiagnostics::Consumer::Fg,snapshot,facts,"source guides");
+        PublishGuideObservation(GetIndex(),GuideDiagnostics::Stage::Received,"Evaluate received");
+    }
+    catch (...) {}
+}
+
+void DLSSG_Dx12::RequestGuideHooks()
+{
+    // Both callers hold _inputContinuityMutex on their source/Present thread.
+    // Keep Detours' current-thread update synchronous, outside resource locks.
+    if (_guideHooksRequested) return;
+    ResTrack_Dx12::HookLateNrQueue(_device);
+    // The void installer reports no readiness. As for native guides, missing
+    // real Execute/Reset notifications must leave recorded resources retained.
+    _guideHooksRequested=true;
+}
+
+bool DLSSG_Dx12::TryOpenGuidePreviewRecording(UINT slot) noexcept
+{
+    // Present holds continuity and has already ordered the real producer.
+    // Unlike GetUICommandList, this optional path neither waits nor submits
+    // another slot. Only THIS allocator's actual owner fence permits Reset.
+    if (slot>=std::size(_uiCommandList) || _uiCloseFailed[slot] || !_gameCommandQueue ||
+        _gameCommandQueue->GetDesc().Type!=D3D12_COMMAND_LIST_TYPE_DIRECT ||
+        !dlssg::depth_contract::OnDevice(_device,_gameCommandQueue)) return false;
+    if (_uiCommandListResetted[slot]) return _uiCommandList[slot]!=nullptr;
+    if (_uiFenceValue>=UINT64_MAX-1 || PollUIAllocator(slot)!=UIAllocatorStatus::Ready) return false;
+    if (FAILED(_uiCommandAllocator[slot]->Reset())) return false;
+    if (FAILED(_uiCommandList[slot]->Reset(_uiCommandAllocator[slot],nullptr))) return false;
+    _uiCommandListResetted[slot]=true;
+    _uiAllocatorFenceValues[slot]=++_uiFenceValue;
+    return true; // Present's existing Close/Execute/Signal owns this recording.
+}
+
+void DLSSG_Dx12::CaptureAcceptedGuides(UINT slot) noexcept
+{
+    GuideCapture::SampleToken sample;
+    const bool preview=GuideCapture::TryBeginSample(GuideCapture::Stream::Fg,sample);
+    const bool offline=GuideCapture::OfflineWanted(GuideCapture::Stream::Fg);
+    if (!preview&&!offline) return;
+    struct Cancel {GuideCapture::SampleToken& token;~Cancel(){GuideCapture::CancelSample(token);}} cancel{sample};
+    try
+    {
+        if (slot>=std::size(_guideObservations) || _uiCloseFailed[slot]) return;
+        const auto demand=GuideCapture::GetPreviewDemand();
+        const bool colourOnly=preview && demand.mode==GuideCapture::PreviewMode::FgColour;
+        const auto& depth=_guideTags[slot][0];const auto& motion=_guideTags[slot][1];
+        const auto owner=CurrentInputOwner();
+        if (!depth.accepted || !motion.accepted || depth.frame!=_frameCount || motion.frame!=_frameCount ||
+            depth.generation!=_inputContinuity.SourceGeneration() || motion.generation!=depth.generation ||
+            !(depth.owner==owner) || !(motion.owner==owner)) return;
+        if (OwnsNativeZzzSource() && (depth.nativeSerial!=_nativeGuideUses[slot].source.serial ||
+            motion.nativeSerial!=_nativeGuideUses[slot].source.serial)) return;
+        auto& snapshot=_guideObservations[slot].snapshot;
+        if (_guideObservations[slot].frame!=_frameCount || snapshot.epoch!=_inputContinuity.SourceGeneration()) return;
+        GuideCapture::Inputs inputs;
+        const bool ownedGuides=_dx11GuideSealedFrame[slot]!=_frameCount &&
+            _uiCommandListResetted[slot] && depth.input.cmdList==_uiCommandList[slot] &&
+            motion.input.cmdList==_uiCommandList[slot];
+        // A native ValidNow tag is identity only here: its borrowed source may
+        // already have been reused. Colour does not require reading either guide.
+        // Guide/offline capture still requires the exact open owned recording.
+        if (!colourOnly || (offline && ownedGuides))
+        {
+            if (!ownedGuides)
+            {
+                if (preview) GuideCapture::PreviewUnavailable(
+                    "Unavailable: current guides have no open independently owned recording");
+                return;
+            }
+            inputs.depth=depth.input.copy?depth.input.copy:depth.input.resource;
+            inputs.motion=motion.input.copy?motion.input.copy:motion.input.resource;
+            inputs.depthState=depth.input.state;inputs.motionState=motion.input.state;
+            inputs.depthRect={depth.input.left,depth.input.top,static_cast<UINT>(depth.input.width),depth.input.height};
+            inputs.motionRect={motion.input.left,motion.input.top,static_cast<UINT>(motion.input.width),motion.input.height};
+            // Exactly BuildGuideConstants' SDK UV conversion, not raw input scale.
+            if (!motion.input.width || !motion.input.height) return;
+            inputs.motionToUvX=_mvScaleX[slot]/static_cast<float>(motion.input.width);
+            inputs.motionToUvY=_mvScaleY[slot]/static_cast<float>(motion.input.height);
+            if (!std::isfinite(inputs.motionToUvX) || !std::isfinite(inputs.motionToUvY)) return;
+        }
+        if (colourOnly && (!_upscalerFinalColours[slot] ||
+            !UpscalerColourCurrent(_upscalerFinalColours[slot]->source))) return;
+        RequestGuideHooks(); // FG-only preview must not depend on NR/native use.
+        if (colourOnly && !TryOpenGuidePreviewRecording(slot)) return;
+        // Present has already joined the exact current-source final endpoint.
+        // A try-only resource read never creates recordings or waits for a pool.
+        std::shared_lock resources(_resourceMutex[slot],std::try_to_lock);
+        if(!resources.owns_lock())return;
+        const auto& final=_upscalerFinalColours[slot];
+        const auto tagged=_frameResources[slot].find(FG_ResourceType::PresentColor);
+        const auto ready=_resourceReady[slot].find(FG_ResourceType::PresentColor);
+        if(final && final->source==_upscalerColourSources[slot] && UpscalerColourCurrent(final->source) &&
+            tagged!=_frameResources[slot].end() && ready!=_resourceReady[slot].end() && ready->second){
+            auto& actual=tagged->second;auto* colour=actual.GetResource();
+            if(colour && actual.validity==FG_ResourceValidity::UntilPresent &&
+                UpscalerColourIdentity(colour)==final->endpoint.colour &&
+                actual.width==final->description.Width && actual.height==final->description.Height){
+                inputs.colour=colour;inputs.colourState=actual.state;
+                inputs.colourRect={actual.left,actual.top,static_cast<UINT>(actual.width),actual.height};
+                // NGX's HDR flag describes SR input, not the final display
+                // endpoint. Depth/MV are independent of colour transfer too.
+                if (colourOnly) inputs.colourHdr=
+                    DlssNr::NativeInputColourSpace(_swapChain,final->description.Format)!=
+                        DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+            }
+        }
+        inputs.independentRecording=true;
+        if (preview) GuideCapture::TryRecord(sample,_uiCommandList[slot],inputs,snapshot);
+        if (offline && ownedGuides) GuideCapture::RecordOffline(GuideCapture::Stream::Fg,_uiCommandList[slot],inputs,snapshot);
+        // The shared real Execute/Reset hooks notify GuideCapture exactly once.
+        // Missing final colour stays unavailable for colour mode; guide-only
+        // samples remain independent of NR and of the scene colour's HDR flag.
+    }
+    catch (...) {}
+}
+
 bool DLSSG_Dx12::FlipOwnedUpscalerGuide(Dx12Resource* input)
 {
     const auto slot=GetIndex();
@@ -1664,7 +2119,9 @@ bool DLSSG_Dx12::FlipOwnedUpscalerGuide(Dx12Resource* input)
     auto& output=_resourceCopy[slot][input->type];
     if (!CreateBufferResource(_device,input->resource,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
         &output,true,depth)) return false;
-    if (!shader->Dispatch(input->cmdList,input->resource,output,input->width,input->height,!depth)) return false;
+    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance());
+    if (!shader->Dispatch(input->cmdList,input->resource,output,input->width,input->height,!depth,
+        depth ? orientation.depthFlipY : orientation.motionFlipY,orientation.motionYInverted)) return false;
     input->copy=output;input->state=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     return true;
 }
@@ -1672,16 +2129,18 @@ bool DLSSG_Dx12::FlipOwnedUpscalerGuide(Dx12Resource* input)
 bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsCommandList* list,
     const NVSDK_NGX_Parameter* parameters,
     ID3D12Resource* depth, ID3D12Resource* motion, UINT width, UINT height, UINT mvWidth, UINT mvHeight,
-    D3D12_RESOURCE_STATES depthState, D3D12_RESOURCE_STATES motionState)
+    D3D12_RESOURCE_STATES depthState, D3D12_RESOURCE_STATES motionState, uintptr_t evaluatedOutput)
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (!OwnsUpscalerDepthContract() || !CanSubmitInputs()) return false;
-    const bool nativeZzzSource=OwnsNativeZzzSource();
     // Activate starts the normal target-frame pause. SetResource rejects guides
-    // during that pause, so defer before recording conversions or reserving a
-    // native receipt. This is scheduled warmup, not partial SDK publication.
+    // during that pause on every upscaler route, including DX11-on12. Defer
+    // before recording conversions or reserving a native receipt; otherwise
+    // the first rejected tag tears down and restarts the same warmup forever.
+    // This is scheduled warmup, not partial SDK publication.
     // UpscaleStart already advanced the frame; SR/NR continue toward the target.
-    if (nativeZzzSource && (!IsActive() || IsPaused())) return false;
+    if (!IsActive() || IsPaused()) return false;
+    const bool nativeZzzSource=OwnsNativeZzzSource();
     if (!_inputRecordingDepth || !parameters || !list || list->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT ||
         !dlssg::depth_contract::OnDevice(_device,list) ||
         !dlssg::depth_contract::OnDevice(_device,depth) || !dlssg::depth_contract::OnDevice(_device,motion) ||
@@ -1697,8 +2156,10 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
         !dlssg::depth_contract::Region(motionDesc,mvLeft,mvTop,mvWidth,mvHeight))
         return RefuseDepthContract("source-guide-subrect",false);
     const bool scale=Config::Instance()->FGEnableDepthScale.value_or_default();
-    const bool flip=Config::Instance()->FGResourceFlip.value_or_default();
-    if ((scale && (left || top)) || (flip && (left || top || mvLeft || mvTop)))
+    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance());
+    const bool depthFlip=orientation.DepthCopy(),motionFlip=orientation.MotionCopy();
+    const bool flip=depthFlip || motionFlip;
+    if (((scale || depthFlip) && (left || top)) || (motionFlip && (mvLeft || mvTop)))
         return RefuseDepthContract("conversion-subrect-not-supported",false);
     auto* feature=selectedFeature;
     const UINT scaleWidth=feature?feature->DisplayWidth():0;
@@ -1707,15 +2168,16 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
         return RefuseDepthContract("depth-scale-output-domain",false);
     // The existing helper cannot make a readable view of R16_TYPELESS and
     // throws for DENY_SHADER_RESOURCE. Do not record an invalid conversion.
-    if ((scale || flip) && ((depthDesc.Flags&D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) ||
-        depthDesc.Format==DXGI_FORMAT_R16_TYPELESS ||
-        (flip && (motionDesc.Flags&D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE))))
+    if (((scale || depthFlip) && ((depthDesc.Flags&D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) ||
+        depthDesc.Format==DXGI_FORMAT_R16_TYPELESS)) ||
+        (motionFlip && (motionDesc.Flags&D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE)))
         return RefuseDepthContract("conversion-srv-unavailable",false);
     const auto slot=GetIndex();
     const bool ownedRecording=list==_uiCommandList[slot] && _uiCommandListResetted[slot] &&
         _uiFence && _uiAllocatorFenceValues[slot] && _gameCommandQueue &&
         dlssg::depth_contract::OnDevice(_device,_gameCommandQueue);
     const bool nativeZzz=!ownedRecording && nativeZzzSource;
+    D3D12_RESOURCE_DESC selectedOutputDescription{};
     // Native ZZZ records on the real SR list, not a provider UI list. Track
     // that exact recording's Execute/Signal/Reset before reusing shader state.
     if (!ownedRecording && !nativeZzz)
@@ -1731,15 +2193,12 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
         ID3D12Resource* output=nullptr;
         if (parameters->Get(NVSDK_NGX_Parameter_Output,&output)!=NVSDK_NGX_Result_Success)
             parameters->Get(NVSDK_NGX_Parameter_Output,(void**)&output);
+        if (output) selectedOutputDescription=output->GetDesc();
         if (!output || !dlssg::depth_contract::OnDevice(_device,output) ||
             dlssg::depth_contract::SameOwner(output,depth) || dlssg::depth_contract::SameOwner(output,motion) ||
-            output->GetDesc().Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+            selectedOutputDescription.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D)
             return RefuseDepthContract("native-selected-sr-output",false);
-        if (!_nativeGuideHooksRequested)
-        {
-            ResTrack_Dx12::HookLateNrQueue(_device); // Reuse the existing hooks, also when NR is off.
-            _nativeGuideHooksRequested=true;
-        }
+        RequestGuideHooks();
         auto& use=_nativeGuideUses[slot];
         if (_nativeGuideFailed) return false;
         if (_device->GetDeviceRemovedReason()!=S_OK ||
@@ -1781,6 +2240,22 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
     if ((scale || flip) && dlssg::depth_contract::Game()==GameRouting::Identity::StarRail &&
         (!_starRailGuideSwapchain || !_starRailGuideQueueCurrent))
         return RefuseDepthContract("starrail-conversion-not-on-presenting-queue",false);
+    const bool sharedDx11=ownedRecording &&
+        dlssg::depth_contract::Game()==GameRouting::Identity::Genshin &&
+        State::Instance().swapchainInteropApi==SwapchainInteropApi::Dx11wDx12;
+    if (sharedDx11)
+    {
+        // A different queue needs a real producer receipt; do not guess order.
+        if (!dlssg::depth_contract::SameOwner(_gameCommandQueue,Dx11WithDx12::GetD3D12CommandQueue()))
+            return RefuseDepthContract("dx11-guide-source-queue-mismatch",false);
+    }
+    const auto borrowDx11Guides=[&] {
+        if (!sharedDx11) return;
+        // CPU-only validation/allocation may fail without recording a read.
+        // Pin immediately before the first conversion or SDK snapshot.
+        _dx11GuideInputs[slot][0]=depth; _dx11GuideInputs[slot][1]=motion;
+        _dx11GuideBorrowed[slot]=true; _dx11GuideSealedFrame[slot]=0;
+    };
     // Once commands/tags can be recorded, even an undispatched frame owns real
     // GPU/SDK state. A CPU failure cannot bypass the established teardown path.
     _managedRetained=true;_continuityOwner=true;_teardownBorrowedInputs=true;_guideContractOwned=true;
@@ -1791,6 +2266,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
     {
         for (auto type : {FG_ResourceType::Depth,FG_ResourceType::Velocity})
         {
+            if (type==FG_ResourceType::Depth ? !depthFlip : !motionFlip) continue;
             const auto previous=_resourceCopy[slot].find(type);
             if (previous==_resourceCopy[slot].end() || !previous->second) continue;
             const auto old=previous->second->GetDesc();
@@ -1823,6 +2299,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
         // subrect only changes the tag; it must not rebuild the FG pool.
         if (!shader->CreateBufferResource(_device,depth,scaleWidth,scaleHeight,D3D12_RESOURCE_STATE_UNORDERED_ACCESS) ||
             !shader->Buffer()) return RefuseDepthContract("depth-scale-allocation");
+        borrowDx11Guides();
         shader->SetBufferState(list,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         ResourceBarrier(list,depth,depthState,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         const bool recorded=shader->Dispatch(list,depth,shader->Buffer());
@@ -1830,6 +2307,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
         if (!recorded) return RefuseDepthContract("depth-scale-not-recorded");
         actualDepth=shader->Buffer();depthState=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
+    if (!scale) borrowDx11Guides();
     const auto publish=[&](FG_ResourceType type,ID3D12Resource* resource,UINT x,UINT y,
         UINT w,UINT h,D3D12_RESOURCE_STATES state)
     {
@@ -1861,8 +2339,222 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
         if (!NativeGuideSourceCurrent(use.source) || !BuildGuideConstants(slot,use.constants,true))
             return RefuseDepthContract("native-source-constants");
     }
+    try
+    {
+        auto& snapshot=_guideObservations[slot].snapshot;
+        const auto describe=[](const GuideTag& tag)
+        {
+            return GuideDiagnostics::Resource{true,static_cast<UINT>(tag.description.Format),
+                tag.description.Width,tag.description.Height,
+                {tag.input.left,tag.input.top,static_cast<UINT>(tag.input.width),tag.input.height}};
+        };
+        snapshot.depth=describe(_guideTags[slot][0]);snapshot.motion=describe(_guideTags[slot][1]);
+        // Actual accepted resources BEFORE depth scaling/row/sign conversion.
+        snapshot.rawDepth={true,static_cast<UINT>(depthDesc.Format),depthDesc.Width,depthDesc.Height,{left,top,width,height}};
+        snapshot.rawMotion={true,static_cast<UINT>(motionDesc.Format),motionDesc.Width,motionDesc.Height,{mvLeft,mvTop,mvWidth,mvHeight}};
+        snapshot.rawSdkUvX=mvWidth?_mvScaleX[slot]/static_cast<float>(mvWidth):0;
+        snapshot.rawSdkUvY=mvHeight?_mvScaleY[slot]/static_cast<float>(mvHeight):0;
+        snapshot.rawMappingKnown=snapshot.rawSource && GuideSourceMetadata::AcceptedMapping(
+            *snapshot.rawSource,snapshot.rawDepth,snapshot.rawMotion,snapshot.rawSdkUvX,snapshot.rawSdkUvY);
+        snapshot.depthFlip=orientation.depthFlipY;snapshot.motionFlip=orientation.motionFlipY;
+        snapshot.yNegated=orientation.motionYInverted;snapshot.depthInverted=IsInvertedDepth();
+        snapshot.scaleX=_mvScaleX[slot]/static_cast<float>(_guideTags[slot][1].input.width);
+        snapshot.scaleY=_mvScaleY[slot]/static_cast<float>(_guideTags[slot][1].input.height);
+        snapshot.jitterX=_jitterX[slot];snapshot.jitterY=_jitterY[slot];
+        snapshot.accepted=true;
+        snapshot.Set(GuideDiagnostics::Field::DepthBounds,1,true,GuideDiagnostics::Origin::ActualCall);
+        snapshot.Set(GuideDiagnostics::Field::MotionBounds,1,true,GuideDiagnostics::Origin::ActualCall);
+        // A successful SDK tag is not a phase or display-colour certification.
+        PublishGuideObservation(slot,GuideDiagnostics::Stage::Recorded,
+            "current depth/MV tags accepted; constants/producer submission pending; UI optional");
+    }
+    catch (...) {}
+    if (_frameCount<=32 || _frameCount%600==0)
+        LOG_INFO("F6 FG guide coordinates: frame={} depthFlipY={} motionFlipY={} motionYInverted={} offset={} depth={}x{} mv={}x{} sourceMvScale={},{} jitter={},{} signApplied=texture constantsScaleUnchanged=true",
+            _frameCount,orientation.depthFlipY,orientation.motionFlipY,orientation.motionYInverted,
+            orientation.UsesOffset(),width,height,mvWidth,mvHeight,_mvScaleX[slot],_mvScaleY[slot],
+            _jitterX[slot],_jitterY[slot]);
     _depthSourceRejected=false; // Only a complete real pair can recover admission.
+    try
+    {
+        const auto& observation=_guideObservations[slot];
+        const auto output=nativeZzz ? reinterpret_cast<uintptr_t>(_nativeGuideUses[slot].output.Get()) : evaluatedOutput;
+        if (output && observation.frame==_frameCount && _upscalerColourSerial<UINT64_MAX)
+        {
+            const auto& snapshot=observation.snapshot;
+            dlssg::colour::Source key{++_upscalerColourSerial,_frameCount,
+                _inputContinuity.SourceGeneration(),_inputOwnerEpoch,snapshot.feature,snapshot.configuration,
+                reinterpret_cast<uintptr_t>(this),UpscalerColourIdentity(_swapChain),output};
+            _upscalerColourSources[slot]=UpscalerColourSourcePtr(new UpscalerColourSource(key,
+                CurrentInputOwner(),snapshot,selectedOutputDescription,reinterpret_cast<uintptr_t>(list),!nativeZzz));
+            // DX11's callback already follows a successful real Evaluate. Native
+            // success must come from CompleteNativeGuideSource's exact receipt.
+            _upscalerColourSucceeded[slot]=!nativeZzz;
+        }
+    }
+    catch (const std::bad_alloc&) {} // Optional colour remains unavailable; guides still work.
     return true;
+}
+
+bool DLSSG_Dx12::UpscalerColourCurrent(const UpscalerColourSourcePtr& source) const
+{
+    if (!source || !OwnsUpscalerDepthContract()) return false;
+    const auto slot=source->key.frame%std::size(_upscalerColourSources);
+    return source==_upscalerColourSources[slot] && source->key.frame==_frameCount &&
+        source->key.generation==_inputContinuity.SourceGeneration() && source->key.epoch==_inputOwnerEpoch &&
+        source->key.provider==reinterpret_cast<uintptr_t>(this) && source->owner==CurrentInputOwner() &&
+        _inputContinuity.Current(slot,source->key.frame,source->owner);
+}
+
+bool DLSSG_Dx12::SealDx11GuideInputs(bool tagsAccepted, ID3D12CommandQueue* sourceQueue)
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    const auto slot=GetIndex();
+    if (!_dx11GuideBorrowed[slot]) return tagsAccepted; // Warmup/validation recorded no borrowed read.
+    const auto fail=[&] {
+        // No next shared upload, provider replacement or later fence can make
+        // an uncertain borrowed read safe. Keep all actual owners retained.
+        Dx11WithDx12::BlockFgGuideWrites();
+        _managedRetained=true; Deactivate(); QuarantineFailedTeardown();
+        return false;
+    };
+    if (!tagsAccepted || !CanSubmitInputs() ||
+        !dlssg::depth_contract::SameOwner(sourceQueue,_gameCommandQueue) ||
+        !dlssg::depth_contract::SameOwner(sourceQueue,Dx11WithDx12::GetD3D12CommandQueue()) ||
+        !_uiCommandListResetted[slot] || _uiCloseFailed[slot]) return fail();
+    // Sample actual guides while their original recording is still open.
+    // Final colour is joined later; never reopen this raw shared-guide read.
+    CaptureAcceptedGuides(slot);
+    if (!SubmitUICommandList(slot) || !Dx11WithDx12::SyncDx12ToDx11(_gameCommandQueue)) return fail();
+    _dx11GuideSealedFrame[slot]=_frameCount;
+    _dx11GuideBorrowed[slot]=false;
+    // The shared fence Signal was queued after the SDK's real snapshot read;
+    // DX11 Wait now precedes every later source write. CPU waits for neither NR nor FG.
+    return true;
+}
+
+DLSSG_Dx12::UpscalerColourSourcePtr DLSSG_Dx12::CurrentUpscalerColourSource()
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    const auto source=_upscalerColourSources[GetIndex()];
+    return UpscalerColourCurrent(source) ? source : nullptr;
+}
+
+void DLSSG_Dx12::CaptureUpscalerHudless(const UpscalerColourSourcePtr& source,
+    ID3D12GraphicsCommandList* list, ID3D12Resource* output, D3D12_RESOURCE_STATES state)
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    if (!UpscalerColourCurrent(source) || source->bridge || !_upscalerColourSucceeded[GetIndex()] ||
+        source->list!=reinterpret_cast<uintptr_t>(list) || source->key.output!=reinterpret_cast<uintptr_t>(output)) return;
+    const auto& desc=source->outputDescription; // Reuse the selected Evaluate's actual description.
+    ResourceInfo info{};
+    info.buffer=output;info.width=desc.Width;info.height=desc.Height;info.format=desc.Format;
+    info.flags=desc.Flags;info.type=UAV;info.captureInfo=CaptureInfo::Upscaler;
+    const auto previous=_upscalerHudlessCapture;
+    _upscalerHudlessCapture=source;
+    struct EndCapture { UpscalerColourSourcePtr& active; UpscalerColourSourcePtr previous;
+        ~EndCapture(){active=std::move(previous);} } finish{_upscalerHudlessCapture,previous};
+    Hudfix_Dx12::CheckForHudless(list,&info,state,true);
+}
+
+void DLSSG_Dx12::JoinUpscalerFinalColour(const UpscalerColourSourcePtr& source, IDXGISwapChain* swapchain,
+    ID3D12CommandQueue* queue, const DlssNr::FinishedPictureOutcome& outcome,
+    ID3D12Resource* copiedColour, ID3D12Fence* copyFence, UINT64 copyValue)
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    if (!UpscalerColourCurrent(source) || !CanSubmitInputs() || !_upscalerColourSucceeded[GetIndex()] ||
+        !queue || !dlssg::depth_contract::SameOwner(queue,_gameCommandQueue) ||
+        source->key.swapchain!=UpscalerColourIdentity(swapchain) ||
+        !dlssg::depth_contract::SameOwner(swapchain,_swapChain)) return;
+    const auto slot=GetIndex();
+    // The bridge's outer endpoint owns this join. A nested generic FG Present
+    // cannot erase/relabel it, nor can a second Present reuse the same SR token.
+    if (outcome.bridgeEndpoint!=source->bridge || (source->bridge && !copiedColour) ||
+        _upscalerFinalColours[slot]) return;
+    // These are observations of this source-bound endpoint, not admission or
+    // a claim that the NR pixels completed. In particular record uncertain NR
+    // failure before refusing its colour, so it cannot look like a skipped NR.
+    {
+        auto facts=GuideDiagnostics::TraceFacts(source->snapshot,FrameTrace::Kind::NrOutcome);
+        facts.nrOutcomeKnown=true;facts.nrResult=static_cast<int>(outcome.result);
+        facts.nrReason=static_cast<int>(outcome.reason);facts.colour=outcome.color;
+        facts.queue=outcome.queue;facts.fenceValue=outcome.fenceValue;
+        GuideDiagnostics::Observe(GuideDiagnostics::Consumer::Fg,source->snapshot,facts,"NR outcome");
+    }
+    if (outcome.result==DlssNr::FinishedPictureResult::FailedUncertain) return;
+    // A Present NR transaction may only join the exact source selected before
+    // the wrapper copied this colour. A diagnostic observation cannot grant it.
+    if (outcome.source && outcome.source != source->snapshot.rawSource) return;
+    Microsoft::WRL::ComPtr<IDXGISwapChain3> sc;
+    Microsoft::WRL::ComPtr<ID3D12Resource> colour;
+    if (!swapchain || FAILED(swapchain->QueryInterface(IID_PPV_ARGS(&sc)))) return;
+    const auto index=sc->GetCurrentBackBufferIndex();
+    if (FAILED(sc->GetBuffer(index,IID_PPV_ARGS(&colour)))) return;
+    const dlssg::colour::Endpoint endpoint{UpscalerColourIdentity(swapchain),UpscalerColourIdentity(colour.Get()),
+        UpscalerColourIdentity(queue),UpscalerColourIdentity(_device),State::Instance().frameCount};
+    const dlssg::colour::Endpoint observed{outcome.swapchain,outcome.color,outcome.queue,outcome.device,outcome.presentEpoch};
+    if (!dlssg::colour::SameEndpoint(endpoint,observed) || !outcome.endpointSerial ||
+        outcome.bridgeEndpoint!=source->bridge) return;
+    if (source->bridge && (!copiedColour || !dlssg::depth_contract::SameOwner(copiedColour,colour.Get()) ||
+        !copyFence || !copyValue || copyValue==UINT64_MAX || copyFence->GetCompletedValue()==UINT64_MAX)) return;
+    const auto mutation=outcome.Written() ? dlssg::colour::Mutation::NrWritten : dlssg::colour::Mutation::Original;
+    // WrittenOrdered means the real endpoint submitted on this very queue.
+    // Retain that distinction; a CPU return or UI fence is never completion.
+    if (outcome.Written() && (!outcome.fence || !outcome.fenceValue || outcome.fenceValue==UINT64_MAX ||
+        !outcome.submissionSerial || outcome.fence->GetCompletedValue()==UINT64_MAX)) return;
+    const auto desc=colour->GetDesc();
+    if (desc.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width>UINT_MAX) return;
+    std::shared_ptr<const UpscalerFinalColour> join;
+    try
+    {
+        join=std::shared_ptr<const UpscalerFinalColour>(new UpscalerFinalColour(source,endpoint,
+            source->bridge ? dlssg::colour::Route::Dx11CopiedPresent : dlssg::colour::Route::NativePresent,
+            mutation,index,desc,outcome.submissionSerial,outcome.fenceValue,copyValue));
+    }
+    catch (const std::bad_alloc&) { return; } // Missing optional colour never fails SR/FG.
+    if (!UpscalerColourCurrent(source)) return;
+    _upscalerFinalColours[slot]=join;
+    Dx12Resource tag{};tag.type=FG_ResourceType::PresentColor;tag.resource=colour.Get();
+    tag.frameIndex=slot;tag.width=desc.Width;tag.height=desc.Height;
+    tag.state=D3D12_RESOURCE_STATE_PRESENT;tag.validity=FG_ResourceValidity::UntilPresent;
+    const auto publish=[&](Dx12Resource& input)
+    {
+        const auto* previous=_upscalerColourPublication;
+        _upscalerColourPublication=&input;
+        struct EndPublication { const Dx12Resource*& active; const Dx12Resource* previous;
+            ~EndPublication(){active=previous;} } finish{_upscalerColourPublication,previous};
+        return SetResource(&input);
+    };
+    if (!publish(tag)) return;
+    // Do not republish raw/pre-NR HUDless beside a processed final image. The
+    // absence of a compatible optional tag never suppresses FG itself.
+    auto candidate=_upscalerPendingHudless[slot];
+    if (candidate.source && dlssg::colour::CanUseHudless(source->key,candidate.source->key,mutation))
+    {
+        // The copy was already recorded by Hudfix. Its old producer list may
+        // now be closed/submitted; eValidUntilPresent needs no borrowed list.
+        candidate.input.cmdList=nullptr;
+        publish(candidate.input);
+    }
+    if (!UpscalerColourCurrent(source) || _upscalerFinalColours[slot]!=join || !CanSubmitInputs()) return;
+    try
+    {
+        auto& observation=_guideObservations[slot];auto& snapshot=observation.snapshot;
+        snapshot.fields=source->snapshot.fields; // Reuse the exact source metadata, no parameter re-query.
+        snapshot.colour={true,static_cast<UINT>(desc.Format),desc.Width,desc.Height,
+            {0,0,static_cast<UINT>(desc.Width),desc.Height}};
+        snapshot.picture=endpoint.present;
+        snapshot.colourChoice=outcome.Written() ? "same-source final NR present route; pixel lineage unverified" :
+            "same-source current original present route; pixel lineage unverified";
+        auto facts=GuideDiagnostics::TraceFacts(snapshot,FrameTrace::Kind::FinalColourJoined);
+        facts.colour=endpoint.colour;facts.queue=endpoint.queue;facts.fenceValue=outcome.fenceValue;
+        facts.nrOutcomeKnown=true;facts.nrResult=static_cast<int>(outcome.result);
+        facts.nrReason=static_cast<int>(outcome.reason);
+        GuideDiagnostics::Observe(GuideDiagnostics::Consumer::Fg,snapshot,facts,"final colour");
+        PublishGuideObservation(slot,observation.submitted?GuideDiagnostics::Stage::Submitted:
+            GuideDiagnostics::Stage::Recorded,"final colour route joined; optional HUDless checked against NR mutation");
+    }
+    catch (...) {} // Telemetry does not grant or revoke the actual join.
 }
 
 bool DLSSG_Dx12::NativeGuideRetired(const NativeGuideUse& use) const
@@ -1927,6 +2619,8 @@ void DLSSG_Dx12::NativeGuidesSubmitted(ID3D12CommandQueue* queue, UINT count, ID
             return;
         }
         use.executing=false; use.signalled=true;
+        const auto slot=static_cast<UINT>(&use-_nativeGuideUses);
+        ObserveGuideSubmission(slot,use.fence.Get(),use.value);
         if (++_nativeGuideSubmissions<=3 || _nativeGuideSubmissions%600==0)
             LOG_INFO("R1058 native FG producer submitted: pid={} frame={} serial={} source_generation={} input_epoch={} sdk_frame={} list={} native_list={} output={} producer_queue={} fence={} target={} sr_succeeded={} SDK_snapshot=ValidNow generated=UNKNOWN",
                 GetCurrentProcessId(),use.source.frame,use.source.serial,use.source.generation,use.source.epoch,use.source.sdkFrame,
@@ -2054,11 +2748,12 @@ bool DLSSG_Dx12::PrepareNativeGuideGapPresent()
     _guideTags[GetIndex()][1].accepted=false;
     _nativeGuideDispatch={};
     const bool off=_nativeGapOffProof.Ensure(owner,localViewport,[&] {
+        InvalidateDispatchOptions();
         auto options=_lastRunningOptions;
         options.mode=sl::DLSSGMode::eOff;
         options.flags|=sl::DLSSGFlags::eRetainResourcesWhenOff;
         const auto setOptions=StreamlineProxy::DLSSGSetOptions();
-        return setOptions && setOptions(viewport,options)==sl::Result::eOk;
+        return setOptions && StreamlineHooks::SubmitDlssgOptions(setOptions,viewport,options)==sl::Result::eOk;
     },stillSafe);
     if (off) _depthSourceGap=true;
     else if (OwnsNativeZzzSource() && CurrentInputOwner()==owner)
@@ -2082,6 +2777,28 @@ void DLSSG_Dx12::CompleteNativeGuideSource(ID3D12CommandList* list, const dlssg:
     if (!use || use->list.Get()!=list || use->closed || use->submitted) return;
     use->srSucceeded=succeeded && output==use->output.Get() &&
         source.epoch==_inputOwnerEpoch && source.generation==_inputContinuity.SourceGeneration();
+    const auto colourSlot=static_cast<UINT>(use-_nativeGuideUses);
+    const auto colourSource=_upscalerColourSources[colourSlot];
+    if (UpscalerColourCurrent(colourSource) && !colourSource->bridge &&
+        colourSource->key.frame==source.frame && colourSource->list==source.list &&
+        colourSource->key.output==source.output)
+        _upscalerColourSucceeded[colourSlot]=use->srSucceeded;
+    if (use->srSucceeded)
+    {
+        try
+        {
+            const auto slot=static_cast<UINT>(use-_nativeGuideUses);
+            auto& snapshot=_guideObservations[slot].snapshot;
+            if (colourSource && _guideObservations[slot].frame==source.frame && snapshot.epoch==source.generation)
+            {
+                const auto& desc=colourSource->outputDescription;
+                snapshot.colour={true,static_cast<UINT>(desc.Format),desc.Width,desc.Height,
+                    {0,0,static_cast<UINT>(desc.Width),desc.Height}};
+                snapshot.colourChoice="same selected SR transaction output identity; final present-colour match unverified";
+            }
+        }
+        catch (...) {}
+    }
     if (!use->srSucceeded && source.frame==_frameCount)
         RefuseDepthContract("native-selected-sr-failed-or-output-changed",false);
 }
@@ -2289,8 +3006,16 @@ bool DLSSG_Dx12::BuildGuideConstants(int slot, sl::Constants& constData, bool in
 bool DLSSG_Dx12::Dispatch()
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
+    PollGuideObservations();
     LOG_FUNC();
 
+    if (_dispatchActive || _providerStateQueryActive || _dispatchOptions.InFlight() || _starRailGapSuppressing)
+    {
+        InvalidateDispatchOptions();
+        return false;
+    }
+    _dispatchActive = true;
+    struct FinishDispatch { bool& active; ~FinishDispatch() { active = false; } } finishDispatch { _dispatchActive };
     if (!CanSubmitInputs()) return false;
     const bool depthContractFrame=OwnsDepthContract();
     if (depthContractFrame && _depthSourceRejected) return false;
@@ -2300,6 +3025,8 @@ bool DLSSG_Dx12::Dispatch()
     const auto sourceGeneration = _inputContinuity.SourceGeneration();
     const bool resetStarRailHistory = starRailFrame && (resumingInputGap ||
         restartStarRailRuntime || _starRailDispatchGeneration != sourceGeneration);
+    const auto sourceFrameCount = _frameCount;
+    const auto sourceInputOwner = CurrentInputOwner();
     UINT64 willDispatchFrame = 0;
     int fIndex = -1;
     if (resumingInputGap)
@@ -2347,7 +3074,7 @@ bool DLSSG_Dx12::Dispatch()
                                   willDispatchFrame <= _starRailDispatchFrame)))
         return false; // Complete current tags and a high-water mark in this source generation only.
 
-    const bool genshinFrame = GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) &&
+    const bool genshinFrame = (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())) &&
         State::Instance().activeFgInput == FGInput::Upscaler &&
         State::Instance().activeFgOutput == FGOutput::DLSSG;
     if (genshinFrame && (_genshinConstantsFrame[fIndex] != willDispatchFrame ||
@@ -2396,26 +3123,44 @@ bool DLSSG_Dx12::Dispatch()
 
     auto& state = State::Instance();
 
-    // Preserve the saved request across temporary provider limits. Only the
-    // value submitted to this provider is bounded by its current capability.
-    if (_maxInterpolationCount < 1)
+    // Reuse the existing non-Genshin observation before selecting options, so
+    // a newly lowered raw maximum bounds this very submission. Genshin retains
+    // its post-Present reader; only an unknown/changed owner needs a cold retry.
+    sl::DLSSGState actualState {};
+    auto stateResult = sl::Result::eErrorInvalidState;
+    if (!genshinFrame || !_generationState.Current(CurrentProviderOwner()))
+        stateResult = QueryProviderState(actualState);
+    if (!CanSubmitInputs() || !_isActive || sourceFrameCount != _frameCount ||
+        sourceGeneration != _inputContinuity.SourceGeneration() || !(sourceInputOwner == CurrentInputOwner()))
         return false;
     const int requestedInterpolationCount = Config::Instance()->FGDLSSGInterpolationCount.value_or_default();
-    const int appliedInterpolationCount = (std::clamp)(requestedInterpolationCount, 1,
-        static_cast<int>(_maxInterpolationCount));
-    if (_framesToInterpolate != appliedInterpolationCount)
-    {
-        LOG_INFO("Interpolation count changed {} -> {} (saved request {}, provider max {})", _framesToInterpolate,
-                 appliedInterpolationCount, requestedInterpolationCount, _maxInterpolationCount);
-        _framesToInterpolate = appliedInterpolationCount;
-    }
+    const auto selection = _generationState.Select(CurrentProviderOwner(), requestedInterpolationCount,
+        Config::Instance()->FGDLSSGForceDMFG.value_or_default());
+    if (!selection) return false; // Unknown/zero capability is never assumed to support 2x, let alone 6x.
 
     sl::DLSSGOptions options {};
     options.mode = sl::DLSSGMode::eOn;
-    options.numFramesToGenerate = _framesToInterpolate;
+    options.numFramesToGenerate = selection.attemptedGenerated;
     options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
+    // Allocate Streamline's UI-recomposition path only when this exact frame
+    // has both successfully tagged color inputs. A lone or stale tag must not enable it.
+    const auto tagAccepted = [&](FG_ResourceType type)
+    {
+        const auto tag = _resourceReady[fIndex].find(type);
+        return tag != _resourceReady[fIndex].end() && tag->second;
+    };
+    const bool currentColourPair = _guideUiTagFrame[fIndex] == willDispatchFrame &&
+        _guideUiTagGeneration[fIndex] == sourceGeneration;
+    options.enableUserInterfaceRecomposition =
+        dlssg::options::CanRecomposeUserInterface(
+            tagAccepted(FG_ResourceType::HudlessColor), tagAccepted(FG_ResourceType::UIColor), currentColourPair)
+            ? sl::eTrue : sl::eFalse;
+    // Temporary panel control only. The normal acknowledged options transaction
+    // detects the flag change, and restores it on a later safe Dispatch.
+    if (GuideDiagnostics::OnlyGenerated().load(std::memory_order_acquire))
+        options.flags |= sl::DLSSGFlags::eShowOnlyInterpolatedFrame;
 
-    if (Config::Instance()->FGDLSSGForceDMFG.value_or_default())
+    if (selection.dynamic)
     {
         options.mode = sl::DLSSGMode::eDynamic;
         options.dynamicTargetFrameRate = Config::Instance()->FGDLSSGFramerateTargetDMFG.value_or_default();
@@ -2424,7 +3169,8 @@ bool DLSSG_Dx12::Dispatch()
     if (CanRetainForInputGap() || _genshinConstantsFrame[fIndex] == willDispatchFrame)
         options.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff;
     StreamlineHooks::applyMenuDlssgInterlock(options, true);
-    PrepareStarRailOptionsCache(fIndex);
+    const auto optionsScope = CurrentDispatchScope(fIndex);
+    const auto optionsFrame = _frameCount;
     const auto setAndObserveOptions = [&]() {
         // Any enable attempt can supersede an old Off, even if it reenters a
         // new clock before returning. Final SDK admission must suppress again.
@@ -2435,8 +3181,7 @@ bool DLSSG_Dx12::Dispatch()
         const auto optionOwnerEpoch = _inputOwnerEpoch;
         const auto optionPresentEpoch = _genshinPresentEpoch;
         if (genshinFrame) _genshinBudgetRefusalPresent = 0;
-        bool optionsSubmitted = false;
-        const auto result = SetStarRailDispatchOptions(_starRailDlssgOptions, options,
+        const auto outcome = SetDispatchOptions(_dlssgOptionsAck, optionsScope, fIndex, options,
             willDispatchFrame, resumingInputGap && (!starRailFrame || restartStarRailRuntime),
             [&]() {
                 // Invalidate even if this provider temporarily left the native
@@ -2447,8 +3192,29 @@ bool DLSSG_Dx12::Dispatch()
                     _teardownOffAccepted=false;
                     _lastRunningOptions=options;
                 }
-                return StreamlineProxy::DLSSGSetOptions()(viewport, options);
-            }, &optionsSubmitted);
+                const auto setOptions = StreamlineProxy::DLSSGSetOptions();
+                return setOptions ? StreamlineHooks::SubmitDlssgOptions(setOptions,viewport,options) : sl::Result::eErrorMissingOrInvalidAPI;
+            });
+        const bool optionsSubmitted = outcome.submitted;
+        _generationState.Record(optionsScope, willDispatchFrame, selection, options, outcome);
+        const auto result = outcome.Result() == sl::Result::eOk && !_generationState.acceptedKnown ?
+            sl::Result::eErrorInvalidState : outcome.Result();
+        try
+        {
+            auto& observation=_guideObservations[fIndex];
+            if(observation.frame==willDispatchFrame && observation.snapshot.epoch==sourceGeneration)
+            {
+                auto& snapshot=observation.snapshot;
+                snapshot.sdkOptionsKnown=_generationState.acceptedKnown;
+                snapshot.sdkOptionsCalled=outcome.submitted;snapshot.sdkOptionsResult=static_cast<int>(result);
+                snapshot.sdkOptionsMode=static_cast<int>(options.mode);
+                GuideDiagnostics::Observe(GuideDiagnostics::Consumer::Fg,snapshot,
+                    GuideDiagnostics::TraceFacts(snapshot,FrameTrace::Kind::SdkOptions),"SDK options",true,
+                    static_cast<int>(result));
+                PublishGuideObservation(fIndex,snapshot.stage,"SDK options transaction observed; acknowledgement is not generation proof");
+            }
+        }catch(...){}
+        _framesToInterpolate = _generationState.acceptedKnown ? static_cast<int>(_generationState.acceptedGenerated) : 0;
         // Only this exact failed On/options transaction may suspend the child.
         // Off, GetState warnings and recursive owner changes cannot sign it.
         if (genshinFrame && optionsSubmitted && options.mode != sl::DLSSGMode::eOff &&
@@ -2473,18 +3239,14 @@ bool DLSSG_Dx12::Dispatch()
             }
         }
         if (optionsSubmitted)
-            MfgUnlock::RecordSetOptions(_framesToInterpolate, options.numFramesToGenerate,
-                                       options.mode != sl::DLSSGMode::eOff, (unsigned int) result);
+            MfgUnlock::RecordSetOptions(static_cast<unsigned int>((std::max)(requestedInterpolationCount, 0)),
+                options.numFramesToGenerate, options.mode != sl::DLSSGMode::eOff,
+                static_cast<unsigned int>(outcome.sdkResult));
         // GetState consumes numFramesActuallyPresented. Genshin observes it
         // only in the existing EndGenshinPresent query, after original Present.
         // Pre-Present telemetry explicitly describes an older observation.
-        sl::DLSSGState actualState {};
-        auto stateResult = sl::Result::eOk;
-        if (!genshinFrame)
-        {
-            stateResult = StreamlineProxy::DLSSGGetState()(viewport, actualState, nullptr);
-            if (stateResult == sl::Result::eOk) MfgUnlock::RecordState(actualState.numFramesActuallyPresented);
-        }
+        if (!genshinFrame && stateResult == sl::Result::eOk)
+            MfgUnlock::RecordState(actualState.numFramesActuallyPresented);
         // Source metadata is read under Dispatch's existing continuity lock.
         // Reuse the one vendor result/query above; presented is a consumed,
         // previous observation, not this source frame's generated output.
@@ -2538,20 +3300,26 @@ bool DLSSG_Dx12::Dispatch()
                 previous.calls = previous.changes = 0;
             }
         }
-        static unsigned int telemetryInterval = 0;
-        if (++telemetryInterval % 300 == 1)
+        if (++_optionsTelemetryCalls % 300 == 1)
         {
             if (genshinFrame)
                 LOG_INFO("R827 FG options: pid={} owner={} epoch={} frame={} slot={} thread={} requested={} sent={} mode={} flags={} options_result={} previous_observation_valid={} previous_frame={} previous_epoch={} previous_result={} previous_cap={} previous_presented={} previous_status={} generated=UNKNOWN observation_is_not_current=true",
                     GetCurrentProcessId(),_genshinOwnerGeneration,_inputOwnerEpoch,willDispatchFrame,fIndex,GetCurrentThreadId(),
-                    _framesToInterpolate,options.numFramesToGenerate,(int)options.mode,(unsigned)options.flags,(int)result,
+                    requestedInterpolationCount,options.numFramesToGenerate,(int)options.mode,(unsigned)options.flags,(int)result,
                     _genshinStateObservation.valid,_genshinStateObservation.frame,_genshinStateObservation.epoch,
                     _genshinStateObservation.result,_genshinStateObservation.cap,_genshinStateObservation.presented,_genshinStateObservation.status);
             else
                 LOG_INFO("F5 actual MFG: requested {}, sent {}, optionsResult {}, optionsSubmitted {}, stateResult {}, providerCap {}, presented {}, status {}; generated UNKNOWN",
-                    _framesToInterpolate, options.numFramesToGenerate, (int) result, optionsSubmitted, (int) stateResult,
+                    requestedInterpolationCount, options.numFramesToGenerate, (int) result, optionsSubmitted, (int) stateResult,
                     actualState.numFramesToGenerateMax, actualState.numFramesActuallyPresented, (int) actualState.status);
         }
+        if (_optionsTelemetryCalls % 300 == 1 || result != sl::Result::eOk)
+            LOG_INFO("F6 FG configuration: owner={} lifecycle={} source={} requested_generated={} attempted_generated={} options_result={} admission_result={} submitted={} accepted_known={} accepted_generated={} accepted_mode={} configured_fixed_total={} capability_known={} raw_max_generated={} sdk_interval_presented={}; generated=UNKNOWN scanout=UNKNOWN",
+                _genshinOwnerGeneration, _providerOptionsLifecycle, willDispatchFrame, requestedInterpolationCount,
+                options.numFramesToGenerate, static_cast<int>(outcome.sdkResult), static_cast<int>(result),
+                optionsSubmitted, _generationState.acceptedKnown, _generationState.acceptedGenerated,
+                static_cast<int>(_generationState.acceptedMode), _generationState.FixedTotal(),
+                _generationState.capabilityKnown, _generationState.rawMaxGenerated, _generationState.rawPresented);
         return result;
     };
     const auto setReflexOptions = [&]() {
@@ -2559,11 +3327,15 @@ bool DLSSG_Dx12::Dispatch()
         reflexConst.mode = native::lowlatency::WantsBoostForFrameGeneration() ? sl::ReflexMode::eLowLatencyWithBoost
                                                                                : sl::ReflexMode::eLowLatency;
         reflexConst.useMarkersToOptimize = ReflexHooks::gameIsSendingMarkers();
-        _genshinReflexOwnership = genshinFrame ? GenshinReflexOwnership::Running : GenshinReflexOwnership::None;
-        _genshinReflexOffReported = false;
-        const auto result = SetStarRailDispatchOptions(_starRailReflexOptions, reflexConst,
+        _reflexOwnership = ReflexOwnership::Running;
+        _reflexOffReported = false;
+        const auto outcome = SetDispatchOptions(_reflexOptionsAck, optionsScope, fIndex, reflexConst,
             willDispatchFrame, resumingInputGap && (!starRailFrame || restartStarRailRuntime),
-            [&]() { return StreamlineProxy::ReflexSetOptions()(reflexConst); });
+            [&]() {
+                const auto setOptions = StreamlineProxy::ReflexSetOptions();
+                return setOptions ? setOptions(reflexConst) : sl::Result::eErrorMissingOrInvalidAPI;
+            });
+        const auto result = outcome.Result();
         if (result != sl::Result::eOk)
             LOG_ERROR("Couldn't set Reflex options, error: {}", magic_enum::enum_name(result));
         return result;
@@ -2573,12 +3345,9 @@ bool DLSSG_Dx12::Dispatch()
     if (!resumingInputGap && (dispatchOptionsResult = setAndObserveOptions()) != sl::Result::eOk)
     {
         LOG_ERROR("Couldn't set DLSSG options, error: {}", magic_enum::enum_name(dispatchOptionsResult));
-        if (genshinFrame || CanRetainForInputGap() || nativeSource)
-        {
-            Deactivate();
-            UpdateTarget();
-            return false;
-        }
+        Deactivate();
+        UpdateTarget();
+        return false; // No owner may publish an unaccepted generated-frame count.
     }
     if (genshinFrame && (!_genshinInputs[fIndex] || !_genshinInputs[fIndex]->acceptedBlocking))
     {
@@ -2588,16 +3357,22 @@ bool DLSSG_Dx12::Dispatch()
     }
 
     const auto reflexResult = setReflexOptions();
-    if (nativeSource && reflexResult!=sl::Result::eOk)
-        return RefuseDepthContract("native-reflex-options");
-    if (starRailFrame && (reflexResult != sl::Result::eOk || !sourceStillCurrent())) return false;
+    if (reflexResult != sl::Result::eOk)
+    {
+        InvalidateDispatchOptions();
+        if (nativeSource) return RefuseDepthContract("native-reflex-options");
+        return false;
+    }
+    if (starRailFrame && !sourceStillCurrent()) return false;
 
     if (!_haveHudless.has_value())
     {
         _haveHudless = IsUsingHudless(fIndex);
     }
 
-    if (!_noHudless[fIndex])
+    // Direct upscaler colour was joined/tagged at the final endpoint. Retagging
+    // an earlier raw candidate here could replace the final NR colour route.
+    if (!_noHudless[fIndex] && !OwnsUpscalerDepthContract())
     {
         auto res = &_frameResources[fIndex][FG_ResourceType::HudlessColor];
         if (res->validity != FG_ResourceValidity::ValidNow)
@@ -2742,6 +3517,11 @@ bool DLSSG_Dx12::Dispatch()
     if (depthContractFrame && (!GuideTagsCurrent(fIndex,willDispatchFrame) ||
         (nativeSource && !NativeGuideSourceCurrent(nativeSource))))
         return RefuseDepthContract("guide-pair-changed-after-constants");
+    // SetConstants/retagging can reenter the owner just like SetOptions. Never
+    // publish an old successful configuration as the new source's admission.
+    if (!CanSubmitInputs() || !_isActive || optionsFrame != _frameCount ||
+        !(optionsScope == CurrentDispatchScope(fIndex)) ||
+        !_generationState.Accepted(optionsScope, willDispatchFrame)) return false;
     if (nativeSource && options.mode!=sl::DLSSGMode::eOff)
     {
         _nativeGuideUses[fIndex].dispatched=true;
@@ -2790,6 +3570,43 @@ bool DLSSG_Dx12::Dispatch()
     }
     if (!genshinFrame || DetailedGenshinFrameLog(willDispatchFrame)) LOG_DEBUG("Result: Ok");
 
+    if (depthContractFrame)
+    {
+        try
+        {
+            auto& observation=_guideObservations[fIndex];auto& snapshot=observation.snapshot;
+            snapshot.scaleX=constData.mvecScale.x;snapshot.scaleY=constData.mvecScale.y;
+            snapshot.jitterX=constData.jitterOffset.x;snapshot.jitterY=constData.jitterOffset.y;
+            snapshot.depthInverted=constData.depthInverted==sl::Boolean::eTrue;
+            snapshot.accepted=true;
+            snapshot.uiProtected=options.enableUserInterfaceRecomposition==sl::eTrue;
+            snapshot.resetReason=constData.reset==sl::Boolean::eTrue ? "actual SDK reset=true" : "actual SDK reset=false";
+            auto facts=GuideDiagnostics::TraceFacts(snapshot,FrameTrace::Kind::ConstantsAccepted);
+            facts.token=static_cast<uint64_t>(*frameToken);facts.tokenKnown=true;
+            facts.scaleX=constData.mvecScale.x;facts.scaleY=constData.mvecScale.y;
+            facts.jitterX=constData.jitterOffset.x;facts.jitterY=constData.jitterOffset.y;
+            facts.constantsKnown=true;facts.depthInverted=snapshot.depthInverted;
+            facts.reset=constData.reset==sl::Boolean::eTrue;
+            const auto& depthTag=_guideTags[fIndex][0];
+            const auto& motionTag=_guideTags[fIndex][1];
+            facts.depth=reinterpret_cast<uint64_t>(depthTag.input.copy?depthTag.input.copy:depthTag.input.resource);
+            facts.motion=reinterpret_cast<uint64_t>(motionTag.input.copy?motionTag.input.copy:motionTag.input.resource);
+            GuideDiagnostics::Observe(GuideDiagnostics::Consumer::Fg,snapshot,facts,"SDK constants",true,
+                static_cast<int>(result));
+            PublishGuideObservation(fIndex,observation.submitted?GuideDiagnostics::Stage::Submitted:
+                GuideDiagnostics::Stage::Recorded,
+                "current guide tags and constants accepted; SDK enabled/generated identity unknown; UI optional");
+            // Producer completion may arrive before SDK constants. Preserve the
+            // source-bound constants without granting SDK completion authority.
+            auto& pending=_guidePendingCompletions[fIndex];
+            if (pending.submitted && pending.snapshot.source==snapshot.source &&
+                pending.frame==observation.frame && pending.snapshot.epoch==snapshot.epoch &&
+                pending.snapshot.configuration==snapshot.configuration)
+                pending.snapshot=snapshot;
+        }
+        catch (...) {}
+    }
+
     // Menu interlocks may successfully submit Off. That does not authorize a
     // native source transaction at the next SDK Present.
     return !nativeSource || options.mode!=sl::DLSSGMode::eOff;
@@ -2805,7 +3622,15 @@ DLSSG_Dx12::~DLSSG_Dx12()
     if (!Shutdown()) QuarantineFailedTeardown();
 }
 
-bool DLSSG_Dx12::SetInterpolatedFrameCount(UINT interpolatedFrameCount) { return true; }
+bool DLSSG_Dx12::SetInterpolatedFrameCount(UINT interpolatedFrameCount)
+{
+    // The next authenticated Dispatch applies menu/config requests. This API
+    // cannot acknowledge a new count merely because it is within capability.
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    return _generationState.acceptedKnown && _generationState.acceptedOwner == CurrentProviderOwner() &&
+        _generationState.acceptedMode == sl::DLSSGMode::eOn &&
+        interpolatedFrameCount == _generationState.acceptedGenerated;
+}
 
 FGExecutionGuard DLSSG_Dx12::BeginNativeUpscalerInputs(ID3D12Device* device, FG_Constants& fgConstants)
 {
@@ -2905,7 +3730,7 @@ void DLSSG_Dx12::RequestGenshinResume()
     // actual scalar transition to EvaluateState's established lock ordering.
     const auto& state=State::Instance();
     if(state.isShuttingDown || !Config::Instance()->FGEnabled.value_or_default() ||
-       !GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) || state.currentFG!=this ||
+       !(F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())) || state.currentFG!=this ||
        state.activeFgInput!=FGInput::Upscaler || state.activeFgOutput!=FGOutput::DLSSG) return;
     auto request = _genshinResumeRequests.load(std::memory_order_relaxed);
     while (request != UINT64_MAX && !_genshinResumeRequests.compare_exchange_weak(
@@ -2930,7 +3755,9 @@ void DLSSG_Dx12::ReleaseObjects() { (void)ReleaseObjectsChecked(); }
 bool DLSSG_Dx12::ReleaseObjectsChecked()
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
-    InvalidateStarRailOptions();
+    _pacingLifetime->CloseAdmission();
+    if (!_pacingLifetime->Idle()) return false;
+    InvalidateProviderCapabilities();
     if (_teardownCompleting) return false;
     if (_managedRetained || _inputContinuity.Held()) Deactivate();
     if (!CompletePendingTeardown()) return false;
@@ -2948,6 +3775,9 @@ bool DLSSG_Dx12::ReleaseObjectsChecked()
         SAFE_RELEASE(_scCommandAllocator[i]);
         SAFE_RELEASE(_scCommandList[i]);
         SAFE_RELEASE(dlssgFence[i]);
+        // Host drain and SDK free preceded release of these executable lists.
+        _dx11GuideInputs[i][0].Reset(); _dx11GuideInputs[i][1].Reset();
+        _dx11GuideBorrowed[i]=false; _dx11GuideSealedFrame[i]=0;
 
         // Reset command list state
         _scCommandListResetted[i] = false;
@@ -2974,7 +3804,7 @@ void DLSSG_Dx12::CreateObjects(ID3D12Device* InDevice)
     if (_uiCommandAllocator[0] != nullptr)
         return;
 
-    InvalidateStarRailOptions();
+    InvalidateProviderCapabilities();
     LOG_DEBUG("");
 
     do
@@ -3292,6 +4122,10 @@ bool DLSSG_Dx12::Present()
     if (fIndex < 0) return false;
     if (!OrderNativeGuides(static_cast<UINT>(fIndex)))
         return CanSubmitInputs() ? RefuseDepthContract("native-source-not-submitted",false) : false;
+    if (!inputGap && OwnsUpscalerDepthContract() &&
+        (_dx11GuideSealedFrame[fIndex]!=_frameCount ||
+         GuideCapture::GetPreviewDemand().mode==GuideCapture::PreviewMode::FgColour))
+        CaptureAcceptedGuides(static_cast<UINT>(fIndex));
     if (!genshinFrame || DetailedGenshinFrameLog(_frameCount)) LOG_DEBUG("fIndex: {}", fIndex);
 
     const auto failSubmission = [&]() {
@@ -3429,23 +4263,9 @@ bool DLSSG_Dx12::Present()
         }
         else if (_uiCommandListResetted[fIndex])
         {
-            LOG_DEBUG("Executing _uiCommandList[{}]: {:X}", fIndex, (size_t) _uiCommandList[fIndex]);
-            auto closeResult = _uiCommandList[fIndex]->Close();
-
-            if (closeResult != S_OK)
-            {
-                LOG_ERROR("_uiCommandList[{}]->Close() error: {:X}", fIndex, (UINT) closeResult);
-                _uiCloseFailed[fIndex] = true; // Not submitted; never re-Close/replay this list.
-                return failSubmission();
-            }
-            _gameCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList**) &_uiCommandList[fIndex]);
-            _uiCommandListResetted[fIndex] = false; // Submitted even when Signal fails.
-            const auto signalResult = _gameCommandQueue->Signal(_uiFence, _uiAllocatorFenceValues[fIndex]);
-            if (FAILED(signalResult))
-            {
-                LOG_ERROR("UI allocator fence Signal failed. slot {}, HRESULT {:X}", fIndex, (UINT) signalResult);
-                return failSubmission();
-            }
+            // The same real submission path serves early shared-guide sealing,
+            // optional final-colour preview and ordinary Present recordings.
+            if (!SubmitUICommandList(static_cast<UINT>(fIndex))) return failSubmission();
         }
 
         if (_zzzSCCompletion)
@@ -3628,7 +4448,7 @@ static bool DistinctGenshinComOwners(IUnknown* left, IUnknown* right)
 bool DLSSG_Dx12::IsGenshinBridgeOwner() const
 {
     const auto& state = State::Instance();
-    return GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) &&
+    return (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())) &&
         state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::DLSSG &&
         state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
         state.currentFG == this && SameGenshinComOwner(state.currentFGSwapchain, _swapChain);
@@ -3961,7 +4781,7 @@ void DLSSG_Dx12::EndGenshinPresent(const std::shared_ptr<const GenshinInputRetir
         const auto getState = StreamlineProxy::DLSSGGetState();
         const auto observeState = [&]() {
             // SAME existing post-Present query, never a second consumptive query.
-            const auto result = getState(viewport, actualState, nullptr);
+            const auto result = QueryProviderState(actualState,framegen::DlssgStateQueryReason::CompletionFence);
             stateResult = static_cast<int>(result);
             _genshinStateObservation={};
             _genshinStateObservation.frame=receipt->frame;
@@ -4126,7 +4946,7 @@ void DLSSG_Dx12::RememberGenshinPresentQueue(IDXGISwapChain* swapchain, ID3D12Co
             _starRailGuideQueueCurrent=dlssg::depth_contract::SameOwner(queue,_gameCommandQueue);
         }
     }
-    if (!GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) || !swapchain || !queue) return;
+    if (!(F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())) || !swapchain || !queue) return;
     Microsoft::WRL::ComPtr<IUnknown> identity;
     if (FAILED(swapchain->QueryInterface(IID_PPV_ARGS(&identity))) || !identity) return;
     _genshinCreatedPresentQueue = queue;
@@ -4235,7 +5055,7 @@ void DLSSG_Dx12::SuspendGenshinPresent()
     std::lock_guard continuityLock(_inputContinuityMutex);
     // Check before the route predicate: owner/config loss must also drain.
     CheckGenshinPendingInputs();
-    if (_teardownPending || _genshinReflexOwnership == GenshinReflexOwnership::ReleasePending)
+    if (_teardownPending || _reflexOwnership == ReflexOwnership::ReleasePending)
     {CompletePendingTeardown();return;}
     // A completed positive receipt must not wait for fresh input that its own
     // retained Frame may be preventing. Original vendor+host gates still apply.
@@ -4379,6 +5199,31 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
     if (fIndex < 0 || fIndex >= BUFFER_COUNT) return false;
 
     auto& type = inputResource->type;
+    if (OwnsUpscalerDepthContract() && type==FG_ResourceType::HudlessColor &&
+        inputResource!=_upscalerColourPublication)
+    {
+        // Only the explicit post-successful-Evaluate capture scope can offer a
+        // candidate. Ambient tracker callbacks cannot label an old image current.
+        const auto source=_upscalerHudlessCapture;
+        const auto captureSlot=GetIndex();
+        if (!UpscalerColourCurrent(source) || !_upscalerColourSucceeded[captureSlot] ||
+            source->list!=reinterpret_cast<uintptr_t>(inputResource->cmdList) || inputResource->copy ||
+            inputResource->validity!=FG_ResourceValidity::UntilPresent ||
+            !dlssg::depth_contract::OnDevice(_device,inputResource->resource)) return false;
+        // Hudfix's capture counter used source->Frame(). Its legacy
+        // GetIndexWillBeDispatched hint cannot redirect this exact-source copy.
+        _upscalerPendingHudless[captureSlot]={source,*inputResource};
+        _upscalerPendingHudless[captureSlot].input.frameIndex=captureSlot;
+        _teardownBorrowedInputs=true;
+        return true; // No SDK colour tag until the final NR mutation is known.
+    }
+    const auto colourJoin=_upscalerFinalColours[fIndex];
+    const bool joinedColour=inputResource==_upscalerColourPublication && colourJoin &&
+        UpscalerColourCurrent(colourJoin->source) && _upscalerColourSucceeded[fIndex];
+    if (OwnsUpscalerDepthContract() && type==FG_ResourceType::HudlessColor &&
+        (!joinedColour || !dlssg::colour::CanUseHudless(colourJoin->source->key,
+            _upscalerPendingHudless[fIndex].source ? _upscalerPendingHudless[fIndex].source->key : dlssg::colour::Source{},
+            colourJoin->mutation))) return false;
     const bool checkedGuide=OwnsDepthContract() &&
         (type==FG_ResourceType::Depth || type==FG_ResourceType::Velocity);
     const auto publicationOwner=CurrentInputOwner();
@@ -4410,6 +5255,16 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
         return false; // A marker alone cannot turn an old recording into new-source guides.
     if (type == FG_ResourceType::PresentColor)
     {
+        if (joinedColour)
+        {
+            const auto& endpoint=colourJoin->endpoint;const auto& desc=colourJoin->description;
+            if (fIndex!=GetIndex() || UpscalerColourIdentity(inputResource->resource)!=endpoint.colour ||
+                inputResource->validity!=FG_ResourceValidity::UntilPresent || inputResource->cmdList || inputResource->copy ||
+                inputResource->state!=D3D12_RESOURCE_STATE_PRESENT || inputResource->top || inputResource->left ||
+                inputResource->width!=desc.Width || inputResource->height!=desc.Height) return false;
+        }
+        else
+        {
         // This is the actual provider backbuffer. It is not a HUDless proxy,
         // and only the authenticated Genshin transaction can supply this tag.
         if (fIndex != GetIndex() || _genshinConstantsFrame[fIndex] != _frameCount || !_swapChain ||
@@ -4432,6 +5287,7 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
             // Retain before tagging: even a failed/partial SetTagForFrame must
             // not leave only a raw PresentColor pointer in _frameResources.
             color = backbuffer;
+        }
         }
     }
 
@@ -4525,24 +5381,21 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
     fResource->height = inputResource->height;
     fResource->cmdList = inputResource->cmdList;
 
+    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance());
     auto willFlip = State::Instance().activeFgInput == FGInput::Upscaler &&
-                    !native::OpticalFgNrEnabled() && Config::Instance()->FGResourceFlip.value_or_default() &&
+                    !native::OpticalFgNrEnabled() &&
                     !normalizedGenshin && // R727: this exact private transaction already matches picture raster
-                    (type == FG_ResourceType::Velocity || type == FG_ResourceType::Depth);
+                    ((type == FG_ResourceType::Velocity && orientation.MotionCopy()) ||
+                     (type == FG_ResourceType::Depth && orientation.DepthCopy()));
 
     // A cached slot output is not a conversion result for this input.
     if (willFlip)
         fResource->copy = nullptr;
     if (checkedGuide && willFlip)
     {
-        // The existing RF shader has no NGX subrect-base arguments. Refuse that
-        // unsupported transform rather than quietly changing raster direction.
-        auto* feature=State::Instance().currentFeature;
-        if (fResource->left || fResource->top || !feature ||
-            (Config::Instance()->FGResourceFlipOffset.value_or_default() &&
-                fResource->resource->GetDesc().Height!=fResource->height) ||
-            fResource->width>(feature->LowResMV()?feature->RenderWidth():feature->DisplayWidth()) ||
-            fResource->height>(feature->LowResMV()?feature->RenderHeight():feature->DisplayHeight()))
+        // RF dispatches this guide's exact extent, with its own bounds checks.
+        // Nonzero NGX bases still require an explicit mapping contract.
+        if (fResource->left || fResource->top)
             return RefuseDepthContract("flip-subrect-or-dispatch-coverage");
         // The selected route uses its own per-slot shader/constants/descriptors.
         // A shared shader's CPU upload must not race another in-flight slot.
@@ -4588,7 +5441,7 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
     else if (type == FG_ResourceType::HudlessColor)
         _noHudless[fIndex] = false;
 
-    if ((type == FG_ResourceType::Depth || type == FG_ResourceType::Velocity || type == FG_ResourceType::PresentColor) ||
+    if (joinedColour || (type == FG_ResourceType::Depth || type == FG_ResourceType::Velocity || type == FG_ResourceType::PresentColor) ||
         fResource->validity != FG_ResourceValidity::UntilPresent)
     {
         // Only an actual conversion may extend a ValidNow caller's lifetime.
@@ -4603,7 +5456,7 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
 
             if (lastFormat[fIndex] != DXGI_FORMAT_UNKNOWN && lastFormat[fIndex] != desc.Format)
             {
-                State::Instance().fgChanged = true;
+                if (!joinedColour) State::Instance().fgChanged = true;
                 return false;
             }
 
@@ -4627,6 +5480,8 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
         resource.type = sl::ResourceType::eTex2d;
         resource.width = (uint32_t)(checkedGuide ? actualDescription.Width : fResource->width);
         if (checkedGuide) resource.nativeFormat=(uint32_t)actualDescription.Format;
+        else if (joinedColour && type==FG_ResourceType::PresentColor)
+            resource.nativeFormat=(uint32_t)colourJoin->description.Format;
 
         sl::ResourceTag resourceTag {};
         resourceTag.resource = &resource;
@@ -4681,7 +5536,7 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
             if (tokenResult != sl::Result::eOk || frameToken == nullptr)
             {
                 LOG_ERROR("GetNewFrameToken error: {} ({})", magic_enum::enum_name(tokenResult), (UINT) tokenResult);
-                if (_inputContinuity.Held())
+                if (!joinedColour && _inputContinuity.Held())
                 {
                     State::Instance().fgChanged = true;
                     UpdateTarget();
@@ -4708,9 +5563,15 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
 
             if (result != sl::Result::eOk)
             {
-                State::Instance().fgChanged = true;
-                UpdateTarget();
-                Deactivate();
+                // This optional colour join cannot revoke the independent
+                // accepted guide contract. Preserve normal failure handling
+                // for required guides and all other publication routes.
+                if (!joinedColour)
+                {
+                    State::Instance().fgChanged = true;
+                    UpdateTarget();
+                    Deactivate();
+                }
 
                 return false;
             }
@@ -4733,6 +5594,8 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
         if (starRailGuide && (sourceGeneration != _inputContinuity.SourceGeneration() ||
             sourceFrame != _frameCount || _starRailRecordingGeneration != sourceGeneration ||
             _starRailRecordingFrame != sourceFrame)) return false;
+        if (joinedColour && (!CanSubmitInputs() || !UpscalerColourCurrent(colourJoin->source) ||
+            _upscalerFinalColours[fIndex]!=colourJoin)) return false;
         if (checkedGuide)
         {
             if (!OwnsDepthContract() || !CanSubmitInputs() || sourceFrame!=_frameCount ||
@@ -4743,6 +5606,18 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
             tag.owner=publicationOwner;tag.input=*fResource;tag.description=actualDescription;
             tag.frame=sourceFrame;tag.generation=sourceGeneration;tag.nativeSerial=nativeSource.serial;
             tag.accepted=true;tag.flipped=flipped;
+            // The SDK token clock remains separate from the Evaluate/cache ID.
+            _guideObservations[fIndex].snapshot.providerFrame=nativeSource ?
+                nativeSource.sdkFrame : static_cast<uint32_t>(sourceFrame);
+        }
+        if ((type==FG_ResourceType::HudlessColor || type==FG_ResourceType::UIColor) &&
+            sourceFrame==_frameCount && sourceGeneration==_inputContinuity.SourceGeneration() &&
+            publicationOwner==CurrentInputOwner())
+        {
+            // Only the successful SDK tag above counts; map retention and
+            // optional capture/UI presence alone never assert protection.
+            _guideUiTagFrame[fIndex]=sourceFrame;
+            _guideUiTagGeneration[fIndex]=sourceGeneration;
         }
         SetResourceReady(type, fIndex);
         if (type == FG_ResourceType::Depth || type == FG_ResourceType::Velocity)
@@ -4767,6 +5642,8 @@ void DLSSG_Dx12::SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue
     if (_hookRetiring || _teardownCompleting || _teardownQuarantined || g_dlssgTeardownQuarantined.load()) return;
     if (_gameCommandQueue != queue)
     {
+        _pacingLifetime->CloseAdmission();
+        if (!_pacingLifetime->Idle()) return;
         // Mutable input queue setters cannot silently inherit a creation receipt.
         // This comparison runs only on a queue transition, never a frame wait.
         _starRailGuideQueueCurrent=_starRailGuidePresentQueue &&

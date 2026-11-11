@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "GenshinOwnHookProvenance.h"
+#include <runtime/F6InputPolicy.h>
 
 // Application method hooks retain Own transaction/detach ownership without
 // granting Windows-native query authority to an exact independent proxy.
@@ -52,6 +53,8 @@ inline LONG AddMethod(GenshinNativeQuery::Own::Batch& hooks, GenshinNativeQuery:
     const std::source_location& caller = std::source_location::current()) noexcept
 {
     const auto entry = table[index];
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled)
+        return hooks.Add(slot, original, nullptr, entry, hook, nullptr, nullptr, false, caller);
     const bool independent = IndependentReShadeMethod(table, entry);
     const auto result = hooks.Add(slot, original, nullptr, entry, hook, nullptr, nullptr, !independent, caller);
     // Close the classification/staging window. If Detours actually picked a

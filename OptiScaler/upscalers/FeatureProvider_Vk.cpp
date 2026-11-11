@@ -5,6 +5,7 @@
 #include "Config.h"
 
 #include "NVNGX_Parameter.h"
+#include "FeatureTransition.h"
 
 #include "upscalers/fsr2/FSR2Feature_Vk.h"
 #include "upscalers/dlss/DLSSFeature_Vk.h"
@@ -129,7 +130,7 @@ bool FeatureProvider_Vk::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_
         ImGui::InsertNotification({ ImGuiToastType::Warning, 10000, "Falling back to FSR 2.2" });
         *feature = std::make_unique<FSR2FeatureVk>(handleId, parameters);
         upscaler = Upscaler::FSR22;
-        loaded = true; // Assuming the fallback always loads successfully
+        loaded = (*feature)->ModuleLoaded(); // Construction alone does not establish availability.
     }
 
     // DLSSD is stored in the config as DLSS
@@ -153,42 +154,41 @@ bool FeatureProvider_Vk::ChangeFeature(Upscaler upscaler, VkInstance instance, V
     if (state.newBackend == Upscaler::Reset || dlssOnNonCapable)
         state.newBackend = cfg.VulkanUpscaler.value_or_default();
 
-    contextData->changeBackendCounter++;
+    const auto phase = FeatureTransition::Advance(contextData->changeBackendCounter);
+    if (phase == FeatureTransition::Phase::Invalid)
+    {
+        LOG_ERROR("Invalid upscaler rebuild phase: {}", contextData->changeBackendCounter);
+        return false;
+    }
 
     LOG_INFO("changeBackend is true, counter: {0}", contextData->changeBackendCounter);
 
     // first release everything
-    if (contextData->changeBackendCounter == 1)
+    if (phase == FeatureTransition::Phase::Retire)
     {
         if (contextData->feature != nullptr)
         {
             LOG_INFO("changing backend to {0}", UpscalerDisplayName(state.newBackend));
 
-            auto* dc = contextData->feature.get();
-            // Use given params if using DLSS passthrough
             const bool isPassthrough = state.newBackend == Upscaler::DLSSD || state.newBackend == Upscaler::DLSS;
-
-            contextData->createParams = isPassthrough ? parameters : GetNGXParameters(API::Vulkan, false);
-            contextData->createParams->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, dc->GetFeatureFlags());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_Width, dc->RenderWidth());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_Height, dc->RenderHeight());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_OutWidth, dc->DisplayWidth());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_OutHeight, dc->DisplayHeight());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_PerfQualityValue, dc->PerfQualityValue());
-
-            dc = nullptr;
+            auto retired = FeatureTransition::Prepare(*contextData, parameters, isPassthrough,
+                []() -> ContextData<IFeature_Vk>::ParameterOwner {
+                    return { GetNGXParameters(API::Vulkan, false),
+                        [](NVSDK_NGX_Parameter* p) { delete static_cast<NVNGX_Parameters*>(p); } };
+                }, [](auto& table, auto& feature) { FeatureTransition::CopyRecipe(table, feature); });
+            if (!retired)
+            {
+                LOG_ERROR("Cannot prepare upscaler replacement; current feature retained");
+                contextData->changeBackendCounter = 0;
+                return false;
+            }
 
             vkDeviceWaitIdle(device);
 
             State::Instance().currentFeature = nullptr;
-
-            Util::DelayedDestroy(std::move(contextData->feature));
-
-            // LOG_DEBUG("sleeping before reset of current feature for 1000ms");
-            // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
-            // contextData->feature.reset();
-            // contextData->feature = nullptr;
+            // The feature destructor still owns its existing GPU drain contract.
+            // Its exact initialization table survives alongside it.
+            Util::DelayedDestroy(std::move(retired));
         }
         else
         {
@@ -197,11 +197,7 @@ bool FeatureProvider_Vk::ChangeFeature(Upscaler upscaler, VkInstance instance, V
             state.newBackend = Upscaler::Reset;
             state.changeBackend[handleId] = false;
 
-            if (contextData->createParams != nullptr)
-            {
-                TryDestroyNGXParameters(contextData->createParams, NVNGXProxy::VULKAN_DestroyParameters());
-                contextData->createParams = nullptr;
-            }
+            contextData->ClearCreateParams();
 
             contextData->changeBackendCounter = 0;
 
@@ -211,7 +207,7 @@ bool FeatureProvider_Vk::ChangeFeature(Upscaler upscaler, VkInstance instance, V
         return true;
     }
 
-    if (contextData->changeBackendCounter == 2)
+    if (phase == FeatureTransition::Phase::Construct)
     {
         LOG_INFO("Creating new {} upscaler", UpscalerDisplayName(state.newBackend));
 
@@ -220,13 +216,18 @@ bool FeatureProvider_Vk::ChangeFeature(Upscaler upscaler, VkInstance instance, V
         if (!GetFeature(state.newBackend, handleId, contextData->createParams, &contextData->feature))
         {
             LOG_ERROR("Upscaler can't created");
+            contextData->feature.reset();
+            contextData->ClearCreateParams();
+            contextData->changeBackendCounter = 0;
+            state.newBackend = Upscaler::Reset;
+            state.changeBackend[handleId] = false;
             return false;
         }
 
         return true;
     }
 
-    if (contextData->changeBackendCounter == 3)
+    if (phase == FeatureTransition::Phase::Initialize)
     {
         // next frame create context
         auto initResult = false;
@@ -273,14 +274,7 @@ bool FeatureProvider_Vk::ChangeFeature(Upscaler upscaler, VkInstance instance, V
             state.changeBackend[handleId] = false;
         }
 
-        // If this is an OptiScaler fake NVNGX param table, delete it
-        int optiParam = 0;
-
-        if (contextData->createParams->Get("OptiScaler", &optiParam) == NVSDK_NGX_Result_Success && optiParam == 1)
-        {
-            TryDestroyNGXParameters(contextData->createParams, NVNGXProxy::VULKAN_DestroyParameters());
-            contextData->createParams = nullptr;
-        }
+        contextData->ClearCreateParams();
     }
 
     // if initial feature can't be inited

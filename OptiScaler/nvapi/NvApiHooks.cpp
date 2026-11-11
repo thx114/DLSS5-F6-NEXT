@@ -11,6 +11,7 @@
 #include <detours/detours.h>
 #include <misc/IdentifyGpu.h>
 #include <low_latency/input/input_reflex.h>
+#include <atomic>
 
 // #define LOG_ALL_DRS_GET_CALLS
 
@@ -149,6 +150,31 @@ NvAPI_Status __stdcall NvApiHooks::hkNvAPI_DRS_GetSetting(NvDRSSessionHandle hSe
             if (State::Instance().activeFgOutput == FGOutput::DLSSG)
             {
                 pSetting->u32CurrentValue = NGX_DLSSG_MODE_DISABLED;
+            }
+        }
+
+        const auto fgModelPreset = Config::Instance()->FGDLSSGModelPreset.value_or_default();
+        if (fgModelPreset >= 1 && fgModelPreset <= 3)
+        {
+            if (settingId == NGX_DLSS_FG_OVERRIDE_ID && pSetting->settingType == NVDRS_DWORD_TYPE)
+            {
+                pSetting->u32CurrentValue = NGX_DLSS_FG_OVERRIDE_ON;
+                pSetting->isCurrentPredefined = 0;
+            }
+            else if (settingId == NGX_DLSS_FG_OVERRIDE_RENDER_PRESET_SELECTION_ID &&
+                     pSetting->settingType == NVDRS_DWORD_TYPE)
+            {
+                static constexpr NvU32 presetValues[] = {
+                    NGX_DLSS_FG_OVERRIDE_RENDER_PRESET_SELECTION_RENDER_PRESET_A,
+                    NGX_DLSS_FG_OVERRIDE_RENDER_PRESET_SELECTION_RENDER_PRESET_B,
+                    NGX_DLSS_FG_OVERRIDE_RENDER_PRESET_SELECTION_RENDER_PRESET_C
+                };
+                pSetting->u32CurrentValue = presetValues[fgModelPreset - 1];
+                pSetting->isCurrentPredefined = 0;
+
+                static std::atomic<NvU32> lastReported { UINT32_MAX };
+                if (lastReported.exchange(fgModelPreset, std::memory_order_relaxed) != fgModelPreset)
+                    LOG_INFO("DLSS FG model preset overridden for this process: {}", char('A' + fgModelPreset - 1));
             }
         }
 

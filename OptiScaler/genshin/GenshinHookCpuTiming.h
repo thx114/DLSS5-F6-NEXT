@@ -7,6 +7,7 @@
 #include <type_traits>
 #include <utility>
 #include "GenshinShaderCacheMetrics.h"
+#include "../runtime/FsrHookHudMetrics.h"
 
 // R448: bounded observational wall timing only. No resource/route authority.
 // Fixed TLS counters; only sampled calls read QPC. Publication uses per-thread
@@ -15,6 +16,18 @@ namespace GenshinHookCpuTiming {
 inline constexpr unsigned Stride=64, ThreadLimit=32, PathCount=6;
 inline std::atomic<unsigned> control{0}; // bit0 timing, bit1 controls.Active() snapshot
 inline bool Enabled() noexcept {return (control.load(std::memory_order_relaxed)&1)!=0;}
+// Test-process override only: read once, preserve the caller's Win32 error and
+// leave the persisted controls/profile untouched. No graphics authority changes.
+inline bool ProcessTimingRequested() noexcept {
+    static const bool requested=[]() noexcept {
+        const auto error=GetLastError();
+        wchar_t value[2]{};
+        const auto size=GetEnvironmentVariableW(L"OPTISCALER_HOOK_CPU_TIMING",value,2);
+        SetLastError(error);
+        return size==1 && value[0]==L'1';
+    }();
+    return requested;
+}
 enum class Hook : unsigned {
     hkCachePSSetShader,
     hkCacheStatePSSetShader,
@@ -120,6 +133,15 @@ enum class Stage : unsigned {
     FgFrameLimitSleep,
     FgSdkPresent, // R725: saved DLSSG Present API stack wall, includes vendor callbacks.
     FgPclMarker, // R897: existing host PCL forwarding only; inclusive, stride64.
+    MapPreimage,
+    MapInvalidate,
+    MapSemantic,
+    MapPortable,
+    MapProbe,
+    UnmapInvalidate,
+    UnmapProbe,
+    UnmapPortable,
+    UnmapSemantic,
     Count
 };
 enum Field : unsigned {
@@ -258,7 +280,9 @@ inline const char* StageName(unsigned i) noexcept {
         "FgReflexSleep",
         "FgFrameLimitSleep",
         "FgSdkPresent",
-        "FgPclMarker"};return names[i];
+        "FgPclMarker",
+        "MapPreimage","MapInvalidate","MapSemantic","MapPortable","MapProbe",
+        "UnmapInvalidate","UnmapProbe","UnmapPortable","UnmapSemantic"};return names[i];
 }
 using Values=std::array<uint64_t,FieldCount>;
 // R684: out-of-line, non-constexpr constructors bound initialization at
@@ -314,6 +338,59 @@ inline int64_t Tick() noexcept {
     const auto error=GetLastError();LARGE_INTEGER v{};
     const bool ok=QueryPerformanceCounter(&v)!=FALSE;SetLastError(error);
     return ok?v.QuadPart:0;
+}
+// Independent of Debug/control and the inclusive monitor rows. Admission is
+// established by Family's existing serialized, current Genshin capture Present;
+// individual roots still require an existing direct owner/context check.
+struct FsrHudClock {static int64_t Tick() noexcept {return GenshinHookCpuTiming::Tick();}};
+using FsrHudSampler=FsrHookHudMetrics::RootSampler<HookCount,FsrHudClock>;
+inline constinit thread_local FsrHudSampler fsrHudLocal;
+inline std::atomic<uint64_t> fsrHudGeneration{1};
+inline FsrHookHudMetrics::SnapshotCell fsrHudPublication;
+inline void InvalidateFsrHudOwner() noexcept {
+    fsrHudGeneration.fetch_add(1,std::memory_order_acq_rel);fsrHudLocal.Reset(0);
+}
+inline void BeginFsrHudOwner() noexcept {
+    fsrHudLocal.Reset(fsrHudGeneration.fetch_add(1,std::memory_order_acq_rel)+1);
+}
+inline void ConfirmFsrHudRoot(bool owned) noexcept {
+    if(fsrHudLocal.Generation()==fsrHudGeneration.load(std::memory_order_acquire))fsrHudLocal.Confirm(owned);
+}
+class FsrHudHookScope final {
+    FsrHudSampler::Ticket ticket_{};
+public:
+    FsrHudHookScope(Hook hook,bool collect) noexcept {
+        // Present has a broader owner and includes unrelated frame/SDK work.
+        if(hook==Hook::Present || hook==Hook::Present1 || !fsrHudLocal.Generation())return;
+        if(fsrHudLocal.Generation()!=fsrHudGeneration.load(std::memory_order_acquire))return;
+        ticket_=fsrHudLocal.Enter(static_cast<unsigned>(hook),collect);
+    }
+    void Finish() noexcept {
+        if(!ticket_.generation)return;
+        if(ticket_.generation==fsrHudGeneration.load(std::memory_order_acquire))fsrHudLocal.Leave(ticket_);
+        else if(fsrHudLocal.Generation()==ticket_.generation)fsrHudLocal.Reset(0);
+        ticket_={};
+    }
+    ~FsrHudHookScope(){Finish();}
+    FsrHudHookScope(const FsrHudHookScope&)=delete;
+};
+class FsrHudOriginalScope final {
+    FsrHudSampler::NativeTicket ticket_{};
+public:
+    FsrHudOriginalScope() noexcept {ticket_=fsrHudLocal.BeginOriginal();}
+    ~FsrHudOriginalScope(){fsrHudLocal.EndOriginal(ticket_);}
+    FsrHudOriginalScope(const FsrHudOriginalScope&)=delete;
+};
+using FsrHudSnapshot=FsrHookHudMetrics::Snapshot;
+// HUD contract: unknown fields display "--". A known hookHost value MUST use
+// "~%.2fms/s" (Prefix='~'). Coverage is confirmed hook roots on this capture
+// thread only; unconfirmedRoots are omitted, NOT extrapolated into a total.
+// Ratios use their own actual hits/(hits+misses) in the SAME completed window.
+inline FsrHudSnapshot ReadFsrHudSnapshot() noexcept {
+    const auto generation=fsrHudGeneration.load(std::memory_order_acquire);
+    const auto view=FsrHookHudMetrics::Fresh(fsrHudPublication.Read(),generation,GetTickCount64());
+    if(generation!=fsrHudGeneration.load(std::memory_order_acquire))return {};
+    return view;
 }
 struct Local {
     int slot=-1;bool attempted=false;unsigned depth=0;
@@ -413,11 +490,19 @@ template<class F> decltype(auto) Call(Stage stage,F&& f,ResultKind kind=ResultKi
     if constexpr(std::is_void_v<std::invoke_result_t<F>>){std::forward<F>(f)();}
     else {auto result=std::forward<F>(f)();scope.Returned(static_cast<uint64_t>(result),kind);return result;}
 }
+// Attribute a real observer call without another logger, timer or resource read.
+// Return type and exceptions pass through unchanged; existing sampler controls,
+// stride and per-thread publication apply. These nested intervals are inclusive.
+template<class Work> decltype(auto) ObserveWork(Stage stage,Work&& work) {
+    Scope timing(stage);
+    return std::forward<Work>(work)();
+}
 class HookScope final {
+    FsrHudHookScope fsrHud_;
     unsigned hook_=HookCount,path_=0;bool sampled_=false,nested_=false,refused_=false;
     int64_t begin_=0,firstOriginal_=0;uint64_t original_=0,originalCalls_=0;bool inOriginal_=false,clockFailed_=false;
 public:
-    explicit HookScope(Hook hook,bool collect=true) noexcept {
+    explicit HookScope(Hook hook,bool collect=true) noexcept :fsrHud_(hook,collect) {
         const auto mode=control.load(std::memory_order_relaxed);
         if(!collect || !(mode&1))return;path_=(mode&2)?3:0;local.Claim();if(local.slot<0)return;
         hook_=static_cast<unsigned>(hook);nested_=local.depth++!=0;
@@ -428,6 +513,7 @@ public:
     void Internal(bool internal) noexcept {if(internal)path_=(path_>=3?3:0)+2;}
     void NonTarget(bool refused) noexcept {refused_=refused;if(refused && path_%3!=2)path_=(path_>=3?3:0)+1;}
     template<class F> decltype(auto) Original(F&& f) {
+        FsrHudOriginalScope fsrOriginal;
         if(!Active())return std::forward<F>(f)();
         ++originalCalls_;
         if(!sampled_)return std::forward<F>(f)();
@@ -439,6 +525,7 @@ public:
         return std::forward<F>(f)();
     }
     ~HookScope() noexcept {
+        fsrHud_.Finish();
         if(!Active())return;
         // Stop timing before counter aggregation/publication (documented observer cost).
         const auto end=sampled_?Tick():0;--local.depth;
@@ -743,7 +830,26 @@ inline ShaderCacheSnapshot ReadShaderCache() noexcept {
        GetTickCount64()-view[ShaderCacheSnapshot::EndMs]>2000)return {};
     return view;
 }
-template<class Emit> void OnPresent(bool on,bool bridgeActive,Emit&& emit) {
+// The existing one-second cache publisher calls this with the SAME completed
+// window. No Debug frequency/control writes or additional draw clock reads.
+inline void PublishFsrHudWindow(const ShaderCacheSnapshot& source) noexcept {
+    FsrHudSnapshot view;
+    view.beginMs=source[ShaderCacheSnapshot::BeginMs];view.endMs=source[ShaderCacheSnapshot::EndMs];
+    view.frames=source[ShaderCacheSnapshot::Frames];view.threadId=source[ShaderCacheSnapshot::ThreadId];
+    view.ownerGeneration=fsrHudLocal.Generation();
+    view.windowKnown=view.ownerGeneration && view.endMs>view.beginMs && view.frames && view.threadId;
+    view.shaderMetadata={source[ShaderCacheSnapshot::MetadataHits],source[ShaderCacheSnapshot::MetadataMisses]};
+    constexpr auto current=static_cast<unsigned>(GenshinLegacy::Family::ShaderCacheMetrics::Consumer::Current);
+    view.psBindingCurrent={source.detail.hits[current],source.detail.misses[current]};
+    const auto error=GetLastError();LARGE_INTEGER hz{};
+    const bool clock=QueryPerformanceFrequency(&hz)!=FALSE;SetLastError(error);
+    view.hookHost=fsrHudLocal.Summarize(clock?hz.QuadPart:0,view.endMs>view.beginMs?view.endMs-view.beginMs:0);
+    if(view.ownerGeneration!=fsrHudGeneration.load(std::memory_order_acquire))view={};
+    fsrHudPublication.Publish(view);fsrHudLocal.ClearWindow();
+}
+struct PresentClock {static ULONGLONG Now() noexcept {return GetTickCount64();}};
+template<class Clock=PresentClock,class Emit> void OnPresent(bool on,bool bridgeActive,Emit&& emit) {
+    on=on || ProcessTimingRequested();
     if(on && !frequency.load(std::memory_order_relaxed)){const auto error=GetLastError();LARGE_INTEGER f{};
         if(QueryPerformanceFrequency(&f))frequency.store(f.QuadPart,std::memory_order_relaxed);SetLastError(error);}
     const auto previous=control.exchange((on?1u:0u)|(bridgeActive?2u:0u),std::memory_order_acq_rel);
@@ -753,16 +859,22 @@ template<class Emit> void OnPresent(bool on,bool bridgeActive,Emit&& emit) {
     // other threads' TLS. Their already published values remain readable.
     const bool drain=on || (previous&1);
     if(!drain)return;
-    const auto now=GetTickCount64();auto due=next.load(std::memory_order_relaxed);
+    const auto now=Clock::Now();auto due=next.load(std::memory_order_relaxed);
     if(on && (now<due || !next.compare_exchange_strong(due,now+1000)))return;
     static std::atomic_flag draining=ATOMIC_FLAG_INIT;
     if(draining.test_and_set(std::memory_order_acquire))return;
     struct ReleaseDrain {std::atomic_flag& flag;~ReleaseDrain(){flag.clear(std::memory_order_release);}} release{draining};
     static std::array<std::array<uint64_t,BucketCount>,ThreadLimit> emitted{};
+    static std::array<std::array<uint64_t,BucketCount>,ThreadLimit> reported{};
     static std::array<std::array<MonitorReading,BucketCount>,ThreadLimit> monitorPrevious{};
     static uint64_t previousEpoch=UINT64_MAX,previousDrain=0;
     MonitorSnapshot monitor{};monitor.epoch=monitorEpoch.load(std::memory_order_acquire);
     const bool baseline=previousEpoch!=monitor.epoch;
+    // Keep live monitor/HUD publication at one second, independently of the
+    // expensive detailed cumulative text dump. Disable always drains its tail.
+    static uint64_t nextDetailed=0;
+    const bool detailed=baseline || !on || now>=nextDetailed;
+    if(detailed)nextDetailed=now+5000;
     monitor.beginMs=baseline?now:previousDrain;monitor.endMs=now;
     local.PublishAll();
     unsigned deferred=0;
@@ -771,7 +883,8 @@ template<class Emit> void OnPresent(bool on,bool bridgeActive,Emit&& emit) {
         for(unsigned id=0;id<BucketCount;++id){
             const auto& c=slots[t].cells[id];const auto before=c.version.load(std::memory_order_acquire);
             if(before&1){++deferred;continue;}
-            if(!before || emitted[t][id]==before)continue;Values v{};
+            const bool newMonitor=emitted[t][id]!=before;
+            if(!before || (!newMonitor && (!detailed || reported[t][id]==before)))continue;Values v{};
             for(unsigned i=0;i<FieldCount;++i)v[i]=c.values[i].load(std::memory_order_relaxed);
             // Acquire fence pairs with the writer's odd-version acq_rel update;
             // every payload is atomic, and unstable rows are deferred (no spin).
@@ -781,7 +894,7 @@ template<class Emit> void OnPresent(bool on,bool bridgeActive,Emit&& emit) {
             const bool hook=id<HookCount*PathCount;
             auto& old=monitorPrevious[t][id];
             const auto ticks=v[hook?Wrapper:Total];
-            if(!baseline && v[Samples]>=old.samples && ticks>=old.ticks){
+            if(newMonitor && !baseline && v[Samples]>=old.samples && ticks>=old.ticks){
                 auto& row=monitor.rows[hook?id/PathCount:HookCount+(id-HookCount*PathCount)/2];
                 row.samples+=v[Samples]-old.samples;row.ticks+=ticks-old.ticks;
             }
@@ -793,7 +906,10 @@ template<class Emit> void OnPresent(bool on,bool bridgeActive,Emit&& emit) {
         "bridge_on_external_non_target",
         "bridge_on_internal"};
             const char* path=hook?paths[id%PathCount]:((id-HookCount*PathCount)%2?"bridge_on_stage":"bridge_off_stage");
-            emit(tid,hook?HookName(id/PathCount):StageName((id-HookCount*PathCount)/2),path,v,frequency.load(std::memory_order_relaxed),deferred,refusedThreads.load(),on);
+            if(detailed && reported[t][id]!=before){
+                reported[t][id]=before;
+                emit(tid,hook?HookName(id/PathCount):StageName((id-HookCount*PathCount)/2),path,v,frequency.load(std::memory_order_relaxed),deferred,refusedThreads.load(),on);
+            }
         }
     }
     previousEpoch=monitor.epoch;previousDrain=now;PublishMonitor(monitor);

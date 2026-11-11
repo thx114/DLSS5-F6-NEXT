@@ -1,7 +1,5 @@
 #include <pch.h>
 #include "DLSSFeature_Dx12.h"
-#include <genshin/GenshinFsrSubstageProgress.h>
-#include <genshin/GenshinSrReceipt.h>
 #include <dxgi1_4.h>
 #include <Config.h>
 #include <upscalers/FeatureLifecycleTrace.h>
@@ -92,8 +90,6 @@ bool DLSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         return false;
     if (!_moduleLoaded)
     {
-        GenshinSubstage::Event(GenshinSubstage::Stage::ProviderAttempt,GenshinSubstage::State::Failed,
-            GenshinSubstage::Resource::Unknown,GenshinSubstage::Domain::Ngx,0,GenshinSubstage::Issue::NoProvider);
         LOG_ERROR("nvngx.dll or _nvngx.dll is not loaded!");
         return false;
     }
@@ -104,17 +100,7 @@ bool DLSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     {
         ProcessEvaluateParams(InParameters);
 
-        auto* outputScope=GenshinSrReceipt::active;
-        if(outputScope)outputScope->BeforeDlss12(InCommandList,InParameters,RenderWidth(),RenderHeight(),TargetWidth(),TargetHeight());
-        GenshinSubstage::ActualProviderCall providerCall;
-        auto* const transportScope = GenshinTransport::Scope::Current();
-        const bool recordingCpuEnabled = outputScope && transportScope && transportScope->lease &&
-            transportScope->parameters == InParameters && transportScope->owner.thread == GetCurrentThreadId();
-        GenshinSrRecordingCpu::Scope ngxCpu(static_cast<IFeature_Dx12*>(this), GenshinSrRecordingCpu::Stage::NgxEvaluate, recordingCpuEnabled);
         nvResult = NVNGXProxy::D3D12_EvaluateFeature()(InCommandList, _p_dlssHandle, InParameters, NULL);
-        ngxCpu.Finish(nvResult == NVSDK_NGX_Result_Success ? S_OK : E_FAIL);
-        providerCall.Returned(static_cast<uint32_t>(nvResult),nvResult==NVSDK_NGX_Result_Success);
-        if(outputScope)outputScope->Dlss12Returned(nvResult==NVSDK_NGX_Result_Success);
 
         if (nvResult != NVSDK_NGX_Result_Success)
         {
@@ -124,8 +110,6 @@ bool DLSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     }
     else
     {
-        GenshinSubstage::Event(GenshinSubstage::Stage::ProviderAttempt,GenshinSubstage::State::Failed,
-            GenshinSubstage::Resource::Unknown,GenshinSubstage::Domain::Ngx,0,GenshinSubstage::Issue::NoProvider);
         LOG_ERROR("_EvaluateFeature is nullptr");
         return false;
     }

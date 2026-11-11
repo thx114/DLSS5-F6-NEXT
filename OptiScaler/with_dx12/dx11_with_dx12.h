@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <atomic>
 #include <string>
 
 #include <nvsdk_ngx.h>
@@ -30,6 +31,8 @@ class Dx11WithDx12
     inline static ID3D12Fence* Dx12FenceTextureCopy = nullptr;
     inline static HANDLE Dx11SharedHandleForTextureCopy = NULL;
     inline static UINT64 TextureCopyFenceValue = 1;
+    // A failed borrowed-guide submission cannot allow another shared upload.
+    inline static std::atomic<bool> FgGuideWritesBlocked { false };
 
     // Sync objects are tied to the current D3D11 device, D3D12 device and D3D12 queue.
     // Backend switching can reset resource caches while FG input is still using the bridge,
@@ -147,7 +150,8 @@ class Dx11WithDx12
     static void ResetUpscalerResourceCache(bool releaseSyncResources = false);
 
     static bool SyncDx11ToDx12();
-    static bool SyncDx12ToDx11();
+    static bool SyncDx12ToDx11(ID3D12CommandQueue* completedReaderQueue = nullptr);
+    static void BlockFgGuideWrites() noexcept { FgGuideWritesBlocked.store(true, std::memory_order_release); }
     static bool CopyUpscalerOutputToDx11(UINT frameIndex);
 
     static bool CheckMask(ResourceMask mask, ResourceMask resource);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cwchar>
+#include <runtime/F6InputPolicy.h>
 
 namespace GameRouting
 {
@@ -27,6 +28,12 @@ inline Identity IdentifyExecutable(const wchar_t* executable) noexcept
 
 inline bool UseGenshinBridgeTransport(Identity identity, bool producerScopePresent) noexcept
 {
-    return identity == Identity::Genshin && producerScopePresent;
+    return F6InputPolicy::FsrBridgeEnabled && identity == Identity::Genshin && producerScopePresent;
+}
+
+inline bool UseGenshinPresentPipeline(Identity identity, bool requested) noexcept
+{
+    return F6InputPolicy::DirectDlssInputs && !F6InputPolicy::FsrBridgeEnabled &&
+        identity == Identity::Genshin && requested;
 }
 }

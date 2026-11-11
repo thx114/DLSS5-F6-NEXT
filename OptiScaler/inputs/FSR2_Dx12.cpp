@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <runtime/F6InputPolicy.h>
 #include "FSR2_Dx12.h"
 #include "GenshinFsrCreateDiagnostics.h"
 
@@ -1020,6 +1021,7 @@ static Fsr212::FfxErrorCode hk_ffxFsr2GetInterfaceDX12(Fsr212::FfxFsr2Interface2
 
 void HookFSR2ExeInputs()
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     LOG_INFO("Trying to hook FSR2 methods");
 
     if (KernelBaseProxy::GetProcAddress_()(exeModule, "ffxFsr2GetInterfaceKTGL") != nullptr ||
@@ -1332,6 +1334,7 @@ void HookFSR2ExeInputs()
 
 void HookFSR2Inputs(HMODULE module)
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     LOG_INFO("Trying to hook FSR2 methods");
 
     if (module != nullptr)
@@ -1419,6 +1422,7 @@ void HookFSR2Inputs(HMODULE module)
 
 void HookFSR2Dx12Inputs(HMODULE module)
 {
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
     return;
 
     LOG_INFO("Trying to hook FSR2 methods");

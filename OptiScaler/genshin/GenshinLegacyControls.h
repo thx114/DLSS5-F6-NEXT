@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <algorithm>
+#include <runtime/F6InputPolicy.h>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -34,7 +35,7 @@ struct ControlsSnapshot
     Settings settings{};
     bool enableFsr2Inputs=true,useFsr2Inputs=true;
     bool hookCpuTiming=false; // Observation only; excluded from Settings/route equality and epoch.
-    bool Active()const noexcept{return settings.enabled && enableFsr2Inputs && useFsr2Inputs;}
+    bool Active()const noexcept{return F6InputPolicy::FsrBridgeEnabled && settings.enabled && enableFsr2Inputs && useFsr2Inputs;}
 };
 inline bool ValidSettings(const Settings& s)noexcept
 {

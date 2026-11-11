@@ -30,6 +30,8 @@ struct Status
     bool entryInstalled=false, pending=false, srAccepted=false, nr=false, fg=false;
     uint64_t observedDraws=0, candidates=0, submitted=0, outputCopies=0, reusedCopies=0, instances=0;
     uint64_t tokenMatches=0,nativeReturns=0,targetShaderDraws=0,bindingRejected=0;
+    uint32_t targetDrawKind=0,targetDrawCount=0;
+    bool targetCountKnown=false;
     uint64_t beforeNativeReplacements=0; // Actual SR copyback; no native-return witness.
     uint64_t threeElementDraws=0,preShaderBlocked=0,shaderLookups=0,knownShaderDraws=0,unknownShaderDraws=0;
     CaptureStage captureStage=CaptureStage::NotInspected;
@@ -93,8 +95,6 @@ public:
     CapturePipeline(const CapturePipeline&)=delete;
     CapturePipeline& operator=(const CapturePipeline&)=delete;
     GenshinFsr::NativeDrawAction BeforeDraw(UINT elementCount,bool familyAllowed=true,bool countKnown=true,unsigned drawKind=0);
-    // Owner-thread positive known non-three draw; keeps all draw observers.
-    GenshinFsr::NativeDrawAction BeforeNonTargetDraw(UINT elementCount,unsigned drawKind);
     // Under the native owner lock, construction/owner Present only. Retry a
     // missing scratch state without replacing the pipeline or granting SR.
     void TryInitializeContextState();
@@ -142,15 +142,11 @@ struct OptionalDrawObserver {
 };
 // A hit skips observation, never the game draw. The hook must skip BOTH
 // observation Before and After, including indirect scope/return callbacks.
-// With no real observer, direct per-instance non-three counts can reject
-// capture. Three-element, DrawAuto and indirect draws need a known non-FSR PS.
+// Every draw needs a current known non-FSR PS to skip optional observation.
 // This negative classifier never grants SR, replay or decoded GPU arguments.
 bool TrySkipNonTargetDrawObservation(ID3D11DeviceContext*,UINT elementCount,bool countKnown,unsigned drawKind) noexcept;
 GenshinFsr::NativeDrawAction BeforeNativeDraw(ID3D11DeviceContext* context,UINT elementCount,bool inputsEnabled=true,bool countKnown=true,unsigned drawKind=0,
-    const ControlsSnapshot* acquiredControls=nullptr,bool knownNonTargetDraw=false,OptionalDrawObserver* observer=nullptr) noexcept;
-// knownNonTargetDraw is a caller hint only. The owner rechecks count, current
-// controls, context/thread and drain before omitting target capture getters;
-// depth/manual/guide/visible observers and after-draw pairing remain mandatory.
+    const ControlsSnapshot* acquiredControls=nullptr,OptionalDrawObserver* observer=nullptr) noexcept;
 // Lock-free entry/lifecycle demand for common D3D11 hooks, not a request for
 // all optional collectors. SR remains active while OptionalDrawObserver may be
 // unsubscribed under the real owner lock. False never cancels mandatory drain.

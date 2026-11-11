@@ -20,6 +20,7 @@
 #include <shaders/dlssnr/DlssNr_ProxyCurve.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <mutex>
@@ -36,6 +37,7 @@ struct HostFrame
     bool beforeUpscale = false;   // NR runs before SR
     bool finishedPicture = false; // NR runs on the finished picture
     bool motionMatchesPicture = false; // the vectors were measured on this picture (DlssNrFrameInfo::MotionMatchesPicture)
+    bool fullModelRequired = false; // valid measured motion does not grant output/detail reuse
     unsigned int workWidth = 0, workHeight = 0;
     unsigned int motionWidth = 0, motionHeight = 0, motionBaseX = 0, motionBaseY = 0;
     unsigned int motionAllocWidth = 0, motionAllocHeight = 0; // the motion texture itself
@@ -43,6 +45,13 @@ struct HostFrame
     bool depthInverted = false;
     float mvScaleX = 1.0f, mvScaleY = 1.0f; // raw * scale is motion-subrect pixels (DX12 derives it from model units)
     bool nativeTemporalRouteRequested = false; // verified StarRail native scene route; DetailReuse still owns enablement
+    // Independent full-model feedback. These fields never authorize interval
+    // reuse or modify the motion passed to the NR model / DLSS / FG.
+    bool independentFeedbackRequested = false;
+    bool nativePreSrRoute = false;
+    bool preSrProducerQueueVerified = false;
+    float currentRasterJitterUvX = 0, currentRasterJitterUvY = 0;
+    std::array<uint64_t, 3> preSrOwner {};
     bool temporalRequested = false; // opt-in persistent full-refresh feedback only
     bool lightEditFeedback = false; // StarRail/ZZZ: positive-light full-model edit, regional tone/detail feedback
     bool pictureTemporalRouteRequested = false; // actual Genshin finished-picture producer, not native scene MV
@@ -220,7 +229,9 @@ class Host
         w.hold = _motionGuard.Update(std::exchange(_dropped, -1.0f), maxDropped, sinceLast);
         if (!w.measure)
             _droppedLast = -1.0f; // nothing is being measured: the menu must not show an old reading
-        const char* whyNot = f.edgeCompression
+        const char* whyNot = f.fullModelRequired
+                                 ? "current picture requires full model evaluation"
+                                 : f.edgeCompression
                                  ? kEdgeCompression
                                  : UnavailableOnRoute(f.beforeUpscale, f.finishedPicture,
                                      f.motionMatchesPicture || (f.nativeTemporalRouteRequested && NativeGuideAuthority(f) &&
@@ -273,8 +284,13 @@ class Host
         const bool heldOff = on && whyNot != nullptr && (whyNot == fg || whyNot == kBelowMinimumFps);
         _gatedFrames = heldOff ? _gatedFrames + 1 : 0;
         // Feedback does not skip the model: interval 1 still captures/fuses every real NR frame.
-        w.wanted = on && whyNot == nullptr && (w.interval > 1 || (w.temporal && f.temporalRequested));
-        w.keep = heldOff && _gatedFrames <= kKeepGatedFrames;
+        // The selected consumer owns history even when its current guides are
+        // rejected. Falling back to legacy reuse would hide that rejection and
+        // feed an already-fused answer into the independent residual cache.
+        const bool feedbackOwnsHistory = f.independentFeedbackRequested;
+        w.wanted = on && !feedbackOwnsHistory && whyNot == nullptr &&
+            (w.interval > 1 || (w.temporal && f.temporalRequested));
+        w.keep = !feedbackOwnsHistory && heldOff && _gatedFrames <= kKeepGatedFrames;
         return w;
     }
 
@@ -324,10 +340,11 @@ class Host
         // Without frame generation NR runs on every present, so any skipped present is a gap. With it, the present
         // counter also counts the generated frames: the step that is normal is learnt (StepTracker).
         facts.frame = f.frameNumber;
-        if (!f.pictureFlowReuseVerified) _steps.Add(f.frameNumber);
-        // This is the successful SR source clock, not a physical FG Present clock.
+        const bool sourceClock = f.nativeTemporalRouteRequested || f.pictureFlowReuseVerified;
+        if (!sourceClock) _steps.Add(f.frameNumber);
+        // Native capture serials and successful SR source ordinals are not a physical FG Present clock.
         // A missing source is a real gap even when FG is active. Never learn it away.
-        facts.maxStep = f.pictureFlowReuseVerified ? 1ull : MaxStepFor(w.withFg, _steps.Typical());
+        facts.maxStep = sourceClock ? 1ull : MaxStepFor(w.withFg, _steps.Typical());
         // The saved change is in the values of the proxy curve it was made in, so another curve (or a frame that turns
         // passthrough, or back) starts over like any other change to the model's answer.
         const DlssNrReplaceCurve replaceCurve = ReplaceCurveFor(f.reversibleMode, f.passthrough);

@@ -1,11 +1,16 @@
 #include "pch.h"
+#include <runtime/F6InputPolicy.h>
+#include <runtime/SourcePresent.h>
 #include <framegen/FinalOutputEndpoint.h>
+#include <framegen/FgSourcePacing.h>
+#include <hooks/Streamline_Hooks.h>
 #include <integration/HoYoShade.h>
 #include <with_dx12/GenshinVisibleChild.h>
 #include <dlssnr/DlssNr.h>
 #include "FG_Hooks.h"
 #include "FGQueueIdleGate.h"
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <utility>
 #include <string_view>
@@ -44,6 +49,46 @@ static HANDLE _semaphore = nullptr;
 
 namespace
 {
+// FG SDK timing adapter begin
+// Only the real forwarded API is inside this interval. A synchronous raw
+// callback is already inside its source SDK call; an independent worker has
+// its own TLS interval. These per-thread inclusive rows must not be added.
+thread_local bool fgSdkPresentTimingActive=false;
+template<class Present> HRESULT ObserveFgSdkPresent(bool collect,Present&& present,
+    GenshinHookCpuTiming::WallSample* observed=nullptr)
+{
+    const bool owns=collect && !fgSdkPresentTimingActive;
+    GenshinHookCpuTiming::Scope timing(GenshinHookCpuTiming::Stage::FgSdkPresent,owns);
+    if(owns)fgSdkPresentTimingActive=true;
+    struct Restore {
+        bool owns;
+        ~Restore(){if(owns)fgSdkPresentTimingActive=false;}
+    } restore{owns};
+    const HRESULT result=std::forward<Present>(present)();
+    timing.Returned(static_cast<uint32_t>(result),GenshinHookCpuTiming::ResultKind::Hresult);
+    const auto wall=timing.Finish(); // stop before result logging, overlay postwork or Reflex
+    if(observed)*observed=wall;
+    const auto apiLastError=GetLastError();
+    GuideDiagnostics::PresentReturned(static_cast<int64_t>(result));
+    SetLastError(apiLastError);
+    return result;
+}
+// FG SDK timing adapter end
+
+bool GenshinFgTimingRequested(UINT flags) noexcept
+{
+    if((flags & DXGI_PRESENT_TEST) || !GenshinHookCpuTiming::Enabled())return false;
+    // Observation only: do not query a provider or require a source receipt on
+    // an SDK worker. Bypasses identify an intercepted API, not an input frame.
+    const auto error=GetLastError();
+    static const bool genshin=[]() noexcept {
+        try{return F6InputPolicy::DirectDlssInputs && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());}
+        catch(...){return false;}
+    }();
+    SetLastError(error);
+    return genshin;
+}
+
 // Only these hook lifecycle operations use this mutex. They never wait for it while inside a provider.
 // Recursive entry is needed for preserve-create -> ResizeBuffers and DXGI's ResizeBuffers1 forwarding.
 // R654: Present-only TLS metadata accompanies the existing R448 sampled stages.
@@ -440,7 +485,7 @@ template<class Release> HRESULT RetireFGForCreate(FGSwapchainOwner* owner, Relea
 static bool CheckForFGStatus(HWND outputWindow)
 {
     if (GenshinVisibleChild::IsRetainedChild(outputWindow) &&
-        GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()))
+        (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())))
     {
         const auto& state=State::Instance();
         // Availability is observational for the optional child. Failure must
@@ -1076,6 +1121,15 @@ HRESULT FGHooks::hkSetFullscreenState(IDXGISwapChain* This, BOOL Fullscreen, IDX
 
 HANDLE FGHooks::hkGetFrameLatencyWaitableObject(IDXGISwapChain2* This)
 {
+    const auto caller=StreamlineHooks::FrameLatencyCaller(_ReturnAddress());
+    const bool sdkLoaded=StreamlineHooks::DlssgPluginLoaded();
+    const auto flags=StreamlineHooks::ReadFrameLatencyFlags(This);
+    const auto target=framegen::latency::Select(flags,caller,sdkLoaded,true,false,true);
+    StreamlineHooks::ReportFrameLatencyAccess(This,flags,caller,sdkLoaded,target);
+    if(target==framegen::latency::Target::None)return nullptr;
+    // No reliable application provenance means pass-through. In particular,
+    // never globally intercept the SDK merely because FG is Off or loaded.
+    if(caller==framegen::latency::Caller::Sdk)return o_FGSCGetFrameLatencyWaitableObject(This);
     if (State::Instance().activeFgOutput != FGOutput::XeFG)
         return o_FGSCGetFrameLatencyWaitableObject(This);
 
@@ -1571,12 +1625,12 @@ HRESULT FGHooks::hkFGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags
 
         if (sc != nullptr)
         {
-            result = sc->Present(SyncInterval, Flags);
+            result = ObserveFgSdkPresent(GenshinFgTimingRequested(Flags),[&]{return sc->Present(SyncInterval, Flags);});
             LOG_DEBUG("sc->Present result: {:X}", (UINT) result);
         }
         else
         {
-            result = o_FGSCPresent(This, SyncInterval, Flags);
+            result = ObserveFgSdkPresent(GenshinFgTimingRequested(Flags),[&]{return o_FGSCPresent(This, SyncInterval, Flags);});
             LOG_DEBUG("o_FGSCPresent result: {:X}", (UINT) result);
         }
 
@@ -1607,12 +1661,12 @@ HRESULT FGHooks::hkFGPresent1(IDXGISwapChain1* This, UINT SyncInterval, UINT Fla
 
         if (sc != nullptr)
         {
-            result = sc->Present1(SyncInterval, Flags, pPresentParameters);
+            result = ObserveFgSdkPresent(GenshinFgTimingRequested(Flags),[&]{return sc->Present1(SyncInterval, Flags, pPresentParameters);});
             LOG_DEBUG("sc->Present result: {:X}", (UINT) result);
         }
         else
         {
-            result = o_FGSCPresent1(This, SyncInterval, Flags, pPresentParameters);
+            result = ObserveFgSdkPresent(GenshinFgTimingRequested(Flags),[&]{return o_FGSCPresent1(This, SyncInterval, Flags, pPresentParameters);});
             LOG_DEBUG("o_FGSCPresent result: {:X}", (UINT) result);
         }
 
@@ -1641,12 +1695,19 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         GenshinFg::Current().Reset();
         GenshinBridgeFg::Revoke();
         if (pPresentParameters == nullptr)
-            return o_FGSCPresent(This, SyncInterval, Flags);
+            return ObserveFgSdkPresent(GenshinFgTimingRequested(Flags),[&]{return o_FGSCPresent(This, SyncInterval, Flags);});
         else
-            return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
+            return ObserveFgSdkPresent(GenshinFgTimingRequested(Flags),[&]{return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);});
     }
 
     auto willPresent = (Flags & DXGI_PRESENT_TEST) == 0;
+    // Native DX12 can enter through the FG proxy without an outer source
+    // wrapper. Claim source bookkeeping there, but never repeat an outer
+    // LocalPresent's clocks/tick/epoch or admit a physical output callback.
+    SourcePresent::Scope proxySourceOwner(willPresent && !state.externalFrameGeneration &&
+        state.swapchainInteropApi == SwapchainInteropApi::None &&
+        state.activeFgOutput == FGOutput::DLSSG && This == state.currentFGSwapchain && state.currentFG != nullptr);
+    if (proxySourceOwner.Owns()) SourcePresent::ObserveProxySource(This, SyncInterval, Flags);
     const auto pacingPresentFrame = state.frameCount; // Actual FGPresent entry, not a displayed-child ID.
 
     if (willPresent)
@@ -1806,6 +1867,14 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 
     auto* executionOwner = dynamic_cast<IFGFeature_Dx12*>(fg);
     auto presentExecution = executionOwner != nullptr ? executionOwner->GuardExecution(FGExecutionScope::Present) : FGExecutionGuard {};
+    // Declared AFTER the execution guard so early-return/unwind unlocks our
+    // FG mutex while the provider is still protected. Never unlock another
+    // caller's recursive/non-owned FG mutex, and never touch it after Finish.
+    struct PresentMutexRelease {
+        OwnedMutex* mutex;
+        void Release() { if (mutex) { auto* held=std::exchange(mutex,nullptr);held->unlockThis(2); } }
+        ~PresentMutexRelease() { Release(); }
+    } presentMutexRelease { mutexUsed ? &fg->Mutex : nullptr };
     // Off can prevent the Genshin adapter from entering EvaluateState. Apply
     // its provider transition under the existing execution guard as well.
     // CompletePendingTeardown below still owns the real drain/retirement.
@@ -1828,6 +1897,15 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
                fg != nullptr && state.currentFG == fg && fg->IsActive() && !fg->IsPaused();
     };
     const bool fgFeatureActive = fgPacingActive();
+    // Actual source/provider role, independent of the disabled internal FSR
+    // bridge. Physical SDK outputs have their immutable wrapper role and do
+    // not enter this input-chain Present. Reentry cannot claim another wait.
+    static const bool genshinDirectExecutable = GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
+    const bool directDlssSource = F6InputPolicy::DirectDlssInputs && genshinDirectExecutable &&
+        willPresent && !state.externalFrameGeneration && This == state.currentFGSwapchain &&
+        state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::DLSSG &&
+        executionOwner != nullptr && state.currentFG == fg && dynamic_cast<DLSSG_Dx12*>(fg) != nullptr;
+    framegen::SourcePacingScope sourcePacingScope(directDlssSource);
     // Inspect the provider only after the existing Present execution guard.
     // Disabled timing performs no added provider RTTI or metadata reads.
     const bool collectStarRailPacing = starRailTimingRequested && executionOwner != nullptr &&
@@ -1852,7 +1930,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         return c;
     };
 
-    const bool genshinDlssg = GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) &&
+    const bool genshinDlssg = (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())) &&
         state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::DLSSG;
     const bool genshinSdkTransaction = willPresent && genshinDlssg && This==state.currentFGSwapchain &&
         GenshinBridgeFg::PresentScope::Current()!=nullptr;
@@ -1863,6 +1941,9 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         int startResult=-1,endResult=-1,sleepResult=-1; // -1: API not called
     } genshinReflex;
     sl::FrameToken* localToken = nullptr;
+    FGPacingLeasePtr sourcePacingLease;
+    uint64_t sourcePacingTokenFrame = 0;
+    bool sourcePacingStartCalled = false, sourcePacingEndCalled = false;
     dlssg::NativeSource nativeZzzMarkerSource {}; // SDK Present receipt even when game markers are selected.
     bool nativeZzzStartCalled=false, nativeZzzSourceFailed=false, nativeZzzSourceAttempted=false;
     auto* nativeZzzDlssg=dynamic_cast<DLSSG_Dx12*>(fg);
@@ -1880,7 +1961,15 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
             {
                 ((IDXGISwapChain4*) This)->GetCurrentBackBufferIndex();
                 const uint32_t frameId = (uint32_t) fg->FrameCount();
-                tokenResult = StreamlineProxy::GetNewFrameToken()(localToken, &frameId);
+                if (sourcePacingScope.Owns())
+                {
+                    sourcePacingLease=StreamlineHooks::BeginDlssgPacing(
+                        executionOwner->PacingLifetime(),StreamlineProxy::RawGetNewFrameToken(),
+                        StreamlineProxy::ReflexSleep(),StreamlineProxy::PCLSetMarker(),localToken,&frameId);
+                    tokenResult=sourcePacingLease ? sl::Result::eOk : sl::Result::eErrorInvalidState;
+                }
+                else if (const auto getToken=StreamlineProxy::GetNewFrameToken())
+                    tokenResult=getToken(localToken,&frameId);
 
                 if (tokenResult == sl::Result::eOk && localToken != nullptr) {
                     auto markerStamp=collectStarRailPacing ? GenshinHookCpuTiming::MakeStarRailStamp(
@@ -1891,7 +1980,13 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
                         markerStamp.markerFrame=static_cast<uint64_t>(*localToken);markerStamp.markerFrameKnown=true;
                     }
                     GenshinHookCpuTiming::Scope markerTiming(GenshinHookCpuTiming::Stage::FgPclMarker,collectStarRailPacing);
+                    const uint64_t markerTokenFrame=static_cast<uint64_t>(*localToken);
                     const auto markerResult=StreamlineProxy::PCLSetMarker()(sl::PCLMarker::ePresentStart, *localToken);
+                    if (sourcePacingScope.Owns()) {
+                        sourcePacingTokenFrame=markerTokenFrame;
+                        sourcePacingStartCalled=markerResult==sl::Result::eOk &&
+                            static_cast<uint64_t>(*localToken)==markerTokenFrame;
+                    }
                     const auto markerWall=markerTiming.Finish();
                     if(collectStarRailPacing){
                         markerStamp.result=static_cast<uint32_t>(markerResult);markerStamp.resultKnown=true;
@@ -1925,8 +2020,15 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         else if (fgPresentAdmitted && state.activeFgInput == FGInput::FSRFG30)
             FSR3FG::ffxPresentCallback();
 
+        // Keep the exact source across NR/vendor callbacks; a later ring entry
+        // cannot inherit this source Present's final colour.
+        auto* colourOwner=dynamic_cast<DLSSG_Dx12*>(fg);
+        const auto colourSource=colourOwner ? colourOwner->CurrentUpscalerColourSource() :
+            DLSSG_Dx12::UpscalerColourSourcePtr{};
         const auto finishedPicture = DlssNr::ApplyToFinishedPicture(This, gameQueue);
         if (HoYoShade::ColorConsumers(This) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
+        if (colourOwner && state.currentFG==colourOwner)
+            colourOwner->JoinUpscalerFinalColour(colourSource,This,gameQueue,finishedPicture);
         if (fgPresentAdmitted && genshinDlssg)
         {
             // The adapter performs real SetResource and provider Present only
@@ -2007,14 +2109,15 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         LOG_TRACE("FGHooks::FGPresent: FG feature exists but is inactive/paused; pass-through present only");
     }
 
-    // The captured StarRail physical output may run on the SDK worker while
-    // this source Present holds continuity and waits inside o_FGSCPresent.
-    // Own cap updates here, after Dispatch applied its count; the authenticated
-    // physical endpoint must not re-enter the provider from that worker.
-    // This route is independent of the default-off timing control above.
-    if (starRailTimingRoute && executionOwner != nullptr && state.currentFG == fg &&
+    // FG source Reflex ownership begin
+    // All DLSSG physical outputs may run on an SDK worker while this source
+    // holds continuity inside SDK Present. Update once here after Dispatch has
+    // applied its count, including Off/paused release, never from that worker.
+    if (willPresent && !state.externalFrameGeneration && This == state.currentFGSwapchain &&
+        state.activeFgOutput == FGOutput::DLSSG && executionOwner != nullptr && state.currentFG == fg &&
         dynamic_cast<DLSSG_Dx12*>(fg) != nullptr)
-        ReflexHooks::update(fgPacingActive(), false);
+        ReflexHooks::update(fgPacingActive(), state.swapchainInteropApi == SwapchainInteropApi::VkwDx12);
+    // FG source Reflex ownership end
 
     if (willPresent && state.swapchainInteropApi == SwapchainInteropApi::None)
     {
@@ -2130,7 +2233,8 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         genshinReflex.beforeActive=fgPacingActive();
         genshinReflex.beforePaused=fg && state.currentFG==fg && fg->IsPaused();
     }
-    framegen::final_output::InputScope physicalInput(This, Flags, effectivePresentParameters);
+    std::optional<framegen::final_output::InputScope> physicalInput;
+    physicalInput.emplace(This, Flags, effectivePresentParameters);
     auto starRailSdkContext=starRailPacingContext("before-sdk-present");
     if(collectStarRailPacing){
         starRailSdkContext.attribution.sync=SyncInterval;starRailSdkContext.attribution.flags=Flags;
@@ -2166,15 +2270,17 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         localToken=nullptr;
         tokenResult=sl::Result::eErrorInvalidState;
     }
-    GenshinHookCpuTiming::Scope sdkPresentTiming(GenshinHookCpuTiming::Stage::FgSdkPresent,
-                                               collectStarRailPacing && !starRailSourceFailed);
+    GenshinHookCpuTiming::WallSample starRailSdkWall;
+    const bool collectSdkPresent=collectStarRailPacing || GenshinFgTimingRequested(Flags);
     if (starRailSourceFailed)
         result = DXGI_ERROR_INVALID_CALL; // Unknown input cannot consume stale guides.
     else
         result = dlssg::zzz::RunPresent(nativeZzzAction,DXGI_ERROR_INVALID_CALL,[&]() -> HRESULT {
-            if (pPresentParameters == nullptr)
-                return o_FGSCPresent(This, SyncInterval, Flags);
-            return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, effectivePresentParameters);
+            return ObserveFgSdkPresent(collectSdkPresent,[&]() -> HRESULT {
+                if (pPresentParameters == nullptr)
+                    return o_FGSCPresent(This, SyncInterval, Flags);
+                return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, effectivePresentParameters);
+            },&starRailSdkWall);
         });
     const auto starRailSdkResult=static_cast<uint32_t>(result); // Freeze the actual SDK return before postwork.
     if (nativeZzzMarkerSource && (nativeZzzMarkerSource.serial<=3 || nativeZzzMarkerSource.serial%600==0 ||
@@ -2185,8 +2291,6 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
             nativeZzzMarkerSource.output,(uintptr_t)This,!nativeZzzSourceFailed,static_cast<uint32_t>(result),
             nativeZzzMarkerSource.upstreamApi,nativeZzzMarkerSource.upstreamViewport,
             nativeZzzMarkerSource.providerViewport,nativeZzzMarkerSource.sdkFrame);
-    sdkPresentTiming.Returned(starRailSdkResult,GenshinHookCpuTiming::ResultKind::Hresult);
-    const auto starRailSdkWall=sdkPresentTiming.Finish(); // Before logging/overlay postwork/Reflex.
     if(collectStarRailPacing && !starRailSourceFailed){
         starRailSdkContext.attribution.result=starRailSdkResult;starRailSdkContext.attribution.resultKnown=true;
         GenshinHookCpuTiming::RecordStarRailCall(GenshinHookCpuTiming::StarRailCall::SdkPresent,starRailSdkContext.attribution,starRailSdkWall);
@@ -2269,7 +2373,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     auto starRailReflexContext=starRailPacingContext("reflex-branch-skipped");
     bool starRailReflexCalled=false;
     GenshinHookCpuTiming::WallSample starRailReflexWall;
-    const bool genshinPacing = willPresent && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
+    const bool genshinPacing = sourcePacingScope.Owns();
     // SDK callbacks keep their own marker counters. Reacquire the original
     // selected-source token for End/Sleep; never substitute a newer marker/slot.
     if (nativeZzzStartCalled)
@@ -2280,7 +2384,9 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         (genshinSdkTransaction ? genshinReflex.startCalled : nativeZzzDlssg ? nativeZzzStartCalled : fgFeatureActive) &&
         (genshinSdkTransaction ? genshinReflex.ownMarkers : nativeZzzDlssg ? nativeZzzStartCalled :
             (!ReflexHooks::gameIsSendingMarkers() || !config->FGDLSSGUseGamesReflexMarkers.value_or_default())) &&
-        willPresent && state.activeFgOutput == FGOutput::DLSSG)
+        willPresent && state.activeFgOutput == FGOutput::DLSSG &&
+        (!genshinPacing || (sourcePacingStartCalled &&
+            static_cast<uint64_t>(*localToken)==sourcePacingTokenFrame)))
     {
         if (StreamlineProxy::PCLSetMarker() != nullptr) {
             auto markerStamp=collectStarRailPacing ? GenshinHookCpuTiming::MakeStarRailStamp(
@@ -2293,6 +2399,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
             GenshinHookCpuTiming::Scope markerTiming(GenshinHookCpuTiming::Stage::FgPclMarker,collectStarRailPacing);
             if(genshinSdkTransaction)genshinReflex.endToken=static_cast<uint64_t>(*localToken);
             const auto markerResult=StreamlineProxy::PCLSetMarker()(sl::PCLMarker::ePresentEnd, *localToken);
+            if (genshinPacing) sourcePacingEndCalled=markerResult==sl::Result::eOk;
             const auto markerWall=markerTiming.Finish();
             if(genshinSdkTransaction){
                 genshinReflex.endCalled=true;genshinReflex.endResult=static_cast<int>(markerResult);
@@ -2306,7 +2413,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         // Genshin's FG execution and continuity locks must not cover a driver
         // pacing wait. The marker and native->child submission order above stay
         // unchanged; only the blocking Sleep is deferred until both unlock.
-        if (!genshinPacing && fgPacingActive() &&
+        if (!directDlssSource && fgPacingActive() &&
             (!nativeZzzDlssg || (nativeZzzStartCalled &&
                 nativeZzzDlssg->NativeGuidePresentToken(localToken,nativeZzzMarkerSource))))
         {
@@ -2327,11 +2434,11 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     // Its actual wait remains after owner unlock to preserve current safety.
     // A dxvk game's frame generation through the Vulkan present bridge (NativeDxvkVulkan) presents a real D3D12 swapchain
     // here, as a native Vulkan game's does: the limiter applies to it.
-    if (willPresent && !state.reflexLimitsFps && !native::lowlatency::OwnsFrameCap() &&
+    if (!directDlssSource && willPresent && !state.reflexLimitsFps && !native::lowlatency::OwnsFrameCap() &&
         state.activeFgOutput != FGOutput::NoFG &&
         (!IdentifyGpu::getPrimaryGpu().usesDxvk || VkPresentBridge::DxvkThroughVulkan()) && !XellHooks::canLimit())
     {
-        if (!genshinPacing)
+        if (!directDlssSource)
         {
             static const bool starRailExecutable =
                 _wcsicmp(Util::ExePath().filename().c_str(), L"StarRail.exe") == 0;
@@ -2354,9 +2461,17 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         ReleaseSemaphore(_semaphore, 1, nullptr);
     }
 
+    physicalInput.reset(); // Close this real SDK output transaction while guarded.
     presentExecution.FinishWork();
     if (willPresent && executionOwner != nullptr && !executionOwner->CompletePendingTeardown())
-        LOG_WARN("F5 FG pending teardown incomplete; generation remains blocked");
+    {
+        static thread_local ULONGLONG lastPendingTeardownReport=0;
+        const auto now=GetTickCount64();
+        if(!lastPendingTeardownReport || now-lastPendingTeardownReport>=5000) {
+            lastPendingTeardownReport=now;
+            LOG_WARN("F5 FG pending teardown incomplete; generation remains blocked");
+        }
+    }
 
     // Teardown can itself deactivate the provider. Snapshot scheduling only
     // after that boundary, while its guard/FG mutex are still held. No provider
@@ -2382,13 +2497,37 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         pacingContext.active = fgPacingAfterPresent;
         pacingContext.preparedGeneratedCount = fgPacingGeneratedFrames;
     }
-    if (genshinPacing) presentExecution.Finish();
 
-    if (mutexUsed && fg != nullptr)
-    {
-        LOG_TRACE("Releasing FG->Mutex: {}", fg->Mutex.getOwner());
-        fg->Mutex.unlockThis(2);
-    }
+    // FG source pacing decision begin
+    // All mutable provider/SDK-token observations and cap-owner selection occur
+    // before either lock is released. The lease is independent of the provider.
+    FGPacingLeasePtr pacingLease;
+    if (genshinPacing && fgPacingAfterPresent && sourcePacingStartCalled && sourcePacingEndCalled &&
+        tokenResult==sl::Result::eOk && localToken &&
+        static_cast<uint64_t>(*localToken)==sourcePacingTokenFrame)
+        pacingLease=std::move(sourcePacingLease);
+    sourcePacingLease.reset(); // Release any reservation that did not reach PresentEnd.
+    const bool leaseValid=pacingLease && pacingLease->Valid() && pacingLease->Frame()==sourcePacingTokenFrame;
+    const bool ownPacingMarkers=genshinPacing &&
+        (!ReflexHooks::gameIsSendingMarkers() || !config->FGDLSSGUseGamesReflexMarkers.value_or_default());
+    const bool reflexOwnsCap=state.reflexLimitsFps;
+    const bool nativeOwnsCap=genshinPacing && !reflexOwnsCap && native::lowlatency::OwnsFrameCap();
+    const bool dxvkExcluded=genshinPacing && !reflexOwnsCap && !nativeOwnsCap &&
+        IdentifyGpu::getPrimaryGpu().usesDxvk && !VkPresentBridge::DxvkThroughVulkan();
+    const bool xellOwnsCap=genshinPacing && !reflexOwnsCap && !nativeOwnsCap && !dxvkExcluded && XellHooks::canLimit();
+    const auto pacingDecision=framegen::SelectSourcePacing({
+        genshinPacing ? framegen::PacingRole::Source : framegen::PacingRole::Unknown,
+        willPresent, F6InputPolicy::DirectDlssInputs, directDlssSource, fgPacingAfterPresent,
+        ownPacingMarkers, leaseValid, reflexOwnsCap, nativeOwnsCap, xellOwnsCap,
+        state.activeFgOutput!=FGOutput::NoFG, dxvkExcluded, fgPacingGeneratedFrames });
+    const float pacingCapFps=config->FramerateLimit.value_or_default();
+    const bool pacingProviderKnown=genshinPacing && state.currentFG==fg;
+    const uint64_t pacingProviderFrame=pacingProviderKnown ? fg->FrameCount() : 0;
+    // Release THIS call's FG mutex first, under continuity, so no raw provider
+    // or OwnedMutex access can race destruction after execution Finish().
+    presentMutexRelease.Release();
+    if (directDlssSource) presentExecution.Finish();
+    // FG source pacing decision end
 
     if (deferStarRailLimiter)
     {
@@ -2400,61 +2539,59 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 
     if (genshinPacing)
     {
-        // Keep the original short-circuit order; observe only values the real
-        // branches evaluate. In particular, do not ask extra cap/driver APIs.
-        const char* reflexReason = "UNKNOWN";
-        const bool callReflex = [&]() {
-            if (tokenResult != sl::Result::eOk) { reflexReason = "token-result"; return false; }
-            if (localToken == nullptr) { reflexReason = "no-token"; return false; }
-            if (!fgPacingAfterPresent) { reflexReason = "fg-inactive-guard"; return false; }
-            if (!config->FGEnabled.value_or_default()) { reflexReason = "fg-disabled"; return false; }
-            if (genshinSdkTransaction ? !genshinReflex.ownMarkers :
-                (ReflexHooks::gameIsSendingMarkers() && config->FGDLSSGUseGamesReflexMarkers.value_or_default()))
-            { reflexReason = "game-markers"; return false; }
-            if (state.activeFgOutput != FGOutput::DLSSG) { reflexReason = "not-dlssg"; return false; }
-            if(genshinSdkTransaction && StreamlineProxy::ReflexSleep()==nullptr)
-            { reflexReason = "no-sleep-api"; return false; }
-            reflexReason = "called";return true;
-        }();
+        // No provider, raw SDK token or mutable scheduling decision is accessed
+        // here. Teardown may now proceed concurrently; the independent lease
+        // owns precisely the token/API lifetime required by its Sleep call.
+        // Record the immutable policy itself, with a fixed process budget and
+        // per-thread rate limit. This log neither queries SDK state nor claims
+        // generated identity, displayed FPS, or any resource retirement.
+        static std::atomic<unsigned> pacingReports{0};
+        static thread_local ULONGLONG lastPacingReport=0;
+        const auto pacingNow=GetTickCount64();
+        if(!lastPacingReport || pacingNow-lastPacingReport>=5000) {
+            auto used=pacingReports.load(std::memory_order_relaxed);
+            while(used<32 && !pacingReports.compare_exchange_weak(used,used+1,std::memory_order_relaxed)){}
+            if(used<32) {
+                lastPacingReport=pacingNow;
+                LOG_INFO("F6 source pacing: present_entry={} provider_known={} provider_frame={} token_frame={} original_token_lease={} fg_active={} applied_generated_snapshot={} reflex_sleep={} explicit_limiter={} cap_fps={} reflex_cap={} native_cap={} xell_cap={} source_role=direct_dlss wait_boundary=after_fg_mutex_and_execution_unlock observation_only=true generated_identity=UNKNOWN",
+                    pacingPresentFrame,pacingProviderKnown,pacingProviderFrame,sourcePacingTokenFrame,leaseValid,
+                    pacingDecision.fgActive,pacingDecision.generatedFrames,pacingDecision.reflexSleep,
+                    pacingDecision.frameLimit,pacingCapFps,reflexOwnsCap,nativeOwnsCap,xellOwnsCap);
+            }
+        }
+        const bool callReflex=pacingDecision.reflexSleep;
         FgPacingContext reflexContext = pacingContext;
         if (collectPacing)
         {
-            reflexContext.capFps = config->FramerateLimit.value_or_default();
-            reflexContext.reflexLimitsFps = state.reflexLimitsFps;
-            // This path can sleep for low latency without owning the FPS cap.
-            reflexContext.reason = reflexReason;
+            reflexContext.capFps=pacingCapFps;
+            reflexContext.reflexLimitsFps=reflexOwnsCap;
+            reflexContext.reason=callReflex ? "called-leased-token" :
+                !pacingDecision.fgActive ? "fg-inactive-guard" :
+                !ownPacingMarkers ? "game-markers" : "no-valid-token-lease";
         }
         GenshinHookCpuTiming::WallSample reflexWall;
         if (callReflex)
         {
-            LOG_DEBUG("Calling ReflexSleep after Genshin FG unlock");
             GenshinHookCpuTiming::Scope timing(GenshinHookCpuTiming::Stage::FgReflexSleep,collectPacing);
-            if(genshinSdkTransaction)genshinReflex.sleepToken=static_cast<uint64_t>(*localToken);
-            const auto sleepResult=StreamlineProxy::ReflexSleep()(*localToken);
+            const auto sleepResult=pacingLease->Sleep();
             reflexWall = timing.Finish();
             if(genshinSdkTransaction){
+                genshinReflex.sleepToken=sourcePacingTokenFrame;
                 genshinReflex.sleepCalled=true;genshinReflex.sleepResult=static_cast<int>(sleepResult);
             }
         }
 
         FgPacingContext limitContext = pacingContext;
-        const bool callLimiter = [&]() {
-            limitContext.reflexLimitsFps = state.reflexLimitsFps;
-            if (limitContext.reflexLimitsFps) { limitContext.capOwner = "Reflex"; limitContext.reason = "reflex-cap"; return false; }
-            const bool nativeOwns = native::lowlatency::OwnsFrameCap();
-            limitContext.nativeOwnsCap = nativeOwns ? 1 : 0;
-            if (nativeOwns) { limitContext.capOwner = "NativeLowLatency"; limitContext.reason = "native-cap"; return false; }
-            if (state.activeFgOutput == FGOutput::NoFG) { limitContext.reason = "no-fg-output"; return false; }
-            if (IdentifyGpu::getPrimaryGpu().usesDxvk && !VkPresentBridge::DxvkThroughVulkan())
-            { limitContext.reason = "dxvk-excluded"; return false; }
-            const bool xellCanLimit = XellHooks::canLimit();
-            limitContext.xellCanLimit = xellCanLimit ? 1 : 0;
-            if (xellCanLimit) { limitContext.capOwner = "Xell"; limitContext.reason = "xell-cap"; return false; }
-            limitContext.capOwner = "FrameLimit";limitContext.reason = "called";return true;
-        }();
+        const bool callLimiter=pacingDecision.frameLimit;
+        limitContext.reflexLimitsFps=reflexOwnsCap;
+        limitContext.nativeOwnsCap=nativeOwnsCap ? 1 : 0;
+        limitContext.xellCanLimit=xellOwnsCap ? 1 : 0;
+        limitContext.capOwner=reflexOwnsCap ? "Reflex" : nativeOwnsCap ? "NativeLowLatency" :
+            xellOwnsCap ? "Xell" : dxvkExcluded ? "dxvk-excluded" : "FrameLimit";
+        limitContext.reason=callLimiter ? "called" : "other-cap-owner";
         if (collectPacing)
         {
-            limitContext.capFps = config->FramerateLimit.value_or_default();
+            limitContext.capFps = pacingCapFps;
             if (callLimiter && !(limitContext.capFps > 0.0f))
             {
                 limitContext.capOwner = "no-configured-cap";
@@ -2470,7 +2607,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         if (callLimiter)
         {
             GenshinHookCpuTiming::Scope timing(GenshinHookCpuTiming::Stage::FgFrameLimitSleep,collectPacing);
-            FrameLimit::sleep(fgPacingAfterPresent, fgPacingGeneratedFrames);
+            FrameLimit::sleep(pacingDecision.fgActive, pacingDecision.generatedFrames);
             limiterWall = timing.Finish();
         }
         if (collectPacing)

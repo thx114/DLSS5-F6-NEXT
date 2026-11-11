@@ -14,12 +14,10 @@ class RF_Dx12 : public Shader_Dx12
   private:
     FrameDescriptorHeap _frameHeaps[RF_NUM_OF_HEAPS];
 
-    uint32_t InNumThreadsX = 16;
-    uint32_t InNumThreadsY = 16;
-
   public:
+    // Extents, not last indices. invertY affects velocity only.
     bool Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InResource, ID3D12Resource* OutResource,
-                  UINT64 width, UINT height, bool velocity);
+                  UINT64 width, UINT height, bool velocity, bool flipY = true, bool invertY = true);
 
     RF_Dx12(std::string InName, ID3D12Device* InDevice);
 

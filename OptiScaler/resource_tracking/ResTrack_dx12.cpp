@@ -781,11 +781,12 @@ void ResTrack_Dx12::hkExecuteCommandLists(ID3D12CommandQueue* This, UINT NumComm
     native::lowlatency::OnFirstSubmit(This);
     if (auto* fg=dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG); fg && fg->TracksNativeGuides())
         fg->NativeGuidesSubmitting(This, NumCommandLists, ppCommandLists);
+    const auto previewReceipt=DlssNr::FinishedPictureSubmitting(This,NumCommandLists,ppCommandLists);
     o_ExecuteCommandLists(This, NumCommandLists, ppCommandLists);
     if (auto* fg=dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG); fg && fg->TracksNativeGuides())
         fg->NativeGuidesSubmitted(This, NumCommandLists, ppCommandLists);
     HoYoShade::NotifyNativeSubmit(This, NumCommandLists, ppCommandLists);
-    DlssNr::FinishedPictureSubmitted(This, NumCommandLists, ppCommandLists);
+    DlssNr::FinishedPictureSubmitted(This, NumCommandLists, ppCommandLists,previewReceipt);
 }
 
 #pragma region Heap hooks

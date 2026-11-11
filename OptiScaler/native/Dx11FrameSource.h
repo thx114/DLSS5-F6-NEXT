@@ -42,6 +42,28 @@ class Dx11FrameSource : public IFrameSource
   private:
     bool EnsureDevices(ID3D11Device* device11);
 
+    // Observation only: one admitted input per second, emitted at a later
+    // Acquire on the same owner thread. Pins name the actual sampled timelines;
+    // none of these values participates in admission, ordering or retirement.
+    struct DeliveryObservation
+    {
+        enum Boundary : unsigned { Begin, PreviousOrder, UploadCopy, Depth, Mask, UploadSignal, UploadFlush,
+            Acquired, Returned, ReturnSignal, ReturnWait, Copyback, CopySignal, CopyFlush, End, Count };
+        int64_t ticks[Count] = {};
+        uint64_t frame=0, generation=0, sourceFrame=0, presentEpoch=0, pictureSerial=0;
+        uintptr_t context=0, queue=0, picture=0, backbuffer=0;
+        uint64_t previousCopy=0, sharedBefore=UINT64_MAX, ready=0, sharedAfterUpload=UINT64_MAX;
+        uint64_t doneValue=0, doneOnReturn=UINT64_MAX, returnValue=0, copyValue=0, sharedAfterCopy=UINT64_MAX;
+        Microsoft::WRL::ComPtr<ID3D12Fence> sharedFence, doneFence;
+        bool active=false, capturing=false, acquired=false, returned=false, previousSharedUse=false;
+        bool copyBack=false, processed=false, uncertain=false;
+    } _delivery;
+    DWORD _deliveryThread=0;
+    uint64_t _deliveryLastSample=0, _deliveryLastReport=0;
+    void BeginDeliveryObservation(bool presented);
+    void StampDelivery(DeliveryObservation::Boundary boundary) noexcept;
+    void ReportDeliveryObservation();
+
     IDXGISwapChain* _swapChain = nullptr;
     ID3D11Device* _device11 = nullptr;
     ID3D11Device* _realDevice11 = nullptr; // the device behind _device11 when that is a proxy (Streamline's), else it

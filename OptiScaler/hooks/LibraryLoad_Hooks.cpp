@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <runtime/F6InputPolicy.h>
 #include "LibraryLoad_Hooks.h"
 
 #include <Config.h>
@@ -441,7 +442,7 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
         }
     }
 
-    if (CheckDllNameW(&libName, &fsr2NamesW))
+    if (F6InputPolicy::FsrBridgeEnabled && CheckDllNameW(&libName, &fsr2NamesW))
     {
         auto module = NtdllProxy::LoadLibraryExW_Ldr(libName.c_str(), NULL, 0);
 
@@ -451,7 +452,7 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
         return module;
     }
 
-    if (CheckDllNameW(&libName, &fsr2BENamesW))
+    if (F6InputPolicy::FsrBridgeEnabled && CheckDllNameW(&libName, &fsr2BENamesW))
     {
         auto module = NtdllProxy::LoadLibraryExW_Ldr(libName.c_str(), NULL, 0);
 
@@ -461,7 +462,7 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
         return module;
     }
 
-    if (CheckDllNameW(&libName, &fsr3NamesW))
+    if (F6InputPolicy::FsrBridgeEnabled && CheckDllNameW(&libName, &fsr3NamesW))
     {
         auto module = NtdllProxy::LoadLibraryExW_Ldr(libName.c_str(), NULL, 0);
 
@@ -471,7 +472,7 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
         return module;
     }
 
-    if (CheckDllNameW(&libName, &fsr3BENamesW))
+    if (F6InputPolicy::FsrBridgeEnabled && CheckDllNameW(&libName, &fsr3BENamesW))
     {
         auto module = NtdllProxy::LoadLibraryExW_Ldr(libName.c_str(), NULL, 0);
 
@@ -555,7 +556,7 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
         return moduleAmdxc64;
     }
 
-    if (CheckDllNameW(&libName, &ffxDx12NamesW))
+    if (F6InputPolicy::FsrBridgeEnabled && CheckDllNameW(&libName, &ffxDx12NamesW))
     {
         if (FfxApiProxy::Dx12Module() != nullptr)
         {
@@ -571,7 +572,7 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
         return module;
     }
 
-    if (CheckDllNameW(&libName, &ffxDx12UpscalerNamesW))
+    if (F6InputPolicy::FsrBridgeEnabled && CheckDllNameW(&libName, &ffxDx12UpscalerNamesW))
     {
         if (FfxApiProxy::Dx12Module_SR() != nullptr)
         {
@@ -587,7 +588,7 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
         return module;
     }
 
-    if (CheckDllNameW(&libName, &ffxDx12FGNamesW))
+    if (F6InputPolicy::FsrBridgeEnabled && CheckDllNameW(&libName, &ffxDx12FGNamesW))
     {
         if (FfxApiProxy::Dx12Module_FG() != nullptr)
         {
@@ -603,7 +604,7 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
         return module;
     }
 
-    if (CheckDllNameW(&libName, &ffxVkNamesW))
+    if (F6InputPolicy::FsrBridgeEnabled && CheckDllNameW(&libName, &ffxVkNamesW))
     {
         if (FfxApiProxy::VkModule() != nullptr)
         {

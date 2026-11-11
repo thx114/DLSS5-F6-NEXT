@@ -5,6 +5,9 @@
 #include "GenshinDepthEvidence.h"
 #include "GenshinDepthPortableResources.h"
 #include "GenshinDepthRetention.h"
+#include "GenshinInputObservation.h"
+#include "../runtime/CpuSnapshotBytes.h"
+#include "../runtime/MappedResourceJournal.h"
 #include <d3dcompiler.h>
 #include <d3d11shader.h>
 #include <wrl/client.h>
@@ -86,7 +89,6 @@ inline const char* CaptureFailureText(CaptureFailure reason)noexcept {
 std::shared_ptr<const Draw> Capture(ID3D11DeviceContext*,ID3D11VertexShader*,ID3D11HullShader*,ID3D11DomainShader*,ID3D11PixelShader*,D3D11_PRIMITIVE_TOPOLOGY,
     const std::array<Binding,42>&,const D3D11_VIEWPORT&,D3D11_COMPARISON_FUNC,
     uint64_t deviceEpoch,uint64_t configEpoch,CaptureFailureObservation* observation=nullptr)noexcept;
-bool Same(const std::shared_ptr<const Draw>&,const std::shared_ptr<const Draw>&)noexcept;
 bool Returned(ID3D11DeviceContext*,const std::shared_ptr<const Draw>&)noexcept;
 // Poll uses DONOTFLUSH / DO_NOT_WAIT; neither it nor capture waits for GPU work.
 void Poll(ID3D11DeviceContext*)noexcept;
@@ -647,7 +649,7 @@ enum class PayloadOrigin : unsigned char { Unknown, CpuUpdate, DynamicShadow, De
 struct Payload {
     GenshinDepthRetention::Token retention; // released after bytes
     Payload()=default;Payload(const Payload&)=delete;Payload& operator=(const Payload&)=delete;
-    std::vector<unsigned char> bytes;bool ready=false,failed=false;
+    FramePipeline::CpuSnapshotBytes bytes;bool ready=false,failed=false;
     PayloadOrigin diagnosticOrigin=PayloadOrigin::Unknown;
     uint64_t diagnosticCreatedTick=GetTickCount64(),diagnosticSourceTick=0;
     // Phase20: original API interception return address only; never a command key.
@@ -676,6 +678,7 @@ struct Flight {
 };
 struct State {
     std::mutex mutex;ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;
+    FramePipeline::InputObservationSession observation;
     DWORD thread=0;uint64_t deviceEpoch=0,configEpoch=0,serial=0,lossEpoch=0;
     static constexpr size_t BufferCapacity=128;
     std::array<Buffer,BufferCapacity> buffers{};std::array<Flight,3> flights{};
@@ -689,9 +692,7 @@ inline std::shared_ptr<Payload> NewPayload(size_t size) {
     auto p=std::make_shared<Payload>();
     p->retention=GenshinDepthRetention::Payload(p.get(),size);
     if(!p->retention)return {};
-    p->bytes.resize(size);
-    // Never publish storage exceeding its charge, even with vector overgrowth.
-    if(p->bytes.capacity()>size)return {};
+    p->bytes=FramePipeline::CpuSnapshotBytes(size);
     return p;
 }
 inline State& StateStore(){static State s;return s;}
@@ -719,7 +720,33 @@ inline bool SyncLoss(State& s)noexcept {
 struct Access {
     State& s=StateStore();std::unique_lock<std::mutex> lock{s.mutex,std::try_to_lock};
     bool synchronized=false;
-    Access(){if(!lock.owns_lock())Lost();else synchronized=SyncLoss(s);}
+    Access(){if(!lock.owns_lock())Lost();else {
+        // Stop new admission independently of old Draw/Flight/map custody.
+        // Both stop and restart revoke live numeric versions; frozen readers
+        // and mandatory application writeback keep their independent owners.
+        const auto demand=GenshinLegacy::ReadNewInputObservationDemand();
+        if(s.observation.Observe(demand)){
+            if(!demand.Requested())for(auto& buffer:s.buffers){
+                const auto& payload=buffer.payload;
+                if(!payload || payload->ready || payload->failed)continue;
+                bool queued=false;
+                for(const auto& flight:s.flights)if(flight.queued)
+                    for(const auto& destination:flight.destination)queued=queued || destination==payload;
+                // No GPU work exists for this placeholder. Its frozen reader
+                // must fail explicitly rather than await a copy we stopped.
+                // Already queued payloads still resolve through their real EVENT.
+                if(!queued)payload->failed=true;
+            }
+            Lost();
+            static unsigned reports=0;
+            if(reports++<32)try {
+                LOG_INFO("F6 numeric input observation: pid={} thread={} new_inputs={} nr={} fg={} effects={} preview={} capture={} unknown={} loss={} old_flights_and_writeback_preserved=true",
+                    GetCurrentProcessId(),GetCurrentThreadId(),s.observation.Requested(),demand.nr,demand.fg,
+                    demand.effects,demand.preview,demand.capture,demand.unknown,loss.load());
+            }catch(...){}
+        }
+        synchronized=SyncLoss(s);
+    }}
     explicit operator bool()const noexcept{return lock.owns_lock() && synchronized &&
         s.lossEpoch==loss.load() && s.lossEpoch!=UINT64_MAX;}
 };
@@ -804,6 +831,9 @@ inline bool Queued(const State& s,const std::shared_ptr<Payload>& payload)noexce
 }
 inline bool QueueDeferredLocked(State& s,ID3D11DeviceContext* c,const Buffer* only=nullptr) {
     if(!Context(s,c))return false;
+    // A pre-write freeze of an already-returned reader is old-work custody.
+    // Present may not start a broad new collection while consumers are off.
+    if(!only && !s.observation.Requested())return true;
     bool pending=false;
     if(only)pending=DeferredEligible(s,*only) && !Queued(s,only->payload);
     else for(const auto& b:s.buffers)pending=pending || (DeferredEligible(s,b) && !Queued(s,b.payload));
@@ -1040,25 +1070,30 @@ struct CpuMap {
     GenshinDepthRetention::Buffers<1> retention;
     CpuMap()=default;CpuMap(const CpuMap&)=default;CpuMap(CpuMap&&)noexcept=default;
     CpuMap& operator=(CpuMap other)noexcept {this->~CpuMap();new(this) CpuMap(std::move(other));return *this;}
-    GenshinDepthRetention::Token shadowRetention; // before shadow storage
     ComPtr<ID3D11DeviceContext> context;ComPtr<ID3D11Buffer> resource;
-    std::shared_ptr<void> shadow;void* driver=nullptr;UINT bytes=0,sub=0;
+    // This payload remains unpublished and not Ready until the exact Unmap.
+    // The same aligned storage becomes the returned immutable CPU snapshot.
+    std::shared_ptr<Payload> shadow;void* driver=nullptr;UINT bytes=0,sub=0;
     DWORD thread=0;uint64_t revision=0,loss=0;
 };
-struct CpuMaps {std::mutex mutex;std::array<CpuMap,32> active;};
+using CpuMaps=FramePipeline::MappedResourceJournal<CpuMap,32>;
 inline CpuMaps& MapStore(){static CpuMaps maps;return maps;}
 inline CpuMap TakeMap(ID3D11DeviceContext* c,ID3D11Resource* r,UINT sub) {
-    ComPtr<ID3D11Buffer> buffer;if(!r || FAILED(r->QueryInterface(IID_PPV_ARGS(&buffer))))return {};
-    auto& store=MapStore();std::lock_guard lock(store.mutex);
-    for(auto& map:store.active)if(map.shadow && map.context.Get()==c && map.resource.Get()==buffer.Get() && map.sub==sub){
-        auto out=std::move(map);map={};return out;}
-    return {};
+    auto& store=MapStore();
+    if(!r || !store.HasEntries())return {};
+    auto out=store.Take({reinterpret_cast<uintptr_t>(c),reinterpret_cast<uintptr_t>(r),sub});
+    if(out.shadow || !store.HasEntries())return out;
+    // Unknown/wrapped interfaces retain canonical lookup. Exact retained
+    // interface hits and an empty journal need no COM call.
+    ComPtr<ID3D11Buffer> buffer;
+    if(FAILED(r->QueryInterface(IID_PPV_ARGS(&buffer))) || buffer.Get()==r)return {};
+    return store.Take({reinterpret_cast<uintptr_t>(c),reinterpret_cast<uintptr_t>(buffer.Get()),sub});
 }
 }
 inline bool Mapped(ID3D11DeviceContext* c,ID3D11Resource* r,UINT sub,D3D11_MAP type,
     UINT flags,D3D11_MAPPED_SUBRESOURCE* mapped,HRESULT hr)noexcept {
     if(Internal() || FAILED(hr) || !mapped || !mapped->pData)return false;
-    try{detail::Access a;if(!a || !detail::Context(a.s,c))return false;auto* b=detail::Find(a.s,r,true);if(!b)return false;
+    try{detail::Access a;if(!a || !a.s.observation.Requested() || !detail::Context(a.s,c))return false;auto* b=detail::Find(a.s,r,true);if(!b)return false;
         b->payload.reset();b->revision=++a.s.serial;b->mapped=true;b->mappingKnown=true;
         // Partial/NO_OVERWRITE updates cannot supply a full-buffer CPU contract.
         // Refuse numerical capture while forwarding their original mapped data.
@@ -1068,18 +1103,13 @@ inline bool Mapped(ID3D11DeviceContext* c,ID3D11Resource* r,UINT sub,D3D11_MAP t
         next.context=c;next.resource=b->object;next.driver=mapped->pData;
         next.bytes=b->desc.ByteWidth;next.sub=sub;next.thread=GetCurrentThreadId();
         next.revision=b->revision;next.loss=a.s.lossEpoch;
-        next.shadow=std::shared_ptr<void>(_aligned_malloc(next.bytes,16),_aligned_free);
-        if(!next.shadow)return false;
-        next.shadowRetention=GenshinDepthRetention::Payload(next.shadow.get(),next.bytes);
-        if(!next.shadowRetention)return false;std::memset(next.shadow.get(),0,next.bytes);
-        auto& store=detail::MapStore();std::unique_lock lock(store.mutex,std::try_to_lock);if(!lock.owns_lock())return false;
-        for(const auto& map:store.active)if(map.shadow && map.context.Get()==c && map.resource.Get()==b->object.Get())return false;
-        for(auto& map:store.active)if(!map.shadow){
-            // This is only a resource-isolation receipt: the pure CB cannot
-            // alias a target/IA allocation. No Ready bytes are claimed until
-            // the matching original Unmap returns. Capture still rejects mapped CBs.
-            map=std::move(next);mapped->pData=map.shadow.get();return true;
-        }
+        next.shadow=detail::NewPayload(next.bytes);if(!next.shadow)return false;
+        auto* data=next.shadow->bytes.data();
+        // This proves only pure-CB isolation. The journal must retain writeback
+        // through owner/loss changes; mapped CBs still cannot feed Capture.
+        if(detail::MapStore().TryInsert({reinterpret_cast<uintptr_t>(c),
+            reinterpret_cast<uintptr_t>(b->object.Get()),sub},std::move(next))){
+            mapped->pData=data;return true;}
         // Capacity/allocation/contention leaves the original Map untouched.
     }catch(...){detail::Lost();}
     return false;
@@ -1095,7 +1125,7 @@ public:
     static Submission Update(ID3D11DeviceContext* c,ID3D11Resource* r,UINT sub,const D3D11_BOX* box,
         const void* data,UINT flags=0,uintptr_t diagnosticUploadCaller=0)noexcept {
         Submission out;if(Internal())return out;
-        try{detail::Access a;if(!a || !detail::Context(a.s,c))return out;
+        try{detail::Access a;if(!a || !a.s.observation.Requested() || !detail::Context(a.s,c))return out;
             // Invalidate already revoked any actually tracked destination.
             // A foreign upload cannot admit another context's CB into this
             // fixed owner table or publish numerical bytes on its behalf.
@@ -1118,10 +1148,10 @@ public:
         Submission out;if(Internal())return out;
         try{
             out.mapped_=detail::TakeMap(c,r,sub);
-            if(out.mapped_.shadow)std::memcpy(out.mapped_.driver,out.mapped_.shadow.get(),out.mapped_.bytes);
+            if(out.mapped_.shadow)std::memcpy(out.mapped_.driver,out.mapped_.shadow->bytes.data(),out.mapped_.bytes);
             detail::Access a;if(!a || sub)return out;auto* b=detail::Find(a.s,r);if(!b)return out;
             const bool owner=detail::Context(a.s,c);
-            const bool exact=owner && b->mappingKnown && b->mapped && out.mapped_.shadow &&
+            const bool exact=owner && a.s.observation.Requested() && b->mappingKnown && b->mapped && out.mapped_.shadow &&
                 out.mapped_.thread==GetCurrentThreadId() && out.mapped_.revision==b->revision &&
                 out.mapped_.loss==a.s.lossEpoch && a.s.lossEpoch==detail::loss.load();
             b->payload.reset();b->revision=++a.s.serial;
@@ -1129,8 +1159,7 @@ public:
             if(!out.retention_.Add(b->object.Get()))return out;
             out.context_=c;out.target_=b->object;out.revision_=b->revision;out.loss_=a.s.lossEpoch;
             out.thread_=GetCurrentThreadId();out.unmap_=true;
-            if(exact){auto payload=detail::NewPayload(out.mapped_.bytes);if(!payload)return out;
-                std::memcpy(payload->bytes.data(),out.mapped_.shadow.get(),payload->bytes.size());
+            if(exact){auto payload=out.mapped_.shadow;
                 payload->diagnosticOrigin=detail::PayloadOrigin::DynamicShadow;payload->diagnosticSourceTick=GetTickCount64();
                 payload->diagnosticUploadCaller=diagnosticUploadCaller;
                 payload->ready=true;out.payload_=std::move(payload);}
@@ -1153,10 +1182,10 @@ public:
                 // A lost/non-exact shadow stays absent and needs the unchanged
                 // same-draw deferred-copy/query/GPU-completion proof for bytes.
                 if(unmap_){b->mapped=false;b->mappingKnown=true;}
-                b->payload=payload_;
+                if(a.s.observation.Requested())b->payload=payload_;else b->payload.reset();
                 // Both factories populate payload_ only from the complete
                 // original CPU upload/shadow; a non-exact Unmap has no payload.
-                frozen=payload_ && payload_->ready && !payload_->failed &&
+                frozen=a.s.observation.Requested() && payload_ && payload_->ready && !payload_->failed &&
                     payload_->bytes.size()==b->desc.ByteWidth;
             }
         }catch(...){detail::Lost();}target_.Reset();return frozen;
@@ -1204,7 +1233,7 @@ inline std::shared_ptr<const Draw> Capture(ID3D11DeviceContext* c,ID3D11VertexSh
             return refuse(CaptureFailure::StageLinkage);
         const auto pixel=ps?detail::Shader(ps,Stage::Pixel):nullptr;
         if(ps && (!pixel || !pixel->valid))return programRefusal(CaptureFailure::Pixel,pixel,ps,Stage::Pixel);
-        detail::Access a;if(!a || !detail::BindOwner(a.s,c,deviceEpoch,configEpoch))return refuse(CaptureFailure::Owner);
+        detail::Access a;if(!a || !a.s.observation.Requested() || !detail::BindOwner(a.s,c,deviceEpoch,configEpoch))return refuse(CaptureFailure::Owner);
         auto out=std::make_shared<Draw>();
         if(!detail::CaptureArguments(*out,GenshinDepthMapping::CurrentDraw(),c))return refuse(CaptureFailure::Arguments);
         if(!detail::UnknownInstances(*out))detail::PollLocked(a.s,c);
@@ -1274,17 +1303,6 @@ inline std::shared_ptr<const Draw> Capture(ID3D11DeviceContext* c,ID3D11VertexSh
         }if(out->loss!=detail::loss.load())return refuse(CaptureFailure::Loss);
         if(observation)observation->reason=CaptureFailure::None;return out;
     }catch(...){detail::Lost();return refuse(CaptureFailure::Exception);}
-}
-inline bool Same(const std::shared_ptr<const Draw>& a,const std::shared_ptr<const Draw>& b)noexcept {
-    if(!a || !b || a->program!=b->program || a->context.Get()!=b->context.Get() || a->vs.Get()!=b->vs.Get() ||
-       a->ps.Get()!=b->ps.Get() || a->hs.Get()!=b->hs.Get() || a->ds.Get()!=b->ds.Get() || a->topology!=b->topology || a->deviceEpoch!=b->deviceEpoch || a->configEpoch!=b->configEpoch ||
-       a->loss!=b->loss || a->thread!=b->thread || a->instances!=b->instances || a->instanceStart!=b->instanceStart ||
-       !detail::SameArguments(a->arguments,b->arguments) || a->call!=b->call || a->revision!=b->revision || a->compare!=b->compare ||
-       std::memcmp(&a->viewport,&b->viewport,sizeof(a->viewport)) || a->positionLayout.Get()!=b->positionLayout.Get() ||
-       a->positionSlot!=b->positionSlot || a->positionDefaultW!=b->positionDefaultW)return false;
-    if(a->used!=b->used)return false;
-    for(unsigned i=0;i<a->binding.size();++i)if(a->binding[i].buffer!=b->binding[i].buffer || a->binding[i].first!=b->binding[i].first ||
-        a->binding[i].count!=b->binding[i].count || a->payload[i]!=b->payload[i])return false;return true;
 }
 inline bool Returned(ID3D11DeviceContext* c,const std::shared_ptr<const Draw>& draw)noexcept {
     if(!draw || Internal())return false;try{

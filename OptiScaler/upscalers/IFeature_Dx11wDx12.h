@@ -1,6 +1,9 @@
 ﻿#pragma once
 #include "IFeature_Dx11.h"
 #include "Dx11BridgeInitState.h"
+#include <runtime/GpuWorkDomain.h>
+#include <runtime/GuideSourceMetadata.h>
+#include <atomic>
 struct Dx11BridgeInitRetention;
 
 #include "IFeature_Dx12.h"
@@ -26,10 +29,14 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
 
   protected:
     std::unique_ptr<IFeature_Dx12> dx12Feature = nullptr;
+    GuideSourceMetadata::Ptr currentInputMetadata;
+    // Count real input attempts, including failures and inputs that skip NR.
+    // The successful-output clock is unsuitable for one-frame MV adjacency.
+    std::atomic<uint64_t> nrSourceAttempts { 0 };
     Dx11BridgeInit::State bridgeInitState;
     Dx11BridgeInitRetention* initRetention = nullptr;
     void RetainFailedInitialization();
-    // Preallocated only on the authenticated Genshin path, before any new work.
+    // Preallocated before bridge submission, including external NGX sources.
     std::unique_ptr<Dx11BridgeInitRetention> genshinRuntimeRetention;
     void RetainGenshinRuntime() noexcept;
 
@@ -48,7 +55,7 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
     UINT64 genshinLastSubmittedFence = 0; // Set only after a successful queue Signal.
     bool genshinLastSubmissionIsolated = false; // Same successful Signal; transitions drain legacy query/pass aliases.
     bool genshinSubmissionUnfenced = false;
-    HRESULT WaitForGenshinRecording(UINT commandFrame, bool isolatedPassResources);
+    HRESULT CheckRecordingAvailable(UINT commandFrame, bool isolatedPassResources);
     bool genshinCommandPathFailed = false; // Refuse unsafe allocator reuse after a private transport failure.
     UINT64 Dx12CommandAllocatorFenceValue[DX11WDX12_COMMAND_BUFFER_COUNT] = {};
     // Last recording of each real slot, not an admission/retirement receipt.
@@ -64,6 +71,8 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
     };
     std::array<GenshinRecordingObservation,DX11WDX12_COMMAND_BUFFER_COUNT> genshinRecordings{};
     bool genshinCommandFailureReported=false,genshinDeviceFailureReported=false;
+    std::atomic<bool> interopFenceFaultReported{false},interopDeviceFaultReported{false};
+    void ReportInteropFenceFault(const char* phase,UINT slot,UINT64 target,UINT64 completed,DWORD waitResult) noexcept;
     void LogGenshinFailure(const char* phase,HRESULT reason,UINT commandFrame,
                            UINT64 waitTarget=0,bool waitTargetKnown=false) noexcept;
 
@@ -77,7 +86,7 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
     ID3D11Resource* paramOutput[DX11_WITH_DX12_CACHED_FRAMES] = {};
 
     // Per-feature Genshin domain; never replaces IFeature's shared static device.
-    GenshinTransport::GpuWorkDomain genshinWorkDomain;
+    FramePipeline::GpuWorkDomain genshinWorkDomain;
     ID3D12Device* BridgeWorkDevice() const noexcept {
         return genshinWorkDomain.Creator()?genshinWorkDomain.Creator():_dx11on12Device;
     }
@@ -90,13 +99,15 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
 
     // Returns false when the last submitted bridge work cannot be proven
     // complete. In that case resources stay retained until process teardown.
-    // Final Genshin teardown releases the provider after the drain and before
-    // its dependencies. Resource recreation leaves the live provider intact.
+    // Close the old executable generations through successful Reset after the
+    // real queue drain, before releasing the provider and command dependencies.
+    // Resource recreation leaves the live provider intact.
     bool ReleaseSharedResources(bool releaseProvider = false);
 
     bool BaseInit(ID3D11Device* InDevice, ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters);
 
   public:
+    GuideSourceMetadata::Ptr CurrentInputMetadata() const noexcept { return currentInputMetadata; }
     // dx11 w/dx12 can't be wrapped but the IFeature_Dx11, needs its own Init and Evaluate
     bool InitInternal(ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters) final { return false; };
     bool EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters) final

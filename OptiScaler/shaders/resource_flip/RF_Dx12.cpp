@@ -8,11 +8,32 @@
 
 #include "precompiled/RF_Shader.h"
 
+#ifndef RF_SOURCE_FNV1A
+#error Regenerate resource_flip/precompiled/RF_Shader.h with Generate-RFShader.ps1 before building.
+#else
+static_assert(RFSourceHash() == RF_SOURCE_FNV1A, "RF bytecode is stale; run Generate-RFShader.ps1");
+#endif
+
 bool RF_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InResource, ID3D12Resource* OutResource,
-                       UINT64 width, UINT height, bool velocity)
+                       UINT64 width, UINT height, bool velocity, bool flipY, bool invertY)
 {
     if (!_init || _device == nullptr || InCmdList == nullptr || InResource == nullptr || OutResource == nullptr)
         return false;
+
+    const auto inDesc = InResource->GetDesc();
+    const auto outDesc = OutResource->GetDesc();
+    RFRegion region {};
+    if (InResource == OutResource || inDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        outDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || inDesc.DepthOrArraySize != 1 ||
+        outDesc.DepthOrArraySize != 1 || inDesc.SampleDesc.Count != 1 || outDesc.SampleDesc.Count != 1 ||
+        (inDesc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) != 0 ||
+        (outDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0 ||
+        !TryRFRegion(width, height, inDesc.Width, inDesc.Height, outDesc.Width, outDesc.Height,
+                     flipY && Config::Instance()->FGResourceFlipOffset.value_or_default(), region))
+    {
+        LOG_WARN("[{}] Invalid resource flip region: {}x{}", _name, width, height);
+        return false;
+    }
 
     LOG_DEBUG("[{0}] Start!", _name);
 
@@ -25,15 +46,17 @@ bool RF_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InR
     CreateShaderResourceView(_device, InResource, currentHeap.GetSrvCPU(0));
     CreateUnorderedAccessView(_device, OutResource, currentHeap.GetUavCPU(0), 0);
 
-    auto inDesc = InResource->GetDesc();
     RFConstants constants {};
 
-    constants.height = height - 1;
-    constants.width = static_cast<UINT>(width - 1);
-    constants.offset = Config::Instance()->FGResourceFlipOffset.value_or_default() ? inDesc.Height - height : 0;
+    constants.height = region.height;
+    constants.width = region.width;
+    constants.offset = region.offset;
     constants.velocity = velocity ? 1 : 0;
+    constants.rowFlip = flipY ? 1 : 0;
+    constants.negateMotionY = velocity && invertY ? 1 : 0;
 
-    LOG_DEBUG("Width: {}, Height: {}, Offset", constants.width, constants.height, constants.offset);
+    LOG_DEBUG("Width: {}, Height: {}, Offset: {}, RowFlip: {}, NegateMotionY: {}", constants.width,
+              constants.height, constants.offset, constants.rowFlip, constants.negateMotionY);
 
     if (!CreateConstantsBuffer(_device, _constantBuffer, constants, currentHeap.GetCbvCPU(0)))
     {
@@ -49,23 +72,7 @@ bool RF_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InR
 
     InCmdList->SetComputeRootDescriptorTable(0, currentHeap.GetTableGPUStart());
 
-    UINT dispatchWidth = 0;
-    UINT dispatchHeight = 0;
-
-    if ((State::Instance().currentFeature->GetFeatureFlags() & NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) == 0)
-    {
-        dispatchWidth =
-            static_cast<UINT>((State::Instance().currentFeature->DisplayWidth() + InNumThreadsX - 1) / InNumThreadsX);
-        dispatchHeight = (State::Instance().currentFeature->DisplayHeight() + InNumThreadsY - 1) / InNumThreadsY;
-    }
-    else
-    {
-        dispatchWidth =
-            static_cast<UINT>((State::Instance().currentFeature->RenderWidth() + InNumThreadsX - 1) / InNumThreadsX);
-        dispatchHeight = (State::Instance().currentFeature->RenderHeight() + InNumThreadsY - 1) / InNumThreadsY;
-    }
-
-    InCmdList->Dispatch(dispatchWidth, dispatchHeight, 1);
+    InCmdList->Dispatch(region.groupsX, region.groupsY, 1);
 
     return true;
 }

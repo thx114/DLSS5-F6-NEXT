@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <framegen/GuideOrientation.h>
 #include "XeFG_Dx12.h"
 #include <hudfix/Hudfix_Dx12.h>
 #include <menu/menu_overlay_dx.h>
@@ -1633,9 +1634,10 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
     fResource->height = inputResource->height;
     fResource->cmdList = inputResource->cmdList;
 
+    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance());
     auto willFlip = State::Instance().activeFgInput == FGInput::Upscaler &&
-                    Config::Instance()->FGResourceFlip.value_or_default() &&
-                    (type == FG_ResourceType::Velocity || type == FG_ResourceType::Depth);
+                    ((type == FG_ResourceType::Velocity && orientation.MotionCopy()) ||
+                     (type == FG_ResourceType::Depth && orientation.DepthCopy()));
 
     // FlipResource grants Present validity only after recording a real output.
     // Failure must not publish the borrowed input as if the requested copy existed.

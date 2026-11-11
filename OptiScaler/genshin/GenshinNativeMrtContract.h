@@ -15,7 +15,7 @@
 namespace GenshinLegacy::NativeMrt
 {
 constexpr uint32_t Revision=1;
-constexpr uint64_t AccumulateShader=0x78057A29AF6C2D99ull;
+constexpr uint64_t AccumulateShader=GenshinFsrProfiles::Reviewed[0].hash;
 enum class Reason : uint8_t { Ready, MissingToken, ReplayToken, WrongOwner, WrongShader, WrongLayout,
     Alias, UnsupportedView, WrongFormat, StaleGeneration, NativeDrawMissing, BindingsChanged,
     SourceSchemaUnknown, JitterPhaseUnknown, OutputRoleUnknown, InvalidParameters, ProviderRejected };
@@ -56,6 +56,8 @@ struct Frame
     uint32_t frame=0,renderWidth=0,renderHeight=0,outputWidth=0,outputHeight=0;
     std::array<Surface,3> inputs{};
     std::array<Surface,2> outputs{};
+    Surface overlay{};
+    uintptr_t overlaySampler=0;
     std::array<uint32_t,3> inputSlots{0,2,3};
     uint32_t selectedOutput=1;
     Settings controls{};
@@ -113,7 +115,9 @@ inline Reason Validate(const Frame& f)noexcept
         !std::isfinite(f.rawJitterX) || !std::isfinite(f.rawJitterY))return Reason::MissingToken;
     if(!f.device || !f.context || !f.deviceEpoch || !f.ownerEpoch || !f.configEpoch || !f.thread || !f.drawSerial || !f.immediate)
         return Reason::WrongOwner;
-    if(f.shader!=AccumulateShader || !f.shaderIdentity)return Reason::WrongShader;
+    if(!GenshinFsrProfiles::Accumulate(f.shader) || !f.shaderIdentity)return Reason::WrongShader;
+    if(GenshinFsrProfiles::Overlay(f.shader) && (!f.nrProfile ||
+       !f.nrProfile->MatchesShader(f.deviceEpoch,f.shaderIdentity,f.shader)))return Reason::WrongShader;
     if(f.inputSlots!=std::array<uint32_t,3>{0,2,3} || f.selectedOutput!=1 || !f.constantBuffer ||
         !f.renderWidth || !f.renderHeight || f.outputWidth<f.renderWidth || f.outputHeight<f.renderHeight)return Reason::WrongLayout;
     for(const auto& s:f.inputs)if(!Full(s,false))return Reason::UnsupportedView;
@@ -137,11 +141,19 @@ inline Reason Validate(const Frame& f)noexcept
     const bool depth=ReadableDepth(d.desc.Format,d.viewFormat);
     if(!color || !depth || m.viewFormat!=DXGI_FORMAT_R10G10B10A2_UNORM || !pair(m) || !pair(c) || !pair(o) || o.viewFormat!=c.viewFormat)
         return Reason::WrongFormat;
+    if(GenshinFsrProfiles::Overlay(f.shader)) {
+        const auto& s=f.overlay;
+        if(!f.overlaySampler || !Full(s,false) || s.device!=f.device ||
+           (s.viewFormat!=DXGI_FORMAT_R8G8B8A8_UNORM && s.viewFormat!=DXGI_FORMAT_R8G8B8A8_UNORM_SRGB &&
+            s.viewFormat!=DXGI_FORMAT_R16G16B16A16_FLOAT && s.viewFormat!=DXGI_FORMAT_R10G10B10A2_UNORM &&
+            s.viewFormat!=DXGI_FORMAT_R11G11B10_FLOAT))return Reason::UnsupportedView;
+        for(const auto& o:f.outputs)if(s.resource==o.resource)return Reason::Alias;
+    }
     return Reason::Ready;
 }
 inline bool BridgeProfile(const Frame& frame,Schema& schema)noexcept
 {
-    if(Validate(frame)!=Reason::Ready || frame.shader!=AccumulateShader ||
+    if(Validate(frame)!=Reason::Ready || !GenshinFsrProfiles::Accumulate(frame.shader) ||
         frame.inputSlots!=std::array<uint32_t,3>{0,2,3} || frame.selectedOutput!=1)return false;
     schema={};schema.revision=Revision;schema.shaderIdentity=frame.shaderIdentity;
     schema.deviceEpoch=frame.deviceEpoch;schema.ownerEpoch=frame.ownerEpoch;schema.configEpoch=frame.configEpoch;
@@ -204,7 +216,8 @@ public:
         // immutable surface field are compared below; no second schema scan.
         if(current.drawSerial!=frame_.drawSerial || current.shader!=frame_.shader || current.shaderIdentity!=frame_.shaderIdentity ||
             static_cast<bool>(current.nrProfile)!=static_cast<bool>(frame_.nrProfile) ||
-            (current.nrProfile && !current.nrProfile->Matches(frame_.deviceEpoch,frame_.shaderIdentity)) ||
+            (current.nrProfile && !current.nrProfile->MatchesShader(frame_.deviceEpoch,frame_.shaderIdentity,frame_.shader)) ||
+            current.overlaySampler!=frame_.overlaySampler || !Same(current.overlay,frame_.overlay) ||
             current.constantBuffer!=frame_.constantBuffer || current.renderContext!=frame_.renderContext || current.frame!=frame_.frame ||
             current.tokenTick!=frame_.tokenTick || current.rawJitterX!=frame_.rawJitterX || current.rawJitterY!=frame_.rawJitterY ||
             current.inputSlots!=frame_.inputSlots || current.selectedOutput!=frame_.selectedOutput ||

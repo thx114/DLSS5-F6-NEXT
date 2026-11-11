@@ -3,6 +3,7 @@
 #include "GenshinDepthSemantic.h"
 #include "GenshinDepthDraw.h"
 #include "GenshinDepthPortableResources.h"
+#include "../runtime/CpuIndexBounds.h"
 #include <d3d11_3.h>
 #include <functional>
 
@@ -327,19 +328,16 @@ struct Raster {
                 const UINT width=indexFormat==DXGI_FORMAT_R16_UINT?2:indexFormat==DXGI_FORMAT_R32_UINT?4:0;
                 const uint64_t begin=uint64_t(indexOffset)+uint64_t(draw.start)*width,end=begin+uint64_t(draw.count)*width;
                 if(!width||begin>UINT_MAX||end>UINT_MAX||!image->Covers(UINT(begin),UINT(end))){fail(F::FetchRange,32);return;}
-                firstVertex=UINT64_MAX;lastVertex=0;
                 const bool strip=topology==D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP||topology==D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP||
                     topology==D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ||topology==D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ;
                 // Decode only actual CPU-proven index bytes, never a driver Map
                 // or indirect argument readback in the application's query domain.
-                for(UINT i=0;i<draw.count;++i){UINT value=0;const auto address=UINT(begin+uint64_t(i)*width);
-                    if(!image->CopyTo(&value,address,address+width)){fail(F::FetchRange,32);return;}
-                    if(strip&&value==(width==2?0xffffu:UINT_MAX))continue;
-                    const int64_t vertex=int64_t(value)+draw.base;
-                    if(vertex<0||vertex>UINT_MAX){fail(F::FetchRange,32);return;}
-                    firstVertex=(std::min)(firstVertex,uint64_t(vertex));lastVertex=(std::max)(lastVertex,uint64_t(vertex));
+                FramePipeline::CpuIndexBounds bounds;
+                if(!FramePipeline::ReadCpuIndexBounds(UINT(begin),draw.count,width,draw.base,strip,
+                    [&](void* target,UINT low,UINT high){return image->CopyTo(target,low,high);},bounds)){
+                    fail(F::FetchRange,32);return;
                 }
-                if(firstVertex==UINT64_MAX){fail(F::FetchRange,32);return;}
+                firstVertex=bounds.first;lastVertex=bounds.last;
             }
             if(lastVertex>UINT_MAX){fail(F::FetchRange);return;}
             for(UINT slot=0;slot<32;++slot)if(portable.slots&(uint32_t(1)<<slot)){
@@ -458,13 +456,13 @@ struct Raster {
                 b=entry.object;cached=true;if(!out.retention.Add(b.Get()))return false;break;}
             if(!cached){
                 auto expanded=GenshinDepthPortable::Allocate(image.desc.ByteWidth);if(!expanded)return false;
-                std::memset(expanded->data.get(),0,image.desc.ByteWidth);
+                std::memset(expanded->data.data(),0,image.desc.ByteWidth);
                 // Unknown padding is never fetched: CapturePortable proved all
                 // actual VS/layout/index address ranges before creating this image.
-                for(const auto& p:image.parts)std::memcpy(static_cast<unsigned char*>(expanded->data.get())+p.begin,
-                    static_cast<const unsigned char*>(p.storage->data.get())+p.offset,p.end-p.begin);
+                for(const auto& p:image.parts)std::memcpy(expanded->data.data()+p.begin,
+                    p.storage->data.data()+p.offset,p.end-p.begin);
                 auto d=image.desc;d.BindFlags&=D3D11_BIND_VERTEX_BUFFER|D3D11_BIND_INDEX_BUFFER;
-                if(!buffer(portable.geometry[i],d,expanded->data.get(),b))return false;
+                if(!buffer(portable.geometry[i],d,expanded->data.data(),b))return false;
             }
             if(i==32)out.indices=std::move(b);else out.vertices[i]=std::move(b);
         }

@@ -13,12 +13,15 @@
 #include "NativeWorkDevice.h"
 #include "NativeSceneCutPolicy.h"
 #include "NrInputObservation.h"
+#include "../runtime/NativeProducerCpuTiming.h"
+#include "../runtime/NativePrepGpuTiming.h"
 
 #include "../motion/OpticalFlow_Dx12.h"
 #include "../motion/TrustMask_Dx12.h"
 
 #include <functional>
 #include <memory>
+#include <new>
 #include <string>
 
 namespace GenshinPresentNr { class NativeParentConsumer; }
@@ -135,6 +138,7 @@ class NativeProducer
         long stoppedHr = 0;              // and the HRESULT it got, when it had one
         long deviceRemoved = 0;          // the device's removed reason at that moment (0: not removed)
         NrInputObservation::Depth depthObservation;
+        NativePrepGpuTiming::Reading completedPrepGpu;
     };
 
     NativeProducer() = default;
@@ -162,7 +166,7 @@ class NativeProducer
     // its separately receipted publicOwner. Work follows input.ready, and output.done is
     // the point it finishes at. The picture is processed in place.
     Result Run(ID3D12CommandQueue* queue, const FrameInput& input, const Options& options, const ApplyFn& apply,
-               FrameOutput& output);
+               FrameOutput& output, NativeProducerCpuTiming::Frame* timing = nullptr);
 
     // Owner-thread polling before the next FG motion Prepare. Release only this
     // producer's redundant input reference after its exact final submission.
@@ -179,6 +183,9 @@ class NativeProducer
 
   private:
     static constexpr uint32_t kRing = 3;
+    std::unique_ptr<NativePrepGpuTiming::Recorder<kRing>> _prepGpu =
+        std::unique_ptr<NativePrepGpuTiming::Recorder<kRing>>{
+            new (std::nothrow) NativePrepGpuTiming::Recorder<kRing>()};
 
     bool WaitFor(UINT64 value);
     FilterResult FilterSubmitted(const FilterFn& filter, const FrameInput& input, ID3D12CommandQueue* queue,
