@@ -1,0 +1,42 @@
+# Local outputs and generated version headers
+/build/
+/OptiScaler/resource_build_date.h
+/OptiScaler/resource_build_commit.h
+*.obj
+*.iobj
+*.pch
+*.ipch
+*.pdb
+*.ipdb
+*.ilk
+*.exp
+*.tlog
+*.lastbuildstate
+*.recipe
+obj/
+bin/
+x64/
+__pycache__/
+*.py[cod]
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Keep private research, captures and runtime records outside publication
+/audit/
+/research/
+/private/
+/captures/
+/recordings/
+/tools/research/
+*.log
+*.dmp
+*.etl
+*.asm
+*.dxbc
+*.mp4
+*.mkv
+
+# Intentional vendored build dependencies remain tracked
+!/external/**

@@ -1,0 +1,78 @@
+#pragma once
+
+#include <d3d12.h>
+#include <d3d11.h>
+#include <dxgi.h>
+#include <mutex>
+
+class WithDx12
+{
+  private:
+    // Only first publication in Genshin uses this transaction. The mutex never
+    // spans COM, driver calls, hooks, logging, or candidate reference release.
+    inline static std::mutex _publicationMutex;
+    inline static bool _constructingPair = false, _publicationInterrupted = false;
+    inline static thread_local unsigned _internalPairCreationDepth = 0;
+    class InternalPairCreationScope
+    {
+      public:
+        InternalPairCreationScope() noexcept { ++_internalPairCreationDepth; }
+        ~InternalPairCreationScope() { --_internalPairCreationDepth; }
+        InternalPairCreationScope(const InternalPairCreationScope&) = delete;
+        InternalPairCreationScope& operator=(const InternalPairCreationScope&) = delete;
+    };
+    struct PairReservation
+    {
+        ~PairReservation();
+        PairReservation() = default;
+        PairReservation(const PairReservation&) = delete;
+        PairReservation& operator=(const PairReservation&) = delete;
+    };
+    static bool PrepareGenshinPair(ID3D11Device* device11, D3D_FEATURE_LEVEL level, IDXGIAdapter* adapter);
+    static bool InitializeInternalPairDevice(ID3D12Device* device);
+    inline static D3D12_COMMAND_LIST_TYPE _commandListType = D3D12_COMMAND_LIST_TYPE_DIRECT;
+
+    inline static ID3D12Device* _d3d12Device = nullptr;
+    inline static ID3D12CommandQueue* _d3d12CommandQueue = nullptr;
+
+    inline static bool CreateDx12Device(D3D_FEATURE_LEVEL InFeatureLevel, IDXGIAdapter* InAdapter = nullptr);
+    inline static void GetHardwareAdapter(IDXGIFactory1* InFactory, IDXGIAdapter** InAdapter,
+                                          D3D_FEATURE_LEVEL InFeatureLevel, bool InRequestHighPerformanceAdapter);
+
+    inline static void UpdateStateObjects();
+
+    inline static ID3D12CommandQueue* CreateD3D12CommandQueue(ID3D12Device* dx12Device);
+
+    inline static bool CreateD3D12DeviceAndQueueFromD3D11(ID3D11Device* dx11Device, D3D_FEATURE_LEVEL featureLevel,
+                                                          ID3D12Device** dx12Device,
+                                                          ID3D12CommandQueue** dx12CommandQueue);
+
+    static ID3D12Device* GetD3D12DeviceFromD3D11(ID3D11Device* dx11Device, D3D_FEATURE_LEVEL featureLevel);
+
+  public:
+    static bool IsInited();
+
+    // Factory-hook call boundary only. Only WithDx12 can construct its scope;
+    // this TLS value grants no identity, provenance, or resource authority.
+    static bool InternalPairCreationActive() noexcept { return _internalPairCreationDepth != 0; }
+
+    static ID3D12Device* RequestD3D12Device(D3D_FEATURE_LEVEL InFeatureLevel);
+    static ID3D12Device* RequestD3D12Device(D3D_FEATURE_LEVEL InFeatureLevel, IDXGIAdapter* adapter = nullptr);
+
+    static bool PrepareD3D12ForD3D11(ID3D11Device* InDx11Device,
+                                     D3D_FEATURE_LEVEL InFeatureLevel = D3D_FEATURE_LEVEL_11_0);
+
+    // SDK-created physical output keeps its own queue in FinalOutputEndpoint.
+    static void AdoptSwapchainQueue(ID3D12CommandQueue* queue);
+
+    static void SetD3D12Objects(ID3D12Device* InDevice, ID3D12CommandQueue* InCommandQueue,
+                                D3D12_COMMAND_LIST_TYPE InCommandListType = D3D12_COMMAND_LIST_TYPE_DIRECT);
+
+    // The device is going away (the Vulkan present bridge's private one): if it is the one held, it and its queue are let
+    // go, here and in State, so nothing reaches them afterwards.
+    static void ForgetD3D12Device(ID3D12Device* device);
+
+    static ID3D12Device* GetD3D12Device();
+    static ID3D12CommandQueue* GetD3D12CommandQueue();
+    static D3D12_COMMAND_LIST_TYPE GetD3D12CommandListType();
+};
