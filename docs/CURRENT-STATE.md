@@ -1,24 +1,22 @@
 # F6 当前状态
 
-更新：2026-11-12。**FG 排队锁环修复、退出入口保护、全界面英文已完成源码和离线验证；Release x64 内置 FG ADFF3486 已按用户要求原位部署，正式与三个游戏缓存磁盘身份核验通过；游戏验收待完成。HDR 按用户要求暂缓。**
+更新：2026-11-12。**用户确认 ADFF3486 的 ZZZ 间歇性卡顿仍在；1ABD9AFD 诊断版已原位部署并完成磁盘核验。新版本修正 Reflex 旧报告选择并增加原生 guide 阻塞原因遥测，卡顿根因及改善尚未证实。HDR 暂缓。**
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`；产品源码提交 `b1ee21020a58`。导航树为 `D:/CODE/DLSS5_NEXT`，分支 `codex/navigation-20261112`。GitHub 目标 `thx114/DLSS5-F6-NEXT`，本轮修复单独提交，远端身份以本轮 Git 回执核验。
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`；本次源码提交 `51fdb7b19f09`。导航树 `D:/CODE/DLSS5_NEXT` 只维护导航与迁移基线。GitHub 目标 `thx114/DLSS5-F6-NEXT`。
 
 | 项目 | 当前事实 |
 |---|---|
-| 最新用户实测 | ZZZ 关闭 FG 后周期性卡顿消失，仍观察到 GPU 等待。此反馈针对旧部署，不代表新候选通过 |
-| DLSS 接入 | 固定日志 `build/repair-20261112/zzz-186740.log` 已出现 `owner=selected`；不再沿用旧 PID180352 的 backend-only 结论 |
-| FG 修复 | 无关 native list 的 Reset/Execute 通知先以独立短锁核对身份，避开 Present 持 continuity 等待 SDK worker 的锁环；相关／未知 list 仍走原检查，保留真实 queue/fence/Reset 退休门 |
-| 退出保护 | 进程寿命 pin、attach 缓存 loader probe、退出／loader context 的 owner/NGX/DLSSG/重配／child 退休入口拒绝；拒绝保留完整对象，并释放当前线程 CPU lease。不支持热卸载，不取消已在途 SDK 调用 |
-| 界面英文 | 新增354词条，共2013；覆盖监视、NR持续调试、弹窗、通知与动态状态。已显示通知随语言切换，用户路径、格式参数和 ImGui ID 保留；视觉布局未实测 |
-| HDR | 暂缓；本轮 HDR helper、测试及色彩状态改动已撤出。留存 `build/repair-20261112/hdr-deferred-20261112.zip`，不进入候选 |
-| HUDless/UI | 桥固定提交1865c585没有独立HUD-less/UI发布ABI；不能用SR颜色或reactive/transparency mask冒充；[真实输入契约](FG-BRIDGE-HUD-CONTRACT.md)保持 |
-| 新候选 | `build/out/OptiScaler.dll`；SHA256 `ADFF3486F21C52FCD0FE72D73A14BB3AFA93E599A2A73AD72DCC7EAD1F790372`；33,985,536 B，内置FG，无新增ASI，Release x64构建通过；编译／链接警告保留在日志，不称零警告 |
-| 身份验证 | 2425项输入（含FgDepthContract.h与vendored依赖）构建前后不变；生成版本头另存；53必要NGX导出及全部948导出名称／序号核验一致 |
-| 定向验证 | 16组通过，含105项清理接线、真实Windows生命周期21项、wrapper Release28项、FG Hook55场景／1873项、NGX生命周期50项、英文6061项／6负控、native guides29项及旧缺陷负控、ZZZ16套／107接线、12套核心CPU/WARP；详见本轮tests.json |
-| 正式部署 | 按用户“部署”要求原位安装ADFF3486；正式及三个游戏缓存SHA一致，原File ID／硬链接不变，2,535项受保护文件与profiles不变；未查询／操控游戏 |
-| FSR桥 | 保持已部署 `CC301B42EC7AA31059B9FCD10B29B3915B9EB21DBE363D5F431ED9201CB904A1`，本轮未改 |
+| 最新用户实测 | ADFF3486 下 ZZZ 仍周期卡顿，监视读数约70降至接近0时卡住，随后回升；此前关闭FG后不卡。旧锁环修复未解决本次症状 |
+| 固定会话 | `build/repair-20261112/zzz-190880.log`，PID190880，日志版本b1ee210；10,761,256 B／123,177行，SHA256 C93B42515ADD8A047B64A1C1ECCCDB2B4A6DDD166B0FE41744B101511D3191DE。loaded-memory SHA未知 |
+| 已观察链路 | selected Evaluate 2756、FG Dispatch成功2573；160次SDK插帧状态切换、159次最大呈现延迟变化，其中1→6及6→1各79次。例源frame2392槽忙后eOff／6→1，frame2393成功后eOn／1→6；时序相关，不等于根因证明 |
+| 尚缺证据 | 原拒绝日志各20条且节流；不能区分未Reset与真实producer fence未完成。6条源list及4槽不足以证明池容量缺陷；没有扩大池子或借旧帧 |
+| 新增诊断 | `F6 native guide reuse blocked:`，首次三条、之后按需至多每秒一条。记录slot/list/queue/fence/target及reset_pending等逐窗原因；计数跨slot且重叠，身份属于最后尝试，fence采样在拒绝之后，只观察，不参与退休 |
+| 监视修正 | D3D／Vulkan固定选最新有效完成报告；过期清空，缺失／非嵌套保持unknown。Bridge／NR与Reflex缺报告实例关联凭据，enrichment保持unknown；独立NR计时链未改。渲染队列跨度和GPU开始前等待分开，读数不代表物理队列占用 |
+| 保留功能 | 内置FG、独立SR／NR／FG、既有退出入口保护和完整英文保留；退出正常性及英文布局仍待各自实测。HUDless/UI仍缺真实桥输入，见[输入契约](FG-BRIDGE-HUD-CONTRACT.md) |
+| 当前诊断DLL | `build/out/OptiScaler.dll`；SHA256 `1ABD9AFDDD605B3D55EF3466EDBDD7946DCA6FD8B362A4C2030A4FCC61DE9ABC`；33,989,632 B，Release x64，内置FG，无新增ASI |
+| 本次验证 | 2428项输入构建前后不变；53必要NGX导出及全部948导出名称／序号不变。原生通知29项及旧锁环负控、ZZZ16套／107接线、options95项、Reflex策略58项／真实方法抽取31项／queue12项、5套核心定向回归通过；gpt-6.1-sol/high独立复核无确定blocker。构建警告保留于日志 |
+| 正式部署 | 正式与三个游戏缓存均为1ABD9AFD，原File ID／四个硬链接不变，2,535项受保护文件与profiles不变；桥保持CC301B42。ADFF3486已备份；未查询、启动、终止或操控游戏 |
 
-本轮回执平铺在 `build/repair-20261112/repair-current-{source,tests,review,artifact}.json` 及对应日志；当前构建指针 `build/current-{artifact,build,tests}.json` 指新候选，`build/current-deployment.json` 已指ADFF3486正式安装，部署核验见 `build/f6-deploy-ADFF3486-verified.json`。部署前5265915D原字节和旧回执已保留，陈旧.next另存回退后移除。旧5265915D候选另存 `build/rollback/repair-pre-5265915D.dll`，旧回执保留。
+本轮证据集中在 `build/repair-20261112/zzz-followup-{source,tests,review,artifact}.json`，部署核验 `zzz-followup-deploy-verified.json`；`build/current-{artifact,build,tests}.json` 指新诊断候选，`build/current-deployment.json` 指已核验的1ABD9AFD。旧 `repair-current-*`／ADFF3486回执保留原身份；ADFF3486回退在 `build/rollback/zzz-followup-pre-ADFF3486.dll`，部署时也另存原字节。
 
-游戏加载身份、FG实际显示率、GPU等待／周期卡顿改善、退出正常性、英文布局仍需用户在新版本中分别验证。离线检查和构建成功不代替这些验收。FG使用内置实现，跳过残留MFGUnlocker.asi；不修改用户配置或跨游戏借用结论。
+下一步由用户手动启动ZZZ，保留现有FG参数，在同场景运行约30秒并复现卡顿；读取日志版本51fdb7b的新局固定日志，关联新增busy原因、源帧／SDK帧及启停时序。不重复要求已完成的关闭FG对照。尚无新版本游戏验收，不能把监视修正或离线构建当作卡顿已修复。保留全部真实queue/fence/Reset门和用户配置。
