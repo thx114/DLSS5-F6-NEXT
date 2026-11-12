@@ -63,7 +63,9 @@ SR、NR 和 FG 分别配置。开启其中一项，不代表另外两项已经�
 
 ### 3. 使用自备 ASI 插件
 
-需要 ASI 时，将插件保留在用户自己的独立目录，并在该游戏实际使用的 `OptiScaler.ini` 中配置：
+ASI 可从 [dashdogy/MFG-Unlocker Releases](https://github.com/dashdogy/MFG-Unlocker/releases) 获取，接入与菜单说明见[上游 OptiScaler 文档](https://github.com/dashdogy/MFG-Unlocker/blob/main/docs/optiscaler.md#menus)。
+
+解压后，将 `MFGUnlocker.dll` 重命名为 `MFGUnlocker.asi`（仅更改扩展名），放入用户自己的独立插件目录，再在该游戏实际使用的 `OptiScaler.ini` 中配置：
 
 ```ini
 [Plugins]

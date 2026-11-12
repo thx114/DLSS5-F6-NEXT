@@ -63,7 +63,9 @@ Change one group of settings at a time so you can identify which feature produce
 
 ### 3. Use your own ASI plugins
 
-If you need ASI, keep the plugins in your own separate directory and configure the `OptiScaler.ini` actually used by that game:
+Get the release package from [dashdogy/MFG-Unlocker Releases](https://github.com/dashdogy/MFG-Unlocker/releases). See the [upstream OptiScaler guide](https://github.com/dashdogy/MFG-Unlocker/blob/main/docs/optiscaler.md#menus) for integration and menu instructions.
+
+Extract the package, rename `MFGUnlocker.dll` to `MFGUnlocker.asi` (change only the file extension), and place it in your own separate plugin directory. Configure the `OptiScaler.ini` actually used by that game:
 
 ```ini
 [Plugins]
