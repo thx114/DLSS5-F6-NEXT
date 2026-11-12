@@ -1563,6 +1563,7 @@ bool DLSSG_Dx12::CompletePendingTeardown()
     }
     _guideContractOwned=false;
     for (auto& use:_nativeGuideUses) use={}; // Native recordings already physically retired above.
+    _nativeGuideBusy={};
     _nativeGuideListInterest.Clear();
     _nativeGuideTracking.store(false,std::memory_order_release);
     _depthSourceRejected=_depthSourceGap=false;
@@ -2227,7 +2228,10 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
             return false;
         }
         if (!NativeGuideRetired(use))
+        {
+            LogNativeGuideBusy(slot);
             return RefuseDepthContract("native-guide-slot-in-flight",false);
+        }
         if (!use.fence && FAILED(_device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&use.fence))))
             return RefuseDepthContract("native-guide-fence-unavailable",false);
         if (!use.fence || use.value>=UINT64_MAX-1 || use.fence->GetCompletedValue()==UINT64_MAX)
@@ -2585,6 +2589,43 @@ bool DLSSG_Dx12::NativeGuideRetired(const NativeGuideUse& use) const
     if (!use.signalled || !use.fence || !use.value || use.value==UINT64_MAX) return false;
     const auto done=use.fence->GetCompletedValue();
     return done!=UINT64_MAX && done>=use.value;
+}
+
+void DLSSG_Dx12::LogNativeGuideBusy(UINT slot)
+{
+    // Called under source continuity, before changing the slot or any SDK tags.
+    // A second completion sample may advance after the refused poll. It cannot
+    // authorize reuse, close an old recording, wait for a future Reset or retire owners.
+    const auto& use=_nativeGuideUses[slot];
+    const UINT64 done=use.fence ? use.fence->GetCompletedValue() : 0;
+    const auto now=GetTickCount64();
+    auto& window=_nativeGuideBusy;
+    if (!window.start) window.start=now;
+    ++window.total;
+    ++window.samples;
+    window.resetPending+=!use.closed;
+    window.unsubmitted+=!use.submitted;
+    window.executing+=use.executing;
+    window.signalMissing+=use.submitted && !use.signalled;
+    window.fenceMissing+=!use.fence;
+    window.fencePending+=use.submitted && use.signalled && use.fence && use.value &&
+        use.value!=UINT64_MAX && done!=UINT64_MAX && done<use.value;
+    window.deviceRemoved+=done==UINT64_MAX;
+    // Reasons overlap across all slots. The row identity belongs only to the
+    // last attempt; closed means Reset revoked replay authority, not GPU idle.
+    if (window.total>3 && now-window.lastLog<1000) return;
+    LOG_INFO("F6 native guide reuse blocked: pid={} provider={} current_frame={} current_epoch={} slot={} old_frame={} serial={} generation={} old_epoch={} sdk_frame={} list={} native_list={} producer_queue={} fence={} target={} sampled_completed={} closed={} submitted={} executing={} signalled={} gap_off={} have_running_options={} total={} window_ms={} samples={} reset_pending={} unsubmitted={} executing_samples={} signal_missing={} fence_missing={} fence_pending={} device_removed={} observation_only=true reasons_overlap=true sample_phase=after_refusal window_scope=all_slots identity_scope=last_attempt",
+        GetCurrentProcessId(),reinterpret_cast<uintptr_t>(this),_frameCount,_inputOwnerEpoch,slot,
+        use.source.frame,use.source.serial,use.source.generation,use.source.epoch,use.source.sdkFrame,
+        reinterpret_cast<uintptr_t>(use.list.Get()),reinterpret_cast<uintptr_t>(use.nativeList.Get()),
+        reinterpret_cast<uintptr_t>(use.queue.Get()),reinterpret_cast<uintptr_t>(use.fence.Get()),use.value,done,
+        use.closed,use.submitted,use.executing,use.signalled,_depthSourceGap,_haveRunningOptions,
+        window.total,now-window.start,window.samples,window.resetPending,window.unsubmitted,window.executing,
+        window.signalMissing,window.fenceMissing,window.fencePending,window.deviceRemoved);
+    const auto total=window.total;
+    window={};
+    window.total=total;
+    window.start=window.lastLog=now;
 }
 
 bool DLSSG_Dx12::NativeGuidesRetired() const

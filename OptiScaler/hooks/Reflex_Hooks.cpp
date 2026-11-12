@@ -1,5 +1,6 @@
 #include "pch.h"
 #include <runtime/ReflexQueueTiming.h>
+#include <runtime/ReflexReportPolicy.h>
 #include "Reflex_Hooks.h"
 #include <Config.h>
 #include <Util.h>
@@ -933,82 +934,38 @@ bool ReflexHooks::updateTimingData(TimingReportSnapshot& snapshot)
     if (!_inited)
         return false;
 
-    auto processFrameReport = [&](const auto& frameReport, IUnknown* reportDevice = nullptr) -> bool
+    auto processFrameReport = [&](const auto& frameReport, const ReflexReportPolicy::Selection& selection,
+                                  uintptr_t reportDeviceKey) -> bool
     {
         TimingReportSnapshot report {};
         auto& timingData = report.timingData;
         // Missing endpoints are zero, not timestamps. Use the same complete-pair
         // rule for the graph range, individual entries and raw durations.
-        const auto validTimingInterval = [](uint64_t begin, uint64_t finish) {
-            return begin != 0 && finish != 0 && finish >= begin;
-        };
-        uint64_t start = UINT64_MAX;
-        uint64_t end = 0;
-
-        // Please don't look, just thought it would be least work
-        auto pTimes = (const uint64_t*) &frameReport.simStartTime;
-        for (auto i = 0; i < 12; i += 2)
-        {
-            if (!validTimingInterval(pTimes[i], pTimes[i + 1]))
-                continue;
-
-            if (pTimes[i] < start)
-                start = pTimes[i];
-
-            if (pTimes[i + 1] > end)
-                end = pTimes[i + 1];
-        }
-
-        if (start == UINT64_MAX || end <= start)
-            return false;
+        const auto validTimingInterval = ReflexReportPolicy::ValidInterval;
+        const auto start = selection.range.begin;
+        const auto end = selection.range.end;
+        const double rangeUs = static_cast<double>(end - start);
+        report.estimated = _timingEstimated.load(std::memory_order_relaxed);
 
         // Monitor-only freshness: fgLastFrame does not advance with FG off.
-        // Repeated driver reports must not keep an old timing bar alive forever.
-        static uint64_t lastReportFrame=0,lastReportStart=0,lastReportEnd=0;
-        static ULONGLONG lastReportChange=0;
+        // Enrichment arrival/expiry cannot refresh a repeated report or cause
+        // fallback to an older report when this selected report becomes stale.
+        static ReflexReportPolicy::Freshness freshness;
         const auto reportTick=GetTickCount64();
-        if(frameReport.frameID!=lastReportFrame || start!=lastReportStart || end!=lastReportEnd){
-            lastReportFrame=frameReport.frameID;lastReportStart=start;lastReportEnd=end;lastReportChange=reportTick;
-        }
-        if(reportTick-lastReportChange>2000)
+        if (!freshness.Observe(frameReport.frameID, selection.range, reportDeviceKey, report.estimated, reportTick))
             return false;
-        const auto anchor = GpuTimeline::Anchor(frameReport.frameID, reportDevice);
-        const bool calibrated = GpuTimeline::Enabled() && !_timingEstimated.load(std::memory_order_relaxed) &&
-            anchor.frame && frameReport.renderSubmitStartTime != 0;
-        std::array<std::optional<std::pair<double, double>>, 2> gpuRanges{};
-        if (calibrated)
-        {
-            const double markerQpc = (anchor.beginUs + anchor.endUs) * 0.5;
-            report.clockUncertaintyUs = (anchor.endUs - anchor.beginUs) * 0.5;
-            const double offset = double(frameReport.renderSubmitStartTime) - markerQpc;
-            for (unsigned i = 0; i < gpuRanges.size(); ++i)
-            {
-                const auto span = GpuTimeline::Read(static_cast<GpuTimeline::Stream>(i), frameReport.frameID);
-                if (!span.frame || span.device != anchor.device || std::abs(span.beginUs - markerQpc) > 2e6) continue;
-                const double begin = span.beginUs + offset, finish = span.endUs + offset;
-                if (begin <= 0.0 || finish < begin || finish >= double(UINT64_MAX)) continue;
-                gpuRanges[i] = std::pair{begin, finish};
-                start = std::min(start, static_cast<uint64_t>(std::floor(begin)));
-                end = std::max(end, static_cast<uint64_t>(std::ceil(finish)));
-            }
-        }
-        double rangeUs = static_cast<double>(end - start);
-        for (unsigned i = 0; i < gpuRanges.size(); ++i)
-            if (gpuRanges[i])
-            {
-                const auto [begin, finish] = *gpuRanges[i];
-                TimingEntry entry{ .position = (begin - double(start)) / rangeUs, .length = (finish - begin) / rangeUs };
-                if (i == 0) { report.bridgeGpu = entry; report.bridgeGpuMs = (finish - begin) / 1000.0; }
-                else { report.nrGpu = entry; report.nrGpuMs = (finish - begin) / 1000.0; }
-            }
-
-
+        // GpuTimeline caches frame/device IDs, but no report-instance receipt.
+        // The same IDs may name a later report with different submit/endpoints,
+        // including reuse not seen by this polling UI. Aligning an old anchor by
+        // a newly computed offset would invent a same-report association. Leave
+        // all enrichment unknown until the producer supplies instance evidence.
         report.frameId = frameReport.frameID;
-        report.estimated = _timingEstimated.load(std::memory_order_relaxed);
-        if (const auto queue = ReflexQueueTiming::Split(report.frameId, report.estimated,
-            frameReport.osRenderQueueStartTime, frameReport.osRenderQueueEndTime,
-            frameReport.gpuRenderStartTime, frameReport.gpuRenderEndTime))
-            report.beforeGpuQueueMs = queue->beforeGpuMs;
+        if (validTimingInterval(frameReport.osRenderQueueStartTime, frameReport.osRenderQueueEndTime) &&
+            validTimingInterval(frameReport.gpuRenderStartTime, frameReport.gpuRenderEndTime))
+            if (const auto queue = ReflexQueueTiming::Split(report.frameId, report.estimated,
+                frameReport.osRenderQueueStartTime, frameReport.osRenderQueueEndTime,
+                frameReport.gpuRenderStartTime, frameReport.gpuRenderEndTime))
+                report.beforeGpuQueueMs = queue->beforeGpuMs;
         // The current D3D SDK declares this field; the Vulkan report does not.
         // Never interpret reserved bytes or fakenvapi's synthetic GPU durations.
         if constexpr (requires { frameReport.gpuActiveRenderTimeUs; })
@@ -1020,20 +977,26 @@ bool ReflexHooks::updateTimingData(TimingReportSnapshot& snapshot)
         static std::atomic<ULONGLONG> nextRawReport{0};const auto rawTick=GetTickCount64();
         if(rawTick>=nextRawReport.load(std::memory_order_relaxed)){
             nextRawReport.store(rawTick+500,std::memory_order_relaxed);
-            const auto duration = [&](const uint64_t* times, size_t index) {
-                if (!validTimingInterval(times[index], times[index + 1]))
+            const auto duration = [&](uint64_t begin, uint64_t finish) {
+                if (!validTimingInterval(begin, finish))
                     return -1.0;
-                return static_cast<double>(times[index + 1] - times[index]) / 1000.0;
+                return static_cast<double>(finish - begin) / 1000.0;
             };
-            LOG_INFO("R858 Reflex raw: pid={} frame={} range_ms={:.4f} submit_ms={:.4f} present_ms={:.4f} driver_ms={:.4f} queue_ms={:.4f} gpu_ms={:.4f} estimated={} raw_units=us gpu_active_ms={:.4f} gpu_active_valid={} report_frame_valid={} report_begin_us={} report_end_us={} queue_valid={} queue_begin_us={} queue_end_us={} gpu_valid={} gpu_begin_us={} gpu_end_us={}",
-                GetCurrentProcessId(),report.frameId,rangeUs/1000.0,duration(pTimes,2),duration(pTimes,4),
-                duration(pTimes,6),duration(pTimes,8),duration(pTimes,10),report.estimated,
+            LOG_INFO("R858 Reflex raw: pid={} frame={} range_ms={:.4f} submit_ms={:.4f} present_ms={:.4f} driver_ms={:.4f} queue_ms={:.4f} gpu_ms={:.4f} estimated={} raw_units=us gpu_active_ms={:.4f} gpu_active_valid={} report_frame_valid={} report_begin_us={} report_end_us={} queue_valid={} queue_begin_us={} queue_end_us={} gpu_valid={} gpu_begin_us={} gpu_end_us={} selection=latest_valid_completed report_index={} newest_index={} newest_slot_frame={} skipped_invalid_slots={} report_device=0x{:x} report_unchanged_ms={} queue_nested_valid={} bridge_enriched=false nr_enriched=false enrichment=unknown_report_instance sample_age_ms=UNKNOWN physical_queue=UNKNOWN display_owner=UNKNOWN",
+                GetCurrentProcessId(),report.frameId,rangeUs/1000.0,
+                duration(frameReport.renderSubmitStartTime,frameReport.renderSubmitEndTime),
+                duration(frameReport.presentStartTime,frameReport.presentEndTime),
+                duration(frameReport.driverStartTime,frameReport.driverEndTime),
+                duration(frameReport.osRenderQueueStartTime,frameReport.osRenderQueueEndTime),
+                duration(frameReport.gpuRenderStartTime,frameReport.gpuRenderEndTime),report.estimated,
                 report.gpuActiveRenderTimeUs ? static_cast<double>(*report.gpuActiveRenderTimeUs)/1000.0 : -1.0,
                 report.gpuActiveRenderTimeUs.has_value(),report.frameId!=0,start,end,
                 validTimingInterval(frameReport.osRenderQueueStartTime,frameReport.osRenderQueueEndTime),
                 frameReport.osRenderQueueStartTime,frameReport.osRenderQueueEndTime,
                 validTimingInterval(frameReport.gpuRenderStartTime,frameReport.gpuRenderEndTime),
-                frameReport.gpuRenderStartTime,frameReport.gpuRenderEndTime);
+                frameReport.gpuRenderStartTime,frameReport.gpuRenderEndTime,
+                selection.index,selection.newestIndex,selection.newestFrame,selection.newestIndex-selection.index,
+                reportDeviceKey,freshness.UnchangedMs(reportTick),report.beforeGpuQueueMs.has_value());
         }
         timingData[TimingType::TimeRange] = TimingEntry { .position = 0, .length = rangeUs };
         UPDATE_TIMING_ENTRY(sim, Simulation)
@@ -1075,28 +1038,11 @@ bool ReflexHooks::updateTimingData(TimingReportSnapshot& snapshot)
             return false;
         }
 
-        // Choose the completed sample's actual report, not an unrelated newest frame.
-        if (GpuTimeline::Enabled() && !_timingEstimated.load(std::memory_order_relaxed))
-        {
-            // Prefer a complete shared sample over a newer NR-only report:
-            // bridge queries are intentionally sparse (at most 10 per second).
-            int selected = -1;
-            unsigned bestScore = 0;
-            for (int i = 63; i >= 0; --i)
-            {
-                const auto frame = results->frameReport[i].frameID;
-                const auto anchor = GpuTimeline::Anchor(frame, sleepDev);
-                if (!anchor.frame) continue;
-                const auto bridge = GpuTimeline::Read(GpuTimeline::Stream::Bridge, frame);
-                const auto nr = GpuTimeline::Read(GpuTimeline::Stream::Nr, frame);
-                const unsigned score = (bridge.frame && bridge.device == anchor.device ? 2u : 0u) +
-                    (nr.frame && nr.device == anchor.device ? 1u : 0u);
-                if (score > bestScore) { bestScore = score; selected = i; }
-                if (score == 3) break;
-            }
-            if (selected >= 0 && processFrameReport(results->frameReport[selected], sleepDev)) return true;
-        }
-        return processFrameReport(results->frameReport[63], sleepDev);
+        // Choose once from NVAPI's completion order. Optional GPU data may
+        // enrich only this report; stale/failed processing never retries older IDs.
+        const auto selection = ReflexReportPolicy::LatestCompleted(results->frameReport);
+        return selection && processFrameReport(results->frameReport[selection->index], *selection,
+            reinterpret_cast<uintptr_t>(sleepDev));
     }
 
     if (_lastVkSleepDev && o_NvAPI_Vulkan_GetLatency)
@@ -1117,8 +1063,9 @@ bool ReflexHooks::updateTimingData(TimingReportSnapshot& snapshot)
             return false;
         }
 
-        // 64th element has the latest data
-        return processFrameReport(results->frameReport[63]);
+        const auto selection = ReflexReportPolicy::LatestCompleted(results->frameReport);
+        return selection && processFrameReport(results->frameReport[selection->index], *selection,
+            reinterpret_cast<uintptr_t>(_lastVkSleepDev));
     }
 
     return false;

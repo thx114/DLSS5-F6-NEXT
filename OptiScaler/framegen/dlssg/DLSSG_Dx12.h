@@ -289,6 +289,14 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     bool BuildGuideConstants(int slot, sl::Constants& constants, bool includeCamera);
     void EvaluateStateLocked(ID3D12Device* device, FG_Constants& fgConstants);
     bool NativeGuideRetired(const NativeGuideUse& use) const;
+    // Observation only: Reset and the producer's actual fence remain the reuse authority.
+    void LogNativeGuideBusy(UINT slot);
+    struct NativeGuideBusyWindow
+    {
+        UINT64 start=0, lastLog=0, total=0, samples=0;
+        UINT64 resetPending=0, unsubmitted=0, executing=0, signalMissing=0;
+        UINT64 fenceMissing=0, fencePending=0, deviceRemoved=0;
+    } _nativeGuideBusy;
     bool NativeGuidesRetired() const;
     bool OrderNativeGuides(UINT slot);
     NativeGuideUse* FindNativeGuideSource(const dlssg::NativeSource& source);

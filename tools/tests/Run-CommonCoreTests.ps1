@@ -22,6 +22,7 @@ $suites = @(
     @{ Name = 'FgHandoffWarp'; Source = 'OptiScaler/with_dx12/tests/fg-handoff/fixture.cpp'; StubInclude = 'build/common-core-tests'; Libraries = 'd3d11.lib d3d12.lib dxgi.lib' },
     @{ Name = 'BridgeRetirementWarp'; Source = 'OptiScaler/upscalers/tests/bridge-retirement/fixture.cpp'; StubInclude = 'build/common-core-tests'; Libraries = 'd3d12.lib dxgi.lib' },
     @{ Name = 'ReflexQueueTiming'; Source = 'OptiScaler/runtime/tests/ReflexQueueTimingTests.cpp' },
+    @{ Name = 'ReflexReportPolicy'; Source = 'OptiScaler/runtime/tests/ReflexReportPolicyTests.cpp'; StubInclude = 'external/nvapi' },
     @{ Name = 'DlssPresetMenu'; Source = 'OptiScaler/menu/tests/DlssPresetMenuTests.cpp' },
     @{ Name = 'LookControls'; Source = 'OptiScaler/menu/tests/look-controls/fixture.cpp'; StubInclude = 'build/common-core-tests' },
     @{ Name = 'NrColourTransaction'; Source = 'OptiScaler/shaders/dlssnr/tests/colour-transaction/fixture.cpp'; StubInclude = 'build/common-core-tests' },
