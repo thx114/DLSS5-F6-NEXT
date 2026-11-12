@@ -1,10 +1,10 @@
 # F6 NEXT
 
-2026-11-12：**ADFF3486 经用户实测仍有 ZZZ 周期卡顿；1ABD9AFD 诊断版已部署。已修监视器旧报告选择并增加guide阻塞状态，卡顿根因尚未证实。HDR暂缓。** 详见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
+2026-11-12：**新局确认四呈现槽与producer录制生命周期耦合，已修recording资源所有权。候选0C7D6709通过Release x64、导出、定向回归和独立复核，尚未部署；实际卡顿改善待验收，HDR暂缓。** 详见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`，本次源码提交 `51fdb7b19f09`。正式及三个游戏缓存均为1ABD9AFD，原文件身份／硬链接、用户配置及profiles不变；FSR桥保持CC301B42。FG使用内置实现。退出保护、完整英文已保留，相关游戏验收独立记录。
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`，候选源码 `8df406c4715d`。正式及三缓存仍1ABD9AFD，桥CC301B42；本轮AGENTS要求不改正式部署或profiles。FG内置，SR／NR／FG语义、6×参数和监视报告策略保留。
 
-新局PID190880确认selected DLSS输入，也记录FG反复启停及呈现延迟1↔6切换；槽忙的Reset／fence原因需要新诊断日志核实。Reflex选最新有效完成报告，缺报告实例凭据的Bridge／NR enrichment保持unknown；独立NR计时未改。桥缺独立HUDless/UI ABI，见[输入契约](docs/FG-BRIDGE-HUD-CONTRACT.md)。
+PID185668已输出2328次busy采样均Reset pending，594条详细行after_refusal fence采样均达target；FG启／停及最大延迟1↔6各1510次。修复让GPU转换资源随真实recording保留至Reset＋自身producer fence且CPU释放；四槽只保留当前身份，未扩大BUFFER_COUNT、删退休门或借旧帧。
 
 ## 目录
 
@@ -33,7 +33,7 @@ python OptiScaler/hooks/tests/test_fg_hook_install.py --cpu
 pwsh -NoProfile -File ./tools/tests/Run-CommonCoreTests.ps1
 ```
 
-产物 `build/out/OptiScaler.dll`，UTF-8日志 `build/msbuild.log`。本次冻结2428项输入，核验全部948个导出；定向验证和独立复核见 `build/repair-20261112/zzz-followup-*`，部署核验 `zzz-followup-deploy-verified.json`。旧ADFF3486及回执保留。构建、部署、实际加载、画面和性能分别验收；本次尚未证明卡顿改善。
+产物 `build/out/OptiScaler.dll`，UTF-8日志 `build/msbuild.log`。本次冻结2428项输入，核验全部948个导出；定向验证和独立复核见 `build/repair-20261112/zzz-recordings-*`。候选0C7D6709尚未部署，旧1ABD9AFD、ADFF3486和回执保留。构建、部署、实际加载、画面和性能分别验收；本次尚未证明卡顿改善。
 
 ## 文档
 
