@@ -205,6 +205,10 @@ void BeginFrame(HWND targetHwnd, HWND inputHwnd, bool isUwp = false);
 void FeedImGui(bool menuVisible);
 void EndFrame(bool menuVisible);
 
+// The menu's platform poll must see real input, rather than the snapshots our
+// hooks deliberately neutralize for the game. The bypass ends before UI work.
+void NewImGuiWin32Frame();
+
 void SetMenuVisible(bool visible);
 void ResetMenuInputTransientState();
 

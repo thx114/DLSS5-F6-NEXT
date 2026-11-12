@@ -404,6 +404,9 @@
     <ClInclude Include="menu\NextgenUi.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="menu\MenuInputPolicy.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="menu\menu_dx11.h">
       <Filter>Header Files</Filter>
     </ClInclude>

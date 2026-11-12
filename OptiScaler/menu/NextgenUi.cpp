@@ -59,8 +59,9 @@ bool Tab(const char* id, const char* label, bool selected, float width, float he
     if (selected && primary)
         draw->AddLine(ImVec2(low.x + rounding, high.y - 1.0f), ImVec2(high.x - rounding, high.y - 1.0f),
                       ImGui::GetColorU32(ImGuiCol_CheckMark), std::max(1.0f, ImGui::GetFontSize() * .11f));
-    if (ImGui::IsItemFocused())
-        draw->AddRect(low, high, ImGui::GetColorU32(ImGuiCol_NavCursor), rounding);
+    // InvisibleButton already renders the navigation cursor and observes
+    // NavCursorVisible. A second unconditional focus border stays after a
+    // mouse takes over and makes ordinary retained focus look stuck.
 
     const ImVec2 extent = ImGui::CalcTextSize(label);
     // Large fonts and very narrow windows must not paint over neighboring tabs.

@@ -37,6 +37,7 @@
 #include <native/VkPresentBridge.h>
 
 #include "input/input_system.h"
+#include "MenuInputPolicy.h"
 #include <wrapped/wrapped_swapchain.h>
 
 #include "font/Hack_Compressed.h"
@@ -129,7 +130,6 @@ static uint64_t lastInputTick = 0;
 static uint64_t lastShortcutFireTick = 0;
 constexpr uint64_t debounceThreshold = 1000;
 
-static bool hasGamepad = false;
 static bool ffxInitTried = false;
 static bool xefgInitTried = false;
 static std::string windowTitle;
@@ -1991,21 +1991,9 @@ void MenuCommon::UpdateMenuInputMode(RenderMenuContext& ctx)
 {
     auto& io = ctx.io;
 
-    // Moved here to prevent gamepad key replay
-    if (_isVisible)
-    {
-        if (hasGamepad)
-            io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-
-        io.ConfigFlags = ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
-    }
-    else
-    {
+    if (!_isVisible)
         capturingKey = false;
-        hasGamepad = (io.BackendFlags & ImGuiBackendFlags_HasGamepad) != 0;
-        io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
-        io.ConfigFlags = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_NoKeyboard;
-    }
+    MenuInputPolicy::SetVisible(io, _isVisible);
 }
 
 void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
@@ -2215,7 +2203,7 @@ void MenuCommon::BeginMenuFrameIfNeeded(RenderMenuContext& ctx)
     {
         if (!_isUWP)
         {
-            ImGui_ImplWin32_NewFrame();
+            OptiInput::NewImGuiWin32Frame();
         }
         else
         {
@@ -8471,9 +8459,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
         _isVisible = false;
         menuOpenRequested = false;
         menuIntentEligibleForRebuild = false;
-        hasGamepad = (io.BackendFlags | ImGuiBackendFlags_HasGamepad) > 0;
-        io.BackendFlags &= 30;
-        io.ConfigFlags = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_NoKeyboard;
+        MenuInputPolicy::SetVisible(io, false);
 
         _showMipmapCalcWindow = false;
         _showHudlessWindow = false;
@@ -9011,8 +8997,8 @@ bool MenuCommon::RenderMenu()
 
     // 1) Collect timing and input state before any ImGui drawing.
     UpdateRenderTiming(ctx);
-    UpdateMenuInputMode(ctx);
     HandleMenuShortcuts(ctx);
+    UpdateMenuInputMode(ctx);
     GuideDiagnosticsMenu::Visibility(_isVisible);
     GuideCalibrationRuntime::Tick();
 
@@ -9086,14 +9072,11 @@ void MenuCommon::Init(HWND InHwnd, bool isUWP)
     ImGuiIO& io = ImGui::GetIO();
     (void) io;
 
-    hasGamepad = (io.BackendFlags | ImGuiBackendFlags_HasGamepad) > 0;
-    io.BackendFlags &= 30;
-    io.ConfigFlags = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_NoKeyboard;
+    MenuInputPolicy::SetVisible(io, _isVisible);
 
     io.MouseDrawCursor = _isVisible;
     io.WantCaptureKeyboard = _isVisible;
     io.WantCaptureMouse = _isVisible;
-    io.WantSetMousePos = _isVisible;
 
     io.IniFilename = io.LogFilename = nullptr;
 

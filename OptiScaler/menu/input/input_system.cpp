@@ -3,6 +3,8 @@
 #include <StartupExceptionEvidence.h>
 
 #include <include/imgui/imgui.h>
+#include <include/imgui/imgui_internal.h>
+#include <include/imgui/imgui_impl_win32.h>
 
 namespace OptiInput
 {
@@ -1298,6 +1300,12 @@ void BeginFrame(HWND targetHwnd, HWND inputHwnd, bool isUwp)
     UpdateOptionalInputIntegrations();
 }
 
+void NewImGuiWin32Frame()
+{
+    ScopedHookBypass bypass;
+    ImGui_ImplWin32_NewFrame();
+}
+
 void FeedImGui(bool menuVisible)
 {
     std::unique_lock lock(_state.Mutex);
@@ -1443,12 +1451,54 @@ void FeedImGui(bool menuVisible)
         io.AddInputCharacterUTF16(ch);
 }
 
+// Keep enough evidence to distinguish a retained navigation highlight from
+// missing coordinates, a held button, or queued input. Never log typed text,
+// and cap the output for each menu opening instead of tracing every frame.
+static void LogImGuiInputSnapshotLocked(bool menuVisible)
+{
+    static bool wasVisible = false;
+    static unsigned frame = 0;
+    static unsigned remaining = 0;
+    if (!menuVisible)
+    {
+        wasVisible = false;
+        return;
+    }
+    if (!wasVisible)
+    {
+        frame = 0;
+        remaining = 48;
+    }
+    wasVisible = true;
+    ++frame;
+    const auto* context = ImGui::GetCurrentContext();
+    if (!context || remaining == 0)
+        return;
+    const auto& io = context->IO;
+    const bool buttonEdge = io.MouseClicked[0] || io.MouseReleased[0] ||
+        io.MouseClicked[1] || io.MouseReleased[1];
+    const bool queued = context->InputEventsQueue.Size > 32 && frame % 30 == 0;
+    if (frame > 8 && !buttonEdge && !queued && frame % 120 != 0)
+        return;
+    --remaining;
+    LOG_INFO("F6 menu input: frame={} remaining={} focused={} mode={} acquired=({},{}) imgui=({:.0f},{:.0f}) "
+             "buttons={}/{}/{} clicked={} released={} shift={}/{} queue={} nav={:X} navSource={} "
+             "config={:X} backend={:X} appFocusLost={} wantSetMousePos={}",
+             frame, remaining, _state.Focused, AcquisitionModeName(_state.AcquisitionMode),
+             _state.MouseClientPos.x, _state.MouseClientPos.y, io.MousePos.x, io.MousePos.y,
+             io.MouseDown[0], io.MouseDown[1], io.MouseDown[2], io.MouseClicked[0], io.MouseReleased[0],
+             _state.Keys[VK_LSHIFT].Down, _state.Keys[VK_RSHIFT].Down, context->InputEventsQueue.Size,
+             context->NavId, static_cast<int>(context->NavInputSource), io.ConfigFlags, io.BackendFlags,
+             io.AppFocusLost, io.WantSetMousePos);
+}
+
 void EndFrame(bool menuVisible)
 {
     std::unique_lock lock(_state.Mutex);
 
     ApplyMenuVisibilityChangeLocked(menuVisible);
     LogInputHealthSnapshotLocked("EndFrame");
+    LogImGuiInputSnapshotLocked(menuVisible);
     ClearTransientState();
     keyboardFrameOpen = false;
 }

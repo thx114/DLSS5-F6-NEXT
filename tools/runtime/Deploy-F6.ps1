@@ -7,6 +7,8 @@ If the destination is in use, stage the candidate beside it as OptiScaler.dll.ne
 [CmdletBinding()]
 param(
     [string]$Artifact,
+    [ValidatePattern('^(?:official/F6|local/[A-Za-z0-9_-]+)$')]
+    [string]$BuildId = 'official/F6',
     [string]$InstallationRoot = 'D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full'
 )
 Set-StrictMode -Version Latest
@@ -14,7 +16,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 if (!$Artifact) { $Artifact = Join-Path $projectRoot 'build/out/OptiScaler.dll' }
 $artifactPath = (Get-Item -LiteralPath $Artifact -ErrorAction Stop).FullName
-$destination = (Get-Item -LiteralPath (Join-Path $InstallationRoot 'OptiScaler/official/F6/OptiScaler.dll') -ErrorAction Stop).FullName
+$destination = (Get-Item -LiteralPath (Join-Path $InstallationRoot "OptiScaler/$BuildId/OptiScaler.dll") -ErrorAction Stop).FullName
 if ([StringComparer]::OrdinalIgnoreCase.Equals($artifactPath, $destination)) {
     throw 'Artifact and destination must be different files.'
 }
@@ -30,7 +32,7 @@ try {
     $source.Position = 0
     $artifactHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($source))
     $source.Position = 0
-    # Open, never Create/rename/replace: the official file object must survive.
+    # Open, never Create/rename/replace: the selected file object must survive.
     # Actual file contention decides staging; process names are irrelevant.
     try {
         $target = [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)

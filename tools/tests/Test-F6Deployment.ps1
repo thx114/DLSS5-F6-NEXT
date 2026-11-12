@@ -115,4 +115,25 @@ try {
     Assert-Deployment ((Get-Hash $nextPath) -eq $pendingHash) 'Invalid candidate replaced the sidecar.'
 } finally { $held.Dispose() }
 Assert-Deployment ((Get-Hash $config) -eq $configHash) 'User configuration changed.'
+
+# An isolated build updates its own runtime aliases without touching official F6.
+$localRoot = Join-Path $installationRoot 'OptiScaler/local/F6-ASI'
+$null = [IO.Directory]::CreateDirectory($localRoot)
+$localDestination = Join-Path $localRoot 'OptiScaler.dll'
+[IO.File]::WriteAllBytes($localDestination, [byte[]](1..100))
+$localLink = Join-Path $fixtureRoot 'local-runtime.dll'
+$null = New-Item -ItemType HardLink -Path $localLink -Target $localDestination
+$localId = (& fsutil file queryfileid $localDestination) -join "`n"
+Set-Candidate 105 768
+$result = & $deploymentScript -Artifact $artifact -BuildId 'local/F6-ASI' -InstallationRoot $installationRoot | ConvertFrom-Json
+Assert-Deployment ($result.Status -eq 'DEPLOYED_IN_PLACE') 'Local build was not deployed.'
+Assert-Deployment ((Get-Hash $localLink) -eq (Get-Hash $artifact)) 'Local runtime alias did not update.'
+Assert-Deployment (((& fsutil file queryfileid $localDestination) -join "`n") -eq $localId) 'Local file identity changed.'
+Assert-Deployment ((Get-Hash $destination) -eq $pendingHash) 'Local deployment changed official F6.'
+Assert-Deployment ((Get-Hash $config) -eq $configHash) 'Local deployment changed user configuration.'
+foreach ($invalidBuild in @('../F6', 'local/../F6', 'official/F6/../Other', 'local/F6/extra')) {
+    $failed = $false
+    try { $null = & $deploymentScript -Artifact $artifact -BuildId $invalidBuild -InstallationRoot $installationRoot } catch { $failed = $true }
+    Assert-Deployment $failed 'Invalid build identity should be rejected.'
+}
 [pscustomobject]@{ Status='PASS'; Checks=$script:checks; Fixture=$fixtureRoot; OfficialInstallationTouched=$false } | ConvertTo-Json

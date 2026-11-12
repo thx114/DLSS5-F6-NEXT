@@ -1,5 +1,11 @@
 # tools/runtime
 
+`deploy_f6_asi.py` 根据固定 JSON plan 新建独立的 Hub 包与各游戏 runtime，并通过 `set_opt_build` 选择。依次执行 `prepare --plan <文件>`、`select --plan <文件>`；已有目录会拒绝再次 prepare。`verify --plan <文件>` 只核对磁盘选择、原文件保护清单、各游戏配置和 NR 绑定，并更新独立 ASI 回执。plan 可固定各游戏的 `NrSHA256`；当前有效 plan 记录在 `build/current-asi-deployment.json` 的 `Plan` 字段。三游戏分别使用自己的 profile 与 NR，不把共享包默认配置当成游戏有效配置。CLI 写数据库后，已打开的 Hub 需要从托盘完整退出并重启，才能刷新构建选择缓存。
+
+已有隔离包更新 DLL 时使用 `Deploy-F6.ps1 -BuildId local/F6-ASI -Artifact <已核验DLL>`。默认 BuildId 仍是 `official/F6`；只允许该正式身份或 `local/单目录名`。该操作沿用原位写入、备份和占用时 `.next` 暂存，不改变 profile 或选择。新候选、隔离部署与共享正式部署分别记回执，不因生成 `.next` 而声称已部署。
+
+菜单输入回归：`python OptiScaler/menu/tests/test_menu_input.py`。它运行仓库中的 ImGui 及抽取的生产后端／输入函数，验证鼠标、键盘、手柄、开关菜单与输入屏蔽；不访问游戏。新 DLL 每次打开菜单最多记录 48 条 `F6 menu input`，包括采集／消费坐标、按钮、导航与事件队列，不记录输入文本。该证据用于排查菜单冷开点击失效，不能凭离线测试宣称游戏内已修复。
+
 `Deploy-F6.ps1` 将已构建 DLL 流写到正式文件原对象，保留 runtime hardlink，并备份原字节；构建、部署和实际游戏验收分别记录。
 
 部署不查询游戏进程，只尝试独占打开目标DLL。目标被实际占用时，将候选写至正式DLL旁的 `OptiScaler.dll.next`，校验完整字节后发布，返回 `STAGED_NEXT_FILE_IN_USE`、`PendingArtifact`、SHA256及 `InstalledChanged=false`。这是待替换，不更新正式部署回执；权限、磁盘等其它错误仍失败。占用解除后，用候选或 `.next` 作为 `-Artifact` 再执行同一脚本原位部署，保持正式文件硬链接；不自动重命名替换。部署回归：`pwsh -NoProfile -File ./tools/tests/Test-F6Deployment.ps1`，仅操作独立夹具，不修改正式安装。

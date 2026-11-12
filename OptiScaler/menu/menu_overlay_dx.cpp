@@ -1044,7 +1044,7 @@ static void RenderImGui_DX11(IDXGISwapChain* pSwapChain)
         {
             MenuCpuFrame cpu(MenuHotpaths::Backend::Dx11, g_pd3dDevice, g_outputMenuGeneration, false);
             ImGui_ImplDX11_NewFrame();
-            ImGui_ImplWin32_NewFrame();
+            // RenderMenu owns the single platform input sample and core frame.
 
             // A real DX11 backend owns both the SRV and its last GPU read.
             // The provider admits only Genshin and the exact producer context.
