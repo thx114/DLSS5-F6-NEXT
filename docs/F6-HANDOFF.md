@@ -1,9 +1,7 @@
 # F6 项目交接入口
 
-更新：2026-11-12。**已按用户要求继续，最新交接见[产品报告第 0 节](../../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)**，包含当前源码修复、测试证据、候选身份、未确定项和后续验收。
+更新：2026-11-12。当前修复与验收边界见[产品交接第0节](../../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)及[产品当前状态](../../DLSS5_NEXT-workers/f6-rewrite/docs/CURRENT-STATE.md)。
 
-唯一写树 D:/CODE/DLSS5_NEXT-workers/f6-rewrite，codex/f6-rewrite，HEAD 9ab9686，大量既有未提交改动，禁止 reset/clean。本根 master 仅保留迁移基线、导航和共享研究。
+产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`；源码提交b1ee21020a58，候选ADFF3486已构建、未部署。FG排队、退出入口和英文已补，HDR暂缓；HUDless/UI缺桥输入。本根仅为`codex/navigation-20261112`导航和迁移基线。
 
-**FG 用内置、不用 ASI。** F6 5265915D 与 FSR 桥 CC301B42 已按用户要求部署；正式及三游戏缓存 F6 DLL 磁盘 SHA 均为 5265915D，原文件身份／硬链接不变，旧安装 8FCB8632 已备份，2,535 项受保护文件未变。部署前用户反馈崩铁 OK、ZZZ 未检测 DLSS；旧 PID180352 被归 backend，不能替代新版本实测。新版本冻结清单遗漏 FgDepthContract.h，验证边界保留。
-
-构建测试证据在产品树 build/repair-20261112/verification-next/；本次部署核验见 build/f6-deploy-5265915D-verified.json 和 current-deployment.json，旧候选及回执保留。实际加载、画面和性能待分别验收，游戏由用户手动启动。参考[仓库清单](REFERENCE-REPOSITORIES.md)与[当前状态](CURRENT-STATE.md)。
+正式F6保持5265915D，桥保持CC301B42，profiles不变。用户已确认ZZZ关闭FG后卡顿消失、仍有GPU等待；新候选尚无游戏验收。构建／测试回执在产品树`build/repair-20261112/repair-current-*`，当前部署回执保持旧安装身份。
