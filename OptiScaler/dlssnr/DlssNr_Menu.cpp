@@ -4499,8 +4499,8 @@ void UpdateF5LowHint(Config* config)
         return;
 
     shown = true;
-    ImGui::InsertNotification({ ImGuiToastType::Info, 15000,
-                                "F6 当前未接入游戏超分调用。\n若游戏已启用超分，请检查输入接入。光学 F5Low 也可独立运行 NR：打开菜单，神经渲染，光学 F5Low。" });
+    ImGui::InsertNotification({ ImGuiToastType::Info, 15000, "%s",
+        MenuText::Translate("F6 当前未接入游戏超分调用。\n若游戏已启用超分，请检查输入接入。光学 F5Low 也可独立运行 NR：打开菜单，神经渲染，光学 F5Low。").c_str() });
 }
 
 static void RenderUnsortedPage(Config* config, float menuResScale)

@@ -249,7 +249,7 @@ void RenderHistoryWindow(Config* config) {
     if(!historyWindowOpen||!config){NrHistoryDebug::Request(false);GuideCapture::RequestHistoryMeasurement(false);return;}
     NrHistoryDebug::Request(true);
     ImGui::SetNextWindowSize(ImVec2(860,570),ImGuiCond_FirstUseEver);
-    if(!ImGui::Begin("NR 每帧细节保留调试###NrHistoryPerFrame",&historyWindowOpen))
+    if(!MenuText::Begin("NR 每帧细节保留调试###NrHistoryPerFrame",&historyWindowOpen))
     {NrHistoryDebug::Request(false);GuideCapture::RequestHistoryMeasurement(false);ImGui::End();return;}
     static NrHistoryDebug::View view;
     GuideCapture::RequestHistoryMeasurement(config->DlssNrPresentedTemporalDetail.value_or_default());
@@ -295,7 +295,7 @@ void RenderHistoryWindow(Config* config) {
     }else MenuText::TextUnformatted("等待当前源帧；NR 或持续保留关闭时不会伪造历史。");
     if(ImGui::BeginTable("NrHistoryFrames",8,ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_RowBg|ImGuiTableFlags_ScrollY,ImVec2(0,0))) {
         constexpr const char* columns[]{"源帧","历史源","准入/历史","录制","提交","GPU完成","Reset","原因"};
-        for(auto name:columns)ImGui::TableSetupColumn(name);
+        for(auto name:columns)MenuText::TableSetupColumn(name);
         ImGui::TableSetupScrollFreeze(0,1);ImGui::TableHeadersRow();
         for(unsigned n=0;n<view.count;++n) {
             const auto& f=view.frames[(view.next+view.frames.size()-1-n)%view.frames.size()];
@@ -336,7 +336,7 @@ void Render(Config*) {
         }
         ImGui::EndTable();
     }
-    if(ImGui::TreeNode("消费者详情与拒绝原因")){
+    if(MenuText::TreeNode("消费者详情与拒绝原因")){
         for(unsigned n=0;n<3;++n){ImGui::PushID(static_cast<int>(n));const auto& lane=view.lanes[n];const auto& s=lane.latest;
             MenuText::SeparatorText(consumers[n]);MenuText::TextWrapped("原因：%s",s.reason.c_str());
             MenuText::Text("源 %llu；代次 %llu；配置 %llu；相位 %s",s.source,s.epoch,s.configuration,s.phaseVerified?"已验证":"未知");
@@ -398,7 +398,7 @@ void RenderPreviewStrip(Config* config) {
     }
     SyncDemand(config);
     SnapshotStatus();
-    if(ImGui::TreeNode("预览详情／离线双帧")){
+    if(MenuText::TreeNode("预览详情／离线双帧")){
         const auto status=GuideCapture::PreviewStatus();
         MenuText::TextWrapped("%s",status.c_str());
         MenuText::TextWrapped("关闭菜单继续全屏预览；选择关闭才停止新增采样。当前不支持 HDR 输入／输出。显示变换不修改 NR／FG 输入。");

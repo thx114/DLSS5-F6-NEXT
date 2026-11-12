@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <thread>
 #include <utility>
 #include <vector>
 // Extracted production bodies use RAII/parameters which the CPU doubles make
@@ -26,6 +27,11 @@ constexpr UINT DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL = 3, DXGI_SWAP_EFFECT_FLIP_DISCA
 constexpr UINT D3D12_FENCE_FLAG_NONE = 0;
 
 unsigned checks = 0;
+namespace ModuleLifetime
+{
+inline bool allowed = true;
+inline bool CleanupAllowed() { return allowed; }
+}
 void Check(bool ok, const char* message) {
     ++checks;
     if (!ok) throw std::runtime_error(message);
@@ -108,7 +114,10 @@ template<class T> struct ComPtr {
 }
 enum class FGHookRetirementState { Completed, Pending, Refused, Quarantined };
 struct FGHookRetirementResult { FGHookRetirementState state; HRESULT hr; };
-struct FGHookRetirementReceipt {};
+struct FGHookRetirementReceipt { std::unique_lock<std::recursive_mutex> execution; };
+std::recursive_mutex retirementExecution;
+bool completeRetirement = false;
+unsigned refuseAfterRelease = 0;
 namespace fg_queue_idle { inline HRESULT Refusal(HRESULT hr) { return FAILED(hr) ? hr : E_FAIL; } }
 enum class FGOutput { DLSSG, XeFG, FSRFG, NoFG };
 enum class FGInput { Upscaler };
@@ -159,9 +168,13 @@ bool CheckForFGStatus(HWND) { return true; }
 FGHookRetirementResult CompleteExistingFGTeardown(FGSwapchainOwner*, bool) {
     ++teardowns; return {FGHookRetirementState::Pending, DXGI_ERROR_WAS_STILL_DRAWING};
 }
-FGHookRetirementResult RetireFGResources(FGSwapchainOwner*, bool) {
-    ++retirements; return {FGHookRetirementState::Pending, DXGI_ERROR_WAS_STILL_DRAWING};
+FGHookRetirementResult RetireFGResources(FGSwapchainOwner* owner, bool) {
+    ++retirements;
+    if (!completeRetirement) return {FGHookRetirementState::Pending, DXGI_ERROR_WAS_STILL_DRAWING};
+    owner->retirement.execution = std::unique_lock<std::recursive_mutex>(retirementExecution);
+    return {FGHookRetirementState::Completed, S_OK};
 }
+// INSERT_PRODUCT_PIN_RESULT
 // INSERT_PRODUCT_RELEASE
 // INSERT_PRODUCT_RETIRE
 // INSERT_PRODUCT_CAPTURE
@@ -236,7 +249,11 @@ struct FGHooks {
 // INSERT_PRODUCT_CREATE_HWND
 
 void Dummy() {}
-ULONG OriginalRelease(IUnknown* object) { return object->Release(); }
+ULONG OriginalRelease(IUnknown* object) {
+    const auto remaining = object->Release();
+    if (refuseAfterRelease && releases == refuseAfterRelease) ModuleLifetime::allowed = false;
+    return remaining;
+}
 void* table[40];
 void Reset(FGOutput output = FGOutput::DLSSG) {
     if (fgOwner) {
@@ -268,6 +285,9 @@ void Reset(FGOutput output = FGOutput::DLSSG) {
     FGHooks::_dx12InteropPresentHwnd = reinterpret_cast<HWND>(19);
     fgHookStatus.store(HRESULT_FROM_WIN32(ERROR_NOT_READY));
     fgLifecycleCallback = false;
+    ModuleLifetime::allowed = true;
+    completeRetirement = false;
+    refuseAfterRelease = 0;
     addRefs = releases = binds = providerCreates = teardowns = retirements = 0;
     detours = {};
     errors.clear();
@@ -426,9 +446,53 @@ int main() try {
     auto* retired = new FGSwapchainOwner;
     retired->pin = &chain;
     fgOwner = retired;
+    const auto beforeRelease = releases;
+    const auto beforeOwners = destroyedOwners;
+    ModuleLifetime::allowed = false;
+    retired->retirement.execution = std::unique_lock<std::recursive_mutex>(retirementExecution);
+    const auto refusedPin = ReleaseFGPin(retired, OriginalRelease);
+    Check(!refusedPin.released && refusedPin.references == 1 && releases == beforeRelease &&
+          destroyedOwners == beforeOwners && fgOwner == retired && retired->pin == &chain &&
+          State::Instance().currentFGSwapchain == &chain && FGHooks::SwapchainHookStatus() == S_OK,
+          "loader/exit refusal preserves complete owner, publication and F5 pin before any release");
+    bool unlocked = false;
+    std::thread([&] {
+        std::unique_lock check(retirementExecution, std::try_to_lock);
+        unlocked = check.owns_lock();
+    }).join();
+    Check(unlocked && !retired->retirement.execution.owns_lock(),
+          "refused pin release drops the current-thread CPU lease before returning");
+    ModuleLifetime::allowed = true;
     ReleaseFGPin(retired, OriginalRelease);
     Check(fgOwner == nullptr && State::Instance().currentFGSwapchain == nullptr &&
           FGHooks::SwapchainHookStatus() == HRESULT_FROM_WIN32(ERROR_NOT_READY), "real pin release clears source readiness");
+
+    ++scenarios;
+    Reset();
+    auto* lateRefusal = new FGSwapchainOwner;
+    lateRefusal->pin = &chain;
+    lateRefusal->retireStage = FGSwapchainOwner::RetireStage::Ready;
+    fgOwner = lateRefusal;
+    State::Instance().currentFGSwapchain = &chain;
+    fgHookStatus.store(S_OK);
+    completeRetirement = true;
+    refuseAfterRelease = 1; // Exit begins in the final balanced AddRef probe.
+    Check(RetireFGForCreate(lateRefusal, OriginalRelease) == DXGI_ERROR_WAS_STILL_DRAWING,
+          "Create must propagate a final pin-release refusal after successful retirement");
+    Check(fgOwner == lateRefusal && lateRefusal->pin == &chain && chain.refs == 1 &&
+          State::Instance().currentFGSwapchain == &chain && FGHooks::SwapchainHookStatus() == S_OK,
+          "late refusal preserves the entire original publication and exactly one pin");
+    unlocked = false;
+    std::thread([&] {
+        std::unique_lock check(retirementExecution, std::try_to_lock);
+        unlocked = check.owns_lock();
+    }).join();
+    Check(unlocked && !lateRefusal->retirement.execution.owns_lock(),
+          "Create refusal never carries a same-thread execution lease to another call");
+    ModuleLifetime::allowed = true;
+    refuseAfterRelease = 0;
+    Check(RetireFGForCreate(lateRefusal, OriginalRelease) == S_OK && !fgOwner && chain.refs == 0,
+          "a later ordinary retry can retire and release exactly the retained pin");
     std::printf("PASS %u real FG Hook/Set/Create/Retire CPU scenarios, %u checks; SDK/GPU/game untested\n",
                 scenarios, checks);
     return 0;

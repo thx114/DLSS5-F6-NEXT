@@ -11,6 +11,7 @@
 #include <State.h>
 #include <Config.h>
 #include <dlssnr/DlssNrFgTrace.h>
+#include <runtime/ModuleLifetime.h>
 
 #include <cwctype>
 #include <misc/IdentifyGpu.h>
@@ -306,6 +307,10 @@ LPTOP_LEVEL_EXCEPTION_FILTER WINAPI KernelHooks::hk_K32_SetUnhandledExceptionFil
 VALIDATE_HOOK(hk_K32_ExitProcess, Kernel32Proxy::PFN_ExitProcess)
 VOID WINAPI KernelHooks::hk_K32_ExitProcess(UINT uExitCode)
 {
+    // Revoke new work before other DLLs enter their detach callbacks. Do not
+    // attempt FG Off, GPU retirement or module destruction on this exit stack.
+    ModuleLifetime::RequestProcessExit();
+    State::Instance().isShuttingDown = true;
     // Other threads (the log's writer) are stopped by ExitProcess and the loader's detach is skipped for it: this is the
     // last chance for the queued log lines to reach the disk. Bounded.
     DrainLogForExit();

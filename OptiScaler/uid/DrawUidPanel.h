@@ -34,7 +34,7 @@ inline void RenderPanel() {
     MenuText::TextDisabled("授权状态：未验证（授权不可用）");
     MenuText::TextWrapped("尚未接入真实授权验证器，无法确认或授予付费权限。draw 命中、候选字节与 UID 请求均不代表当前账号验证或授权成功。");
     ImGui::Spacing();
-    if(!ImGui::CollapsingHeader("Draw UID（按需、仅内存）##draw-uid"))return;
+    if(!MenuText::CollapsingHeader("Draw UID（按需、仅内存）##draw-uid"))return;
     auto status=Inspect();bool enabled=status.enabled;
     if(MenuText::Checkbox("允许按需获取 UID##draw-uid",&enabled))Enable(enabled);
     MenuText::TextWrapped("UID 数字解码尚未实现。需要已证实的游戏字形语义；本页不会将 draw 命中、颜色或纹理当作 UID。默认关闭，不自动后台采集，不保存账号数据。");
@@ -47,7 +47,7 @@ inline void RenderPanel() {
     MenuText::InputScalar("VB 槽##draw-uid",ImGuiDataType_U32,&selected.vertexSlot);
     MenuText::InputScalar("VB 字节偏移（相对绑定）##draw-uid",ImGuiDataType_U32,&selected.vertexByteOffset);
     MenuText::InputScalar("VB 请求字节数（1..4096）##draw-uid",ImGuiDataType_U32,&selected.vertexBytes);
-    if(ImGui::TreeNode("可选完整 CB 范围##draw-uid")){
+    if(MenuText::TreeNode("可选完整 CB 范围##draw-uid")){
         MenuText::Checkbox("使用 PS 常量；否则为 VS##draw-uid",&selected.pixelConstants);
         MenuText::InputScalar("CB 槽##draw-uid",ImGuiDataType_U32,&selected.constantSlot);
         MenuText::InputScalar("CB 完整字节数（0 表示关闭）##draw-uid",ImGuiDataType_U32,&selected.constantBytes);

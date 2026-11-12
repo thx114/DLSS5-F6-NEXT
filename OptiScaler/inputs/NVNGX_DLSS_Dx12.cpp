@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "Util.h"
+#include <runtime/ModuleLifetime.h>
 #include "Config.h"
 
 #include "NVNGX_DLSS.h"
@@ -449,6 +450,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_with_ProjectID(
 // cleanup body on every normal (non-exit) Shutdown1 call. Consolidating avoids that.
 static NVSDK_NGX_Result ShutdownDx12(ID3D12Device* requestedDevice)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     // A DLL still detaching after ours (or the driver, reentrantly) calling back in here once
     // DllMain has already begun teardown is not safe to act on; that decision was already made.
     if (State::Instance().isShuttingDown || shutdown)
@@ -670,6 +672,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_PopulateParameters_Impl(NVSDK_NGX
  */
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_DestroyParameters(NVSDK_NGX_Parameter* InParameters)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     LOG_FUNC();
 
     if (InParameters == nullptr)
@@ -1007,6 +1010,7 @@ static NVSDK_NGX_Result ReleaseDx12Feature(NVSDK_NGX_Handle* InHandle)
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* InHandle)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     if (!NgxInput::Installed() || !InHandle)
         return ReleaseDx12Feature(InHandle);
     if (State::Instance().isShuttingDown)

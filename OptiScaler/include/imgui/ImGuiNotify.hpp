@@ -20,6 +20,7 @@
 #include <functional>		// For storing the code, which executest on the button click in the notification
 
 #include "imgui.h"
+#include <utility>
 #include "imgui_internal.h"
 
 
@@ -99,9 +100,12 @@ enum class ImGuiToastPos : uint8_t
 /**
  * @brief A class for creating toast notifications with ImGui.
  */
+using ImGuiToastTextTranslator = std::string (*)(const char*);
+
 class ImGuiToast
 {
 private:
+    std::function<std::string()> contentProvider;
     ImGuiWindowFlags							flags = NOTIFY_DEFAULT_TOAST_FLAGS;
 
     ImGuiToastType								type = ImGuiToastType::None;
@@ -166,7 +170,24 @@ public:
      */
     inline void setContent(const char* format, ...)
     {
+        contentProvider = {};
         NOTIFY_FORMAT(this->setContent, format);
+    }
+
+    // Resolve display text on the render thread without restarting the toast.
+    // A provider owns its captured values and formats them in the current language.
+    inline void setContentProvider(std::function<std::string()> provider)
+    {
+        contentProvider = std::move(provider);
+    }
+    inline std::string resolveTitle(ImGuiToastTextTranslator translate)
+    {
+        return translate ? translate(title) : std::string(title);
+    }
+    inline std::string resolveContent(ImGuiToastTextTranslator translate)
+    {
+        if (contentProvider) return contentProvider();
+        return translate ? translate(content) : std::string(content);
     }
 
     /**
@@ -502,7 +523,8 @@ namespace ImGui
      * Each notification is rendered as a toast window with a title, content and an optional icon.
      * If a notification is expired, it is removed from the vector.
      */
-    inline void RenderNotifications(ImGuiToastPos toastPos, float scale, bool toneMap = false)
+    inline void RenderNotifications(ImGuiToastPos toastPos, float scale, bool toneMap = false,
+                                    ImGuiToastTextTranslator translate = nullptr)
     {
         const ImVec2 mainWindowPos = GetMainViewport()->Pos;
         const ImVec2 mainWindowSize = GetMainViewport()->Size;
@@ -547,8 +569,10 @@ namespace ImGui
 
             // Get icon, title and other data
             const char* icon = currentToast->getIcon();
-            const char* title = currentToast->getTitle();
-            const char* content = currentToast->getContent();
+            const auto titleText = currentToast->resolveTitle(translate);
+            const auto contentText = currentToast->resolveContent(translate);
+            const char* title = titleText.c_str();
+            const char* content = contentText.c_str();
             const char* defaultTitle = currentToast->getDefaultTitle();
             const float opacity = currentToast->getFadePercent(); // Get opacity based of the current phase
 

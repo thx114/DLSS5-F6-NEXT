@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "NativeDx12Hooks.h"
 #include "NativeDx12Router.h"
+#include <runtime/ModuleLifetime.h>
 
 #include <proxies/NVNGX_Proxy.h>
 #include <inputs/NVNGX_DLSS.h>
@@ -304,6 +305,7 @@ NVSDK_NGX_Result InitProject(bool project, const void* caller, const char* id, N
 }
 NVSDK_NGX_Result Stop(bool project, const void* caller)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     if (shutdownReplay)
         return InternalReplay(caller) ? *shutdownReplay : NVSDK_NGX_Result_Fail;
     if (NativeStopDelegation(caller)) return NativeStopCall(native.D3D12_Shutdown);
@@ -315,6 +317,7 @@ NVSDK_NGX_Result Stop(bool project, const void* caller)
 }
 NVSDK_NGX_Result StopDevice(bool project, const void* caller, ID3D12Device* device)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     if (shutdownReplay)
         return InternalReplay(caller) ? *shutdownReplay : NVSDK_NGX_Result_Fail;
     if (NativeStopDelegation(caller)) return NativeStopCall(native.D3D12_Shutdown1, device);
@@ -366,6 +369,7 @@ NVSDK_NGX_Result Evaluate(ID3D12GraphicsCommandList* command, const NVSDK_NGX_Ha
 }
 NVSDK_NGX_Result Release(NVSDK_NGX_Handle* handle)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     const auto caller = _ReturnAddress();
     return router.Release(External(caller), handle, NativeStopDelegation(caller));
 }
@@ -395,6 +399,7 @@ NVSDK_NGX_Result Capabilities(NVSDK_NGX_Parameter** out)
 }
 NVSDK_NGX_Result Destroy(NVSDK_NGX_Parameter* params)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     const auto caller = _ReturnAddress();
     const bool vendorCaller = NativeDelegation(caller);
     return router.InvokeNative([&] {
@@ -449,6 +454,7 @@ NVSDK_NGX_Result BInitProject(const char* id, NVSDK_NGX_EngineType e, const char
 }
 NVSDK_NGX_Result BStop()
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     const auto caller = _ReturnAddress();
     if (shutdownReplay) return InternalReplay(caller) ? *shutdownReplay : NVSDK_NGX_Result_Fail;
     if (NativeStopDelegation(caller)) return NativeStopCall(native.D3D12_Shutdown);
@@ -459,6 +465,7 @@ NVSDK_NGX_Result BStop()
 }
 NVSDK_NGX_Result BStopDevice(ID3D12Device* device)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     const auto caller = _ReturnAddress();
     if (shutdownReplay) return InternalReplay(caller) ? *shutdownReplay : NVSDK_NGX_Result_Fail;
     if (NativeStopDelegation(caller)) return NativeStopCall(native.D3D12_Shutdown1, device);
@@ -479,6 +486,7 @@ NVSDK_NGX_Result BEvaluate(ID3D12GraphicsCommandList* command, const NVSDK_NGX_H
 }
 NVSDK_NGX_Result BRelease(NVSDK_NGX_Handle* handle)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     return router.Release(false, handle, NativeStopDelegation(_ReturnAddress()));
 }
 

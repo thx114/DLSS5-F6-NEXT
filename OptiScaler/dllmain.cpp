@@ -1,5 +1,6 @@
 #include "pch.h"
 #include <runtime/F6InputPolicy.h>
+#include <runtime/ModuleLifetime.h>
 #include "integration/HoYoShade.h"
 #include <genshin/GenshinNativeQueryProvenance.h>
 #include "dllmain.h"
@@ -2171,12 +2172,14 @@ DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
     return 0;
 }
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID /*lpReserved*/)
 {
     switch (ul_reason_for_call)
     {
     case DLL_PROCESS_ATTACH:
     {
+        // Publish no hooks/worker callbacks unless their code lifetime is fixed.
+        if (!ModuleLifetime::PinCallbacks(hModule)) return FALSE;
         DisableThreadLibraryCalls(hModule);
 
         HMODULE handle = nullptr;
@@ -2628,47 +2631,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     }
 
     case DLL_PROCESS_DETACH:
+        ModuleLifetime::NotifyDetach();
         State::Instance().isShuttingDown = true;
-
-        // ExitProcess has already stopped other threads. No DLL unloading, logging,
-        // thread joins or GPU cleanup is safe here; the OS reclaims process resources.
-        if (lpReserved != nullptr)
-            break;
-
-        startupav::Shutdown();
-
-        // Unhooking and cleaning stuff causing issues during shutdown.
-        // Disabled for now to check if it cause any issues
-        // UnhookApis();
-        // unhookStreamline();
-        // unhookGdi32();
-        // unhookWintrust();
-        // unhookCrypt32();
-        // unhookAdvapi32();
-        // DetachHooks();
-
-        if (skModule != nullptr)
-            NtdllProxy::FreeLibrary_Ldr(skModule);
-
-        if (reshadeModule != nullptr)
-            NtdllProxy::FreeLibrary_Ldr(reshadeModule);
-
-        if (_asiHandles.size() > 0)
-        {
-            for (size_t i = 0; i < _asiHandles.size(); i++)
-                NtdllProxy::FreeLibrary_Ldr(_asiHandles[i]);
-        }
-
-        for (const PVOID& v : State::Instance().modulesToFree)
-        {
-            NtdllProxy::FreeLibrary_Ldr(v);
-        }
-
-        spdlog::info("");
-        spdlog::info("DLL_PROCESS_DETACH");
-        spdlog::info("Unloading OptiScaler");
-        CloseLogger();
-
+        // No SDK/COM cleanup, module unloading, logging or waiting under loader
+        // lock, including explicit detach. Callback code is pinned above and
+        // process termination reclaims the remaining objects and worker handles.
         break;
 
     case DLL_THREAD_ATTACH:

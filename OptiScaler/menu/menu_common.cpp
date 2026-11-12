@@ -2151,9 +2151,11 @@ void MenuCommon::UpdateVersionAndStartupNotifications(RenderMenuContext& ctx)
 
             ImGuiToast notification { ImGuiToastType::Warning, 10000 };
             notification.setTitle(MenuText::Translate("检测到延迟加载的 Streamline 钩子").c_str());
-            notification.setContent(
-                "建议将 OptiScaler 从 %s 改为其他支持的加载文件名，否则可能出现异常。",
-                filename.c_str());
+            notification.setContentProvider([filename] {
+                return MenuText::Format(
+                    "建议将 OptiScaler 从 %s 改为其他支持的加载文件名，否则可能出现异常。",
+                    filename.c_str());
+            });
             ImGui::InsertNotification(notification);
         }
 
@@ -2334,7 +2336,8 @@ void MenuCommon::RenderNotifications(RenderMenuContext& ctx)
     if (config->IsStarRailInputProfile())
         DlssNr::UpdateF5LowHint(config);
 
-    ImGui::RenderNotifications(ImGuiToastPos::TopCenter, notificationScale, tonemapRequired);
+    ImGui::RenderNotifications(ImGuiToastPos::TopCenter, notificationScale, tonemapRequired,
+                              +[](const char* text) { return MenuText::Translate(text ? text : ""); });
 
 
     if (config->UseHQFont.value_or_default())
@@ -2369,7 +2372,7 @@ void MenuCommon::UpdateFrameTimeAverages(RenderMenuContext& ctx)
         struct StatisticsCache {
             GuideDiagnostics::Statistics observed;
             uint64_t sourceEnd=0,querySequence=0;
-            bool sourceKnown=false,sdkKnown=false;
+            bool sourceKnown=false,sdkKnown=false,english=false;
             std::string text;
         };
         static thread_local StatisticsCache cache;
@@ -2388,15 +2391,16 @@ void MenuCommon::UpdateFrameTimeAverages(RenderMenuContext& ctx)
             // Generated-output callbacks reuse text until the actual source,
             // SDK interval or freshness changes. They do not recalculate FPS.
             if (cache.text.empty() || cache.sourceEnd!=observed.source.lastNs ||
-                cache.querySequence!=observed.querySequence || cache.sourceKnown!=sourceKnown || cache.sdkKnown!=sdkKnown)
+                cache.querySequence!=observed.querySequence || cache.sourceKnown!=sourceKnown || cache.sdkKnown!=sdkKnown ||
+                cache.english!=NextgenUi::English())
             {
                 cache.sourceEnd=observed.source.lastNs;cache.querySequence=observed.querySequence;
-                cache.sourceKnown=sourceKnown;cache.sdkKnown=sdkKnown;
-                cache.text=sourceKnown ? StrFmt("源：%.1f Hz",frameRate) : "源：未知";
+                cache.sourceKnown=sourceKnown;cache.sdkKnown=sdkKnown;cache.english=NextgenUi::English();
+                cache.text=sourceKnown ? StrFmt("源：%.1f Hz",frameRate) : MenuText::Translate("源：未知");
                 if (sdkKnown) cache.text+=StrFmt(" | SDK：%u / %.2f ms",observed.presented,
                     (observed.endNs-observed.beginNs)*1e-6);
-                else cache.text+=" | SDK：区间未知";
-                cache.text+=" | 实际显示率：未知";
+                else cache.text+=MenuText::Translate(" | SDK：区间未知");
+                cache.text+=MenuText::Translate(" | 实际显示率：未知");
             }
             ctx.frameStatistics=cache.text;
         }
@@ -4087,7 +4091,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 }
                 ShowHelpMarker("选择 J/K/L/M 后点击下方“应用更改”，对所有 SR 质量档使用该预设。K/L/M 是否被当前 NGX 版本接受由 SDK 决定，SDK 可能回退到默认预设。");
 
-                if (ImGui::TreeNode("全部 SR 预设（高级）"))
+                if (MenuText::TreeNode("全部 SR 预设（高级）"))
                 {
                     bool pOverride = config->RenderPresetOverride.value_or_default();
                     if (MenuText::Checkbox("渲染预设覆盖", &pOverride))

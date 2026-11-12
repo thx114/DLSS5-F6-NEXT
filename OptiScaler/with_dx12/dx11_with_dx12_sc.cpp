@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <runtime/ModuleLifetime.h>
 #include <native/NrConsumerFilter.h>
 #include <integration/HoYoShade.h>
 #include "dx11_with_dx12_sc.h"
@@ -699,6 +700,15 @@ ULONG STDMETHODCALLTYPE Dx11wDx12SC::AddRef()
 ULONG STDMETHODCALLTYPE Dx11wDx12SC::Release()
 {
     ULONG ret = InterlockedDecrement(&_refcount);
+    if (!ModuleLifetime::CleanupAllowed())
+    {
+        if (ret == 0)
+        {
+            InterlockedExchange(&_refcount, 1); // retain the whole owner, including all COM members
+            return 1;
+        }
+        return ret;
+    }
 
     LOG_TRACE("Count: {}, caller: {}", ret, Util::WhoIsTheCaller(_ReturnAddress()));
 
@@ -1016,6 +1026,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetBuffer(UINT Buffer, REFIID riid, void*
 
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookSetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     LOG_DEBUG("Dx11wDx12SC SetFullscreenState: {}, target: {:X}, caller: {}", Fullscreen, (size_t) pTarget,
               Util::WhoIsTheCaller(_ReturnAddress()));
 
@@ -1065,6 +1076,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc)
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat,
                                                      UINT SwapChainFlags)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     if ((_sourceCopyUncertain.load(std::memory_order_acquire) || native::nrfilter::HasUncertainCopy(_nrCopyAllocatorFenceValues))) return DXGI_ERROR_WAS_STILL_DRAWING;
     if (_nativeParentRoute)
     {
@@ -1219,6 +1231,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookResizeBuffers(UINT BufferCount, UINT 
 
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     if (_nativeParentRoute)
     {
         NativeCall call(*this);
@@ -1313,6 +1326,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetBackgroundColor(DXGI_RGBA* pColor)
 
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::SetRotation(DXGI_MODE_ROTATION Rotation)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     if (_nativeParentRoute)
     {
         NativeCall call(*this);
@@ -1337,6 +1351,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetRotation(DXGI_MODE_ROTATION* pRotation
 
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::SetSourceSize(UINT Width, UINT Height)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     if (_nativeParentRoute)
     {
         NativeCall call(*this);
@@ -1410,6 +1425,7 @@ framegen::latency::Target Dx11wDx12SC::_SelectFrameLatencyTarget(void* returnAdd
 
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::SetMatrixTransform(const DXGI_MATRIX_3X2_F* pMatrix)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     if (_nativeParentRoute) {
         NativeCall call(*this);
         std::unique_lock<std::recursive_mutex> nativeLock(_nativeParentMutex,std::try_to_lock);
@@ -1499,6 +1515,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
                                                       UINT SwapChainFlags, const UINT* pCreationNodeMask,
                                                       IUnknown* const* ppPresentQueue)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     if ((_sourceCopyUncertain.load(std::memory_order_acquire) || native::nrfilter::HasUncertainCopy(_nrCopyAllocatorFenceValues))) return DXGI_ERROR_WAS_STILL_DRAWING;
     if (_nativeParentRoute)
     {
@@ -3057,6 +3074,7 @@ HRESULT Dx11wDx12SC::_PresentNativeParent(UINT sync,UINT flags,const DXGI_PRESEN
 
 void Dx11wDx12SC::_RevokeNativeChild(bool recoverableDisplayChange)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return;
     _recoveryCopyDrain = {};
     _recoveryPresentDrain = {};
     // Terminal failure is sticky. A display setter cannot launder unknown GPU
@@ -3072,6 +3090,7 @@ void Dx11wDx12SC::_RevokeNativeChild(bool recoverableDisplayChange)
 }
 bool Dx11wDx12SC::_TryDrainNativeChild()
 {
+    if (!ModuleLifetime::CleanupAllowed()) return false;
     if(_visiblePresentEntered)return false;
     // A stale/non-current raw provider cannot sign another owner's completion.
     if(_visibleProvider && State::Instance().currentFG!=_visibleProvider)return false;
@@ -3086,6 +3105,7 @@ bool Dx11wDx12SC::_TryDrainNativeChild()
 }
 bool Dx11wDx12SC::_TryRecoverNativeChild()
 {
+    if (!ModuleLifetime::CleanupAllowed()) return false;
     if (!_nativeParentRoute || _parentDetached || !_childRevoked ||
         _childRecoveryEntered || _visiblePresentEntered || !_visibleChild ||
         !Config::Instance()->FGEnabled.value_or_default()) return false;
@@ -3183,6 +3203,7 @@ void Dx11wDx12SC::_RetireNativeChildOnOwner(void* value)
 {static_cast<Dx11wDx12SC*>(value)->_TryRetireNativeChildOnOwner();}
 void Dx11wDx12SC::_TryRetireNativeChildOnOwner()
 {
+    if (!ModuleLifetime::CleanupAllowed()) return;
     // Owner must never wait behind Present while DXGI may require its message pump.
     std::unique_lock<std::recursive_mutex> nativeLock(_nativeParentMutex,std::try_to_lock);
     if(!nativeLock.owns_lock() || _childRetirementEntered)return;

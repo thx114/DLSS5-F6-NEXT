@@ -1,6 +1,7 @@
 #include "pch.h"
 #include <runtime/F6InputPolicy.h>
 #include <runtime/SourcePresent.h>
+#include <runtime/ModuleLifetime.h>
 #include <framegen/FinalOutputEndpoint.h>
 #include <framegen/FgSourcePacing.h>
 #include <hooks/Streamline_Hooks.h>
@@ -377,6 +378,7 @@ FGHookRetirementResult RetireFGResources(FGSwapchainOwner* owner, bool terminal)
 {
     using Result = FGHookRetirementState;
     using Stage = FGSwapchainOwner::RetireStage;
+    if (!ModuleLifetime::CleanupAllowed()) return { Result::Refused, DXGI_ERROR_WAS_STILL_DRAWING };
     auto provider = State::Instance().currentFG;
     if (!owner) return { Result::Refused, E_INVALIDARG };
     if (owner->quarantined) return { Result::Quarantined, DXGI_ERROR_WAS_STILL_DRAWING };
@@ -423,8 +425,21 @@ FGHookRetirementResult RetireFGResources(FGSwapchainOwner* owner, bool terminal)
     return { Result::Completed, S_OK };
 }
 
-template<class Release> ULONG ReleaseFGPin(FGSwapchainOwner* owner, Release release)
+struct FGPinReleaseResult
 {
+    ULONG references;
+    bool released;
+};
+
+template<class Release> FGPinReleaseResult ReleaseFGPin(FGSwapchainOwner* owner, Release release)
+{
+    // Keep the complete owner and its one pin before changing any publication
+    // or reference. A destructor's early return cannot retain its COM members.
+    if (!ModuleLifetime::CleanupAllowed())
+    {
+        owner->retirement = {}; // Drop the same-thread CPU lease; retain every COM owner and the pin.
+        return { 1, false };
+    }
     ScopedFGCallback callback;
     auto retirement = std::move(owner->retirement); // Lease outlives owner deletion and original pin Release.
     auto pin = std::exchange(owner->pin, nullptr);
@@ -435,12 +450,13 @@ template<class Release> ULONG ReleaseFGPin(FGSwapchainOwner* owner, Release rele
     fgOwner = nullptr;
     const auto remaining = release(pin); // One F5-owned reference; never a loop or a guessed zero.
     delete owner; // Queue/fence/event were drained before provider retirement.
-    return remaining;
+    return { remaining, true };
 }
 
 FGHookRetirementResult CompleteExistingFGTeardown(FGSwapchainOwner* owner, bool terminal)
 {
     using Result = FGHookRetirementState;
+    if (!ModuleLifetime::CleanupAllowed()) return { Result::Refused, DXGI_ERROR_WAS_STILL_DRAWING };
     auto provider = State::Instance().currentFG;
     if (!owner || !provider || provider != owner->provider) return { Result::Refused, DXGI_ERROR_WAS_STILL_DRAWING };
     ScopedFGCallback callback;
@@ -457,6 +473,7 @@ FGHookRetirementResult CompleteExistingFGTeardown(FGSwapchainOwner* owner, bool 
 template<class Release> HRESULT RetireFGForCreate(FGSwapchainOwner* owner, Release release)
 {
     if (!owner || !owner->pin) return E_INVALIDARG;
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     // In particular, a failed hook install has no original Release trampoline.
     // Refuse BEFORE teardown, AddRef probes or any indirect call; keep all owners.
     if (owner->quarantined || !release) return DXGI_ERROR_WAS_STILL_DRAWING;
@@ -487,8 +504,7 @@ template<class Release> HRESULT RetireFGForCreate(FGSwapchainOwner* owner, Relea
         if (remaining == 0) owner->quarantined = true;
         return DXGI_ERROR_WAS_STILL_DRAWING;
     }
-    ReleaseFGPin(owner, release);
-    return S_OK;
+    return ReleaseFGPin(owner, release).released ? S_OK : DXGI_ERROR_WAS_STILL_DRAWING;
 }
 
 }
@@ -1096,6 +1112,7 @@ HRESULT FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
 
 HRESULT FGHooks::hkSetFullscreenState(IDXGISwapChain* This, BOOL Fullscreen, IDXGIOutput* pTarget)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     if (GenshinVisibleChild::IsOwnedChild(_hwnd))
         return Fullscreen ? DXGI_ERROR_UNSUPPORTED : o_FGSCSetFullscreenState(This, FALSE, pTarget);
     IFGFeature* fg = State::Instance().currentFG;
@@ -1246,6 +1263,7 @@ HRESULT FGHooks::hkResizeBuffers(IDXGISwapChain* This, UINT BufferCount, UINT Wi
 {
     if (State::Instance().currentFGSwapchain != This)
         return o_FGSCResizeBuffers(This, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     if (HoYoShade::ColorConsumers(This) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
     // Only the same thread/object's already admitted ResizeBuffers1 may forward this inner call.
     if (fgResizeForward.chain == This && fgResizeForward.buffers1)
@@ -1429,6 +1447,7 @@ HRESULT FGHooks::hkResizeBuffers(IDXGISwapChain* This, UINT BufferCount, UINT Wi
 
 HRESULT FGHooks::hkResizeTarget(IDXGISwapChain* This, const DXGI_MODE_DESC* pNewTargetParameters)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     if (GenshinVisibleChild::IsOwnedChild(_hwnd)) return DXGI_ERROR_UNSUPPORTED;
     if (Config::Instance()->FGXeFGForceBorderless.value_or_default())
     {
@@ -1453,6 +1472,7 @@ HRESULT FGHooks::hkResizeBuffers1(IDXGISwapChain3* This, UINT BufferCount, UINT 
 {
     if (State::Instance().currentFGSwapchain != This)
         return o_FGSCResizeBuffers1(This, BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     if (HoYoShade::ColorConsumers(This) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
     // Forwarding cannot bypass queue-epoch validation, even inside an admitted ResizeBuffers.
     if (fgResizeForward.chain == This && !fgResizeForward.buffers1)
@@ -2739,7 +2759,7 @@ ULONG FGHooks::hkFGRelease(IUnknown* This)
 {
     // A contended/internal/foreign/shutdown call STILL consumes exactly its incoming caller reference.
     // The existing F5 pin protects an active owner; probes below are balanced, never caller refs.
-    if (fgLifecycleCallback) return o_FGRelease(This);
+    if (!ModuleLifetime::CleanupAllowed() || fgLifecycleCallback) return o_FGRelease(This);
     std::unique_lock lifetime(fgLifetimeMutex, std::try_to_lock);
     if (!lifetime.owns_lock() || !fgOwner || fgOwner->quarantined || fgOwner->pin != This || State::Instance().isShuttingDown)
         return o_FGRelease(This);
@@ -2777,5 +2797,5 @@ ULONG FGHooks::hkFGRelease(IUnknown* This)
         if (!references) owner->quarantined = true;
         return references;
     }
-    return ReleaseFGPin(owner, o_FGRelease); // Exactly one F5 pin; never loop to guessed zero.
+    return ReleaseFGPin(owner, o_FGRelease).references; // Exactly one F5 pin; never loop to guessed zero.
 }

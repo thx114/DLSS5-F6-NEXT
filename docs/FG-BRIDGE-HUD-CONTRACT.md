@@ -1,5 +1,7 @@
 # 外部 NGX FSR 桥的 HUD 输入约定
 
+2026-11-12 核对：当前已部署桥固定提交 `1865c585e02679d38881b9020611dfee8d44a9de` 没有独立 HUD-less／UI 色和 Alpha 发布 ABI。现有 SR 颜色、reactive／transparency mask 不满足下述输入契约，不能改标签冒充 UI 保护。此项保持不可用，不继续从桥侧猜测提取；只有上游提供真实资源及完整交接约定后才重新接入。当前 F6 源码只有 `Hudfix_Dx12`，旧文档所述 `Hudfix_Dx11` 不能当作本版本可启用能力。
+
 F6 已有 `FG_ResourceType::HudlessColor` 和 `FG_ResourceType::UIColor` 输入，分别映射 Streamline 的 `HUDLessColor` 和 `UIColorAndAlpha`。现有 FFX/FSR FG 输入也会提交这两类资源。原神旧 `DrawUiMask` 属于基于遮罩构造 HUD-less 图像的路径，不能视为已获取真实独立 UI 图层。
 
 本地 Streamline 头文件另有 `kBufferTypeUIAlpha`：桥若可提供可靠的单通道 UI Alpha，请优先说明，不必为了 F6 预先生成 RGBA。当前 F6 公共资源类型尚未接入 alpha-only，需要在双方 ABI 确定后补相应标签与生命周期；SDK 有该标签不等于 F6 已收到它。

@@ -17,6 +17,8 @@ ROOT = HERE.parents[2]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--cpu", action="store_true")
 parser.add_argument("--negative-ignore-install", action="store_true")
+parser.add_argument("--negative-ignore-pin-refusal", action="store_true")
+parser.add_argument("--negative-keep-retirement-lease", action="store_true")
 parser.add_argument("--devcmd", type=Path,
                     default=Path("D:/VS2022BuildTools/Common7/Tools/VsDevCmd.bat"))
 args = parser.parse_args()
@@ -50,7 +52,8 @@ adapters = {
     "CREATE": block("HRESULT FGHooks::CreateSwapChain("),
     "CREATE_HWND": block("HRESULT FGHooks::CreateSwapChainForHwnd("),
     "RETIRE": block("template<class Release> HRESULT RetireFGForCreate("),
-    "RELEASE": block("template<class Release> ULONG ReleaseFGPin("),
+    "PIN_RESULT": block("struct FGPinReleaseResult") + ";",
+    "RELEASE": block("template<class Release> FGPinReleaseResult ReleaseFGPin("),
     "CAPTURE": block("bool CaptureStarRailSourceFrameLatencyOwner("),
 }
 globals_begin = source.index("FGSwapchainOwner* fgOwner = nullptr;")
@@ -89,6 +92,14 @@ if args.negative_ignore_install:
     for key in ("CREATE", "CREATE_HWND"):
         adapters[key] = adapters[key].replace(
             "if (hookResult != S_OK)", "if (SUCCEEDED(hookResult) && hookResult != S_OK)")
+if args.negative_ignore_pin_refusal:
+    check(args.cpu, "negative control requires --cpu")
+    adapters["RETIRE"] = adapters["RETIRE"].replace(
+        "return ReleaseFGPin(owner, release).released ? S_OK : DXGI_ERROR_WAS_STILL_DRAWING;",
+        "ReleaseFGPin(owner, release); return S_OK;")
+if args.negative_keep_retirement_lease:
+    check(args.cpu, "negative control requires --cpu")
+    adapters["RELEASE"] = adapters["RELEASE"].replace("owner->retirement = {};", "")
 
 fixture = (HERE / "fg_hook_install.cpp").read_text(encoding="utf-8-sig")
 for key, adapter in adapters.items():

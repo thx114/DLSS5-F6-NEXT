@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "Config.h"
+#include <runtime/ModuleLifetime.h>
 #include "Util.h"
 
 #include <upscalers/IFeature_Dx11.h>
@@ -377,6 +378,7 @@ static NVSDK_NGX_Result ShutdownDx11Body()
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_Shutdown()
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     PersistentSrDx11::Entry poolEntry(PersistentSrDx11::Instance());
     if (!poolEntry) return NVSDK_NGX_Result_Fail;
     PersistentSrDx11::Shutdown();
@@ -385,6 +387,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_Shutdown()
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_Shutdown1(ID3D11Device* InDevice)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     PersistentSrDx11::Entry poolEntry(PersistentSrDx11::Instance());
     if (!poolEntry) return NVSDK_NGX_Result_Fail;
     PersistentSrDx11::Shutdown();
@@ -550,6 +553,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_PopulateParameters_Impl(NVSDK_NGX
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_DestroyParameters(NVSDK_NGX_Parameter* InParameters)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     LOG_FUNC();
 
     if (InParameters == nullptr)
@@ -704,6 +708,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_ReleaseFeature(NVSDK_NGX_Handle* InHandle)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
     PersistentSrDx11::Entry poolEntry(PersistentSrDx11::Instance());
     if (!poolEntry) return NVSDK_NGX_Result_Fail;
     if (auto pooled = PersistentSrDx11::TryRelease(InHandle)) return *pooled;

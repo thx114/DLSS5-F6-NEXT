@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <runtime/ModuleLifetime.h>
 #include <runtime/F6InputPolicy.h>
 #include <runtime/SourcePresent.h>
 #include <framegen/FinalOutputEndpoint.h>
@@ -1740,6 +1741,15 @@ ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain4::AddRef()
 ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain4::Release()
 {
     ULONG ret = InterlockedDecrement(&_refcount);
+    if (!ModuleLifetime::CleanupAllowed())
+    {
+        if (ret == 0)
+        {
+            InterlockedExchange(&_refcount, 1); // retain the whole owner, including all COM members
+            return 1;
+        }
+        return ret;
+    }
 
     LOG_TRACE("Count: {}, caller: {}", _refcount, Util::WhoIsTheCaller(_ReturnAddress()));
 
@@ -1896,6 +1906,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetBuffer(UINT Buffer, REFIID 
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookSetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     LOG_DEBUG("Fullscreen: {}, pTarget: {:X}, Caller: {}", Fullscreen, (size_t) pTarget,
               Util::WhoIsTheCaller(_ReturnAddress()));
 
@@ -1958,6 +1969,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetDesc(DXGI_SWAP_CHAIN_DESC* 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
                                                                 DXGI_FORMAT NewFormat, UINT SwapChainFlags)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     GenshinTransport::FinishPendingOutput(nullptr,GenshinTransport::OutputFlushReason::Resize);
     HoYoShade::DirectResizeScope directResize(_real, this);
     if (FAILED(directResize.Result())) return directResize.Result();
@@ -2209,6 +2221,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookResizeBuffers(UINT BufferC
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     return _real->ResizeTarget(pNewTargetParameters);
 }
 
@@ -2523,6 +2536,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
                                                                  const UINT* pCreationNodeMask,
                                                                  IUnknown* const* ppPresentQueue)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     GenshinTransport::FinishPendingOutput(nullptr,GenshinTransport::OutputFlushReason::Resize);
     HoYoShade::DirectResizeScope directResize(_real, this);
     if (FAILED(directResize.Result())) return directResize.Result();

@@ -6,6 +6,7 @@
 #include "DlssgOptionsPolicy.h"
 #include "ZzzFrameScope.h"
 #include "FgColourJoin.h"
+#include "NativeGuideListInterest.h"
 #include <dlssnr/FinishedPictureOutcome.h>
 #include <framegen/FinalOutputEndpoint.h>
 #include <inputs/FG/GenshinFgTicket.h>
@@ -280,6 +281,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         bool closed=false, submitted=false, executing=false, signalled=false, srSucceeded=false, ordered=false;
         bool dispatched=false, presented=false;
     } _nativeGuideUses[BUFFER_COUNT];
+    dlssg::NativeGuideListInterest<BUFFER_COUNT> _nativeGuideListInterest;
     std::atomic<bool> _nativeGuideTracking{false};
     bool _nativeGuideFailed=false;
     UINT64 _nativeGuideSubmissions=0, _nativeGuideSerial=0;

@@ -384,6 +384,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="framegen\dlssg\MfgUnlockMethod.h" />
     <ClInclude Include="framegen\dlssg\MfgUnlockFlip.h" />
     <ClInclude Include="runtime\LoaderStartupContext.h" />
+    <ClInclude Include="runtime\ModuleLifetime.h" />
+    <ClInclude Include="framegen\dlssg\NativeGuideListInterest.h" />
     <ClInclude Include="framegen\dlssg\Kcd2Hdr.h" />
     <ClInclude Include="dlssnr\PassProfiles.h" />
     <ClInclude Include="framegen\ffx\FSRFG_Dx12.h" />

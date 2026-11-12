@@ -5,7 +5,12 @@ real router are under test; module lookup, device ownership and SDK are mocks.
 The compiler and generated files live under the local build directory.
 """
 from pathlib import Path
+import argparse
 import subprocess
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--negative-stop-veto', action='store_true')
+args = parser.parse_args()
 
 ROOT = Path(__file__).resolve().parents[4]
 HERE = Path(__file__).resolve().parent
@@ -45,10 +50,19 @@ signatures = [
     'NVSDK_NGX_Result Stop(',
     'NVSDK_NGX_Result StopDevice(',
     'NVSDK_NGX_Result Destroy(',
+    'NVSDK_NGX_Result Release(',
+    'NVSDK_NGX_Result BStop(',
+    'NVSDK_NGX_Result BStopDevice(',
+    'NVSDK_NGX_Result BRelease(',
 ]
 pieces = [extract(source, signature) for signature in signatures]
 pieces[0] += ';'
 pieces[1] += ';'
+if args.negative_stop_veto:
+    index = signatures.index('NVSDK_NGX_Result Stop(')
+    guard = '    if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;\n'
+    assert pieces[index].count(guard) == 1
+    pieces[index] = pieces[index].replace(guard, '')
 generated = '\n'.join(pieces) + '\n'
 
 out = ROOT / 'build/ngx-lifecycle-tests'

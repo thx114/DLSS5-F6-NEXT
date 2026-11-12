@@ -1,5 +1,6 @@
 #include "pch.h"
 #include <runtime/F6InputPolicy.h>
+#include <runtime/ModuleLifetime.h>
 #include <with_dx12/dx11_with_dx12.h>
 #include <runtime/GuideCapture.h>
 #include <runtime/GuideSourceMetadata.h>
@@ -1166,6 +1167,7 @@ std::shared_ptr<framegen::DlssgPacingLifetime> DLSSG_Dx12::PacingLifetime()
 template<typename Options, typename Submit>
 dlssg::options::Submission DLSSG_Dx12::SetReleaseOptions(const Options& options, Submit&& submit)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return {};
     // Called under continuity, including after logical FG was turned off.
     // Do not require CanSubmitInputs/current source eligibility for release.
     const auto owner = CurrentProviderOwner();
@@ -1241,6 +1243,7 @@ void DLSSG_Dx12::RetryReflexOff()
 
 void DLSSG_Dx12::Deactivate()
 {
+    if (!ModuleLifetime::CleanupAllowed()) return;
     std::lock_guard continuityLock(_inputContinuityMutex);
     _pacingLifetime->CloseAdmission();
     const bool wasActive = _isActive || _waitingNewFrameData || _inputContinuity.Held();
@@ -1315,6 +1318,7 @@ void DLSSG_Dx12::RetryUnretainedProviderOff()
 
 bool DLSSG_Dx12::CompletePendingTeardown()
 {
+    if (!ModuleLifetime::CleanupAllowed()) return false;
     std::lock_guard continuityLock(_inputContinuityMutex);
     // A live Sleep owns CPU/SDK lifetime only. Leave its locks available and
     // retry Off/free at the next real boundary; never wait under continuity.
@@ -1559,6 +1563,7 @@ bool DLSSG_Dx12::CompletePendingTeardown()
     }
     _guideContractOwned=false;
     for (auto& use:_nativeGuideUses) use={}; // Native recordings already physically retired above.
+    _nativeGuideListInterest.Clear();
     _nativeGuideTracking.store(false,std::memory_order_release);
     _depthSourceRejected=_depthSourceGap=false;
     drain.swapchain = nullptr; drain.fence.Reset(); drain.queue.Reset(); drain.device.Reset();
@@ -1611,6 +1616,7 @@ bool DLSSG_Dx12::WaitForTeardownTarget()
 
 bool DLSSG_Dx12::CompletePendingTeardownForTermination()
 {
+    if (!ModuleLifetime::CleanupAllowed()) return false;
     if (CompletePendingTeardown()) return true;
     if (_teardownCompleting || _teardownQuarantined || g_dlssgTeardownQuarantined.load() ||
         _inputRecordingDepth || _presentExecutionDepth || !_teardownPending || !WaitForTeardownTarget()) return false;
@@ -1620,6 +1626,7 @@ bool DLSSG_Dx12::CompletePendingTeardownForTermination()
 FGHookRetirementResult DLSSG_Dx12::CompletePendingTeardownForHook(bool terminal)
 {
     using Result = FGHookRetirementState;
+    if (!ModuleLifetime::CleanupAllowed()) return { Result::Refused, DXGI_ERROR_WAS_STILL_DRAWING };
     std::unique_lock execution(_inputContinuityMutex, std::try_to_lock);
     if (!execution.owns_lock() || _inputRecordingDepth || _presentExecutionDepth || _ownerChanging ||
         _teardownCompleting || _hookRetirementActive)
@@ -1638,6 +1645,7 @@ FGHookRetirementResult DLSSG_Dx12::CompletePendingTeardownForHook(bool terminal)
 
 bool DLSSG_Dx12::PrepareForSwapchainChange(bool terminal)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return false;
     std::lock_guard continuityLock(_inputContinuityMutex);
     _pacingLifetime->CloseAdmission();
     if (!_pacingLifetime->Idle()) return false;
@@ -1711,6 +1719,7 @@ void DLSSG_Dx12::QuarantineFailedTeardown()
 
 void DLSSG_Dx12::DestroyFGContext()
 {
+    if (!ModuleLifetime::CleanupAllowed()) return;
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (_teardownCompleting) return;
     Deactivate();
@@ -1720,6 +1729,7 @@ void DLSSG_Dx12::DestroyFGContext()
 
 bool DLSSG_Dx12::Shutdown()
 {
+    if (!ModuleLifetime::CleanupAllowed()) return false;
     std::lock_guard continuityLock(_inputContinuityMutex);
 
     _pacingLifetime->CloseAdmission();
@@ -2238,6 +2248,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
         use.list=list; use.nativeList=dlssg::depth_contract::NativeObject(list);
         use.queue.Reset(); use.depth=depth; use.motion=motion; use.output=output;
         use.closed=use.submitted=use.executing=use.signalled=use.srSucceeded=use.ordered=false;
+        _nativeGuideListInterest.Publish(slot,use.list.Get(),use.nativeList.Get());
         _nativeGuideTracking.store(true,std::memory_order_release);
         if (use.source.serial<=3 || use.source.serial%600==0)
             LOG_INFO("F6 ZZZ selected frame source: api={} feature={} selected={} game_viewport={} provider={} provider_viewport={} upstream_raw={} sdk_frame={} frame={} serial={} native_list={} list={} thread={} upstream=pending",
@@ -2585,6 +2596,9 @@ bool DLSSG_Dx12::NativeGuidesRetired() const
 void DLSSG_Dx12::NativeGuidesSubmitting(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
 {
     if (!TracksNativeGuides() || !lists) return;
+    // SDK Present may wait for a worker submitting an unrelated UI/SDK list.
+    // That worker must not wait for the source continuity held across Present.
+    if (!_nativeGuideListInterest.MayContain(count,lists)) return;
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (_teardownQuarantined) return;
     for (UINT i=0;i<count;++i) for (auto& use:_nativeGuideUses)
@@ -2608,6 +2622,7 @@ void DLSSG_Dx12::NativeGuidesSubmitting(ID3D12CommandQueue* queue, UINT count, I
 void DLSSG_Dx12::NativeGuidesSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
 {
     if (!TracksNativeGuides() || !lists) return;
+    if (!_nativeGuideListInterest.MayContain(count,lists)) return;
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (_teardownQuarantined) return;
     if (_nativeGuideFailed) { _managedRetained=true; Deactivate(); return; }
@@ -2641,6 +2656,7 @@ void DLSSG_Dx12::NativeGuidesSubmitted(ID3D12CommandQueue* queue, UINT count, ID
 void DLSSG_Dx12::NativeGuidesReset(ID3D12CommandList* list)
 {
     if (!TracksNativeGuides() || !list) return;
+    if (!_nativeGuideListInterest.MayContain(list)) return;
     std::lock_guard continuityLock(_inputContinuityMutex);
     for (auto& use:_nativeGuideUses)
         if ((use.list.Get()==list || use.nativeList.Get()==list) && !use.closed) use.closed=true;
@@ -3761,6 +3777,7 @@ void DLSSG_Dx12::ReleaseObjects() { (void)ReleaseObjectsChecked(); }
 
 bool DLSSG_Dx12::ReleaseObjectsChecked()
 {
+    if (!ModuleLifetime::CleanupAllowed()) return false;
     std::lock_guard continuityLock(_inputContinuityMutex);
     _pacingLifetime->CloseAdmission();
     if (!_pacingLifetime->Idle()) return false;
@@ -5671,6 +5688,7 @@ void DLSSG_Dx12::SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue
 
 FGHookRetirementReceipt DLSSG_Dx12::RetireSwapchainForHook(const FGHookRetirementRequest& request)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return FGHookRetirementReceipt::Refused(DXGI_ERROR_WAS_STILL_DRAWING);
     std::unique_lock execution(_inputContinuityMutex, std::try_to_lock);
     const auto refused = [](HRESULT hr) { return FGHookRetirementReceipt::Refused(hr); };
     if (!execution.owns_lock() || _inputRecordingDepth || _presentExecutionDepth || _ownerChanging ||
@@ -5740,6 +5758,7 @@ FGHookRetirementReceipt DLSSG_Dx12::RetireSwapchainForHook(const FGHookRetiremen
 
 bool DLSSG_Dx12::ReleaseSwapchain(HWND hwnd)
 {
+    if (!ModuleLifetime::CleanupAllowed()) return false;
     if (hwnd != _hwnd || _hwnd == NULL)
         return false;
 

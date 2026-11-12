@@ -4,6 +4,12 @@
 #include <stdexcept>
 #include <unordered_set>
 
+namespace ModuleLifetime
+{
+inline bool allowed = true;
+inline bool CleanupAllowed() { return allowed; }
+}
+
 // The adapter is extracted at test time. Module lookup, SDK calls and device
 // ownership are simulated; no DLL loading, SDK, GPU or exported stub is tested.
 using NVSDK_NGX_Result = int;
@@ -26,8 +32,9 @@ const void* const vendorModule = reinterpret_cast<const void*>(1);
 const void* const appModule = reinterpret_cast<const void*>(2);
 const void* dllModule = reinterpret_cast<const void*>(3);
 const void* currentCaller = appModule;
-const void* ModuleAt(const void* caller) { return caller; }
-bool External(const void* caller) { return caller == appModule && !nativeDepth && !selectedDepth; }
+unsigned callerClassifications = 0;
+const void* ModuleAt(const void* caller) { ++callerClassifications; return caller; }
+bool External(const void* caller) { ++callerClassifications; return caller == appModule && !nativeDepth && !selectedDepth; }
 
 using InitFn = int (*)(unsigned long long, const wchar_t*, ID3D12Device*, const NVSDK_NGX_FeatureCommonInfo*, int);
 using InitExtFn = int (*)(unsigned long long, const wchar_t*, ID3D12Device*, int, const NVSDK_NGX_FeatureCommonInfo*);
@@ -46,6 +53,7 @@ Module native, selected;
 std::function<int()> onInit, onInitExt, onStop, onStopDevice, onEvaluate;
 unsigned initCalls = 0, initExtCalls = 0, stopCalls = 0, stopDeviceCalls = 0, evaluateCalls = 0;
 unsigned destroyCalls = 0;
+unsigned nativeReleaseCalls = 0, selectedReleaseCalls = 0;
 std::mutex parameterMutex;
 std::unordered_set<NVSDK_NGX_Parameter*> persistentParameters;
 ID3D12Device* observed = nullptr;
@@ -79,6 +87,9 @@ struct Api
     static void Receipt(const char*, Owner, const Handle*, std::optional<int>, std::optional<unsigned>) {}
     static int NativeEvaluate(int, const Handle*, int, int);
     static int SelectedEvaluate(int, const Handle*, int, int) { return Fail(); }
+    static int NativeRelease(Handle*) { ++nativeReleaseCalls; return NVSDK_NGX_Result_Success; }
+    static int SelectedRelease(Handle*) { ++selectedReleaseCalls; return NVSDK_NGX_Result_Success; }
+    static void DeleteSelectedHandle(Handle*) { throw std::runtime_error("unexpected selected deletion"); }
 };
 Api api;
 Dx12Router<Api> router(api);
@@ -114,6 +125,49 @@ int main() try
     auto ext = [&](const void* caller) { return InitExt(false, caller, 1, L"path", &device, 0, nullptr); };
     NVSDK_NGX_Parameter persistent;
     persistentParameters.insert(&persistent);
+
+    Check(init(appModule) == NVSDK_NGX_Result_Success, "ordinary setup before cleanup veto");
+    const auto beforeClassifications = callerClassifications;
+    const auto beforeStops = stopCalls + stopDeviceCalls;
+    const auto beforeDestroys = destroyCalls;
+    const auto beforeReleases = nativeReleaseCalls + selectedReleaseCalls;
+    NVSDK_NGX_Handle retained {123};
+    ModuleLifetime::allowed = false;
+    {
+        // Even otherwise-authorized vendor cleanup/replay must stop before
+        // caller classification, router admission or any vendor operation.
+        Depth nativeCall(nativeDepth), stopCall(nativeStopDepth), selectedCall(selectedDepth);
+        Replay replay(shutdownReplay, NVSDK_NGX_Result_Success);
+        currentCaller = vendorModule;
+        Check(Stop(false, vendorModule) == NVSDK_NGX_Result_Fail,
+              "cleanup veto precedes Shutdown replay and vendor delegation");
+        Check(StopDevice(false, vendorModule, &device) == NVSDK_NGX_Result_Fail,
+              "cleanup veto precedes device Shutdown delegation");
+        Check(BStop() == NVSDK_NGX_Result_Fail && BStopDevice(&device) == NVSDK_NGX_Result_Fail,
+              "backend Shutdown entries cannot bypass the veto");
+        Check(Release(&retained) == NVSDK_NGX_Result_Fail && BRelease(&retained) == NVSDK_NGX_Result_Fail,
+              "native and backend Release refuse without retiring a route");
+        Check(Destroy(&persistent) == NVSDK_NGX_Result_Fail && persistentParameters.contains(&persistent),
+              "parameter destruction refusal retains persistent ownership");
+    }
+    {
+        Depth selectedCall(selectedDepth);
+        Replay replay(shutdownReplay, NVSDK_NGX_Result_Success);
+        Check(Stop(true, dllModule) == NVSDK_NGX_Result_Fail,
+              "cleanup veto precedes Shutdown replay and vendor delegation");
+    }
+    {
+        Depth nativeCall(nativeDepth), stopCall(nativeStopDepth);
+        Check(Stop(false, vendorModule) == NVSDK_NGX_Result_Fail,
+              "cleanup veto precedes an otherwise authorized native Shutdown delegation");
+    }
+    Check(callerClassifications == beforeClassifications && stopCalls + stopDeviceCalls == beforeStops &&
+          destroyCalls == beforeDestroys && nativeReleaseCalls + selectedReleaseCalls == beforeReleases,
+          "all denied cleanup entries perform zero caller/router/vendor side effects");
+    ModuleLifetime::allowed = true;
+    currentCaller = appModule;
+    Check(init(appModule) == NVSDK_NGX_Result_Success && Stop(false, appModule) == NVSDK_NGX_Result_Success,
+          "ordinary lifecycle remains usable after a denied cleanup attempt");
 
     onEvaluate = [&] {
         const auto before = stopCalls;

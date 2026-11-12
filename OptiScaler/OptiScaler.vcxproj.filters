@@ -1961,6 +1961,8 @@
     <ClInclude Include="framegen\dlssg\MfgUnlockMethod.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="framegen\dlssg\MfgUnlockFlip.h"><Filter>Header Files</Filter></ClInclude>
       <ClInclude Include="runtime\LoaderStartupContext.h" />
+    <ClInclude Include="runtime\ModuleLifetime.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="framegen\dlssg\NativeGuideListInterest.h"><Filter>Header Files</Filter></ClInclude>
     <ClCompile Include="framegen\dlssg\MfgUnlock.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
 </Project>

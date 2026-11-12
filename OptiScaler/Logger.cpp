@@ -16,6 +16,7 @@
 #include "Util.h"
 #include "LogAsyncRule.h"
 #include "LogAsyncEvidence.h"
+#include <runtime/ModuleLifetime.h>
 
 // The logger in use and what its crash-path flush needs (LogAsyncRule.h). Left allocated at exit on purpose: destroying
 // a thread pool at process exit joins a worker that is already gone. A logger that was replaced (the menu's file/console
@@ -207,6 +208,7 @@ static std::atomic<bool> g_drainedForExit { false };
 
 void CloseLogger()
 {
+    if (!ModuleLifetime::CleanupAllowed()) return;
     NoteDroppedLogLines(); // a game that never reaches a periodic report still hears of it once
 
     auto* setup = g_logSetup.load();
@@ -218,12 +220,15 @@ void CloseLogger()
 
     spdlog::shutdown();
 
-    // The setup is left allocated on purpose, drained or not: destroying it joins its worker, and this runs under the
-    // loader lock (a worker blocked on a disk would hang the unload) or at process exit (the worker is already gone).
+    // Replaced setups remain allocated for raw logger readers. This function is
+    // a normal-context close only; detach and process exit never enter it.
 }
 
 void DrainLogForExit()
 {
+    // ExitProcess may itself be called from another DLL's loader callback.
+    if (ModuleLifetime::detaching.load(std::memory_order_acquire) ||
+        ModuleLifetime::CurrentContext() != LoaderStartupContext::Status::Ready) return;
     auto* setup = g_logSetup.load();
 
     if (setup == nullptr || !logasync::ShouldDrainAtExit(setup->mode, g_drainedForExit.exchange(true)))

@@ -1,6 +1,7 @@
 ﻿// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <genshin/GenshinFsrSubstageProgress.h>
+#include "UiLocalization.h"
 #include <imgui/imgui.h>
 #include <cstdio>
 
@@ -120,25 +121,25 @@ inline bool Read(const GenshinLegacy::Ui::Session& session,std::uint64_t now,
 }
 inline void FreshnessText(const Freshness& freshness) {
     if(freshness.ageKnown)
-        ImGui::Text("源快照更新距今 %.2fs（%s）",double(freshness.age)/1000.0,
+        MenuText::Text("源快照更新距今 %.2fs（%s）",double(freshness.age)/1000.0,
                     freshness.fresh?"近期观测":"历史记录；等待新鲜 producer 事件");
     else
-        ImGui::TextUnformatted("源快照年龄未知（时钟/时间戳不可验证）；等待新鲜 producer 事件");
+        MenuText::TextUnformatted("源快照年龄未知（时钟/时间戳不可验证）；等待新鲜 producer 事件");
 }
 inline void Summary(const GenshinSubstage::Snapshot& s,const GenshinSubstage::Progress& p,
                     const Freshness& freshness) {
     using namespace GenshinSubstage;
     FreshnessText(freshness);
-    ImGui::Text("%s%s：%s%s",freshness.fresh?"":"历史记录：",StageText(p.current),
+    MenuText::Text("%s%s：%s%s",freshness.fresh?"":"历史记录：",StageText(p.current),
                 StateText(p.state),p.timedOut?"（计时提示）":"");
-    ImGui::Text("本阶段 %.1fs；本次 %.1fs",double(p.elapsed)/1000.0,double(p.total)/1000.0);
+    MenuText::Text("本阶段 %.1fs；本次 %.1fs",double(p.elapsed)/1000.0,double(p.total)/1000.0);
     if(s.firstFailure.known) {
         const auto& f=s.firstFailure;
-        ImGui::TextWrapped("首次失败%s：%s / %s %s / %s 0x%llX",
+        MenuText::TextWrapped("首次失败%s：%s / %s %s / %s 0x%llX",
             f.recovered?"（已恢复）":"",StageText(f.stage),ResourceText(f.event.resource),
             IssueText(f.event.issue),DomainText(f.event.domain),static_cast<unsigned long long>(f.event.code));
     }
-    ImGui::Text("%sSR：%s；NR：%s；FG：%s",freshness.fresh?"近期观测：":"历史记录：",
+    MenuText::Text("%sSR：%s；NR：%s；FG：%s",freshness.fresh?"近期观测：":"历史记录：",
         p.srReady?"就绪":"未就绪",
         s.nr==Mode::Disabled?"已关闭":p.nrReady?"模型已返回":"待观测",
         s.fg==Mode::Disabled?"已关闭":p.fgReady?"已执行":"待观测");
@@ -148,11 +149,11 @@ inline void Rows(const GenshinSubstage::Snapshot& s,std::uint64_t now) {
         const auto stage=static_cast<GenshinSubstage::Stage>(i);
         const auto& e=s.stages[i];
         if(!GenshinSubstage::Applicable(s,stage)) {
-            ImGui::TextDisabled("%s：已关闭（可选）",StageText(stage));continue;
+            MenuText::TextDisabled("%s：已关闭（可选）",StageText(stage));continue;
         }
         const auto end=e.finished?e.finished:now;
         const auto duration=e.started && end>=e.started?end-e.started:0;
-        ImGui::Text("%s：%s  %.1fs",StageText(stage),StateText(e.state),double(duration)/1000.0);
+        MenuText::Text("%s：%s  %.1fs",StageText(stage),StateText(e.state),double(duration)/1000.0);
     }
 }
 }

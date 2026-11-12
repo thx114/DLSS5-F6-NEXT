@@ -3,6 +3,7 @@
 #include "CriticalErrorQueue.h"
 #include <genshin/GenshinLoadingProgress.h>
 #include "GenshinFsrSubstageUi.h"
+#include "UiLocalization.h"
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 #include <algorithm>
@@ -169,12 +170,12 @@ inline Layout Render(const Queue& queue, bool& collapsed, const Rect& mainMenu, 
                 ImGui::PushFontSize(normalNoticeSize * 3.0f / fontFactor);
                 ImGui::PushTextWrapPos(0.0f);
                 ImGui::PushStyleColor(ImGuiCol_Text, colors.heading);
-                ImGui::TextWrapped("%s", FsrHeading);
+                MenuText::TextWrapped("%s", FsrHeading);
                 ImGui::PopStyleColor();
                 if (!layout.compact)
                 {
-                    ImGui::TextWrapped("%s", FsrStepOne);
-                    ImGui::TextWrapped("%s", FsrStepTwo);
+                    MenuText::TextWrapped("%s", FsrStepOne);
+                    MenuText::TextWrapped("%s", FsrStepTwo);
                 }
                 ImGui::PopTextWrapPos();
                 ImGui::PopFontSize();
@@ -194,26 +195,26 @@ inline Layout Render(const Queue& queue, bool& collapsed, const Rect& mainMenu, 
             notice == Notice::GenshinHooking ? HookHeading :
             notice == Notice::GenshinFsrNotDetected ? FsrHeading : hasSubstages?Substage::StageText(detail.current):StageText(progress.stage);
         ImGui::PushStyleColor(ImGuiCol_Text, colors.heading);
-        ImGui::TextUnformatted(heading);
+        MenuText::TextUnformatted(heading);
         ImGui::PopStyleColor();
         if (mainVisible)
         {
             ImGui::SameLine();
-            if (ImGui::SmallButton(collapsed ? "展开" : "折叠")) collapsed = !collapsed;
+            if (MenuText::SmallButton(collapsed ? "展开" : "折叠")) collapsed = !collapsed;
         }
-        char progressText[96] {};
+        std::string progressText;
         if (!freshness.fresh) {
             if(freshness.ageKnown)
-                snprintf(progressText, sizeof(progressText), "历史记录；源更新距今 %.2fs",double(freshness.age)/1000.0);
+                progressText = MenuText::Format("历史记录；源更新距今 %.2fs",double(freshness.age)/1000.0);
             else
-                snprintf(progressText, sizeof(progressText), "%s", "等待新鲜 producer 事件；源年龄未知");
+                progressText = MenuText::Translate("等待新鲜 producer 事件；源年龄未知");
         }
         else if (hasSubstages)
-            snprintf(progressText, sizeof(progressText), "观测步骤 %u / %u（可选关闭 %u）",
+            progressText = MenuText::Format("观测步骤 %u / %u（可选关闭 %u）",
                      detail.succeeded, detail.applicable, detail.disabled);
         else
-            snprintf(progressText, sizeof(progressText), "%s", "等待真实FSR链路事件");
-        ImGui::ProgressBar(hasSubstages?detail.fraction:0.0f, ImVec2(-1.0f, 0.0f), progressText);
+            progressText = MenuText::Translate("等待真实FSR链路事件");
+        MenuText::ProgressBar(hasSubstages?detail.fraction:0.0f, ImVec2(-1.0f, 0.0f), progressText.c_str());
         if (!layout.compact)
         {
             ImGui::Separator();
@@ -226,27 +227,27 @@ inline Layout Render(const Queue& queue, bool& collapsed, const Rect& mainMenu, 
                 if(hasSubstages)Substage::Summary(substages,detail,freshness);
                 else {
                 Substage::FreshnessText(freshness);
-                if(!freshness.fresh)ImGui::TextUnformatted("以下为历史记录，不能证明当前 SR/NR/FG 执行");
+                if(!freshness.fresh)MenuText::TextUnformatted("以下为历史记录，不能证明当前 SR/NR/FG 执行");
                 ImGui::PushStyleColor(ImGuiCol_Text, colors.heading);
-                ImGui::Text("%s：%s%s", StageText(progress.stage), StateText(progress.state),
+                MenuText::Text("%s：%s%s", StageText(progress.stage), StateText(progress.state),
                             progress.timedOut ? "（超时）" : "");
                 ImGui::PopStyleColor();
                 if (snapshot.known)
                 {
                     const auto& stage = snapshot.stages[GenshinLoading::Index(progress.stage)];
-                    ImGui::Text("本阶段 %.1fs / 超时阈值 %.1fs；总耗时 %.1fs",
+                    MenuText::Text("本阶段 %.1fs / 超时阈值 %.1fs；总耗时 %.1fs",
                                 double(progress.currentMs) / 1000.0,
                                 double(GenshinLoading::TimeoutMs(progress.stage)) / 1000.0,
                                 double(progress.totalMs) / 1000.0);
-                    ImGui::Text("原因：%s；错误码：0x%llX", ReasonText(stage.reason),
+                    MenuText::Text("原因：%s；错误码：0x%llX", ReasonText(stage.reason),
                                 static_cast<unsigned long long>(stage.errorCode));
-                    ImGui::Text("%sSR：%s；NR：%s", freshness.fresh?"近期观测：":"历史记录：",
+                    MenuText::Text("%sSR：%s；NR：%s", freshness.fresh?"近期观测：":"历史记录：",
                                 progress.srReady ? "就绪" : "未就绪",
                                 progress.nrReady ? "已执行" : snapshot.nrMode == GenshinLoading::NrMode::Disabled
                                     ? "已关闭 / 跳过" : snapshot.nrMode == GenshinLoading::NrMode::Unsupported
                                         ? "不支持 / 跳过" : snapshot.nrMode == GenshinLoading::NrMode::Unknown
                                             ? "未知 / 等待观测" : "未就绪");
-                    ImGui::Text("%sFG：%s", freshness.fresh?"近期观测：":"历史记录：", progress.fgReady ? "已执行" :
+                    MenuText::Text("%sFG：%s", freshness.fresh?"近期观测：":"历史记录：", progress.fgReady ? "已执行" :
                                 snapshot.fgMode == GenshinLoading::NrMode::Disabled ? "已关闭 / 跳过" :
                                 snapshot.fgMode == GenshinLoading::NrMode::Unsupported ? "不支持 / 跳过" :
                                 "未知 / 等待观测");
@@ -256,17 +257,17 @@ inline Layout Render(const Queue& queue, bool& collapsed, const Rect& mainMenu, 
                 {
                     ImGui::Spacing();
             ImGui::PushStyleColor(ImGuiCol_Text, colors.heading);
-            ImGui::TextUnformatted("派蒙设置提示");
+            MenuText::TextUnformatted("派蒙设置提示");
             ImGui::PopStyleColor();
-            ImGui::BulletText("%s", FsrStepOne);
-            ImGui::BulletText("%s", FsrStepTwo);
+            MenuText::BulletText("%s", FsrStepOne);
+            MenuText::BulletText("%s", FsrStepTwo);
                 }
                 if(hasSubstages) {
                     ImGui::Separator();
-                    if(!freshness.fresh)ImGui::TextUnformatted("历史阶段（保留上次源快照）");
+                    if(!freshness.fresh)MenuText::TextUnformatted("历史阶段（保留上次源快照）");
                     Substage::Rows(substages,now);
                 }
-                if (!hasSubstages && snapshot.known && ImGui::TreeNode("关键步骤"))
+                if (!hasSubstages && snapshot.known && MenuText::TreeNode("关键步骤"))
                 {
                     for (std::size_t i = 0; i < snapshot.stages.size(); ++i)
                     {
@@ -274,7 +275,7 @@ inline Layout Render(const Queue& queue, bool& collapsed, const Rect& mainMenu, 
                         const auto duration = stage.startedTick &&
                             (stage.finishedTick ? stage.finishedTick : now) >= stage.startedTick
                             ? (stage.finishedTick ? stage.finishedTick : now) - stage.startedTick : 0;
-                        ImGui::Text("%s：%s（%.1fs）", StageText(static_cast<GenshinLoading::Stage>(i)),
+                        MenuText::Text("%s：%s（%.1fs）", StageText(static_cast<GenshinLoading::Stage>(i)),
                                     StateText(stage.state), double(duration) / 1000.0);
                     }
                     ImGui::TreePop();
