@@ -1,11 +1,11 @@
 # DLSS5_NEXT 当前状态
 
-更新：2026-11-12。**产品修复版ADFF3486已按用户要求部署并完成磁盘核验；HDR暂缓。** 当前工作包含FG排队锁环修复、退出入口保护和完整英文，详见[产品当前状态](../../DLSS5_NEXT-workers/f6-rewrite/docs/CURRENT-STATE.md)与[交接第0节](../../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)。
+更新：2026-11-12。**ADFF3486 经用户实测仍有ZZZ间歇性卡顿；1ABD9AFD诊断版已原位部署并核验。监视器旧报告选择已修正，新增native guide阻塞原因记录；真实卡顿根因及改善未证实。HDR暂缓。** 详见[产品当前状态](../../DLSS5_NEXT-workers/f6-rewrite/docs/CURRENT-STATE.md)和[交接第0节](../../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)。
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`，源码提交 `b1ee21020a58`。本根 `D:/CODE/DLSS5_NEXT` 为 `codex/navigation-20261112` 导航／迁移基线，不在本根构建最新产品。GitHub目标 `thx114/DLSS5-F6-NEXT`，main未改。
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`，本次源码提交 `51fdb7b`；本根 `D:/CODE/DLSS5_NEXT` 为 `codex/navigation-20261112` 导航／迁移基线。GitHub目标 `thx114/DLSS5-F6-NEXT`。
 
-ZZZ旧局186740已出现selected DLSS接入；用户实测关闭FG后周期卡顿消失，仍有GPU等待。新修复、退出和英文布局尚待游戏验收。16组定向验证及Release x64通过；2425项输入构建前后相同，53必要NGX导出及全部948导出核验一致。新候选SHA256 `ADFF3486F21C52FCD0FE72D73A14BB3AFA93E599A2A73AD72DCC7EAD1F790372`。
+新固定日志PID190880（版本b1ee210）记录160次SDK插帧状态切换、159次最大呈现延迟变化，包含缺源后eOff／6→1及下一帧恢复eOn／1→6。原节流日志不能区分Reset未完成与真实producer fence未完成。新日志 `F6 native guide reuse blocked:` 只观察，保留原拒绝／退休门；不扩大池子、借旧帧或修改6×参数。Reflex选最新有效完成报告，缺实例凭据的Bridge／NR enrichment为unknown，独立NR计时链未改。
 
-正式F6及三个游戏缓存均为ADFF3486，原File ID／硬链接不变，2,535项受保护文件与profiles不变；桥保持CC301B42。旧5265915D已备份，陈旧.next已归档移除；核验见产品树 `build/f6-deploy-ADFF3486-verified.json`。未查询、启动或操控游戏。HUDless/UI缺真实桥输入，不以SR颜色或reactive/transparency mask伪造。
+Release x64通过，2428项输入构建前后相同，53必要NGX及全部948导出一致，定向回归和独立复核通过。诊断SHA256 `1ABD9AFDDD605B3D55EF3466EDBDD7946DCA6FD8B362A4C2030A4FCC61DE9ABC`。正式及三个游戏缓存一致，原File ID／硬链接、2,535项受保护文件及profiles不变；桥保持CC301B42，旧ADFF3486已备份。退出保护及完整英文保留，HDR暂缓，HUDless/UI仍缺真实输入。
 
-回执在产品树 `build/repair-20261112/repair-current-*`，构建指针与安装指针分开。HDR已归档撤出候选。保留真实queue/fence/Reset、独立SR/NR/FG语义及用户参数；不扩大池子或借旧帧。旧根、其它工作树、build候选／回退／证据和许可证全部保留。来源见[仓库清单](REFERENCE-REPOSITORIES.md)。
+当前证据在产品树 `build/repair-20261112/zzz-followup-*`，部署核验 `zzz-followup-deploy-verified.json`；旧 `repair-current-*`／ADFF3486证据保留。用户手动启动ZZZ并复现后，再读版本51fdb7b的新局日志；不重复要求关闭FG对照。未查询或操控游戏；新版本性能、画面、退出与英文布局分别验收。旧根、其它工作树及build候选／回退／证据保留。

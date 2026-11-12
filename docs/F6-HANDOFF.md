@@ -1,7 +1,7 @@
 # F6 项目交接入口
 
-更新：2026-11-12。当前修复与验收边界见[产品交接第0节](../../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)及[产品当前状态](../../DLSS5_NEXT-workers/f6-rewrite/docs/CURRENT-STATE.md)。
+更新：2026-11-12。ADFF3486 的ZZZ卡顿未解决；源码51fdb7b的1ABD9AFD诊断版已部署，新增阻塞原因日志并修正Reflex旧报告选择。真实根因及新版本性能尚待新局证据。
 
-产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`；源码提交b1ee21020a58，ADFF3486已按用户要求部署并完成磁盘核验。FG排队、退出入口和英文已补，HDR暂缓；HUDless/UI缺桥输入。本根仅为`codex/navigation-20261112`导航和迁移基线。
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`；本根只维护导航和迁移基线。先读[产品当前状态](../../DLSS5_NEXT-workers/f6-rewrite/docs/CURRENT-STATE.md)与[完整交接第0节](../../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)。
 
-正式及三个游戏缓存均为ADFF3486，原文件身份／硬链接不变；桥保持CC301B42，2,535项受保护文件及profiles不变。旧DLL已备份，旧.next已归档移除。用户已确认ZZZ关闭FG后卡顿消失、仍有GPU等待；新候选尚无游戏验收。构建／测试回执在产品树`build/repair-20261112/repair-current-*`，当前部署回执已指ADFF3486，核验见产品树`build/f6-deploy-ADFF3486-verified.json`。
+正式与三缓存均为1ABD9AFD，原文件身份／硬链接、2,535项受保护文件与profiles不变，桥保持CC301B42。旧ADFF3486已备份。证据在产品树 `build/repair-20261112/zzz-followup-*`，当前部署指针已核验；FG内置，HDR暂缓。用户手动复现后读取版本51fdb7b的新局日志，不重复关闭FG对照；不查询、启动、终止或操控游戏。
