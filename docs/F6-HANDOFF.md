@@ -1,9 +1,9 @@
 # F6 项目交接入口
 
-更新：2026-11-12。**完整报告位于[产品工作树](../../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)**；独立的[外部参考仓库清单](REFERENCE-REPOSITORIES.md)列出位置、固定版本、已参考和待参考功能。
+更新：2026-11-12。**已按用户要求继续，最新交接见[产品报告第 0 节](../../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)**，包含当前源码修复、测试证据、候选身份、未确定项和后续验收。
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`，累计源码保存点`ea8c304`。本根master保留迁移基线、共享研究和导航，不含最新产品集成。
+唯一写树 D:/CODE/DLSS5_NEXT-workers/f6-rewrite，codex/f6-rewrite，HEAD 9ab9686，大量既有未提交改动，禁止 reset/clean。本根 master 仅保留迁移基线、导航和共享研究。
 
-当前 **DD53514B已构建未部署，安装仍81DBE9A5**。用户已确认7C281A54解决NR＋FG主链卡顿／旧帧闪回；持续细节保留、Look实机、旋转发白、卡死、高延迟、HUD及三游戏回归仍未验收。原始构建与21项关键源码哈希不因本次事后提交而改写。
+**FG 用内置、不用 ASI。** F6 5265915D 与 FSR 桥 CC301B42 已按用户要求部署；正式及三游戏缓存 F6 DLL 磁盘 SHA 均为 5265915D，原文件身份／硬链接不变，旧安装 8FCB8632 已备份，2,535 项受保护文件未变。部署前用户反馈崩铁 OK、ZZZ 未检测 DLSS；旧 PID180352 被归 backend，不能替代新版本实测。新版本冻结清单遗漏 FgDepthContract.h，验证边界保留。
 
-本次整理保存有效源码、测试、研究和许可，保留ignored候选／回退／日志，不推送、不合并其它树、不部署。具体命令、精确SHA、已知问题、撤回归因和下一步均以完整报告及实际`build/current-*.json`为准。
+构建测试证据在产品树 build/repair-20261112/verification-next/；本次部署核验见 build/f6-deploy-5265915D-verified.json 和 current-deployment.json，旧候选及回执保留。实际加载、画面和性能待分别验收，游戏由用户手动启动。参考[仓库清单](REFERENCE-REPOSITORIES.md)与[当前状态](CURRENT-STATE.md)。
