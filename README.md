@@ -75,6 +75,24 @@ LoadAsiPlugins = true
 
 使用本项目的帧生成链路时，`[FrameGen] External = false`；ASI 插件与这一设置是不同的配置项。
 
+## 三游戏配置
+
+以下为 **2026-11-13** 从三款游戏各自当前运行目录导出的配置快照，保留各自的 SR、NR、细节保留、FG 和界面参数，供参考和调整。
+
+| 游戏 | 配置文件 | NR `WorkingScale` | 配套 NR 库 |
+|---|---|---|---|
+| 原神 | [OptiScaler.ini](configs/genshin/OptiScaler.ini) | `0.84` | 自定义版本，需自行准备 |
+| 崩坏：星穹铁道 | [OptiScaler.ini](configs/star-rail/OptiScaler.ini) | `0.86` | `310.9.16-SF` |
+| 绝区零 | [OptiScaler.ini](configs/zenless-zone-zero/OptiScaler.ini) | `0.81` | `310.9.16-SF` |
+
+三份配置均保留 `FGInput=Upscaler`、`FGOutput=DLSSG`、`External=false`、`LoadAsiPlugins=true` 和 5 张生成帧请求（目标总倍率 6×）；实际支持能力与显示倍率仍取决于显卡、运行库及用户自备 ASI。
+
+1. 备份目标游戏现有配置，将对应文件保存为该游戏实际加载的 `OptiScaler.ini`。使用启动器时，通过其配置导入或持久化方式应用，避免启动时被旧预设覆盖。
+2. 将 `[Libraries] OptiDllPath = <DEPENDENCY_ROOT>` 替换为自己的依赖根目录绝对路径（目录，不是 DLL 文件），将 `[Plugins] Path = <USER_PLUGIN_DIRECTORY>` 替换为自己的插件目录绝对路径。使用前须替换整个占位符，包括尖括号。
+3. 准备对应运行库和插件，再手动重启游戏加载；未使用 ASI 时，自行调整插件开关和 FG 请求。
+
+公开副本已去掉本机路径，日志文件名恢复为 `auto`，并移除当前 F6 不再读取的历史帧生成项。这些是当前设置快照，仍受下方已知问题影响，不代表通用推荐预设或实机验收通过；INI 不包含 DLL、模型或 ASI。
+
 ## 已知问题
 
 以下为截至 **2026-11-13** 用户确认的未解决事项：

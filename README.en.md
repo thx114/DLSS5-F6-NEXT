@@ -75,6 +75,24 @@ Replace the placeholder with a real path, then restart the game. The project pro
 
 When using this project's frame generation pipeline, set `[FrameGen] External = false`. ASI plugin loading is a separate setting.
 
+## Configurations for the three games
+
+These configuration snapshots were exported on **2026-11-13** from each game's current runtime directory. They preserve the separate SR, NR, detail retention, FG, and interface settings for reference and adjustment.
+
+| Game | Configuration | NR `WorkingScale` | Companion NR library |
+|---|---|---|---|
+| Genshin Impact | [OptiScaler.ini](configs/genshin/OptiScaler.ini) | `0.84` | Custom version; supply your own |
+| Honkai: Star Rail | [OptiScaler.ini](configs/star-rail/OptiScaler.ini) | `0.86` | `310.9.16-SF` |
+| Zenless Zone Zero | [OptiScaler.ini](configs/zenless-zone-zero/OptiScaler.ini) | `0.81` | `310.9.16-SF` |
+
+All three retain `FGInput=Upscaler`, `FGOutput=DLSSG`, `External=false`, `LoadAsiPlugins=true`, and a request for 5 generated frames (a target total multiplier of 6×). Actual support and the displayed multiplier depend on the GPU, runtime libraries, and your own ASI.
+
+1. Back up the target game's existing configuration, then save the corresponding file as the `OptiScaler.ini` actually loaded by that game. With a launcher, apply it through the launcher's configuration import or persistence mechanism so an old preset does not overwrite it at startup.
+2. Replace `[Libraries] OptiDllPath = <DEPENDENCY_ROOT>` with the absolute path to your dependency root directory, not a DLL file, and `[Plugins] Path = <USER_PLUGIN_DIRECTORY>` with the absolute path to your plugin directory. Replace each entire placeholder, including the angle brackets, before use.
+3. Prepare the required runtime libraries and plugins, then manually restart the game. If you do not use ASI, adjust plugin loading and the FG request accordingly.
+
+The public copies remove machine-specific paths, reset the log filename to `auto`, and omit legacy frame generation settings that the current F6 no longer reads. They are snapshots of the current settings, subject to the known issues below, and are not universal recommendations or evidence of successful testing in the games. The INI files do not include DLLs, models, or ASI.
+
 ## Known issues
 
 The following issues were confirmed by the user and remain unresolved as of **2026-11-13**:
