@@ -1,10 +1,8 @@
 # F6 NEXT
 
-2026-11-12：**新局确认四呈现槽与producer录制生命周期耦合，已修recording资源所有权。候选0C7D6709通过Release x64、导出、定向回归和独立复核，尚未部署；实际卡顿改善待验收，HDR暂缓。** 详见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
+2026-11-12：**绝区零已按用户要求单独切到 `local/F6-ZZZ-ASI`；原神、星铁保持 `official/F6` 内置。隔离 DLL 283B6B07／源码97a2cad已构建和部署，真实加载与卡顿改善待重启游戏验收。HDR暂缓。** 详见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`，候选源码 `8df406c4715d`。正式及三缓存仍1ABD9AFD，桥CC301B42；本轮AGENTS要求不改正式部署或profiles。FG内置，SR／NR／FG语义、6×参数和监视报告策略保留。
-
-PID185668已输出2328次busy采样均Reset pending，594条详细行after_refusal fence采样均达target；FG启／停及最大延迟1↔6各1510次。修复让GPU转换资源随真实recording保留至Reset＋自身producer fence且CPU释放；四槽只保留当前身份，未扩大BUFFER_COUNT、删退休门或借旧帧。
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`。绝专属配置保留SR／NR／FG、原6×参数，仅关闭内置Ada／Ampere解锁并从独立插件路径加载既有ASI。独立post-attach startup与FG有界等待保持SR／NR独立。旧正式F6、原神／星铁、四DLL硬链接、233项保护文件、全局选择和旧profiles未改；单游戏回执 `build/current-game-deployment-nap_cn.json`，共享部署仍由原 `current-deployment.json` 记录。
 
 ## 目录
 
@@ -33,7 +31,7 @@ python OptiScaler/hooks/tests/test_fg_hook_install.py --cpu
 pwsh -NoProfile -File ./tools/tests/Run-CommonCoreTests.ps1
 ```
 
-产物 `build/out/OptiScaler.dll`，UTF-8日志 `build/msbuild.log`。本次冻结2428项输入，核验全部948个导出；定向验证和独立复核见 `build/repair-20261112/zzz-recordings-*`。候选0C7D6709尚未部署，旧1ABD9AFD、ADFF3486和回执保留。构建、部署、实际加载、画面和性能分别验收；本次尚未证明卡顿改善。
+产物 `build/out/OptiScaler.dll`，UTF-8日志 `build/msbuild.log`。本次2431项冻结输入、948导出和ASI定向测试通过，证据 `build/repair-20261112/zzz-asi-*`；候选路径不能代替共享正式部署身份。旧0C7D6709及回执保留，构建／部署不证明游戏性能改善。
 
 ## 文档
 

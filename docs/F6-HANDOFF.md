@@ -1,26 +1,28 @@
 # F6 项目完整交接报告
 
-## 0. 当前交接：ZZZ recording 所有权修复候选
+## 0. 当前交接：绝区零单游戏 ASI 切换
 
-更新：2026-11-12。**新局确认 native guide 四呈现槽与真实 producer recording 生命周期耦合，可导致当前源帧拒绝与 FG 反复启停。源码 8df406c4715d 已拆分所有权；候选 0C7D6709 构建、导出、定向回归及独立复核通过，尚未部署，卡顿改善待实机验收。HDR 暂缓。**
+更新：2026-11-12。**按用户“绝改为 ASI，其他游戏不变”的最新指令，绝区零已单独选择 `local/F6-ZZZ-ASI`；原神、星铁仍为 `official/F6` 内置方案。绝专属 DLL `283B6B07`／源码 `97a2cad` 已构建、定向验证、独立复核并部署到独立文件对象；尚未实机验证 ASI 加载或卡顿改善。HDR 暂缓。**
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`；导航树 `D:/CODE/DLSS5_NEXT` 保留迁移基线。GitHub目标 `thx114/DLSS5-F6-NEXT`。按本轮根AGENTS.md“不改正式部署或游戏profiles”约束，正式及缓存DLL、配置和profiles未改。
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`。本次只新增绝区零包／runtime和修改绝区零一个构建选择键；共享正式 F6、原神／星铁文件、全局选择及原有游戏 profiles 均保留。
 
 | 项目 | 当前事实 |
 |---|---|
-| 固定新局 | PID185668，18:08–18:33，日志版本51fdb7b；`build/repair-20261112/zzz-185668.log`，108,242,264 B／1,267,211行，SHA256 `65A474D3DDC491D805DE1329B0604ECE4BB629C30ECE362D2B2B19BAD7830632`；loaded-memory SHA未知 |
-| 拒绝原因 | 594条详细busy，已输出窗口累计2328次采样全为Reset pending；详细行均closed=false、submitted=true、signalled=true，after_refusal采样fence均达到target。不能倒推拒绝瞬间GPU状态或仅凭日志排除Reset通知缺失 |
-| 源与时序 | selected Evaluate 41904次，Handle1000000／1000001分别11097／30807次，共6条list。epoch8主要阶段同list复用帧距以6最多（22567对），其次4（5501）／5（1652），不等于实际Reset间隔。FG启／停、最大呈现延迟1→6／6→1各1510次；401条busy可在同源帧窗口关联eOff及6→1 |
-| 所有权修复 | 四槽只借用精确当前source身份；独立recording持有DS／RF、CB／descriptor、copies及真实producer收据。成功Reset＋自身queue/fence完成且CPU不再持有才可回收；按真实录制按需获取、复用已退休owner并回收多余退休对象，BUFFER_COUNT仍4 |
-| 通知与保留 | Execute前后携带同次execution凭据；旧通知不能更新新帧observation。短锁interest覆盖全部活跃recording及wrapper/native别名；shared CPU lease和提交快照防重入释放／迭代失效。重放、Signal失败、未知完成继续保留；终止quarantine有意保留完整owner |
-| 候选 | `build/out/OptiScaler.dll`，SHA256 `0C7D6709A0364761BA05C9AD03E3B7EA3F2D13ABCF8BF3FD1A9DDBF712425A6E`，33,990,144 B，Release x64，内置FG；源码 `8df406c4715db5e7ebc03c04764f47f67efe12cd`。BUILT_NOT_DEPLOYED |
-| 验证 | 2428项输入构建前后不变；53必要NGX及全部948导出名称／序号一致。真实抽取10个生产方法／owner的106项CPU检查及六种运行负控、16套ZZZ／128接线、97项options接线、guide接线、7套核心含实际WARP回归通过；gpt-6.1-sol/high独立复核无剩余确定blocker。101条构建警告留在日志 |
-| 正式部署 | 仍为1ABD9AFD／源码51fdb7b；正式与三缓存、原File ID／硬链接未改；2588项配置／profiles保护文件哈希一致，FSR桥仍CC301B42。未查询、启动、终止或操控游戏。current-deployment仍指旧正式字节 |
-| 功能边界 | SR／NR／FG独立、用户6×参数、监视最新有效报告策略保留；缺实例凭据的enrichment仍unknown。native borrowed guide preview拒绝门未开放；HUDless/UI仍缺真实桥输入。退出、画面和性能分别验收，构建不证明卡顿消失 |
+| 绝区零构建 | `local/F6-ZZZ-ASI`，独立包 `D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/OptiScaler/local/F6-ZZZ-ASI`，独立 runtime `cache/games/nap_cn/OptiRuntime/A5009284E9948E8D` |
+| DLL 身份 | SHA256 `283B6B07A7CF9926437F2BEF188961064EE5BBB7ABEE9DEC72DE91783BE80BD6`，33,994,240 B，版本 `0.1.29-final (97a2cad)`；源码 `97a2cadfba894e20dbbd6c95efb476ec354903c3` |
+| ASI | 复用已有 `MFGUnlocker.asi`，SHA256 `171AC18D4D632D12DEE22D5CAF2085F301BACFDB9A462561D93DBCBB61D6A4F8`；绝专属插件路径，未把插件嵌入 DLL，未运行用户 ASI 进行离线测试 |
+| 配置语义 | 绝专属 `AdaMfgUnlock=false`、`AmpereMfgUnlock=false`、`LoadAsiPlugins=true`；`External=false` 保留 OptiScaler FG 输入／呈现。MFG 解锁由 ASI 负责；SR、NR、FG 请求与原 5 张生成帧／6×设置不变 |
+| 启动实现 | 通用 ASI 枚举只登记规范 MFG 插件，既有 post-attach worker 单次初始化；重复 owner、失败、异常、worker 创建失败均终态保留。FG 消费前有界等待，loader／TLS／自身线程重入不等；未选 ASI 为 no-op，SR／NR 不依赖其成功 |
+| 游戏 SL | SL2 有效请求仍含 DLSSG 才等待；Opti-owned 分支先移除游戏 FG 再直接初始化游戏 SR／Reflex。未声称 SL1 全路径已覆盖 |
+| 定向验证 | 生产 Gate 28项、真实 loader context 5项、options1132项、builtin谓词41项、Reflex19项；实际生产 startup 在无害模块下跑7种 Windows loader 场景，抽取实际 SL 有效请求尾部16种组合通过；gpt-6.1-sol/high 最终静态复核无确定 blocker |
+| 构建 | Release x64 exit0，2431项冻结输入构建前后不变，全部948导出名称／序号不变；既有警告保留于 `zzz-asi-build.log` |
+| 其他游戏 | 原神、星铁仍选择 `official/F6`，共享及旧四路径 DLL 仍 `1ABD9AFD`／源码 `51fdb7b`，原 File ID／硬链接不变；233项本次保护文件逐字节及身份不变，全局 `OptiScaler/state.json` 未改 |
+| NR／桥 | 绝 NR 仍为310.9.16-SF／`CDFA6C1EC784867182164C7836F324F087B5C9F374D0C9FE46F54999FEABF3ED`；共享 FSR 桥仍 CC301B42，未调整 HDR、HUDless、游戏文件或图形配置 |
+| 验收边界 | 本次未查询、启动、终止或操控游戏。磁盘及单游戏选择已核验，实际加载、生成帧显示和周期卡顿改善未知，用户下次重启绝区零后验收；不重复关闭 FG 对照 |
 
-证据前缀 `build/repair-20261112/zzz-recordings-{source,tests,review,artifact}.json`；固定日志可复现分析 `analyze-zzz-recordings.py`，汇总 `evidence.json`，完整 `zzz-185668-analysis.json`。旧SelectedListCounts只匹配单handle的错误已由全handle解析取代，不再引用。1ABD9AFD候选及旧指针／构建日志已备份为同前缀previous文件与 `build/rollback/zzz-recordings-pre-1ABD9AFD.dll`；旧zzz-followup／repair-current证据保留。正式未改核验 `zzz-recordings-official-unchanged.json`，current-deployment原回执未改。
+当前候选与测试指针为 `build/current-{artifact,build,tests}.json`。共享正式部署回执 `build/current-deployment.json` 保持原字节；绝单游戏部署回执单列 `build/current-game-deployment-nap_cn.json`，完整证据为 `build/repair-20261112/zzz-asi-{source,tests,review,artifact,deployment}.json`，部署可复核脚本 `deploy-zzz-asi.py`。启动器CLI只执行 `set_opt_build`，数据库实际只改变 `launch_option_optiscaler_build_nap_cn_x6znKlJ0xK`。回到内置时只需将绝区零构建选择切回 `official/F6`，不覆盖共享 DLL。
 
-下一步由用户安排部署后，再按真实DLL占用原位写入或记.next待替换，保持硬链接与配置；随后用户手动复现。新局日志启动版本须匹配8df406c，关联 `F6 native guide recording lifecycle:` 的owner回收、当前源连续性、FG启停／最大延迟及实际显示节奏。不重复关闭FG对照。尚未宣称全部可见卡顿已解释或已修好。
+上一轮 recording 所有权修复源码 `8df406c` 和未部署候选 `0C7D6709` 保留；本次源代码继续包含该修复，但本次用户“仍然有”不能单独证明未部署候选已受测。PID185668／日志51fdb7b的2328次 Reset-pending采样、1510次FG启停与四槽耦合证据仍在 `zzz-recordings-*`／`evidence.json`；不能将它们当本次 ASI 运行证据。旧候选完整备份 `build/rollback/zzz-asi-pre-0C7D6709.dll`，旧当前指针在 `zzz-asi-previous/`；旧日志和回退保留。
 
 ## 1. 7D 候选阶段：2026-11-12 历史状态
 
@@ -372,4 +374,4 @@ pwsh -NoProfile -File ./tools/runtime/Deploy-F6.ps1 -Artifact $candidate.Artifac
 
 ## 12. 新会话续接提示
 
-> 先读第0节，后续章节是历史证据，旧候选／部署断言不能覆盖第0节。PID185668完整108MB日志已有Reset门未满足→缺当前源→FG启停／延迟1↔6证据。源码8df406c4715d拆开真实录制GPU owner与四槽当前身份；CPU lease、execution receipt、动态list interest及完整quarantine保留。候选0C7D6709已构建／定向测试／独立复核，尚未部署；正式1ABD9AFD、桥CC301B42、配置和profiles未改。按本轮AGENTS不改正式部署，需用户安排后再部署；卡顿改善未实测，不重复FG关闭对照，不查询或操控游戏。HDR暂缓、FG内置。证据zzz-recordings-*，旧zzz-followup及repair-current保留；仅产品写树继续。
+> 最新用户要求仅绝区零改 ASI，原神／星铁不变。已新增隔离 local/F6-ZZZ-ASI／runtime A5009284E9948E8D并仅改nap_cn构建选择；DLL283B6B07／源码97a2cad，ASI171AC18D，NR CDFA6C1E。External=false保留Opti输入／呈现，两个内置MFG解锁开关false，用户6×参数不变。Gate、无害Windows loader、有效SL请求矩阵和独立复核通过；真实ASI加载和卡顿改善待下次重启绝区零。原神／星铁official/F6和共享1ABD9AFD四硬链接、233项保护文件、全局选择及旧profiles完全未改。单游戏回执current-game-deployment-nap_cn.json；共享current-deployment.json仍是原字节，不得把新out产物当共享已部署。HDR暂缓，不查询或操控游戏，不复用旧智能体。旧recording修复、候选0C7D6709及证据保留，不把未部署候选标成实测失败。
