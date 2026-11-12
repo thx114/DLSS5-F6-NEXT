@@ -171,8 +171,8 @@ inline SpreadPlan PlanSpread(const Decision& d, bool reusedAsDecided, bool haveT
 }
 
 // How far the frame number steps between two NR frames when NR runs on every rendered frame. With frame generation
-// the present counter also counts the generated frames, so the step is the multiplier: 2 at 2x, 4 at 4x, more with an
-// unlocked multiplier. A fixed limit of 4 made every frame above 4x look like a gap, and reuse fell back on all of
+// the present counter also counts the generated frames, so the step is the multiplier: 2 at 2x, 4 at 4x, and more at higher
+// multipliers. A fixed limit of 4 made every frame above 4x look like a gap, and reuse fell back on all of
 // them (Witcher 3, 2026-10-08). The normal step is learnt instead: the median of the last 16 forward steps, so the odd
 // skipped frame does not move it. A frame NR really skipped doubles the step, which stays a gap.
 class StepTracker

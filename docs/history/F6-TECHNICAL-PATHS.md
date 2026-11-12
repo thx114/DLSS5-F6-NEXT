@@ -12,7 +12,7 @@
 |---|---|---|
 |原神SR/FG|internalFSR→paired selected SR→立即gameRTV；同源PreparedDepthSource/packet→NormalizeNative→DLSSG/physical/owner|SR不依赖NR资格；FG异步SDK raw与render TLS显示许可断链，用户Win菜单才见监控USER_FAIL|
 |原神NR|同源packet→完整writer数值证明→Scene→Picture→PreparedDepthLease→FinishedPicture/Present最终模型|PID51780仅3个低频depthtrue样本，不代表持续world/像素；FG有guide不授NR picture资格|
-|星铁FG/NR|所选DLSS wDX12→独立adamfg式FG；真实scene depth/MV→Present NR/history|FGOk2058保留；scene1801/history1799未融合，R1075两文件私有候选未集成，不套原神复杂显示路线|
+|星铁FG/NR|所选DLSS wDX12→独立FG；真实scene depth/MV→Present NR/history|FGOk2058保留；scene1801/history1799未融合，R1075两文件私有候选未集成，不套原神复杂显示路线|
 |ZZZFG/NR|所选SR→F5-owned DLSSG；current-backbuffer Late NR/R30 fresh-color独立|48964 FG0/停用113、source23→Reflex4882身份拒绝，R1078零hunk；不因缺某日志字符串判NR0|
 |滤镜/Look|既有core BeforeSR→prefix/core/continuation→同次selected SR；每pass真实Look/mask|R1073完整selected录制已正式但像素/净成本未运行；原神BeforeSR NR不是该滤镜功能|
 |GIMI/UID/UI|immutable预加载→精确draw/恢复/真实退休；UID独立显式按需|R1072已正式但完整MOD Load未知；默认关闭，UID decoder/verifier不冒完成，监控不等于插帧|

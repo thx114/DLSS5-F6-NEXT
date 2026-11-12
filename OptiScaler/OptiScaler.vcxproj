@@ -252,7 +252,6 @@ del /Q $(SolutionDir)x64\Release\a\Licenses\*.*
 copy $(SolutionDir)external\xess\LICENSE.txt $(SolutionDir)x64\Release\a\Licenses\XeSS_LICENSE.txt /Y
 copy "$(SolutionDir)READ ME - DLSS Neural Rendering.txt" $(SolutionDir)x64\Release\a\ /Y
 copy "$(SolutionDir)Licenses\RenoDX_ATTRIBUTION.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
-copy "$(SolutionDir)Licenses\MFGUnlock_LICENSE.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
 copy "$(SolutionDir)Licenses\ReShade_GenericDepth_LICENSE.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
 copy "$(SolutionDir)Licenses\DLSS5Feeder_LICENSE.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
 copy "$(SolutionDir)Licenses\Inter_OFL.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
@@ -377,15 +376,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="framegen\dlssg\DLSSG_Dx12.h" />
     <ClInclude Include="framegen\dlssg\DlssgTelemetry.h" />
     <ClInclude Include="framegen\dlssg\DlssgProviderIdentity.h" />
-    <ClInclude Include="framegen\dlssg\MfgUnlock.h" />
-    <ClInclude Include="framegen\dlssg\MfgUnlockProvider.h" />
-    <ClInclude Include="framegen\dlssg\MfgUnlockPlugin.h" />
-    <ClInclude Include="framegen\dlssg\MfgUnlockPtx.h" />
-    <ClInclude Include="framegen\dlssg\MfgUnlockMethod.h" />
-    <ClInclude Include="framegen\dlssg\MfgUnlockFlip.h" />
     <ClInclude Include="runtime\LoaderStartupContext.h" />
     <ClInclude Include="runtime\ModuleLifetime.h" />
-    <ClInclude Include="runtime\MfgAsiStartup.h" />
+    <ClInclude Include="runtime\AsiPluginStartup.h" />
     <ClInclude Include="runtime\PluginStartupGate.h" />
     <ClInclude Include="framegen\dlssg\NativeGuideListInterest.h" />
     <ClInclude Include="framegen\dlssg\Kcd2Hdr.h" />
@@ -760,7 +753,6 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="framegen\FinalOutputEndpoint.cpp" />
     <ClCompile Include="framegen\dlssg\DLSSG_Dx12.cpp" />
     <ClCompile Include="framegen\dlssg\Kcd2Hdr.cpp" />
-    <ClCompile Include="framegen\dlssg\MfgUnlock.cpp" />
     <ClCompile Include="framegen\ffx\FSRFG_Dx12.cpp" />
     <ClCompile Include="framegen\IFGFeature.cpp" />
     <ClCompile Include="framegen\IFGFeature_Dx12.cpp" />
@@ -1079,7 +1071,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="dlssnr\DlssNrNative_Vk.cpp" />
     <ClCompile Include="inputs\NVNGX_DLSS_Dx12.cpp" />
     <ClCompile Include="dllmain.cpp" />
-    <ClCompile Include="runtime\MfgAsiStartup.cpp" />
+    <ClCompile Include="runtime\AsiPluginStartup.cpp" />
     <ClCompile Include="MaintenanceGate.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="inputs\NVNGX_DLSS_Vk.cpp" />
     <ClCompile Include="upscalers\xess\XeSSFeature.cpp" />

@@ -1,8 +1,10 @@
 # F6 NEXT
 
-2026-11-12：**原神、星铁、绝区零均已选择 `local/F6-ASI`，三游戏隔离 runtime 已部署 `6D377DD4`／源码 `3665de5`。ASI 负责 MFG 解锁，F6 继续负责 SR／NR／FG，`External=false`；原 NR 版本与 6×请求保留。菜单输入候选已通过离线回归，冷开点击与周期卡顿仍待实机验收，HDR 暂缓。** 详见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
+2026-11-12：**原神、星铁、绝区零的 `local/F6-ASI` 包及三个隔离 runtime 已原位部署 `A6D12031`，源码基于 `75d7a27` 的未提交工作树。F6 继续负责 SR／NR／FG，`External=false`；用户配置、既有 ASI、各游戏 NR 与 6×请求保留。此前菜单点击／焦点已获用户初步通过反馈，新版游戏加载与周期卡顿尚待观察，HDR 暂缓。** 详见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`。新包与三 runtime 的 DLL 原位更新并保留硬链接；旧共享正式 F6、旧绝专属包、旧 runtimes、全局 state 和回退均保留。激活新选择须从托盘完整退出启动器，再重新打开；仅 CLI 写 DB 或关窗口不刷新旧 GUI 缓存。隔离部署回执与共享 `current-deployment.json` 分开。
+本轮源码已移除旧功能入口和实现，保留通用 ASI 插件加载；新建包工具只引用用户自备插件目录，不复制插件。本次仅更新既有包 DLL，2421 项冻结构建输入、948 个导出核验通过，部署后四个 DLL alias 的哈希及原 FileId／硬链接均正确，1857 项保护文件未变。冻结身份、离线验证和本次部署回执见 `build/repair-20261112/asi-only-*`。
+
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`。旧共享正式 F6、旧绝专属包、旧 runtimes、全局 state 和回退均保留。构建选择未变，由用户手动重开游戏加载新 DLL；当前加载、画面和性能尚未验证。隔离部署回执与共享 `current-deployment.json` 分开。
 
 ## 目录
 
@@ -32,7 +34,7 @@ python OptiScaler/hooks/tests/test_fg_hook_install.py --cpu
 pwsh -NoProfile -File ./tools/tests/Run-CommonCoreTests.ps1
 ```
 
-产物 `build/out/OptiScaler.dll`，UTF-8日志 `build/msbuild.log`。本次2435项声明输入及948导出核验通过；菜单51,959项检查、8个执行负控和调用清单负控、部署42项检查通过。证据 `build/repair-20261112/menu-input-*`；旧ASI和recording证据、回退均保留。离线验证与磁盘部署不证明游戏内点击、实际显示或性能。
+产物 `build/out/OptiScaler.dll`，UTF-8日志 `build/msbuild.log`。当前候选通用 ASI 224 项检查／22 个无害夹具场景、部署工具11项测试及普通 FG 定向回归通过；最终本地化静态清单为1999词条、2313处中文。此前菜单51,959项检查及负控记录在 `build/repair-20261112/menu-input-*`，旧证据、回退均保留。离线验证与磁盘部署不证明实际显示或性能。
 
 ## 文档
 

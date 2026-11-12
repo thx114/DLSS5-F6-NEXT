@@ -1,9 +1,0 @@
-#undef GetModuleFileNameW
-#undef CreateFileW
-#undef ReadFile
-#undef CreateToolhelp32Snapshot
-#undef Module32FirstW
-#undef Module32NextW
-#undef BCryptFinishHash
-#undef ReadProcessMemory
-#undef VirtualQuery

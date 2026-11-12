@@ -14,7 +14,7 @@
 
 - 原神51780/session20261104-161924_YuanShen_51780，t0北京16:19:14.423，creationUNKNOWN：180s CLI0，后精确只读notrunning，退出原因未知。NR只有3个低频model_depthtrue样本，不证明world持续深度或像素；用户FG无效果、Win菜单才见监控USER_FAIL。R1076确证异步SDK61148 raw与render52060 TLS显示许可断链，同步失焦短暂shown，0hunk未修。
 - ZZZ48964/creation134382543438743436：120s CLI0且明确forced kill；selectedSR1591、NR cadence/modelDepth非空，FG0/Deactivate113。source23成功提交后Reflex改4882，current-guide-pair拒绝；4893→4896重复。R1078源码调查0hunk，未修；不以缺某模型日志字符串判NR0。
-- 星铁34648/creation134382512438861274：90s CLI0/forced fallback，FGOk2058/Deactivate0；NR真实GPU135组，total中位56.5535ms包含model53.8952ms，不能相加/倒数当world帧率。scene1801/history1799、反馈请求却未融合；动态曝光/残影/细节及净性能未通过。保用户adamfg式独立FG。
+- 星铁34648/creation134382512438861274：90s CLI0/forced fallback，FGOk2058/Deactivate0；NR真实GPU135组，total中位56.5535ms包含model53.8952ms，不能相加/倒数当world帧率。scene1801/history1799、反馈请求却未融合；动态曝光/残影/细节及净性能未通过。保用户独立FG。
 - 这些CLI都早于最新08:30:49联合版；R1072完整MOD Load/像素和R1073 BeforeSR真实效果/净成本尚无新运行验收。旧设备hung首因UNKNOWN，3个深度样本不覆盖旧持续失败。
 
 ## 候选、owner和下一步

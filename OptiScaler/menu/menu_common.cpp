@@ -18,7 +18,6 @@
 #include <inputs/GenshinFsrContract.h>
 #include <runtime/F6InputPolicy.h>
 #include <framegen/dlssg/DlssgTelemetry.h>
-#include <framegen/dlssg/MfgUnlock.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
 #include <framegen/GuideOrientation.h>
 #include <dlssnr/DlssNr_ExposureScan.h>
@@ -4211,44 +4210,6 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     // game starts: they are offered while it is up, and before it while Optical F5Low can make one (choose, save, restart).
     const bool vulkanNoFg = state.swapchainApi == API::Vulkan && state.swapchainInteropApi != SwapchainInteropApi::VkwDx12 &&
                             (MenuPrimaryGpu().usesDxvk || !config->DlssNrEnabled.value_or_default());
-
-    if (config->FGDLSSGAmpereMfgUnlock.value_or_default())
-    {
-        MenuText::TextWrapped("旧 Ampere 外部解锁设置仍已启用，会阻止内置 Ada 多倍插帧；本版不加载该外部路径。");
-        if (MenuText::Button("关闭旧 Ampere 设置（保存后重启）"))
-            config->FGDLSSGAmpereMfgUnlock = false;
-    }
-
-    bool builtinMfg = config->FGDLSSGAdaMfgUnlock.value_or_default();
-    ImGui::BeginDisabled(state.externalFrameGeneration);
-    if (MenuText::Checkbox("内置多倍插帧（需重启）", &builtinMfg))
-        config->FGDLSSGAdaMfgUnlock = builtinMfg;
-    ImGui::EndDisabled();
-    ShowHelpMarker("使用现有内置兼容路径，保存设置并重启后生效。实际倍率仍以运行库接受的配置为准。");
-    if (builtinMfg && !state.externalFrameGeneration)
-    {
-        const auto builtinStatus = MfgUnlock::LastStatus();
-        MenuText::TextWrapped("内置 FG：运行库 %s，能力匹配 %s，时序处理 %u，插件状态 %s",
-            builtinStatus.SnippetVersion.empty() ? "尚未加载" : builtinStatus.SnippetVersion.c_str(),
-            builtinStatus.AdvertiseMatched && builtinStatus.ValidateMatched ? "是" : "否",
-            builtinStatus.KernelsRewritten,
-            builtinStatus.PluginCeiling[0] ? builtinStatus.PluginCeiling : "尚未就绪");
-        if (MenuText::CollapsingHeader("内置 FG 兼容设置"))
-        {
-            const auto method = config->FGDLSSGAdaTemporalFix.value_or("Auto");
-            int choice = method == "Retarget" ? 1 : method == "Ptx" ? 2 : 0;
-            const char* choices[] = { "自动", "重定向", "PTX" };
-            if (MenuText::Segmented("时序处理##builtinFg", &choice, choices, IM_ARRAYSIZE(choices)))
-            {
-                const char* stored[] = { "Auto", "Retarget", "Ptx" };
-                config->FGDLSSGAdaTemporalFix = std::string(stored[choice]);
-            }
-            bool pacing = config->FGDLSSGAdaFlipMeteringPatch.value_or_default();
-            if (MenuText::Checkbox("软件帧调度##builtinFg", &pacing))
-                config->FGDLSSGAdaFlipMeteringPatch = pacing;
-            MenuText::TextDisabled("保存设置并重启游戏后生效。");
-        }
-    }
 
     if (state.externalFrameGeneration)
     {

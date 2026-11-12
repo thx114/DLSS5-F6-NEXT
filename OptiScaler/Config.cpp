@@ -161,21 +161,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             FGEnabled.set_from_config(readBool("FrameGen", "Enabled"));
             StarRailForceFGResident.set_from_config(readBool("FrameGen", "StarRailForceResident"));
             ExternalFrameGeneration.set_from_config(readBool("FrameGen", "External"));
-            FGDLSSGAdaMfgUnlock.set_from_config(readBool("DLSSG", "AdaMfgUnlock"));
-            FGDLSSGAdaBlackwellKernels.set_from_config(readBool("DLSSG", "AdaBlackwellKernels"));
-
-            if (auto adaFix = readString("DLSSG", "AdaTemporalFix"); adaFix.has_value())
-            {
-                if (lstrcmpiA(adaFix.value().c_str(), "retarget") == 0)
-                    FGDLSSGAdaTemporalFix.set_from_config("Retarget");
-                else if (lstrcmpiA(adaFix.value().c_str(), "ptx") == 0)
-                    FGDLSSGAdaTemporalFix.set_from_config("Ptx");
-                else
-                    FGDLSSGAdaTemporalFix.set_from_config("Auto");
-            }
-
-            FGDLSSGAdaFlipMeteringPatch.set_from_config(readBool("DLSSG", "AdaFlipMeteringPatch"));
-            FGDLSSGAmpereMfgUnlock.set_from_config(readBool("DLSSG", "AmpereMfgUnlock"));
             FGDebugView.set_from_config(readBool("FrameGen", "DebugView"));
 
             if (auto FGInputString = readString("FrameGen", "FGInput"); FGInputString.has_value())
@@ -1571,11 +1556,6 @@ void Config::WriteSettings(Sink& target, const GenshinLegacy::Settings& genshinS
         target.SetValue("FrameGen", "Enabled", GetBoolValue(this->FGEnabled.value_for_config()).c_str());
         target.SetValue("FrameGen", "StarRailForceResident", GetBoolValue(this->StarRailForceFGResident.value_for_config()).c_str());
         target.SetValue("FrameGen", "External", GetBoolValue(this->ExternalFrameGeneration.value_for_config_or(false)).c_str());
-        target.SetValue("DLSSG", "AdaMfgUnlock", GetBoolValue(this->FGDLSSGAdaMfgUnlock.value_for_config()).c_str());
-        target.SetValue("DLSSG", "AdaBlackwellKernels", GetBoolValue(this->FGDLSSGAdaBlackwellKernels.value_for_config()).c_str());
-        target.SetValue("DLSSG", "AdaTemporalFix", this->FGDLSSGAdaTemporalFix.value_for_config_or("auto").c_str());
-        target.SetValue("DLSSG", "AdaFlipMeteringPatch", GetBoolValue(this->FGDLSSGAdaFlipMeteringPatch.value_for_config()).c_str());
-        target.SetValue("DLSSG", "AmpereMfgUnlock", GetBoolValue(this->FGDLSSGAmpereMfgUnlock.value_for_config()).c_str());
         target.SetValue("FrameGen", "DebugView", GetBoolValue(this->FGDebugView.value_for_config()).c_str());
         std::string FGInputString = "auto";
         if (auto FGInputHeld = this->FGInput.value_for_config(); FGInputHeld.has_value())

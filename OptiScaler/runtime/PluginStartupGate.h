@@ -12,10 +12,11 @@ namespace PluginStartup
 enum class Status
 {
     Disabled, Pending, Initializing, WorkerUnavailable, Missing, InventoryFailed,
-    AlreadyLoaded, LoadFailed, EntryMissing, Failed, InitReturned
+    AlreadyLoaded, LoadFailed, EntryMissing, Failed, InitReturned, Completed
 };
 
-// A startup receipt only: InitReturned does not certify hooks, SDK support or output.
+// A queue receipt only: terminal failures release consumers too. The caller must
+// let each SDK determine its own support; completion never certifies capability.
 class Gate
 {
     std::atomic<Status> status_ { Status::Disabled };
@@ -72,15 +73,14 @@ class Gate
     bool Await(bool safeContext, uint64_t thread, unsigned timeoutMilliseconds = 5000)
     {
         auto status = Current();
-        if (!Pending(status))
-            return status == Status::Disabled || status == Status::InitReturned;
+        if (!Pending(status)) return true;
         // No wait from DllMain, executable TLS, an unknown loader context, or
         // recursive graphics calls made by the plugin's own initializing thread.
         if (!safeContext || thread_.load(std::memory_order_acquire) == thread) return false;
         std::unique_lock lock(mutex_);
         if (!changed_.wait_for(lock, std::chrono::milliseconds(timeoutMilliseconds),
                                [&] { return !Pending(Current()); })) return false;
-        return Current() == Status::InitReturned;
+        return true;
     }
 };
 }

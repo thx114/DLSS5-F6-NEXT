@@ -1,8 +1,7 @@
 #include "pch.h"
 #include <runtime/F6InputPolicy.h>
 #include <runtime/ModuleLifetime.h>
-#include <runtime/MfgAsiStartup.h>
-#include <framegen/dlssg/MfgUnlockSelection.h>
+#include <runtime/AsiPluginStartup.h>
 #include "integration/HoYoShade.h"
 #include <genshin/GenshinNativeQueryProvenance.h>
 #include "dllmain.h"
@@ -61,13 +60,9 @@
 // R040 private startup diagnostic, implemented beside the configuration parser.
 void LogHoYoShadeStartupConfig(bool enabled, unsigned stage) noexcept;
 
-static std::vector<HMODULE> _asiHandles;
-static std::vector<std::filesystem::directory_entry> _lateLoadingEntries;
 static bool _passThruMode = false;
 
 typedef const char*(CDECL* PFN_wine_get_version)(void);
-typedef void (*PFN_InitializeASI)(void);
-typedef bool (*PFN_PatchResult)(void);
 
 static inline void* ManualGetProcAddress(HMODULE hModule, const char* functionName)
 {
@@ -220,163 +215,23 @@ static void RunAgilityUpgrade(HMODULE dx12Module)
     }
 }
 
+// Only configuration is captured in the loader callout. Scanning, LoadLibrary
+// and optional plugin exports all run on the post-attach worker.
 void LoadAsiPlugins()
 {
-    std::filesystem::path pluginPath(Config::Instance()->PluginPath.value_or(L"plugins"));
-    auto folderPath = pluginPath.wstring();
-
-    LOG_DEBUG(L"Checking {} for *.asi", folderPath);
-
-    if (!std::filesystem::exists(pluginPath))
-        return;
-
-    for (const auto& entry : std::filesystem::directory_iterator(folderPath))
+    AsiPluginStartup::Configure(Config::Instance()->PluginPath.value_or(L"plugins"),
+                               Config::Instance()->LateAsiPluginsDelay.value_or_default(), []
     {
-        if (!entry.is_regular_file())
-            continue;
-
-        std::wstring ext = entry.path().extension().wstring();
-        std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return std::towlower(c); });
-
-        if (ext == L".asi")
-        {
-            std::wstring fileName = entry.path().filename().wstring();
-            std::transform(fileName.begin(), fileName.end(), fileName.begin(),
-                           [](wchar_t c) { return std::towlower(c); });
-
-            if (MfgAsiStartup::OwnsName(fileName))
-            {
-                auto* config = Config::Instance();
-                if (fileName != L"mfgunlocker.asi" ||
-                    MfgUnlock::SkipExternalPlugin(fileName, config->FGDLSSGAdaMfgUnlock.value_or_default(),
-                                                  config->FGDLSSGAmpereMfgUnlock.value_or_default()))
-                    LOG_INFO("Built-in MFG owner or plugin alias selected; skipping MFG ASI");
-                else
-                {
-                    MfgAsiStartup::Select(entry.path());
-                    LOG_INFO("MFG ASI selected for post-attach startup worker");
-                }
-                continue;
-            }
-
-            HMODULE hMod = nullptr;
-
-            if (fileName.rfind(L"-loadlate") != std::wstring::npos)
-                _lateLoadingEntries.push_back(entry);
-            else
-                hMod = NtdllProxy::LoadLibraryExW_Ldr(entry.path().c_str(), NULL, 0);
-
-            if (hMod != nullptr)
-            {
-                LOG_INFO(L"Loaded: {}", entry.path().wstring());
-                _asiHandles.push_back(hMod);
-
-                auto init = (PFN_InitializeASI) KernelBaseProxy::GetProcAddress_()(hMod, "InitializeASI");
-                auto patchResult = (PFN_PatchResult) KernelBaseProxy::GetProcAddress_()(hMod, "PatchResult");
-
-                if (init != nullptr)
-                    init();
-
-                if (patchResult != nullptr)
-                {
-                    auto pr = patchResult();
-
-                    if (pr)
-                    {
-                        LOG_INFO("Game patching is successful");
-                        State::Instance().isOptiPatcherSucceed = true;
-
-                        LOG_INFO("Disabling spoofing");
-
-                        if (!Config::Instance()->DxgiSpoofing.has_value())
-                            Config::Instance()->DxgiSpoofing.set_volatile_value(false);
-
-                        if (!Config::Instance()->VulkanSpoofing.has_value() ||
-                            !Config::Instance()->VulkanSpoofing.value_for_config())
-                        {
-                            Config::Instance()->VulkanSpoofing.set_volatile_value(false);
-                        }
-
-                        if (!Config::Instance()->VulkanExtensionSpoofing.has_value())
-                            Config::Instance()->VulkanExtensionSpoofing.set_volatile_value(false);
-                    }
-                }
-            }
-            else
-            {
-                DWORD err = GetLastError();
-                LOG_ERROR(L"Failed to load: {}, error {:X}", entry.path().wstring(), err);
-            }
-
-            if (_lateLoadingEntries.size() > 0)
-            {
-                std::thread(
-                    []()
-                    {
-                        try
-                        {
-
-                            auto delay = Config::Instance()->LateAsiPluginsDelay.value_or_default();
-                            LOG_INFO("Waiting {} seconds before loading late-load plugins...", delay);
-                            std::this_thread::sleep_for(std::chrono::seconds(delay));
-
-                            for (const auto& entry : _lateLoadingEntries)
-                            {
-                                HMODULE hMod = NtdllProxy::LoadLibraryExW_Ldr(entry.path().c_str(), NULL, 0);
-
-                                if (hMod != nullptr)
-                                {
-                                    LOG_INFO(L"Loaded late: {}", entry.path().wstring());
-                                    _asiHandles.push_back(hMod);
-
-                                    auto init =
-                                        (PFN_InitializeASI) KernelBaseProxy::GetProcAddress_()(hMod, "InitializeASI");
-
-                                    auto patchResult =
-                                        (PFN_PatchResult) KernelBaseProxy::GetProcAddress_()(hMod, "PatchResult");
-
-                                    if (init != nullptr)
-                                        init();
-
-                                    if (patchResult != nullptr)
-                                    {
-                                        auto pr = patchResult();
-                                        if (pr)
-                                        {
-                                            LOG_INFO("Game patching is successful");
-                                            State::Instance().isOptiPatcherSucceed = true;
-                                            LOG_INFO("Disabling spoofing");
-
-                                            if (!Config::Instance()->DxgiSpoofing.has_value())
-                                                Config::Instance()->DxgiSpoofing.set_volatile_value(false);
-
-                                            if (!Config::Instance()->VulkanSpoofing.has_value() ||
-                                                !Config::Instance()->VulkanSpoofing.value_for_config())
-                                            {
-                                                Config::Instance()->VulkanSpoofing.set_volatile_value(false);
-                                            }
-
-                                            if (!Config::Instance()->VulkanExtensionSpoofing.has_value())
-                                                Config::Instance()->VulkanExtensionSpoofing.set_volatile_value(false);
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    DWORD err = GetLastError();
-                                    LOG_ERROR(L"Failed to load: {}, error {:X}", entry.path().wstring(), err);
-                                }
-                            }
-                        }
-                        catch (...)
-                        {
-                            LOG_ERROR("Exception occurred while loading late-load plugins");
-                        }
-                    })
-                    .detach();
-            }
-        }
-    }
+        LOG_INFO("Game patching is successful; disabling unconfigured spoofing");
+        State::Instance().isOptiPatcherSucceed = true;
+        if (!Config::Instance()->DxgiSpoofing.has_value())
+            Config::Instance()->DxgiSpoofing.set_volatile_value(false);
+        if (!Config::Instance()->VulkanSpoofing.has_value() ||
+            !Config::Instance()->VulkanSpoofing.value_for_config())
+            Config::Instance()->VulkanSpoofing.set_volatile_value(false);
+        if (!Config::Instance()->VulkanExtensionSpoofing.has_value())
+            Config::Instance()->VulkanExtensionSpoofing.set_volatile_value(false);
+    });
 }
 
 // nvapi64.dll is loaded only because the startup check below (isNvidiaViaNvapi) keeps it loaded after NvAPI_Initialize.
@@ -2145,7 +2000,7 @@ DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
 {
     startupav::SetPhase(startupav::Phase::WorkerEntry);
     startupav::Prepare(dllModule);
-    MfgAsiStartup::Initialize();
+    AsiPluginStartup::Initialize();
     const bool hoYoEnabled = Config::Instance()->HoYoShadeEnabled.value_or_default();
     const unsigned hoYoStage = static_cast<unsigned>(Config::Instance()->HoYoShadeStage.value_or_default());
     // This existing post-attach worker is outside the loader callout. Prepare
@@ -2611,7 +2466,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID /*lpRese
         else
         {
             const auto startupError = GetLastError();
-            MfgAsiStartup::WorkerUnavailable();
+            AsiPluginStartup::WorkerUnavailable();
             LOG_ERROR("Startup worker creation failed: {}", startupError);
         }
 

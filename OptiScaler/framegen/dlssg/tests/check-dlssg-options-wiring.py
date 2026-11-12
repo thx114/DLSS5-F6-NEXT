@@ -47,7 +47,6 @@ check("StarRail" not in apply and "Genshin" not in apply and "Zzz" not in apply,
 check("EveryDispatch" in scope and "IsStarRailF5DsOwner" in scope, "F5-DS per-dispatch policy lost")
 check("_dispatchActive || _providerStateQueryActive || _dispatchOptions.InFlight()" in dispatch, "recursive SDK entry is allowed")
 check("_generationState.Select(CurrentProviderOwner()" in dispatch, "selection is not bound to current raw capability")
-check("UnlockedMax" not in source, "local raw cap is raised by an unlock hint")
 check("_framesToInterpolate = appliedInterpolationCount" not in dispatch, "request published as accepted count")
 check("_generationState.Record(optionsScope, willDispatchFrame" in dispatch, "accepted configuration lacks source identity")
 check("_generationState.Accepted(optionsScope, willDispatchFrame)" in dispatch, "final source admission lacks accepted config")

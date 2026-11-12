@@ -13,14 +13,13 @@
 #include <menu/menu_overlay_base.h>
 #include <framegen/nvngx/Nvngx_FG.h>
 #include <framegen/dlssg/DlssgTelemetry.h>
-#include <framegen/dlssg/MfgUnlock.h>
 #include <framegen/dlssg/FgDepthContract.h>
 #include <framegen/dlssg/ZzzFrameScope.h>
 #include <proxies/KernelBase_Proxy.h>
 #include <proxies/Streamline_Proxy.h>
 #include <imgui/ImGuiNotify.hpp>
 #include <runtime/GuideDiagnostics.h>
-#include <runtime/MfgAsiStartup.h>
+#include <runtime/AsiPluginStartup.h>
 
 #include <json.hpp>
 #include <sl1_reflex.h>
@@ -621,7 +620,7 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
     if (localPref.featuresToLoad != nullptr &&
         std::find(localPref.featuresToLoad, localPref.featuresToLoad + localPref.numFeaturesToLoad,
                   sl::kFeatureDLSS_G) != localPref.featuresToLoad + localPref.numFeaturesToLoad &&
-        !MfgAsiStartup::AwaitGraphicsStartup()) return sl::Result::eErrorNotInitialized;
+        !AsiPluginStartup::AwaitGraphicsStartup()) return sl::Result::eErrorNotInitialized;
     return o_slInit(localPref, sdkVersion);
 }
 
@@ -1562,10 +1561,8 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 
     if (dlssgPotentiallyActive && state.streamlineVersion >= feature_version { 2, 7, 1 })
     {
-        MfgUnlock::TryApply();
-
         // Populate dlssgMfgMax once
-        if (!state.dlssgMfgMax.has_value() && !MfgUnlock::Pending())
+        if (!state.dlssgMfgMax.has_value())
         {
             // A capability lookup must not consume a second presented interval.
             // Cold state remains unknown until a necessary real GetState call.
@@ -1573,9 +1570,6 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
             if (ReadDlssgStateSample(o_slDLSSGGetState, viewport, localState) && localState.succeeded &&
                 localState.stateVersion >= 2)
             {
-                if (auto unlockedMax = MfgUnlock::UnlockedMax(); unlockedMax > localState.maxGenerated)
-                    localState.maxGenerated = unlockedMax;
-
                 if (localState.maxGenerated > 0 && localState.maxGenerated < 6)
                 {
                     state.dlssgMfgMax = localState.maxGenerated;
@@ -1642,8 +1636,6 @@ sl::Result StreamlineHooks::hkslDLSSGGetStateSerial(const sl::ViewportHandle& vi
 sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
                                               const sl::DLSSGOptions* options)
 {
-    MfgUnlock::TryApply();
-
     sl::Result result {};
 
     const auto originalStructVersion = state.structVersion;
@@ -1667,8 +1659,6 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
             state.bReserved4 = newState.bReserved4;
             state.bIsVsyncSupportAvailable = newState.bIsVsyncSupportAvailable;
 
-            if (auto unlockedMax = MfgUnlock::UnlockedMax(); unlockedMax > state.numFramesToGenerateMax)
-                state.numFramesToGenerateMax = unlockedMax;
         }
 
         if (originalStructVersion >= 3)
@@ -1692,8 +1682,6 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
 
         framegen::DlssgTelemetry::RecordState(state.numFramesActuallyPresented);
 
-        if (auto unlockedMax = MfgUnlock::UnlockedMax(); unlockedMax > state.numFramesToGenerateMax)
-            state.numFramesToGenerateMax = unlockedMax;
     }
 
     if (!State::Instance().dlssgGameDMFGSupported)
@@ -1705,15 +1693,12 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
 
     if (optiState.streamlineVersion >= feature_version { 2, 7, 1 })
     {
-        if (!optiState.dlssgMfgMax.has_value() && !MfgUnlock::Pending())
+        if (!optiState.dlssgMfgMax.has_value())
         {
             framegen::DlssgStateSample localState {};
             if (ReadDlssgStateSample(o_slDLSSGGetState, viewport, localState) && localState.succeeded &&
                 localState.stateVersion >= 2)
             {
-                if (auto unlockedMax = MfgUnlock::UnlockedMax(); unlockedMax > localState.maxGenerated)
-                    localState.maxGenerated = unlockedMax;
-
                 if (localState.maxGenerated > 0 && localState.maxGenerated < 6)
                 {
                     optiState.dlssgMfgMax = localState.maxGenerated;
@@ -2639,8 +2624,6 @@ void StreamlineHooks::hookDlssg(HMODULE slDlssg)
         LOG_WARN("Dlssg module in NULL");
         return;
     }
-
-    MfgUnlock::OnStreamlinePluginLoaded(slDlssg);
 
     if (o_dlssg_slGetPluginFunction)
         unhookDlssg();

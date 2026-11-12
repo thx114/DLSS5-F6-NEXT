@@ -17,7 +17,6 @@
 | 激进可回收（A+B 级，含未被任何头文件引用的 Vulkan-Hpp 头） | **≈ 113.8 MiB（80.9%）** |
 | 瘦身后保留 | **≈ 30.5 MiB（A 级）/ 26.8 MiB（B 级）** |
 | 最占空间 3 个库 | **FidelityFX-SDK 60.6 MiB**、**vulkan 30.5 MiB**、**FidelityFX-SDK-v2 29.2 MiB**（合计 120.3 MiB，占 85.6%） |
-| 可整库移除 | **RTX40MFG-Unlock**（0 文件，空目录） |
 | 构建完全不使用、仅剩分发意图的库 | **FidelityFX-SDK-v2**（除 `Kits\FidelityFX\signedbin` + `docs\license.md` 外全部可删，29.1 MiB） |
 | 其余 17 个库 | 均有**编译或链接证据**，不能整库删除，只能内容级裁剪 |
 
@@ -79,7 +78,6 @@ OptiScaler\shaders\dlssnr\DlssNr_Spatial.h:16:
 | 16 | AntiLag2-SDK | 0.017 MiB | 2 | IncludePath `AntiLag2-SDK` | 3 文件 `ffx_antilag2_dx1{1,2}.h` | **保留** |
 | 17 | latencyflex | 0.014 MiB | 1 | IncludePath `latencyflex` | 5 文件 `latencyflex.h` | **保留** |
 | 18 | peripheral_warp | 0.007 MiB | 2 | **不在 IncludePath** | 1 文件相对路径 `#include "../../../external/peripheral_warp/SpatialWarp.h"` | **保留**（易被误删，特此标注） |
-| 19 | RTX40MFG-Unlock | **0 bytes** | **0** | 无 | 无（`MfgUnlock` 逻辑在 `Config.cpp` 里，与本目录无关；该目录为空且**不在 git 中**） | **【可移除】整库（空目录）** |
 | | **合计** | **140.58 MiB** | **3287** | | | |
 
 ---
@@ -169,7 +167,6 @@ OptiScaler\shaders\dlssnr\DlssNr_Spatial.h:16:
 | 16 | `FidelityFX-SDK\ffx-api\src\` | 0.13 MiB | 未编译（无 ClCompile 引用），仅 include 需要 |
 | 17 | `nvapi\Sample_Code\` | 0.08 MiB | 样例 |
 | 18 | `vulkan\tests\` + 根 cmake/README | 0.03 MiB | 不可达 |
-| 19 | `RTX40MFG-Unlock\`（空目录） | **0 B** | 0 文件，不在 git，无任何引用 |
 | | **A 级合计** | **≈ 110.0 MiB（78.3%）** | 剩余 ≈ 30.5 MiB |
 
 ### B 级 —— 需确认后再删（Vulkan-Hpp 未引用头，3.72 MiB）
@@ -198,7 +195,6 @@ OptiScaler\shaders\dlssnr\DlssNr_Spatial.h:16:
 | 8 | `xess\doc\` | 2.70 MiB | 仅 `inc\`、`lib\`、`bin\`、`LICENSE.txt`、`third-party-programs.txt` 被使用 |
 | 9 | `xess\samples\` | 1.41 MiB | 同上；样例工程不参与构建 |
 | 10 | `nvapi\amd64\` + `nvapi\x86\` | 1.36 MiB | LibraryPath 无 `external\nvapi`；AdditionalDependencies 无 `nvapi64.lib`/`nvapi.lib`；运行时 fakenvapi 走 `LoadLibrary` 而非静态链接 |
-| — | 附：`RTX40MFG-Unlock\`（空目录） | 0 B | `find external/RTX40MFG-Unlock -type f` = 0；`git ls-files` 中不存在（git 不跟踪空目录）；`MfgUnlock` 功能实现在 `Config.cpp` |
 
 ---
 

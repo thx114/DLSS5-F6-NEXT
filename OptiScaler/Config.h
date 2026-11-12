@@ -1206,11 +1206,6 @@ class Config
     // Frame Generation
     FramePipeline::ObservedSetting<CustomOptional<FGInput>,FGInput> FGInput { FGInput::NoFG };
     CustomOptional<bool> ExternalFrameGeneration { false };
-    CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };
-    CustomOptional<bool, NoDefault> FGDLSSGAdaBlackwellKernels;
-    CustomOptional<std::string, NoDefault> FGDLSSGAdaTemporalFix; // Auto / Retarget / Ptx
-    CustomOptional<bool> FGDLSSGAdaFlipMeteringPatch { false };  // pin sl.dlss_g to software frame pacing
-    CustomOptional<bool> FGDLSSGAmpereMfgUnlock { false };
     FramePipeline::ObservedSetting<CustomOptional<FGOutput>,FGOutput> FGOutput { FGOutput::NoFG };
     // Keeps Streamline from picking up the driver's OTA/downloaded plugins; only files in
     // OptiScaler/streamline are used for sl.* plugins and nvngx_dlssg.dll

@@ -1,13 +1,15 @@
-"""Stage an isolated ASI build with per-game profiles, then select it via Hub CLI.
+"""Stage an isolated F6 build with per-game profiles, then select it via Hub CLI.
 
 The plan supplies existing, verified payloads. Existing installations are never
 rewritten, and no game process is queried or controlled. CLI selection changes
-persistent settings; a running Hub may still need a full restart.
+persistent settings; a running Hub may still need a full restart. ASI plugins
+remain in explicitly referenced user-owned directories and are never packaged.
 """
 from __future__ import annotations
 
 import argparse
 import configparser
+from contextlib import closing
 import datetime
 import hashlib
 import json
@@ -43,6 +45,8 @@ class Deployment:
         self.runtime_id = hashlib.sha256(self.build_id.encode()).hexdigest().upper()[:16]
         self.cache = {}
         games = self.plan["Games"]
+        if not games:
+            raise ValueError("Plan must contain at least one game")
         if len({game["Biz"] for game in games}) != len(games):
             raise ValueError("Duplicate game")
         for game in games:
@@ -59,7 +63,7 @@ class Deployment:
 
     def settings(self):
         path = self.hub / "HoYoShadeHubDatabase.db"
-        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as database:
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as database:
             return dict(database.execute("SELECT Key,Value FROM Setting"))
 
     def evidence_file(self, suffix):
@@ -67,6 +71,27 @@ class Deployment:
 
     def runtime(self, game):
         return self.hub / "cache/games" / game["Biz"] / "OptiRuntime" / self.runtime_id
+
+    def user_plugins(self, game):
+        value = game.get("UserPluginsPath", self.plan.get("UserPluginsPath"))
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Plan requires an explicit UserPluginsPath (global or per game); "
+                             "legacy bundled-plugin plans require a new plan and build directory")
+        path = Path(value)
+        if not path.is_absolute() or not path.is_dir():
+            raise ValueError("UserPluginsPath must name an existing absolute user-owned directory")
+        path = path.resolve()
+        for target in [self.package, *(self.runtime(g) for g in self.plan["Games"])]:
+            if path.is_relative_to(target.resolve()) or target.resolve().is_relative_to(path):
+                raise ValueError("UserPluginsPath must be separate from the generated package and runtimes")
+        return path
+
+    @staticmethod
+    def require_no_bundled_plugins(root):
+        for path in root.rglob("*"):
+            if path.is_file() and path.suffix.lower() == ".asi":
+                raise ValueError(f"Bundled ASI is unsupported: {path}; keep user plugins outside "
+                                 "the generated package/runtimes and create a new plan/build directory")
 
     @staticmethod
     def config(data: bytes):
@@ -105,6 +130,8 @@ class Deployment:
         return result
 
     def copy_new(self, source: Path, target: Path, *, link=False):
+        if source.suffix.lower() == ".asi" or target.suffix.lower() == ".asi":
+            raise ValueError("ASI plugins must remain in the user-owned directory")
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             raise FileExistsError(target)
@@ -126,6 +153,7 @@ class Deployment:
                 raise ValueError(f"Existing protected file changed: {path}")
 
     def prepare(self):
+        plugins = {g["Biz"]: self.user_plugins(g) for g in self.plan["Games"]}
         if self.package.exists() or any(self.runtime(g).exists() for g in self.plan["Games"]):
             raise FileExistsError("New package or runtime already exists")
         artifact = Path(self.plan["Artifact"])
@@ -170,10 +198,10 @@ class Deployment:
         save(self.evidence_file("pre.json"), pre)
         source = Path(self.plan["Payload"])
         for path in source.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in {".dll", ".asi", ".txt"}:
+            if not path.is_file() or path.suffix.lower() not in {".dll", ".txt"}:
                 continue
             relative = path.relative_to(source)
-            if relative.parts[0].lower() == "profiles":
+            if relative.parts[0].lower() in {"profiles", "plugins"}:
                 continue
             if path.is_symlink() or path.is_junction():
                 raise ValueError(f"Unsupported payload reparse point: {path}")
@@ -187,8 +215,7 @@ class Deployment:
             biz = game["Biz"]
             log = self.package / "logs" / biz / "OptiScaler.log"
             log.parent.mkdir(parents=True, exist_ok=True)
-            changes = {("dlssg", "adamfgunlock"): "false", ("dlssg", "amperemfgunlock"): "false",
-                       ("plugins", "path"): str(self.package / "plugins"),
+            changes = {("plugins", "path"): str(plugins[biz]),
                        ("libraries", "optidllpath"): str(self.package / "OptiScaler"),
                        ("log", "logfilename"): str(log)}
             authority = self.patch(Path(game["Profile"]).read_bytes(), changes)
@@ -238,6 +265,9 @@ class Deployment:
         self.verify(require_selected=True)
 
     def verify(self, *, require_selected):
+        plugins = {g["Biz"]: self.user_plugins(g) for g in self.plan["Games"]}
+        for root in [self.package, *(self.runtime(g) for g in self.plan["Games"])]:
+            self.require_no_bundled_plugins(root)
         pre = load(self.evidence_file("pre.json"))
         self.protected(pre)
         settings = self.settings()
@@ -252,26 +282,29 @@ class Deployment:
             if game.get("NrSHA256") and self.hash(Path(game["NrSource"])) != game["NrSHA256"]:
                 raise ValueError("Pinned NR source differs: " + game["Biz"])
             for path in self.package.rglob("*"):
-                if path.is_file() and path.suffix.lower() in {".dll", ".asi"}:
+                if path.is_file() and path.suffix.lower() == ".dll":
                     target = runtime / path.relative_to(self.package)
                     expected = self.hash(Path(game["NrSource"])) if path.name.lower() == "nvngx_dlssnr.dll" else self.hash(path)
                     if self.hash(target) != expected:
                         raise ValueError("Runtime payload differs: " + str(target))
+                    source = Path(game["NrSource"]) if path.name.lower() == "nvngx_dlssnr.dll" else path
+                    if source.stat().st_dev == target.stat().st_dev and not source.samefile(target):
+                        raise ValueError("Runtime DLL hardlink differs: " + str(target))
+            if self.hash(self.package / "OptiScaler.dll") != self.plan["SHA256"]:
+                raise ValueError("Package artifact differs")
             if self.hash(runtime / "OptiScaler.dll") != self.plan["SHA256"]:
                 raise ValueError("Runtime artifact differs")
-            if self.hash(runtime / "plugins/MFGUnlocker.asi") != self.plan["AsiSHA256"]:
-                raise ValueError("Runtime ASI differs")
             authority = (self.package / "profiles" / (game["Biz"] + ".ini")).read_bytes()
             old = self.evidence_file("before-" + game["Biz"] + ".ini").read_bytes()
             before, values = self.config(old), self.config(authority)
-            permitted = {("dlssg", "adamfgunlock"), ("dlssg", "amperemfgunlock"),
-                         ("plugins", "path"), ("libraries", "optidllpath"), ("log", "logfilename")}
+            permitted = {("plugins", "path"), ("libraries", "optidllpath"), ("log", "logfilename")}
             if any(before.get(key) != values.get(key) for key in before.keys() | values.keys() if key not in permitted):
                 raise ValueError("User parameters changed: " + game["Biz"])
-            for key, expected in {("dlssg", "adamfgunlock"): "false", ("dlssg", "amperemfgunlock"): "false",
-                                  ("framegen", "external"): "false", ("plugins", "loadasiplugins"): "true"}.items():
-                if values.get(key, "").lower() != expected:
-                    raise ValueError("ASI configuration differs: " + str(key))
+            for key, expected in {("framegen", "external"): "false", ("plugins", "loadasiplugins"): "true",
+                                  ("plugins", "path"): str(plugins[game["Biz"]])}.items():
+                actual = values.get(key, "")
+                if (actual if key == ("plugins", "path") else actual.lower()) != expected:
+                    raise ValueError("Profile configuration differs: " + str(key))
             projected = self.patch(authority, {("libraries", "optidllpath"): str(runtime / "OptiScaler")})
             if (runtime / "OptiScaler.ini").read_bytes() != projected:
                 raise ValueError("Runtime profile projection differs: " + game["Biz"])
@@ -280,13 +313,16 @@ class Deployment:
                 raise ValueError("Game does not select new build: " + game["Biz"])
             games.append({"Biz": game["Biz"], "Runtime": str(runtime), "DiskSelectionVerified": selected,
                           "NrSHA256": self.hash(runtime / "nvngx_dlssnr.dll"),
+                          "UserPluginsPath": str(plugins[game["Biz"]]),
+                          "UserPluginsCopied": False, "UserPluginsExecutionVerified": False,
                           "UserGeneratedFrames": values.get(("dlssg", "interpolationcount")),
                           "RuntimeLoadingVerified": False, "PerformanceAcceptance": "UNKNOWN"})
         result = {"VerifiedUtc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   "Status": "SELECTED_ON_DISK_RESTART_HUB_REQUIRED" if require_selected else "PREPARED_DISK_VERIFIED",
                   "Plan": str(self.plan_path),
                   "BuildId": self.build_id, "Package": str(self.package), "SHA256": self.plan["SHA256"],
-                  "SourceCommit": self.plan["SourceCommit"], "AsiSHA256": self.plan["AsiSHA256"],
+                  "SourceCommit": self.plan["SourceCommit"],
+                  "UserPluginsDistributed": False,
                   "ProtectedFilesVerified": len(pre["ProtectedFiles"]), "ChangedLauncherSettings": changes,
                   "Activation": "Fully exit and restart Hub before starting each game; persistent selection is not proof of the live GUI cache.",
                   "Games": games, "GameProcessQueryPerformed": False, "GameControlPerformed": False}

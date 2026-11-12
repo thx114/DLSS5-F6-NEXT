@@ -1,5 +1,4 @@
 #include <runtime/PluginStartupGate.h>
-#include <framegen/dlssg/MfgUnlockSelection.h>
 #include <atomic>
 #include <cstdio>
 #include <stdexcept>
@@ -26,18 +25,12 @@ int main()
         disabled.WorkerUnavailable();
         disabled.Run(1, []() -> Status { throw std::runtime_error("must not run"); });
         Check(disabled.Current() == Status::Disabled, "disabled remains inert");
-        for (bool ada : { false, true }) for (bool ampere : { false, true })
-        {
-            Check(MfgUnlock::SkipExternalPlugin(L"mfgunlocker.asi", ada, ampere) == (ada || ampere),
-                  "one provider owner selected");
-            Check(!MfgUnlock::SkipExternalPlugin(L"other.asi", ada, ampere), "unrelated plugin preserved");
-        }
         Gate failedWorker;
         Check(failedWorker.Arm() && !failedWorker.Arm(), "selection is once per startup");
         Check(!failedWorker.Await(false, 1, 0), "loader or TLS context never waits");
         Check(!failedWorker.Await(true, 1, 1), "pending worker times out");
         failedWorker.WorkerUnavailable();
-        Check(!failedWorker.Await(true, 1), "worker failure cannot masquerade as readiness");
+        Check(failedWorker.Await(true, 1), "worker failure terminates the queue without claiming SDK support");
         std::atomic<unsigned> calls { 0 };
         failedWorker.Run(2, [&] { ++calls; return Status::InitReturned; });
         Check(calls == 0, "unavailable worker is terminal");
@@ -68,22 +61,25 @@ int main()
         Check(active.Await(true, 3), "terminal publication wakes graphics consumer");
         worker.join();
         Check(calls == 1 && active.Current() == Status::InitReturned, "concurrent calls initialize exactly once");
-        for (auto terminal : { Status::Missing, Status::InventoryFailed, Status::AlreadyLoaded,
-                               Status::LoadFailed, Status::EntryMissing, Status::Failed })
+        for (auto terminal : { Status::WorkerUnavailable, Status::Missing, Status::InventoryFailed, Status::AlreadyLoaded,
+                               Status::LoadFailed, Status::EntryMissing, Status::Failed, Status::InitReturned,
+                               Status::Completed })
         {
             Gate failed;
             failed.Arm();
             failed.Run(1, [=] { return terminal; });
-            Check(!failed.Await(true, 2), "failed initialization never grants provider readiness");
+            Check(failed.Await(true, 2), "all terminal receipts release the queue barrier");
+            Check(failed.Current() == terminal, "completion does not rewrite the plugin outcome");
         }
         Gate exception;
         exception.Arm();
         exception.Run(1, []() -> Status { throw std::runtime_error("plugin initialization"); });
-        Check(exception.Current() == Status::Failed && !exception.Await(true, 2), "exception publishes terminal failure");
+        Check(exception.Current() == Status::Failed && exception.Await(true, 2), "exception publishes terminal receipt");
         Gate invalid;
         invalid.Arm();
         invalid.Run(1, [] { return Status::Pending; });
         Check(invalid.Current() == Status::Failed, "invalid callback result cannot leave waiters pending");
+        Check(invalid.Await(true, 2), "invalid result cannot permanently block consumers");
         std::printf("PluginStartupGate PASS: %u checks\n", checks);
         return 0;
     }

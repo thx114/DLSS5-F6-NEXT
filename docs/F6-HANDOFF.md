@@ -1,8 +1,10 @@
 # F6 项目完整交接报告
 
-## 0. 当前交接：三游戏 ASI 与菜单输入候选
+## 0. 当前交接：三游戏 ASI 与通用插件候选部署
 
-更新：2026-11-12。**原神、星铁、绝区零均已在磁盘选择 `local/F6-ASI`，隔离包及三游戏 runtime 已部署菜单输入候选 `6D377DD4`／源码 `3665de5`。ASI 只负责 MFG 解锁，F6 继续负责 SR／NR／FG，`External=false`。冷开菜单点击和周期卡顿仍待实机验收；HDR 暂缓。**
+更新：2026-11-12。**原神、星铁、绝区零的 `local/F6-ASI` 包及三个隔离 runtime 已原位部署 `A6D12031`，源码基于 `75d7a27` 的未提交工作树。F6 继续负责 SR／NR／FG，`External=false`。此前菜单点击／焦点已获用户初步通过反馈，新版游戏加载、画面与周期卡顿尚待观察；HDR 暂缓。**
+
+本轮源码已移除旧功能入口和实现，保留通用 ASI 插件加载；新建包工具只引用用户自备插件目录，不复制插件。本次仅更新既有包 DLL，没有复制或运行用户 ASI。Release x64 构建及离线验证通过，2421 项冻结构建输入前后一致、948 个导出不变；冻结身份与验证见 `build/repair-20261112/asi-only-{source,artifact,tests}.json`。
 
 唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`。本次三游戏 ASI 授权取代此前“仅绝区零、其他游戏不变”；旧 `official/F6`、`local/F6-ZZZ-ASI`、旧 runtimes、共享正式 DLL 四硬链接与共享 `current-deployment.json` 保留。
 
@@ -10,42 +12,41 @@
 |---|---|
 | 统一包 | `D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/OptiScaler/local/F6-ASI` |
 | 游戏 runtime | `cache/games/<biz>/OptiRuntime/784CEF0274B47D8E`；biz 分别为 `hk4e_cn`、`hkrpg_bilibili`、`nap_cn`，各有自己的 profile、NR 和 authority/baseline |
-| DLL | SHA256 `6D377DD43A2355EB434D10FCD4FC657219FE9F6BD78AA8D912B245E17B7CC17F`，33,998,336 B，`0.1.29-final (3665de5)`；构建源码 `3665de5174106ce2f491b910e0278f24f44ce04a` |
-| 部署 | `DEPLOYED_IN_PLACE`；新包与三 runtime 的 4 个 DLL alias 均为新字节，原 FileId／硬链接保留。旧候选 283B6B07 和实际部署回退均有独立备份 |
-| ASI | 既有 `MFGUnlocker.asi`，SHA256 `171AC18D4D632D12DEE22D5CAF2085F301BACFDB9A462561D93DBCBB61D6A4F8`；不嵌入 DLL，插件路径指向新包 |
-| 配置 | 三游戏均 `AdaMfgUnlock=false`、`AmpereMfgUnlock=false`、`LoadAsiPlugins=true`、`External=false`。原 5 张生成帧／6×请求、SR／NR 参数及各自 NR 选择保留 |
+| DLL | SHA256 `A6D12031D8B33AF050A81DF75029EEC7096D0AC4668D47308CC2FB6D545727D6`，33,951,744 B，`0.1.29-final (75d7a27)`；源码为 `75d7a27e9639b7f050eba3a83dea37456c2e9eed` 基础上的未提交工作树，由冻结清单绑定 |
+| 部署 | `DEPLOYED_IN_PLACE`；包与三 runtime 的 4 个 DLL alias 均已独立回读为新字节，原 FileId／完整硬链接集合保留；回退 DLL 独立核验为实际部署前的 `6D377DD4` |
+| 配置 | 三游戏均 `LoadAsiPlugins=true`、`External=false`。原 5 张生成帧／6×请求、SR／NR 参数及各自 NR 选择保留 |
 | NR | 原神 `3E83DFE5910FE9609A51197531FF446B336762C7EF273F1092BBCBD0D6DFE9B9`；星铁和绝区零 `CDFA6C1EC784867182164C7836F324F087B5C9F374D0C9FE46F54999FEABF3ED`（310.9.16-SF）。新核验 plan 固定这三份 NR 身份 |
 | 菜单改动 | Win32 后端通过线程内 bypass 读取真实状态；移除 DX11 overlay 冗余平台轮询；快捷键先于可见性 policy；不再伪造 HasGamepad 或写 WantSetMousePos；保留键盘／手柄导航，去除 Tab 重复导航框 |
 | 已确认缺陷 | 原代码能让自身 Shift 补偿读到假松键、手柄读到 neutral；重复平台轮询还会缩短 DeltaTime。它们均有可执行旧行为负控，但尚未证明是用户“冷开即点不动”的全部根因 |
 | 输入验证 | 仓库真实 ImGui 与抽取的生产 backend／input／DX11 overlay：51,959 项检查通过，8 个可执行负控和 1 个调用点清单负控检出。OS／D3D 采集使用受控 seam，未访问游戏或加载用户 ASI |
-| 其他验证 | 隔离部署夹具 42 项；本地化静态清单 2013 项词条、2328 处中文、6 个负控通过。Release x64 exit0，2435 项声明输入构建前后一致，948 个导出名称／序号不变；独立 gpt-6.1-sol/high 复核无剩余确定 blocker |
+| 当前离线验证 | 通用 ASI 224 项检查／22 个无害夹具场景、部署工具11项测试；Telemetry 53、OptionsPolicy 1132、PresetMenu 18、静态接线96；最终本地化静态1999词条、2313处中文、6个负控通过。Runtime 6034项执行后仅删5条无引用词条，最终字典重跑静态；Release x64 exit0，保留既有warning |
 | 诊断 | 每次打开菜单最多 48 条 `F6 menu input`，记录采集／消费坐标、按钮、Shift、导航、队列及输入 flags；不记录输入文本。新包日志为 `logs/<biz>/OptiScaler.log` |
-| 旧运行证据 | 固定会话 `20261112-214427_ZenlessZoneZero_193648` 已证明旧绝专属 97a2cad 加载、ASI `status=10 InitReturned`；不是新统一包／新候选的加载、解锁倍率、显示或性能证明 |
-| 保护边界 | 菜单 DLL 升级前后 1589 项旧文件字节与 FileId 核验通过。初次三游戏准备后曾观察旧绝配置／metadata 的 4 处外部重写及 LastCatalogFetchUtc 变化，另留记录；SR／NR／FG 有效参数未变，没有恢复旧快照 |
+| 旧运行证据 | 固定会话 `20261112-214427_ZenlessZoneZero_193648` 已证明旧绝专属 97a2cad 加载、ASI `status=10 InitReturned`；不是新统一包／新候选的加载、显示倍率或性能证明 |
+| 保护边界 | 本次新基线1857项文件部署前后字节、FileId及大小均一致，覆盖当前配置／插件／NR、旧包／runtime、全局state和共享部署回执；三游戏构建选择仍为 `local/F6-ASI`。历史外部配置重写另留记录，没有恢复旧快照 |
 | 未改动 | 未查询、启动、终止或操控游戏；未改游戏文件、HDR、FSR 桥、正式共享部署或全局 state；不重复要求关闭 FG 对照 |
 
-**生效步骤：从托盘“退出”完整结束启动器，再无参数重启启动器，然后由用户启动游戏。** CLI 的 `set_opt_build` 只改数据库，不刷新已打开 GUI 的 AppConfig 缓存；关窗口留在托盘不算完整重启。没有受支持的外部 reload／exit CLI，不改启动器源码。
+**生效步骤：由用户手动重开游戏加载新 DLL。** 本次构建选择没有变化。此前首次切换构建时要求完整重启启动器，是为刷新 GUI 配置缓存，不能据旧步骤推断本次游戏已经加载新版。
 
-当前构建指针为 `build/current-{artifact,build,tests}.json`；隔离部署为 `build/current-asi-deployment.json` 和 `build/current-game-deployment-<biz>.json`，不能把它们当共享正式部署回执。当前核验 plan 为 `build/repair-20261112/menu-input-asi-plan.json`；部署前基线 `menu-input-pre.json`、实际 DLL 写入 `menu-input-dll-deployment.json`、升级复核 `menu-input-deployment-verification.json`。菜单分析／测试／构建证据为同目录 `f6-menu-*.json/log`、`menu-input-{source,artifact,tests}.json` 与构建日志。初次三游戏 ASI 的 `three-game-asi-*` 和旧绝区零 `zzz-asi-*` 均保留，不重复 prepare 已存在目录。
+当前构建指针为 `build/current-{artifact,build,tests}.json`；隔离部署回执为 `build/current-asi-deployment.json` 和 `build/current-game-deployment-<biz>.json`，共享 `build/current-deployment.json` 未改。本次新基线、DLL写入及独立复核分别是 `build/repair-20261112/asi-only-deployment-pre.json`、`asi-only-dll-deployment.json`、`asi-only-deployment-verification.json`。回退路径见回执，旧指针备份为同目录 `asi-only-before-deploy-*`。历史 `menu-input-*`、`three-game-asi-*`、`zzz-asi-*` 保留；旧plan不满足当前 `UserPluginsPath` 规则，不用新工具重新prepare或verify现有旧包。
 
 回退可在启动器切回各游戏原构建选择（原神／星铁 `official/F6`，绝区零 `local/F6-ZZZ-ASI`）；若只回退新统一包 DLL，沿已核回退字节用 `Deploy-F6.ps1 -BuildId local/F6-ASI` 原位写入并复核全部 alias。占用只暂存 `.next`，不查询或终止游戏，不把暂存当成功部署。
 
 ## 1. 7D 候选阶段：2026-11-12 历史状态
 
-以下为 7D 候选阶段记录；其后源码状态和当前验收边界以第 0 节为准。**普通内置 FG Release x64 候选 7D042E99 已构建并通过当时的定向回归；未部署、未实机验证。** 下方历史私有候选和部署记录保留原身份。
+以下为 7D 候选阶段记录；其后源码状态和当前验收边界以第 0 节为准。**普通 FG Release x64 候选 7D042E99 已构建并通过当时的定向回归；未部署、未实机验证。** 下方历史私有候选和部署记录保留原身份。
 
 ### 目标与身份
 
-用户目标仍为修复排队、绝区零已开 DLSS 却提示未接入、星铁只有 NR 没有 FG；FG 使用 F6 内置实现，不使用 ASI。
+该阶段目标为修复排队、绝区零已开 DLSS 却提示未接入、星铁只有 NR 没有 FG；当前范围以第 0 节和根 AGENTS.md 为准。
 
 | 对象 | 本次事实 |
 |---|---|
 | 唯一产品写树 | D:/CODE/DLSS5_NEXT-workers/f6-rewrite，codex/f6-rewrite，HEAD 9ab9686；既有大量未提交改动原位保留，禁止 reset/clean |
-| 当前普通内置候选 | build/out/OptiScaler.dll；SHA256 7D042E990FF913242D0ED67B0F003E6A9E1794315E29DA805C335AE302C8B6F3；33,942,016 B；Release x64 exit 0，BUILT_NOT_DEPLOYED |
-| 链接与导出 | 实际重新链接含 MfgUnlock.obj，无 PrivateFgTestModule／AmpereMfgLoader／旧 ASI 对象；53 个必要 NGX 导出齐全，全部导出名称与序号和旧普通候选一致，PE 版本已核验 |
-| 源码身份 | build/input-integration-source.json，845 项声明输入构建前后相同；覆盖内置 MfgUnlock 配套文件及工厂 provenance 头，不包含全部外部传递依赖或生成版本头 |
+| 该阶段普通候选 | build/out/OptiScaler.dll；SHA256 7D042E990FF913242D0ED67B0F003E6A9E1794315E29DA805C335AE302C8B6F3；33,942,016 B；Release x64 exit 0，BUILT_NOT_DEPLOYED |
+| 链接与导出 | 该历史候选已重新链接；53 个必要 NGX 导出齐全，全部导出名称与序号和旧普通候选一致，PE 版本已核验 |
+| 源码身份 | build/input-integration-source.json，845 项声明输入构建前后相同；包含工厂 provenance 头，不包含全部外部传递依赖或生成版本头 |
 | 旧候选保留 | 8C9418B6／92D1BACE 字节与回执在 build/rollback/queue-latency-* 保留并重新核 SHA；私有 ASI 仅作历史，不生成新私有候选 |
-| 当前指针 | current-artifact.json／current-build.json 指新普通内置候选，current-tests.json 对应该候选；详情 input-integration-{standard-artifact,source,tests,review}.json |
+| 该阶段指针 | current-artifact.json／current-build.json 当时指普通候选，current-tests.json 对应该候选；详情 input-integration-{standard-artifact,source,tests,review}.json |
 | 安装回执 | 仍为 8FCB8632011D46FC4FC87075516E7441F966F676A6A7CEFFD8A741AB5F6ACFA6，回退 65DE30C4；本次不改安装、不重新认证安装字节 |
 | 本次边界 | 未部署、未改用户配置／profiles、未启动或操控游戏、未提交／推送；构建既有警告保留于日志，不称零警告 |
 
@@ -53,10 +54,8 @@
 
 - 保留既有排队、ZZZ caller、FG hook HRESULT／quarantine 和 CanSubmitInputs 准入改动；不删除真实 queue/fence/Reset 退休门，不扩大资源池或借用旧帧。
 - 补菜单缺失的 hooks/FG_Hooks.h 包含；首次编译失败日志保留，最终普通产品编译成功。
-- 将 MfgUnlock::Pending() 改为仅在尚未找到 provider 时等待；独立 ShouldInterceptProviderLoad() 保留后续 provider 加载处理，避免能力缓存一直等待，同时不因第一次尝试而漏掉后续模块。
-- 保留旧 AmpereMfgUnlock 用户值；菜单明确提示它会阻止内置 Ada 路径，并只在用户点击按钮时关闭，保存／重启由用户决定。没有静默写用户配置。
 - 独立复核确认公共 GenshinNativeQuery::Begin 的原始 Detours Begin 取得所有权后失败会遗留事务。新增 BeginDetourTransaction()，对非 ERROR_INVALID_OPERATION 的已取得所有权失败立即 Abort、保留原始错误；Abort 失败撤销 provenance，不 Abort 已存在的事务。三个原始 Begin 分支统一使用该入口，Own::Batch／Detach 不会再漏掉这类清理。
-- build/record-input-integration.py 改为普通内置 FG 单构建记录；核验旧备份、链接对象、导出、PE 版本及冻结指纹后才更新候选指针，安装回执不随构建更新。
+- build/record-input-integration.py 改为普通 FG 单构建记录；核验旧备份、链接对象、导出、PE 版本及冻结指纹后才更新候选指针，安装回执不随构建更新。
 
 ### 本次验证及边界
 
@@ -65,7 +64,6 @@
 | FG Hook／Set／Create／Retire | 54 场景／1867 CPU 检查通过；绕过错误传播负控在第 3 项检出 |
 | NGX caller | 42 项真实 adapter 检查通过；真实 WARP COM identity，无 GPU 命令；旧拒绝逻辑负控在第 16 项检出；proxy GUID 解包仍无动态覆盖 |
 | FG input admission | 38 项通过；绕过 hook 失败门的负控在第 3 项检出 |
-| 内置 FG 状态 | 41 项抽取实际谓词检查通过；恢复永久 Pending 的负控在第 3 项检出；菜单／loader 静态接线通过 |
 | 工厂 Begin 清理 | 26 项实际抽取 helper CPU 检查通过，三个 wrapper 分支静态核验；覆盖已取得所有权失败／后续可 Begin、已有事务不 Abort、Abort 失败撤销；旧缺陷负控在第 2 项检出 |
 | ZZZ／NGX | ZZZ scope 16 套、wiring 107 项；Router 9 套／Release 7 套通过 |
 | 调度／latency | 1380 实际 wrapper CPU 检查、1065 调度检查及 options wiring 95 项通过 |
@@ -83,7 +81,7 @@
 - 副本 447 份唯一报告中位／P95 为 45.597／85.916 ms，排队峰值 86.177 ms；单列 3.287 秒异常主要在 queue 开始前。焦点、窗口和场景不同，不能宣称改善／恶化百分比；用户未单独确认副本流畅通过。
 - 两局崩铁都有 FG Dispatch 成功，不能再沿用 PID173944 的无提交状态解释它们；SDK 接受 5 张生成帧不等于实际 6× 均匀显示。
 - 绝区零已按 DX12 确认成功创建／调用 DLSS，但两句柄 Create／Evaluate／Release 归为 backend，未接入 selected 输入，不是游戏没开 DLSS；具体拒绝分支仍未知。
-- 三局均有 PrivateFgTestModule 初始化日志，不能记作普通内置候选 7D042E99 的实测；精确 loaded-memory SHA 未认证。本轮不改产品／用户配置、不构建、不部署、不操控游戏、不提交。
+- 三局均有 外部插件 初始化日志，不能记作普通候选 7D042E99 的实测；精确 loaded-memory SHA 未认证。本轮不改产品／用户配置、不构建、不部署、不操控游戏、不提交。
 
 ### 仍未闭环与下一验收边界
 
@@ -91,7 +89,7 @@
 
 **ZZZ** 旧固定证据 C:/Users/thx11/AppData/Local/Temp/F6-zzz-dlss-20261112/ 证明游戏确实 Create／Evaluate DLSS；新 caller fallback 尚未实机确认。排队改善、NR 持续细节、残影、GPU 卡死、HUD 与显示／延迟仍逐项待验。
 
-本次不部署。后续部署按目标 DLL 实际文件占用处理：可写原位保留硬链接；被占用写同目录 OptiScaler.dll.next，只记待替换；不查询或终止游戏进程。游戏由用户手动启动／进入场景；实际加载、星铁 NR＋内置 FG、ZZZ 接入及性能分别绑定新 PID、加载身份和当局固定日志。保留独立 SR／NR／FG、用户参数／profiles、内部 FSR 禁用及外部桥 2.4 ABI。
+本次不部署。后续部署按目标 DLL 实际文件占用处理：可写原位保留硬链接；被占用写同目录 OptiScaler.dll.next，只记待替换；不查询或终止游戏进程。游戏由用户手动启动／进入场景；实际加载、星铁 NR＋FG、ZZZ 接入及性能分别绑定新 PID、加载身份和当局固定日志。保留独立 SR／NR／FG、用户参数／profiles、内部 FSR 禁用及外部桥 2.4 ABI。
 
 以下保留架构与历史证据；涉及旧候选、暂停或私有 ASI 的描述均服从以上最新状态。
 
@@ -212,7 +210,6 @@ flowchart LR
 | GPU 分段 | 前 3 次及每 64 次 dispatch 增加 6 个 timestamp，形成 7 个不重叠区间。它是同 queue 时间跨度，不是独占 GPU 活跃时间 |
 | SR J/K/L/M | 已接配置和现有 SR 重建流程；菜单选择不证明 SDK 实际加载该模型 |
 | FG A/B/C | 已接进程内 NVAPI 查询覆盖，保存后重启；PID175744 的 SDK 明确接受 C，其它选择及可靠热切换未验；不写驱动 profile |
-| 本机私有 6× FG 测试 | 独立外部模块接入已构建部署；普通构建关闭专用接入，不附带 ASI。旧内置实现退出产品编译／调用／配置／菜单，旧源文件只保留作离线参考；实际初始化及 6× 输出未验 |
 | HUD 保护 | 已有 HUD-less/UI 色＋Alpha 标签及同源双标签条件；外部桥生产回调和 alpha-only ABI **尚未接入**。见 [HUD 合同](FG-BRIDGE-HUD-CONTRACT.md) |
 | 轻微 FG 残影 | 世界／人物与 UI 问题分别观察；没有证据证明固定一帧错配、双重取反或某一 Y 设置是统一根因 |
 | 预览与 FPS | 已有单选全分辨率 GPU 路线、按需采集和分类帧率统计；关闭退休后的静默及三游戏可用性仍需实机检查 |
@@ -245,7 +242,6 @@ flowchart LR
 | 候选构建 | Release x64 exit 0，33,902,592 B；53 个既有 NGX 导出、版本资源及实际链接已核验 |
 | 候选文件时间 | UTC `2026-11-11T23:36:58.989565Z`，北京时间 2026-11-12 07:36:58 |
 | 普通构建 | `build/out/OptiScaler.dll`；SHA256 `8C9418B66DBBB1C61358A09AE3CA1107479FAD2FEEC3D93992718AAB40DFEC1F`，33,896,960 B；无 ASI／专用摘要／旧实现对象；未部署 |
-| 测试 ASI | 四处 DLL 同目录 `plugins/MFGUnlocker.asi`；SHA256 `171AC18D4D632D12DEE22D5CAF2085F301BACFDB9A462561D93DBCBB61D6A4F8`，7,389,184 B；重试仅复核 |
 | 已安装 DLL | `D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/OptiScaler/official/F6/OptiScaler.dll` |
 | 已安装 SHA256 | `8FCB8632011D46FC4FC87075516E7441F966F676A6A7CEFFD8A741AB5F6ACFA6` |
 | 安装回执 | 2026-11-12 06:13:11 部署、06:14:02 部署侧核验（UTC+08）；4 路径同一原 File ID，7 份配置与重试前快照一致，主会话独立核验通过 |
@@ -271,7 +267,7 @@ pwsh -NoProfile -File ./build.ps1
 
 输出 `build/out/OptiScaler.dll`；UTF-8 日志 `build/msbuild.log`。普通构建使用现有嵌入头，**不需要重生成 shader**。只有修改 HLSL 时才按既有 `tools/shaders/README.md` 和 `OptiScaler/shaders/dlssnr/precompile/build_detail_reuse.ps1` 等配套 recipe 同步 DXIL、SPIR-V、嵌入头与测试；不要只改 HLSL 却部署旧字节码。
 
-当前普通内置 FG 单构建已完成；私有参数与构建分支已移除。最新候选和验证见第 1 节，以下双候选检查保留历史。
+该阶段单构建已完成；私有参数与构建分支已移除。当前候选和验证见第 0 节，以下双候选检查保留历史。
 
 历史私有模块校验、worker 初始化和有界等待已退出当前产品接入，仅保留旧证据，不再执行该方案。
 
@@ -307,8 +303,8 @@ pwsh -NoProfile -File ./tools/tests/Run-CommonCoreTests.ps1 `
 
 | 文件 | 用途 |
 |---|---|
-| current-build.json／current-artifact.json | 普通内置 FG 5265915D，已构建未部署；以第 0 节完整 SHA 核验字节 |
-| queue-latency-{source,tests,review,builds}.json | 旧排队阶段 826 项及双候选证据，不覆盖后续 ZZZ／星铁／内置 FG 全部改动 |
+| current-build.json／current-artifact.json | 当前通用 ASI 候选，身份与部署状态见第 0 节；5265915D 属历史构建 |
+| queue-latency-{source,tests,review,builds}.json | 旧排队阶段 826 项及双候选证据，不覆盖后续 ZZZ／星铁／FG 全部改动 |
 | `current-tests.json` | 与候选关联的验证范围及撤回项 |
 | `current-deployment.json`／`external-fg-deployment.json` | 8FCB8632 正式部署、四处 DLL／ASI、七配置与实际 65DE30C4 回退字节 |
 | `external-fg-source.json`／`external-fg-{tests,review}.json` | 8FCB8632阶段825项输入指纹、定向验证与独立复核；不代表本轮源码 |
@@ -346,38 +342,23 @@ pwsh -NoProfile -File ./tools/runtime/Collect-F6DisplayTiming.ps1 `
 
 ## 11. 部署与验收顺序
 
-历史 F6 专用部署聊天为 01a1cbf3-6888-7611-a4e9-fbece85fcf60。本次普通内置 FG 5265915D 候选已构建未部署；后续部署须按第 0 节完整 SHA 核验，不使用旧私有候选。部署会话只部署及写回执，不改源码／说明／profiles，不启动或操控游戏。
+当前已部署身份、隔离包、回执与回退路径以第 0 节为准；历史部署聊天 01a1cbf3-6888-7611-a4e9-fbece85fcf60 的 8FCB8632 记录只说明当时部署。后续源码修改须另行构建、核验和部署，不能据此更新已部署身份。
 
-8FCB8632 已由该部署聊天原位部署完成。用户明确要求：**部署不再查询游戏进程或判断游戏是否运行**。用户的星铁、ZZZ通常由其它方式启动，进程存在不代表占用F6；后续只按目标DLL的实际文件占用处理，不终止游戏进程。
-
-以下为当前普通内置 FG 候选的后续部署参考，本次不执行；先核验完整 SHA，不使用历史私有候选。
-
-```powershell
-$candidate = Get-Content -LiteralPath ./build/current-artifact.json -Raw | ConvertFrom-Json
-if ($candidate.PrivateTestOnly) { throw '旧私有候选不可用于内置 FG 接续部署' }
-if ((Get-FileHash -LiteralPath $candidate.Artifact -Algorithm SHA256).Hash -ne $candidate.SHA256) {
-  throw 'Candidate SHA256 mismatch'
-}
-pwsh -NoProfile -File ./tools/runtime/Deploy-F6.ps1 -Artifact $candidate.Artifact
-```
-
-脚本流写原文件对象、保留硬链接并备份旧字节，失败尝试原位恢复；脚本返回成功后还须核对4路径哈希、File ID／hardlink、7份配置及当前部署回执。它本身不证明实际加载或游戏通过。回退也用已核字节和原位流程，不能 rename/replace 打断硬链接；回退身份以本次回执为准，备份不自动代表已知良好。
-
-当前 FG 用内置，不部署新 FG ASI。安装回执中 ASI 仅属历史；本轮未清理安装目录，新普通候选跳过残留 mfgunlocker.asi 并保留其它插件。
+部署只按目标 DLL 的实际文件占用处理，不查询或终止游戏。原位流写保留文件对象和硬链接，备份旧字节；核验对应 alias、配置与回执。隔离包沿第 0 节的 BuildId 和独立回执操作，不套用旧共享正式部署命令。回退使用已核字节，不能通过 rename/replace 打断硬链接；备份不自动代表已知良好。
 
 若独占打开目标DLL遇到实际共享／锁定／映射占用，脚本把已核验候选写在正式DLL旁边的 `OptiScaler.dll.next`，返回 `STAGED_NEXT_FILE_IN_USE` 和 `PendingArtifact`；正式DLL及其硬链接不动。已有 `.next` 仅在新文件完整写入并核验后更新；权限或磁盘等其它错误仍报错。此结果只记待替换，不能更新 `current-deployment.json` 为新候选已部署。占用解除后，再以候选或 `.next` 作 `-Artifact` 执行同一原位流程并核验；不通过重命名覆盖正式DLL。脚本不自动替换、不启动后台轮询。
 
 后续建议按证据推进：
 
-1. 用户恢复且新普通内置 FG 候选构建及后续部署完成后，手动启动并核对 source hook、SDK 调用和真实显示输出；分别复测星铁／ZZZ 接入，再验 NR 持续效果、同景 FG 开／关、SR、恢复与 Look。固定场景及参数采延迟，分开启停与稳态。
+1. 用户手动启动后，将加载版本与第 0 节部署身份对应；按新反馈核对 source hook、SDK 调用和显示输出。菜单暂记初步通过，周期卡顿未知；不重复要求关闭 FG 对照。
 2. 原神依次 **SR → SR＋NR → SR＋FG → SR＋NR＋FG**，每组预热5秒采集30秒；区分细节保留关闭、持续保留、最终稳定，记录实际模型尺寸、层数、入口及源/SDK/显示率。
 3. 重点验旋转镜头发白、1秒栅栏／人物跟随、非零历史贡献、遮挡／显露、切场景、热调节不用切窗和卡死恢复；无HUD时单列UI未保护。
 4. 在同一源/queue时间线上拆分共享reader、hidden Present、pacing、模型外7段和报告尾部；先测SDK flush原因，再决定是否改共享颜色生命周期。不能只轮转allocator或删真实wait。
 5. 若FG独立仍有世界／人物残影，导出同一对源帧及实际FG tag纹理，验证rect、scale、jitter、方向和颜色代次；证据不足保留未知。
-6. 原神、星铁、ZZZ 分别记录验收，当前星铁／ZZZ 接入按第 1 节继续；跨游戏、跨候选和旧验收不能互相代替。
+6. 原神、星铁、ZZZ 分别记录验收，当前星铁／ZZZ 接入按第 0 节继续；跨游戏、跨候选和旧验收不能互相代替。
 
 通过门槛包括：当前guides确实使用、有效历史有非零且正确跟随的贡献、无旧帧闪回／跨表面分身、调参后可恢复、关闭预览退休后静默、固定画质下真实显示节奏与延迟改善。120Hz目标只有真实显示事件达到才记通过，缺测量记未知，未达记性能未通过。
 
 ## 12. 新会话续接提示
 
-> 以第0节和CURRENT-STATE为准。三游戏已选local/F6-ASI，runtime 784CEF0274B47D8E按biz隔离；新DLL6D377DD4／源码3665de5已原位部署，ASI171AC18D，原神NR3E83DFE5、星铁／绝NR CDFA6C1E，均保留5张生成帧／6×及External=false。菜单自身输入屏蔽、DX11重复轮询和可见性policy已修正，真实ImGui受控回归通过；冷开鼠标冻结完整根因仍未证明，性能未知。新候选有每次开菜单最多48行诊断，用户完整退出托盘启动器后重启并手动验收。旧97a2cad／绝专属ASI初始化入口已实测返回，不能再写“从未初始化”，也不能当新统一包加载证明。共享正式F6和旧包/runtimes/回执保留，本轮旧1589项核验采用menu-input-pre升级前快照；此前外部配置原子重写另有记录。当前plan和独立部署回执见第0节，不再prepare现存包。HDR暂缓，不查询或操控游戏，不复用过期子智能体。历史阶段的内置FG/单游戏限制、路径和验收结论不覆盖此处。
+> 以第0节和CURRENT-STATE为准。三游戏仍选local/F6-ASI，runtime 784CEF0274B47D8E按biz隔离；DLL A6D12031已原位部署，源码基于75d7a27未提交工作树，由asi-only-source绑定。通用ASI加载保留，用户插件、配置和各游戏NR原样，1857项文件及四个DLL硬链接核验通过，回退字节6D377DD4。用户手动重开游戏加载新版；当前加载、画面与性能未验，旧菜单初步通过不能代替本次验收。当前回执和回退路径见第0节，共享正式部署、旧包/runtimes及历史证据保留，不重复prepare现存包，不用新工具verify旧plan。HDR暂缓，不查询或操控游戏，不复用过期子智能体。

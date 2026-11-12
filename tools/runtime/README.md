@@ -1,6 +1,21 @@
 # tools/runtime
 
-`deploy_f6_asi.py` 根据固定 JSON plan 新建独立的 Hub 包与各游戏 runtime，并通过 `set_opt_build` 选择。依次执行 `prepare --plan <文件>`、`select --plan <文件>`；已有目录会拒绝再次 prepare。`verify --plan <文件>` 只核对磁盘选择、原文件保护清单、各游戏配置和 NR 绑定，并更新独立 ASI 回执。plan 可固定各游戏的 `NrSHA256`；当前有效 plan 记录在 `build/current-asi-deployment.json` 的 `Plan` 字段。三游戏分别使用自己的 profile 与 NR，不把共享包默认配置当成游戏有效配置。CLI 写数据库后，已打开的 Hub 需要从托盘完整退出并重启，才能刷新构建选择缓存。
+`deploy_f6_asi.py` 根据固定 JSON plan 新建独立的 Hub 包与各游戏 runtime，并通过 `set_opt_build` 选择。依次执行 `prepare --plan <文件>`、`select --plan <文件>`；已有目录会拒绝再次 prepare。`verify --plan <文件>` 只核对磁盘选择、原文件保护清单、各游戏配置和 NR 绑定，并更新独立回执。plan 可固定各游戏的 `NrSHA256`；最近部署的 plan 记录在 `build/current-asi-deployment.json` 的 `Plan` 字段，旧记录仍需满足下述兼容要求。三游戏分别使用自己的 profile 与 NR，不把共享包默认配置当成游戏有效配置。CLI 写数据库后，已打开的 Hub 需要从托盘完整退出并重启，才能刷新构建选择缓存。
+
+通用 ASI 插件由用户自行安装。本工具不下载、打包或复制 ASI，也不复制载荷根下的 `plugins/` 目录。plan 必须通过顶层 `UserPluginsPath` 或 `Games[]` 内同名字段（游戏字段优先）明确引用现存的绝对目录；目录必须与待生成的包及 runtimes 分离。工具将其原样投影到该游戏的 `[Plugins] Path`，保持 `LoadAsiPlugins=true`、`External=false` 和各游戏其余 SR／NR／FG 参数，不更改、加载或验证用户插件内容。示例 plan 字段：
+
+```json
+{
+  "UserPluginsPath": "D:/UserPlugins/F6",
+  "Games": [
+    {"Biz": "hk4e_cn", "UserPluginsPath": "D:/UserPlugins/Genshin"}
+  ]
+}
+```
+
+示例只展示新增路径字段，其余 artifact、源码／测试身份、profile、NR 与保护清单仍须完整提供。`prepare` 会跳过载荷中任何 `.asi`；`verify` 遇到包或 runtime 内残留的 `.asi` 会拒绝认证，不会删除或迁移它们。没有 `UserPluginsPath` 的旧计划会在任何写入或 CLI 调用前明确报错，需要另建计划及 BuildId；历史计划与回执保留。原有 BuildId、EvidencePrefix、NR 固定身份和独立回执文件名继续支持，旧的插件哈希字段不再用于认证，新回执改记每游戏 `UserPluginsPath`、`UserPluginsCopied=false`、`UserPluginsExecutionVerified=false` 及顶层 `UserPluginsDistributed=false`。磁盘核验不代表插件执行、游戏加载、画面或性能验收。
+
+部署脚本离线回归：`python -B tools/tests/test_f6_user_plugins_deployment.py`。仅在临时目录构造载荷、数据库和各游戏配置，实际执行 `prepare`／`verify`，不调用真实启动器或游戏，也不写安装目录。
 
 已有隔离包更新 DLL 时使用 `Deploy-F6.ps1 -BuildId local/F6-ASI -Artifact <已核验DLL>`。默认 BuildId 仍是 `official/F6`；只允许该正式身份或 `local/单目录名`。该操作沿用原位写入、备份和占用时 `.next` 暂存，不改变 profile 或选择。新候选、隔离部署与共享正式部署分别记回执，不因生成 `.next` 而声称已部署。
 

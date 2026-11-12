@@ -61,7 +61,7 @@
 ### 1.2 死路径详情：`external\fakenvapi`
 
 - 出现位置：第 **115、121、125** 行（Debug|x64 / Release|x64 / ReleaseDebug|x64 的 IncludePath），共 3 处。
-- 新根 `external\` 只有 19 个目录（`AntiLag2-SDK, FidelityFX-SDK, FidelityFX-SDK-v2, RTX40MFG-Unlock, directx_agility_sdk, freetype, latencyflex, magic_enum, nlohmann, nvapi, nvngx_dlss_sdk, peripheral_warp, simpleini, spdlog, streamline, streamline1, unordered_dense, vulkan, xess`），**没有 fakenvapi**。
+- 新根 `external\` 依赖目录包括（`AntiLag2-SDK, FidelityFX-SDK, FidelityFX-SDK-v2, directx_agility_sdk, freetype, latencyflex, magic_enum, nlohmann, nvapi, nvngx_dlss_sdk, peripheral_warp, simpleini, spdlog, streamline, streamline1, unordered_dense, vulkan, xess`），**没有 fakenvapi**。
 - 该头文件已被内联进产品源码：`OptiScaler\nvapi\fakenvapi.h`、`nvapi\fakenvapi\{log,low_latency,nvapi_calls}.h` 都在 vcxproj 的 ClInclude 里且磁盘存在，代码用 `#include "nvapi/fakenvapi.h"` 这类相对路径，不需要外部 include 目录。
 - **判定：【可直接修】**——删掉这 3 处 `$(SolutionDir)external\fakenvapi;`。当前它只贡献"编译器每 TU 多探一个不存在的目录"的开销，删掉零风险（本次构建成功即证明无依赖）。
 
@@ -120,7 +120,6 @@ copy NUL a\!! EXTRACT ALL FILES TO GAME FOLDER !!   # 空标记文件，不依�
 | 1 | 252 | `external\xess\LICENSE.txt` | ✅ | ✅ | 【保留】 |
 | 2 | **253** | `READ ME - DLSS Neural Rendering.txt` | ❌ | ❌ **全盘不存在**（`find` 旧根无 `READ ME*`） | **【可直接修】删掉這一整行**——素材已永久丢失，且 `README.md` 已取代它 |
 | 3 | 254 | `Licenses\RenoDX_ATTRIBUTION.txt` | ❌ | ✅（worktree） | 【需确认】取回还是弃用 |
-| 4 | 255 | `Licenses\MFGUnlock_LICENSE.txt` | ❌ | ✅ | 同上 |
 | 5 | 256 | `Licenses\ReShade_GenericDepth_LICENSE.txt` | ❌ | ✅ | 同上 |
 | 6 | 257 | `Licenses\DLSS5Feeder_LICENSE.txt` | ❌ | ✅ | 同上 |
 | 7 | 258 | `Licenses\Inter_OFL.txt` | ❌ | ✅ | 同上 |

@@ -3,7 +3,6 @@
 #include "LibraryLoad_Hooks.h"
 
 #include <Config.h>
-#include <framegen/dlssg/MfgUnlock.h>
 #include <DllNames.h>
 
 #include <proxies/Ntdll_Proxy.h>
@@ -68,7 +67,7 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
         const bool otaFg = normalizedPath.contains(L"\\versions\\") &&
             (normalizedPath.contains(L"\\sl_") || normalizedPath.contains(L"\\dlssg\\"));
         if (streamline || otaFg || filename == L"nvngx_dlssg.dll")
-            return nullptr; // not handled: preserve the original loader/unlocker's path
+            return nullptr; // not handled: preserve the original loader's path
     }
 
     std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
@@ -131,17 +130,6 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
             return nvngxDlss;
         else
             LOG_ERROR("Trying to load dll: {}", libNameA);
-    }
-
-    // Optional Ada unlock before NGX caches capabilities. External FG already returned above. Covers the
-    // driver's OTA copy (models\dlssg\...\<hash>.bin) as well as the game's nvngx_dlssg.dll, which the
-    // .bin branch below would otherwise load without patching.
-    if (MfgUnlock::Provider::IsProviderPath(normalizedPath) && MfgUnlock::ShouldInterceptProviderLoad())
-    {
-        auto snippet = NtdllProxy::LoadLibraryExW_Ldr(lpLibFullPath, NULL, 0);
-        if (snippet)
-            MfgUnlock::TryApply(snippet);
-        return snippet;
     }
 
     // NGX OTA

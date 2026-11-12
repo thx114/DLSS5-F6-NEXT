@@ -1957,15 +1957,11 @@
   <ItemGroup>
     <ClInclude Include="framegen\dlssg\DlssgTelemetry.h" />
     <ClInclude Include="framegen\dlssg\DlssgProviderIdentity.h" />
-    <ClInclude Include="framegen\dlssg\MfgUnlock.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="framegen\dlssg\MfgUnlockProvider.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="framegen\dlssg\MfgUnlockPlugin.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="framegen\dlssg\MfgUnlockPtx.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="framegen\dlssg\MfgUnlockMethod.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="framegen\dlssg\MfgUnlockFlip.h"><Filter>Header Files</Filter></ClInclude>
-      <ClInclude Include="runtime\LoaderStartupContext.h" />
+    <ClInclude Include="runtime\LoaderStartupContext.h" />
     <ClInclude Include="runtime\ModuleLifetime.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\AsiPluginStartup.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\PluginStartupGate.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="framegen\dlssg\NativeGuideListInterest.h"><Filter>Header Files</Filter></ClInclude>
-    <ClCompile Include="framegen\dlssg\MfgUnlock.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="runtime\AsiPluginStartup.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
 </Project>

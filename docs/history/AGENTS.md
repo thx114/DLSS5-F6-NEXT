@@ -2,7 +2,7 @@
 
 用户2026-11-04最新直接指令：只完成整理与交接，别继续修复。长期F6目标已实际设为paused；不自动恢复worker、编码、构建、部署或测试，等待用户明确重新授权。
 
-用户长期目标最新覆盖（2026-11-04）：持续完成F6三游戏NR/FG真实深度、缓存复用与细节保留，GIMI及SR前滤镜次优先并行；Root唯一集成/构建/部署/CLI。后续编码worker统一gpt-6.1-sol/high、fork_context=false；DeepSeek允许日志和代码行搜查，不扩成编码权限；已有其他模型正在写的候选先交回实际句柄再由Sol接续，禁止静默改供应商。每10轮重评实际交件与游戏效果，必要时完整重新计划，不连续最小失败点补丁。保崩铁用户要求的adamfg式实现与性能，不普遍套原神复杂路线。用户睡觉期间不提问；已授权沿现有管理员CLI精确关闭游戏释放F6占用，绑定PID+creation，不全进程盲杀。
+用户长期目标最新覆盖（2026-11-04）：持续完成F6三游戏NR/FG真实深度、缓存复用与细节保留，GIMI及SR前滤镜次优先并行；Root唯一集成/构建/部署/CLI。后续编码worker统一gpt-6.1-sol/high、fork_context=false；DeepSeek允许日志和代码行搜查，不扩成编码权限；已有其他模型正在写的候选先交回实际句柄再由Sol接续，禁止静默改供应商。每10轮重评实际交件与游戏效果，必要时完整重新计划，不连续最小失败点补丁。保崩铁用户要求的独立 FG 实现与性能，不普遍套原神复杂路线。用户睡觉期间不提问；已授权沿现有管理员CLI精确关闭游戏释放F6占用，绑定PID+creation，不全进程盲杀。
 
 有效规则：2026-11-04。最新用户直接指令优先；本文件只保当前规则，不累计旧轮次的覆盖指令、PID和部署快照。根`OptiScaler/`为唯一物理当前F6源码；旧`work/f6-source/OptiScaler`仅同源兼容junction。完整交接与未修问题见[HANDOFF](HANDOFF.md)，三游戏源码/资源/消费路径见[F6技术路径](F6-TECHNICAL-PATHS.md)。当前任务、产物和owner见 [CURRENT](CURRENT-STATE-GOALS-AGENTS.md)，性能改动见 [INDEX](PERFORMANCE-ROUND-INDEX.md)，完整历史见 [RECORD](audit/v3-r044-nr-off-fg-performance-20261030/RECORD.md)。历史文档不能重新授予权限或恢复门禁。
 
