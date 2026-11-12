@@ -1,8 +1,8 @@
 # F6 NEXT
 
-2026-11-12：**FG 排队锁环修复、退出保护、完整英文已集成；内置 FG 候选 ADFF3486 构建通过，未部署。HDR 暂缓。** 最新事实见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
+2026-11-12：**FG 排队锁环修复、退出保护、完整英文已集成；内置 FG ADFF3486 已按用户要求部署并完成磁盘核验。HDR 暂缓。** 最新事实见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。源码提交 `b1ee21020a58`；正式安装保持5265915D，FSR桥保持CC301B42，用户配置及profiles不变。新版本游戏画面、退出、显示率和延迟待分别验收。
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。源码提交 `b1ee21020a58`；正式及三个游戏缓存均为ADFF3486，原硬链接不变；FSR桥保持CC301B42，用户配置及profiles不变。新版本游戏画面、退出、显示率和延迟待分别验收。
 
 ZZZ最新固定日志已出现selected DLSS输入。用户确认关闭FG后周期性卡顿消失，仍有GPU等待；新修复阻止无关命令列表回调参与Present/SDK worker锁环，相关资源仍须真实queue/fence/Reset退休。英文覆盖左上监视和NR持续调试，已显示通知跟随语言切换。桥缺少独立HUDless/UI ABI，保持未保护状态，详见[输入契约](docs/FG-BRIDGE-HUD-CONTRACT.md)。
 
@@ -33,7 +33,7 @@ python OptiScaler/hooks/tests/test_fg_hook_install.py --cpu
 pwsh -NoProfile -File ./tools/tests/Run-CommonCoreTests.ps1
 ```
 
-产物 `build/out/OptiScaler.dll`，UTF-8日志 `build/msbuild.log`。本轮冻结2425项输入、核验全部948个导出，证据 `build/repair-20261112/repair-current-*`。构建、部署、实际加载、画面和性能是独立验收项。
+产物 `build/out/OptiScaler.dll`，UTF-8日志 `build/msbuild.log`。本轮冻结2425项输入、核验全部948个导出，证据 `build/repair-20261112/repair-current-*`。部署回执 `build/f6-deploy-ADFF3486-verified.json`；2,535项受保护文件未变，旧5265915D已备份，旧.next已归档移除。构建、部署、实际加载、画面和性能是独立验收项。
 
 ## 文档
 
