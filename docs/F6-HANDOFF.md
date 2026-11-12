@@ -1,28 +1,34 @@
 # F6 项目完整交接报告
 
-## 0. 当前交接：绝区零单游戏 ASI 切换
+## 0. 当前交接：三游戏 ASI 与菜单输入候选
 
-更新：2026-11-12。**按用户“绝改为 ASI，其他游戏不变”的最新指令，绝区零已单独选择 `local/F6-ZZZ-ASI`；原神、星铁仍为 `official/F6` 内置方案。绝专属 DLL `283B6B07`／源码 `97a2cad` 已构建、定向验证、独立复核并部署到独立文件对象；尚未实机验证 ASI 加载或卡顿改善。HDR 暂缓。**
+更新：2026-11-12。**原神、星铁、绝区零均已在磁盘选择 `local/F6-ASI`，隔离包及三游戏 runtime 已部署菜单输入候选 `6D377DD4`／源码 `3665de5`。ASI 只负责 MFG 解锁，F6 继续负责 SR／NR／FG，`External=false`。冷开菜单点击和周期卡顿仍待实机验收；HDR 暂缓。**
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`。本次只新增绝区零包／runtime和修改绝区零一个构建选择键；共享正式 F6、原神／星铁文件、全局选择及原有游戏 profiles 均保留。
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`。本次三游戏 ASI 授权取代此前“仅绝区零、其他游戏不变”；旧 `official/F6`、`local/F6-ZZZ-ASI`、旧 runtimes、共享正式 DLL 四硬链接与共享 `current-deployment.json` 保留。
 
 | 项目 | 当前事实 |
 |---|---|
-| 绝区零构建 | `local/F6-ZZZ-ASI`，独立包 `D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/OptiScaler/local/F6-ZZZ-ASI`，独立 runtime `cache/games/nap_cn/OptiRuntime/A5009284E9948E8D` |
-| DLL 身份 | SHA256 `283B6B07A7CF9926437F2BEF188961064EE5BBB7ABEE9DEC72DE91783BE80BD6`，33,994,240 B，版本 `0.1.29-final (97a2cad)`；源码 `97a2cadfba894e20dbbd6c95efb476ec354903c3` |
-| ASI | 复用已有 `MFGUnlocker.asi`，SHA256 `171AC18D4D632D12DEE22D5CAF2085F301BACFDB9A462561D93DBCBB61D6A4F8`；绝专属插件路径，未把插件嵌入 DLL，未运行用户 ASI 进行离线测试 |
-| 配置语义 | 绝专属 `AdaMfgUnlock=false`、`AmpereMfgUnlock=false`、`LoadAsiPlugins=true`；`External=false` 保留 OptiScaler FG 输入／呈现。MFG 解锁由 ASI 负责；SR、NR、FG 请求与原 5 张生成帧／6×设置不变 |
-| 启动实现 | 通用 ASI 枚举只登记规范 MFG 插件，既有 post-attach worker 单次初始化；重复 owner、失败、异常、worker 创建失败均终态保留。FG 消费前有界等待，loader／TLS／自身线程重入不等；未选 ASI 为 no-op，SR／NR 不依赖其成功 |
-| 游戏 SL | SL2 有效请求仍含 DLSSG 才等待；Opti-owned 分支先移除游戏 FG 再直接初始化游戏 SR／Reflex。未声称 SL1 全路径已覆盖 |
-| 定向验证 | 生产 Gate 28项、真实 loader context 5项、options1132项、builtin谓词41项、Reflex19项；实际生产 startup 在无害模块下跑7种 Windows loader 场景，抽取实际 SL 有效请求尾部16种组合通过；gpt-6.1-sol/high 最终静态复核无确定 blocker |
-| 构建 | Release x64 exit0，2431项冻结输入构建前后不变，全部948导出名称／序号不变；既有警告保留于 `zzz-asi-build.log` |
-| 其他游戏 | 原神、星铁仍选择 `official/F6`，共享及旧四路径 DLL 仍 `1ABD9AFD`／源码 `51fdb7b`，原 File ID／硬链接不变；233项本次保护文件逐字节及身份不变，全局 `OptiScaler/state.json` 未改 |
-| NR／桥 | 绝 NR 仍为310.9.16-SF／`CDFA6C1EC784867182164C7836F324F087B5C9F374D0C9FE46F54999FEABF3ED`；共享 FSR 桥仍 CC301B42，未调整 HDR、HUDless、游戏文件或图形配置 |
-| 验收边界 | 本次未查询、启动、终止或操控游戏。磁盘及单游戏选择已核验，实际加载、生成帧显示和周期卡顿改善未知，用户下次重启启动器及绝区零后验收；不重复关闭 FG 对照 |
+| 统一包 | `D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/OptiScaler/local/F6-ASI` |
+| 游戏 runtime | `cache/games/<biz>/OptiRuntime/784CEF0274B47D8E`；biz 分别为 `hk4e_cn`、`hkrpg_bilibili`、`nap_cn`，各有自己的 profile、NR 和 authority/baseline |
+| DLL | SHA256 `6D377DD43A2355EB434D10FCD4FC657219FE9F6BD78AA8D912B245E17B7CC17F`，33,998,336 B，`0.1.29-final (3665de5)`；构建源码 `3665de5174106ce2f491b910e0278f24f44ce04a` |
+| 部署 | `DEPLOYED_IN_PLACE`；新包与三 runtime 的 4 个 DLL alias 均为新字节，原 FileId／硬链接保留。旧候选 283B6B07 和实际部署回退均有独立备份 |
+| ASI | 既有 `MFGUnlocker.asi`，SHA256 `171AC18D4D632D12DEE22D5CAF2085F301BACFDB9A462561D93DBCBB61D6A4F8`；不嵌入 DLL，插件路径指向新包 |
+| 配置 | 三游戏均 `AdaMfgUnlock=false`、`AmpereMfgUnlock=false`、`LoadAsiPlugins=true`、`External=false`。原 5 张生成帧／6×请求、SR／NR 参数及各自 NR 选择保留 |
+| NR | 原神 `3E83DFE5910FE9609A51197531FF446B336762C7EF273F1092BBCBD0D6DFE9B9`；星铁和绝区零 `CDFA6C1EC784867182164C7836F324F087B5C9F374D0C9FE46F54999FEABF3ED`（310.9.16-SF）。新核验 plan 固定这三份 NR 身份 |
+| 菜单改动 | Win32 后端通过线程内 bypass 读取真实状态；移除 DX11 overlay 冗余平台轮询；快捷键先于可见性 policy；不再伪造 HasGamepad 或写 WantSetMousePos；保留键盘／手柄导航，去除 Tab 重复导航框 |
+| 已确认缺陷 | 原代码能让自身 Shift 补偿读到假松键、手柄读到 neutral；重复平台轮询还会缩短 DeltaTime。它们均有可执行旧行为负控，但尚未证明是用户“冷开即点不动”的全部根因 |
+| 输入验证 | 仓库真实 ImGui 与抽取的生产 backend／input／DX11 overlay：51,959 项检查通过，8 个可执行负控和 1 个调用点清单负控检出。OS／D3D 采集使用受控 seam，未访问游戏或加载用户 ASI |
+| 其他验证 | 隔离部署夹具 42 项；本地化静态清单 2013 项词条、2328 处中文、6 个负控通过。Release x64 exit0，2435 项声明输入构建前后一致，948 个导出名称／序号不变；独立 gpt-6.1-sol/high 复核无剩余确定 blocker |
+| 诊断 | 每次打开菜单最多 48 条 `F6 menu input`，记录采集／消费坐标、按钮、Shift、导航、队列及输入 flags；不记录输入文本。新包日志为 `logs/<biz>/OptiScaler.log` |
+| 旧运行证据 | 固定会话 `20261112-214427_ZenlessZoneZero_193648` 已证明旧绝专属 97a2cad 加载、ASI `status=10 InitReturned`；不是新统一包／新候选的加载、解锁倍率、显示或性能证明 |
+| 保护边界 | 菜单 DLL 升级前后 1589 项旧文件字节与 FileId 核验通过。初次三游戏准备后曾观察旧绝配置／metadata 的 4 处外部重写及 LastCatalogFetchUtc 变化，另留记录；SR／NR／FG 有效参数未变，没有恢复旧快照 |
+| 未改动 | 未查询、启动、终止或操控游戏；未改游戏文件、HDR、FSR 桥、正式共享部署或全局 state；不重复要求关闭 FG 对照 |
 
-当前候选与测试指针为 `build/current-{artifact,build,tests}.json`。共享正式部署回执 `build/current-deployment.json` 保持原字节；绝单游戏部署回执单列 `build/current-game-deployment-nap_cn.json`，完整证据为 `build/repair-20261112/zzz-asi-{source,tests,review,artifact,deployment}.json`，部署可复核脚本 `deploy-zzz-asi.py`。启动器CLI只执行 `set_opt_build`，数据库实际只改变 `launch_option_optiscaler_build_nap_cn_x6znKlJ0xK`。回到内置时只需将绝区零构建选择切回 `official/F6`，不覆盖共享 DLL。
+**生效步骤：从托盘“退出”完整结束启动器，再无参数重启启动器，然后由用户启动游戏。** CLI 的 `set_opt_build` 只改数据库，不刷新已打开 GUI 的 AppConfig 缓存；关窗口留在托盘不算完整重启。没有受支持的外部 reload／exit CLI，不改启动器源码。
 
-上一轮 recording 所有权修复源码 `8df406c` 和未部署候选 `0C7D6709` 保留；本次源代码继续包含该修复，但本次用户“仍然有”不能单独证明未部署候选已受测。PID185668／日志51fdb7b的2328次 Reset-pending采样、1510次FG启停与四槽耦合证据仍在 `zzz-recordings-*`／`evidence.json`；不能将它们当本次 ASI 运行证据。旧候选完整备份 `build/rollback/zzz-asi-pre-0C7D6709.dll`，旧当前指针在 `zzz-asi-previous/`；旧日志和回退保留。
+当前构建指针为 `build/current-{artifact,build,tests}.json`；隔离部署为 `build/current-asi-deployment.json` 和 `build/current-game-deployment-<biz>.json`，不能把它们当共享正式部署回执。当前核验 plan 为 `build/repair-20261112/menu-input-asi-plan.json`；部署前基线 `menu-input-pre.json`、实际 DLL 写入 `menu-input-dll-deployment.json`、升级复核 `menu-input-deployment-verification.json`。菜单分析／测试／构建证据为同目录 `f6-menu-*.json/log`、`menu-input-{source,artifact,tests}.json` 与构建日志。初次三游戏 ASI 的 `three-game-asi-*` 和旧绝区零 `zzz-asi-*` 均保留，不重复 prepare 已存在目录。
+
+回退可在启动器切回各游戏原构建选择（原神／星铁 `official/F6`，绝区零 `local/F6-ZZZ-ASI`）；若只回退新统一包 DLL，沿已核回退字节用 `Deploy-F6.ps1 -BuildId local/F6-ASI` 原位写入并复核全部 alias。占用只暂存 `.next`，不查询或终止游戏，不把暂存当成功部署。
 
 ## 1. 7D 候选阶段：2026-11-12 历史状态
 
@@ -230,7 +236,7 @@ flowchart LR
 
 首个长等待发生在失焦记录之前，不能把全部问题归给之后 FG 关闭。SDK flush、队列入口前成本、共享 reader、隐藏 Present 和报告尾段仍须在**同一 source／queue 时间线**关联。DD53514B 修计时浪费和 Look 冲突，但 **160 ms 的唯一根因与实际改善尚未闭环**；不能删除真实完成等待、猜测重排 SDK 输出或降低用户画质宣称提速。
 
-## 8. 历史候选、部署、加载和回退身份（当前以第 1 节为准）
+## 8. 历史候选、部署、加载和回退身份（当前以第 0 节为准）
 
 | 对象 | 精确信息 |
 |---|---|
@@ -374,4 +380,4 @@ pwsh -NoProfile -File ./tools/runtime/Deploy-F6.ps1 -Artifact $candidate.Artifac
 
 ## 12. 新会话续接提示
 
-> 最新用户要求仅绝区零改 ASI，原神／星铁不变。已新增隔离 local/F6-ZZZ-ASI／runtime A5009284E9948E8D并仅改nap_cn构建选择；DLL283B6B07／源码97a2cad，ASI171AC18D，NR CDFA6C1E。External=false保留Opti输入／呈现，两个内置MFG解锁开关false，用户6×参数不变。Gate、无害Windows loader、有效SL请求矩阵和独立复核通过；真实ASI加载和卡顿改善待下次重启启动器及绝区零。原神／星铁official/F6和共享1ABD9AFD四硬链接、233项保护文件、全局选择及旧profiles完全未改。单游戏回执current-game-deployment-nap_cn.json；共享current-deployment.json仍是原字节，不得把新out产物当共享已部署。HDR暂缓，不查询或操控游戏，不复用旧智能体。旧recording修复、候选0C7D6709及证据保留，不把未部署候选标成实测失败。
+> 以第0节和CURRENT-STATE为准。三游戏已选local/F6-ASI，runtime 784CEF0274B47D8E按biz隔离；新DLL6D377DD4／源码3665de5已原位部署，ASI171AC18D，原神NR3E83DFE5、星铁／绝NR CDFA6C1E，均保留5张生成帧／6×及External=false。菜单自身输入屏蔽、DX11重复轮询和可见性policy已修正，真实ImGui受控回归通过；冷开鼠标冻结完整根因仍未证明，性能未知。新候选有每次开菜单最多48行诊断，用户完整退出托盘启动器后重启并手动验收。旧97a2cad／绝专属ASI初始化入口已实测返回，不能再写“从未初始化”，也不能当新统一包加载证明。共享正式F6和旧包/runtimes/回执保留，本轮旧1589项核验采用menu-input-pre升级前快照；此前外部配置原子重写另有记录。当前plan和独立部署回执见第0节，不再prepare现存包。HDR暂缓，不查询或操控游戏，不复用过期子智能体。历史阶段的内置FG/单游戏限制、路径和验收结论不覆盖此处。

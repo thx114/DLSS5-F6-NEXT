@@ -1,8 +1,8 @@
 # F6 NEXT
 
-2026-11-12：**绝区零已按用户要求单独切到 `local/F6-ZZZ-ASI`；原神、星铁保持 `official/F6` 内置。隔离 DLL 283B6B07／源码97a2cad已构建和部署，真实加载与卡顿改善待重启启动器及游戏验收。HDR暂缓。** 详见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
+2026-11-12：**原神、星铁、绝区零均已选择 `local/F6-ASI`，三游戏隔离 runtime 已部署 `6D377DD4`／源码 `3665de5`。ASI 负责 MFG 解锁，F6 继续负责 SR／NR／FG，`External=false`；原 NR 版本与 6×请求保留。菜单输入候选已通过离线回归，冷开点击与周期卡顿仍待实机验收，HDR 暂缓。** 详见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`。绝专属配置保留SR／NR／FG、原6×参数，仅关闭内置Ada／Ampere解锁并从独立插件路径加载既有ASI。独立post-attach startup与FG有界等待保持SR／NR独立。旧正式F6、原神／星铁、四DLL硬链接、233项保护文件、全局选择和旧profiles未改；单游戏回执 `build/current-game-deployment-nap_cn.json`，共享部署仍由原 `current-deployment.json` 记录。
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`。新包与三 runtime 的 DLL 原位更新并保留硬链接；旧共享正式 F6、旧绝专属包、旧 runtimes、全局 state 和回退均保留。激活新选择须从托盘完整退出启动器，再重新打开；仅 CLI 写 DB 或关窗口不刷新旧 GUI 缓存。隔离部署回执与共享 `current-deployment.json` 分开。
 
 ## 目录
 
@@ -24,6 +24,7 @@
 ```powershell
 pwsh -NoProfile -File ./build.ps1
 python OptiScaler/menu/tests/test_ui_localization.py --runtime
+python OptiScaler/menu/tests/test_menu_input.py
 pwsh -NoProfile -File OptiScaler/framegen/dlssg/tests/run-native-guide-notifications.ps1
 pwsh -NoProfile -File OptiScaler/runtime/tests/run-module-lifetime.ps1
 python OptiScaler/runtime/tests/test_cleanup_entrypoints.py
@@ -31,7 +32,7 @@ python OptiScaler/hooks/tests/test_fg_hook_install.py --cpu
 pwsh -NoProfile -File ./tools/tests/Run-CommonCoreTests.ps1
 ```
 
-产物 `build/out/OptiScaler.dll`，UTF-8日志 `build/msbuild.log`。本次2431项冻结输入、948导出和ASI定向测试通过，证据 `build/repair-20261112/zzz-asi-*`；候选路径不能代替共享正式部署身份。旧0C7D6709及回执保留，构建／部署不证明游戏性能改善。
+产物 `build/out/OptiScaler.dll`，UTF-8日志 `build/msbuild.log`。本次2435项声明输入及948导出核验通过；菜单51,959项检查、8个执行负控和调用清单负控、部署42项检查通过。证据 `build/repair-20261112/menu-input-*`；旧ASI和recording证据、回退均保留。离线验证与磁盘部署不证明游戏内点击、实际显示或性能。
 
 ## 文档
 
