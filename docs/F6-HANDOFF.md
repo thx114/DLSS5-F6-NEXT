@@ -1,9 +1,9 @@
 # F6 项目交接入口
 
-更新：2026-11-12。**ZZZ新局确认native四呈现槽与producer recording生命周期耦合；源码8df406c4715d已修所有权，候选0C7D6709构建／测试／独立复核通过，尚未部署。卡顿改善待实机验收，HDR暂缓。** 详见[产品当前状态](../../DLSS5_NEXT-workers/f6-rewrite/docs/CURRENT-STATE.md)和[交接第0节](../../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)。
+更新：2026-11-12。**绝区零已按最新用户指令独立改用 ASI，原神、星铁保持内置。** 新绝专属 `local/F6-ZZZ-ASI`／DLL283B6B07／源码97a2cad已构建、定向验证和隔离部署；runtime为`A5009284E9948E8D`，真实加载与卡顿改善待重启绝区零验收，HDR暂缓。详见[产品当前状态](../../DLSS5_NEXT-workers/f6-rewrite/docs/CURRENT-STATE.md)和[完整交接](../../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)。
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`；本根是 `codex/navigation-20261112` 导航／迁移基线。GitHub目标 `thx114/DLSS5-F6-NEXT`。正式四路径仍1ABD9AFD／51fdb7b，桥CC301B42，硬链接、配置和profiles未改；按本轮AGENTS不改正式部署。
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`；本根保留导航／迁移基线。启动器仅改nap_cn一个构建选择键，其他两游戏仍`official/F6`；共享1ABD9AFD四DLL原硬链接、233项保护文件、全局state和旧profiles未改。绝专属配置`External=false`，两个内置解锁关闭，既有ASI171AC18D从独立插件目录加载；SR／NR、原6×及NR版本保持。原FSR桥CC301B42未动。
 
-PID185668固定日志108,242,264 B／1,267,211行，版本51fdb7b：2328次已输出busy采样全为Reset pending，594条详细行after_refusal fence采样均达target；FG启／停及最大呈现延迟1→6／6→1各1510次。源list复用帧距不等于Reset间隔，完整卡顿根因仍有验收边界。新实现分开真实录制GPU owner与四槽当前身份，保留Reset／自身queue/fence／source、execution与失败保留门。
+新生产ASI在post-attach worker初始化，FG有界等待保留SR／NR独立；Gate28、loader context5、options1132、builtin41、Reflex19、7种无害Windows loader与16种有效SL请求组合通过，2431输入和948导出核验，独立gpt-6.1-sol/high终审无确定blocker。未操控或查询游戏，不称卡顿已修好。单游戏回执`current-game-deployment-nap_cn.json`与共享`current-deployment.json`分开；不把build/out新文件冒充共享已部署。
 
-候选SHA256 `0C7D6709A0364761BA05C9AD03E3B7EA3F2D13ABCF8BF3FD1A9DDBF712425A6E`，Release x64；2428项输入／948导出和定向回归通过。证据在产品 `build/repair-20261112/zzz-recordings-*`，日志分析 `evidence.json`；candidate指针不代表正式已部署。未查询或操控游戏；用户安排部署后手动验收，不重复关闭FG对照。旧候选、回退、其它工作树及历史证据保留。
+旧recording修复8df406c及未部署候选0C7D6709、旧日志和回退保留。GitHub目标仍`thx114/DLSS5-F6-NEXT`。新证据为产品`build/repair-20261112/zzz-asi-*`，详细约束以产品当前状态为准。
