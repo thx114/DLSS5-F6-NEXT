@@ -277,29 +277,32 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         dlssg::InputOwner owner {};
         FG_Constants settings {};
         sl::Constants constants {};
-        UINT64 value=0;
+        // Mutable GPU state belongs to this producer recording, never to the
+        // four presentation slots. Reuse requires its own Reset and fence.
+        std::unique_ptr<DS_Dx12> depthScale;
+        std::unique_ptr<RF_Dx12> flip[2];
+        Microsoft::WRL::ComPtr<ID3D12Resource> copies[2];
+        std::shared_ptr<NativeGuideUse> quarantineSelf; // Intentional process-lifetime cycle only on failed drain.
+        UINT64 value=0, execution=0;
         bool closed=false, submitted=false, executing=false, signalled=false, srSucceeded=false, ordered=false;
         bool dispatched=false, presented=false;
-    } _nativeGuideUses[BUFFER_COUNT];
-    dlssg::NativeGuideListInterest<BUFFER_COUNT> _nativeGuideListInterest;
+    };
+    std::vector<std::shared_ptr<NativeGuideUse>> _nativeGuideRecordings;
+    NativeGuideUse* _nativeGuideFrames[BUFFER_COUNT] {}; // Borrowed exact-frame identities only.
+    dlssg::NativeGuideListInterest _nativeGuideListInterest;
     std::atomic<bool> _nativeGuideTracking{false};
     bool _nativeGuideFailed=false;
-    UINT64 _nativeGuideSubmissions=0, _nativeGuideSerial=0;
+    UINT64 _nativeGuideSubmissions=0, _nativeGuideSerial=0, _nativeGuideExecution=0;
     dlssg::NativeSource _nativeGuideDispatch {};
     bool BuildGuideConstants(int slot, sl::Constants& constants, bool includeCamera);
     void EvaluateStateLocked(ID3D12Device* device, FG_Constants& fgConstants);
     bool NativeGuideRetired(const NativeGuideUse& use) const;
-    // Observation only: Reset and the producer's actual fence remain the reuse authority.
-    void LogNativeGuideBusy(UINT slot);
-    struct NativeGuideBusyWindow
-    {
-        UINT64 start=0, lastLog=0, total=0, samples=0;
-        UINT64 resetPending=0, unsubmitted=0, executing=0, signalMissing=0;
-        UINT64 fenceMissing=0, fencePending=0, deviceRemoved=0;
-    } _nativeGuideBusy;
+    std::shared_ptr<NativeGuideUse> AcquireNativeGuideRecording();
+    void ClearNativeGuideFrame(UINT slot);
+    dlssg::NativeSource NativeGuideFrameSource(UINT slot) const;
     bool NativeGuidesRetired() const;
     bool OrderNativeGuides(UINT slot);
-    NativeGuideUse* FindNativeGuideSource(const dlssg::NativeSource& source);
+    std::shared_ptr<NativeGuideUse> FindNativeGuideSource(const dlssg::NativeSource& source);
     bool NativeGuideSourceCurrent(const dlssg::NativeSource& source);
     bool NativeGuideToken(const dlssg::NativeSource& source, sl::FrameToken*& token);
     UINT64 _depthContractCalls=0, _depthContractLogTick=0;
@@ -560,8 +563,9 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         std::shared_ptr<const GuideSourceMetadata::Descriptor> rawSource = {});
     // Existing native Execute/Reset hooks only; no alternate producer or queue.
     bool TracksNativeGuides() const noexcept { return _nativeGuideTracking.load(std::memory_order_acquire); }
-    void NativeGuidesSubmitting(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
-    void NativeGuidesSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
+    UINT64 NativeGuidesSubmitting(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
+    void NativeGuidesSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists,
+                              UINT64 execution);
     void NativeGuidesReset(ID3D12CommandList* list);
     dlssg::NativeSource NativeGuideSource(ID3D12CommandList* list);
     void CompleteNativeGuideSource(ID3D12CommandList* list, const dlssg::NativeSource& source,

@@ -1,33 +1,43 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <array>
+#include <algorithm>
 #include <cstddef>
 #include <mutex>
+#include <vector>
 
 namespace dlssg
 {
 // A CPU identity filter, not a recording or GPU completion authority. The
 // provider retains both COM owners until its existing Reset/fence retirement.
 // Never take continuity or call COM/SDK code while holding this short lock.
-template<std::size_t Slots> class NativeGuideListInterest
+class NativeGuideListInterest
 {
     struct Pair
     {
+        const void* recording = nullptr;
         const void* list = nullptr;
         const void* nativeList = nullptr;
-        bool published = false;
     };
     std::mutex _mutex;
-    std::array<Pair, Slots> _pairs {};
+    std::vector<Pair> _pairs;
 
   public:
-    // Called under provider continuity, after the old slot physically retires
-    // and before any SDK tag or conversion can expose the new recording.
-    void Publish(std::size_t slot, const void* list, const void* nativeList)
+    // Recording identities outlive presentation-slot wrap. Called under
+    // continuity before any SDK tag or conversion can expose this recording.
+    void Publish(const void* recording, const void* list, const void* nativeList)
     {
         std::lock_guard lock(_mutex);
-        _pairs.at(slot) = {list, nativeList, true};
+        for (auto& pair : _pairs)
+            if (pair.recording == recording) { pair = {recording, list, nativeList}; return; }
+        _pairs.push_back({recording, list, nativeList});
+    }
+
+    // Only successful Reset plus the exact producer fence permits removal.
+    void Erase(const void* recording)
+    {
+        std::lock_guard lock(_mutex);
+        std::erase_if(_pairs, [=](const auto& pair) { return pair.recording == recording; });
     }
 
     template<class List> bool MayContain(std::size_t count, List* const* lists)
@@ -37,14 +47,13 @@ template<std::size_t Slots> class NativeGuideListInterest
         std::lock_guard lock(_mutex);
         for (const auto& pair : _pairs)
         {
-            if (!pair.published) continue;
             if (!pair.list || !pair.nativeList) return true;
             for (std::size_t i = 0; i < count; ++i)
                 if (!lists[i] || pair.list == lists[i] || pair.nativeList == lists[i]) return true;
         }
         return false;
         // The lock is released before the caller can acquire continuity. A
-        // positive match must still be rechecked against the live slot there.
+        // positive match must still be rechecked against live recordings there.
     }
 
     template<class List> bool MayContain(List* list) { return MayContain(1, &list); }

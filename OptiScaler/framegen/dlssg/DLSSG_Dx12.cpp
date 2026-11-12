@@ -1562,8 +1562,8 @@ bool DLSSG_Dx12::CompletePendingTeardown()
         _upscalerColourSucceeded[i]=false;_upscalerPendingHudless[i]={};
     }
     _guideContractOwned=false;
-    for (auto& use:_nativeGuideUses) use={}; // Native recordings already physically retired above.
-    _nativeGuideBusy={};
+    for (auto& frame:_nativeGuideFrames) frame=nullptr;
+    _nativeGuideRecordings.clear(); // Every recording already passed its own Reset/fence above.
     _nativeGuideListInterest.Clear();
     _nativeGuideTracking.store(false,std::memory_order_release);
     _depthSourceRejected=_depthSourceGap=false;
@@ -1708,10 +1708,12 @@ void DLSSG_Dx12::QuarantineFailedTeardown()
         _dx11GuideInputs[i][0].Detach(); _dx11GuideInputs[i][1].Detach();
         _guideDepthScale[i].release(); // Preserve descriptors/constants/buffer after uncertain submission.
         _guideFlip[i][0].release();_guideFlip[i][1].release();
-        auto& native=_nativeGuideUses[i];
-        native.list.Detach(); native.nativeList.Detach(); native.queue.Detach(); native.fence.Detach();
-        native.depth.Detach(); native.motion.Detach(); native.output.Detach();
     }
+    // Preserve all live recording owners, including those no longer referenced
+    // by a presentation slot. Their destructors must not release uncertain GPU state.
+    for (auto& recording:_nativeGuideRecordings) recording->quarantineSelf=recording;
+    _nativeGuideRecordings.clear(); // Intentional self-owners preserve the complete GPU graph.
+    for (auto& frame:_nativeGuideFrames) frame=nullptr;
     _renderUI.release(); _hudlessCompare.release(); _mvFlip.release(); _depthFlip.release();
     _uiFence = nullptr; _scFence = nullptr;
     _teardownFence = nullptr; _teardownEvent = nullptr;
@@ -1816,7 +1818,7 @@ bool DLSSG_Dx12::RefuseDepthContract(const char* stage, bool publicationStarted)
             options.mode=sl::DLSSGMode::eOff;
             options.flags|=sl::DLSSGFlags::eRetainResourcesWhenOff;
             const bool nativeZzz=OwnsNativeZzzSource();
-            const auto& source=_nativeGuideUses[GetIndex()].source;
+            const auto source=NativeGuideFrameSource(GetIndex());
             const bool frameKnown=!nativeZzz || (source.sdkFrameKnown && source.frame==_frameCount);
             uint32_t id=nativeZzz ? source.sdkFrame : static_cast<uint32_t>(_frameCount);
             sl::FrameToken* token=nullptr;
@@ -2063,8 +2065,8 @@ void DLSSG_Dx12::CaptureAcceptedGuides(UINT slot) noexcept
         if (!depth.accepted || !motion.accepted || depth.frame!=_frameCount || motion.frame!=_frameCount ||
             depth.generation!=_inputContinuity.SourceGeneration() || motion.generation!=depth.generation ||
             !(depth.owner==owner) || !(motion.owner==owner)) return;
-        if (OwnsNativeZzzSource() && (depth.nativeSerial!=_nativeGuideUses[slot].source.serial ||
-            motion.nativeSerial!=_nativeGuideUses[slot].source.serial)) return;
+        if (OwnsNativeZzzSource() && (depth.nativeSerial!=NativeGuideFrameSource(slot).serial ||
+            motion.nativeSerial!=NativeGuideFrameSource(slot).serial)) return;
         auto& snapshot=_guideObservations[slot].snapshot;
         if (_guideObservations[slot].frame!=_frameCount || snapshot.epoch!=_inputContinuity.SourceGeneration()) return;
         GuideCapture::Inputs inputs;
@@ -2133,12 +2135,28 @@ bool DLSSG_Dx12::FlipOwnedUpscalerGuide(Dx12Resource* input)
 {
     const auto slot=GetIndex();
     const bool depth=input->type==FG_ResourceType::Depth;
-    auto& shader=_guideFlip[slot][depth?0:1];
+    const auto recording=OwnsNativeZzzSource() ? FindNativeGuideSource(NativeGuideFrameSource(slot)) : nullptr;
+    if (OwnsNativeZzzSource() && !recording) return false;
+    auto& shader=recording ? recording->flip[depth?0:1] : _guideFlip[slot][depth?0:1];
     if (!shader) shader=std::make_unique<RF_Dx12>(depth?"FG owned depth flip":"FG owned motion flip",_device);
     if (!shader->IsInit()) return false;
-    auto& output=_resourceCopy[slot][input->type];
-    if (!CreateBufferResource(_device,input->resource,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        &output,true,depth)) return false;
+    ID3D12Resource* output=nullptr;
+    if (recording)
+    {
+        auto& copy=recording->copies[depth?0:1];
+        output=copy.Detach(); // The allocation helper owns/replaces this reference.
+        const bool created=CreateBufferResource(_device,input->resource,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            &output,true,depth);
+        copy.Attach(output);
+        if (!created) return false;
+    }
+    else
+    {
+        auto& copy=_resourceCopy[slot][input->type];
+        if (!CreateBufferResource(_device,input->resource,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            &copy,true,depth)) return false;
+        output=copy;
+    }
     const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance());
     if (!shader->Dispatch(input->cmdList,input->resource,output,input->width,input->height,!depth,
         depth ? orientation.depthFlipY : orientation.motionFlipY,orientation.motionYInverted)) return false;
@@ -2197,6 +2215,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
         _uiFence && _uiAllocatorFenceValues[slot] && _gameCommandQueue &&
         dlssg::depth_contract::OnDevice(_device,_gameCommandQueue);
     const bool nativeZzz=!ownedRecording && nativeZzzSource;
+    std::shared_ptr<NativeGuideUse> nativeRecording; // Keep CPU references valid across COM/SDK reentry.
     D3D12_RESOURCE_DESC selectedOutputDescription{};
     // Native ZZZ records on the real SR list, not a provider UI list. Track
     // that exact recording's Execute/Signal/Reset before reusing shader state.
@@ -2219,19 +2238,23 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
             selectedOutputDescription.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D)
             return RefuseDepthContract("native-selected-sr-output",false);
         RequestGuideHooks();
-        auto& use=_nativeGuideUses[slot];
         if (_nativeGuideFailed) return false;
-        if (_device->GetDeviceRemovedReason()!=S_OK ||
-            (use.fence && use.fence->GetCompletedValue()==UINT64_MAX))
+        if (_device->GetDeviceRemovedReason()!=S_OK)
         {
             _nativeGuideFailed=true; _managedRetained=true; Deactivate();
             return false;
         }
-        if (!NativeGuideRetired(use))
-        {
-            LogNativeGuideBusy(slot);
-            return RefuseDepthContract("native-guide-slot-in-flight",false);
-        }
+        for (const auto& recording:_nativeGuideRecordings)
+            if (recording->fence && recording->fence->GetCompletedValue()==UINT64_MAX)
+            {
+                _nativeGuideFailed=true; _managedRetained=true; Deactivate();
+                return false;
+            }
+        // A presentation slot can wrap before the game's producer list Reset.
+        // Keep that recording intact; acquire GPU state by actual retirement,
+        // independently of frame%BUFFER_COUNT. Never wait for a future Reset.
+        nativeRecording=AcquireNativeGuideRecording();
+        auto& use=*nativeRecording;
         if (!use.fence && FAILED(_device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&use.fence))))
             return RefuseDepthContract("native-guide-fence-unavailable",false);
         if (!use.fence || use.value>=UINT64_MAX-1 || use.fence->GetCompletedValue()==UINT64_MAX)
@@ -2252,7 +2275,10 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
         use.list=list; use.nativeList=dlssg::depth_contract::NativeObject(list);
         use.queue.Reset(); use.depth=depth; use.motion=motion; use.output=output;
         use.closed=use.submitted=use.executing=use.signalled=use.srSucceeded=use.ordered=false;
-        _nativeGuideListInterest.Publish(slot,use.list.Get(),use.nativeList.Get());
+        use.execution=0;
+        ClearNativeGuideFrame(slot); // Revoke old frame tags without retiring its recording.
+        _nativeGuideFrames[slot]=&use;
+        _nativeGuideListInterest.Publish(&use,use.list.Get(),use.nativeList.Get());
         _nativeGuideTracking.store(true,std::memory_order_release);
         if (use.source.serial<=3 || use.source.serial%600==0)
             LOG_INFO("F6 ZZZ selected frame source: api={} feature={} selected={} game_viewport={} provider={} provider_viewport={} upstream_raw={} sdk_frame={} frame={} serial={} native_list={} list={} thread={} upstream=pending",
@@ -2286,7 +2312,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
     // RF's allocation helper releases a mismatched destination immediately.
     // Detect the generation change before recording anything; the old real
     // owners must first pass Off/host completion/SDK free above.
-    if (flip)
+    if (flip && !nativeZzz)
     {
         for (auto type : {FG_ResourceType::Depth,FG_ResourceType::Velocity})
         {
@@ -2311,12 +2337,17 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
             width>(feature->LowResMV()?feature->RenderWidth():feature->DisplayWidth()) ||
             height>(feature->LowResMV()?feature->RenderHeight():feature->DisplayHeight()))
             return RefuseDepthContract("depth-scale-domain");
-        auto& shader=_guideDepthScale[slot];
+        auto& shader=nativeZzz ? nativeRecording->depthScale : _guideDepthScale[slot];
         if (shader && shader->Buffer())
         {
             const auto old=shader->Buffer()->GetDesc();
             if (old.Width!=scaleWidth || old.Height!=scaleHeight)
-                return RefuseDepthContract("depth-scale-generation-needs-drain");
+            {
+                if (!nativeZzz) return RefuseDepthContract("depth-scale-generation-needs-drain");
+                // Acquire selected an already retired recording. Its previous
+                // size can change before this recording emits its first command.
+                shader.reset();
+            }
         }
         if (!shader) shader=std::make_unique<DS_Dx12>("FG owned depth scale",_device);
         // Preserve the rollback's display-sized allocation. A changing render
@@ -2357,7 +2388,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
     }
     if (nativeZzz)
     {
-        auto& use=_nativeGuideUses[slot];
+        auto& use=*nativeRecording;
         // Snapshot the actual source camera/jitter/MV/reset only after both
         // accepted tags. Dispatch must not rebuild it from a later recording.
         if (!NativeGuideSourceCurrent(use.source) || !BuildGuideConstants(slot,use.constants,true))
@@ -2402,7 +2433,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
     try
     {
         const auto& observation=_guideObservations[slot];
-        const auto output=nativeZzz ? reinterpret_cast<uintptr_t>(_nativeGuideUses[slot].output.Get()) : evaluatedOutput;
+        const auto output=nativeZzz ? reinterpret_cast<uintptr_t>(nativeRecording->output.Get()) : evaluatedOutput;
         if (output && observation.frame==_frameCount && _upscalerColourSerial<UINT64_MAX)
         {
             const auto& snapshot=observation.snapshot;
@@ -2591,59 +2622,82 @@ bool DLSSG_Dx12::NativeGuideRetired(const NativeGuideUse& use) const
     return done!=UINT64_MAX && done>=use.value;
 }
 
-void DLSSG_Dx12::LogNativeGuideBusy(UINT slot)
+std::shared_ptr<DLSSG_Dx12::NativeGuideUse> DLSSG_Dx12::AcquireNativeGuideRecording()
 {
-    // Called under source continuity, before changing the slot or any SDK tags.
-    // A second completion sample may advance after the refused poll. It cannot
-    // authorize reuse, close an old recording, wait for a future Reset or retire owners.
-    const auto& use=_nativeGuideUses[slot];
-    const UINT64 done=use.fence ? use.fence->GetCompletedValue() : 0;
-    const auto now=GetTickCount64();
-    auto& window=_nativeGuideBusy;
-    if (!window.start) window.start=now;
-    ++window.total;
-    ++window.samples;
-    window.resetPending+=!use.closed;
-    window.unsubmitted+=!use.submitted;
-    window.executing+=use.executing;
-    window.signalMissing+=use.submitted && !use.signalled;
-    window.fenceMissing+=!use.fence;
-    window.fencePending+=use.submitted && use.signalled && use.fence && use.value &&
-        use.value!=UINT64_MAX && done!=UINT64_MAX && done<use.value;
-    window.deviceRemoved+=done==UINT64_MAX;
-    // Reasons overlap across all slots. The row identity belongs only to the
-    // last attempt; closed means Reset revoked replay authority, not GPU idle.
-    if (window.total>3 && now-window.lastLog<1000) return;
-    LOG_INFO("F6 native guide reuse blocked: pid={} provider={} current_frame={} current_epoch={} slot={} old_frame={} serial={} generation={} old_epoch={} sdk_frame={} list={} native_list={} producer_queue={} fence={} target={} sampled_completed={} closed={} submitted={} executing={} signalled={} gap_off={} have_running_options={} total={} window_ms={} samples={} reset_pending={} unsubmitted={} executing_samples={} signal_missing={} fence_missing={} fence_pending={} device_removed={} observation_only=true reasons_overlap=true sample_phase=after_refusal window_scope=all_slots identity_scope=last_attempt",
-        GetCurrentProcessId(),reinterpret_cast<uintptr_t>(this),_frameCount,_inputOwnerEpoch,slot,
-        use.source.frame,use.source.serial,use.source.generation,use.source.epoch,use.source.sdkFrame,
-        reinterpret_cast<uintptr_t>(use.list.Get()),reinterpret_cast<uintptr_t>(use.nativeList.Get()),
-        reinterpret_cast<uintptr_t>(use.queue.Get()),reinterpret_cast<uintptr_t>(use.fence.Get()),use.value,done,
-        use.closed,use.submitted,use.executing,use.signalled,_depthSourceGap,_haveRunningOptions,
-        window.total,now-window.start,window.samples,window.resetPending,window.unsubmitted,window.executing,
-        window.signalMissing,window.fenceMissing,window.fencePending,window.deviceRemoved);
-    const auto total=window.total;
-    window={};
-    window.total=total;
-    window.start=window.lastLog=now;
+    // Continuity is held by the selected SR transaction. A recording is
+    // recyclable only after successful Reset and its own producer completion;
+    // removing a frame identity is never authority to recycle GPU state.
+    std::shared_ptr<NativeGuideUse> reusable;
+    UINT retired=0;
+    for (auto it=_nativeGuideRecordings.begin();it!=_nativeGuideRecordings.end();)
+    {
+        auto& use=**it;
+        if (it->use_count()!=1 || (use.source.frame==_frameCount && use.source.epoch==_inputOwnerEpoch) ||
+            !NativeGuideRetired(use)) { ++it; continue; }
+        _nativeGuideListInterest.Erase(&use);
+        for (UINT slot=0;slot<std::size(_nativeGuideFrames);++slot)
+        {
+            if (_nativeGuideFrames[slot]!=&use) continue;
+            ClearNativeGuideFrame(slot);
+        }
+        if (!reusable) reusable=std::move(*it);
+        it=_nativeGuideRecordings.erase(it);
+        ++retired;
+    }
+    const bool created=!reusable;
+    if (!reusable) reusable=std::make_shared<NativeGuideUse>();
+    _nativeGuideRecordings.push_back(reusable);
+    if (created || _nativeGuideSerial<=3 || _nativeGuideSerial%600==0)
+        LOG_INFO("F6 native guide recording lifecycle: pid={} frame={} epoch={} frame_slot={} owners={} retired={} created={} presentation_slots={} retirement=Reset+producer_fence",
+            GetCurrentProcessId(),_frameCount,_inputOwnerEpoch,GetIndex(),_nativeGuideRecordings.size(),
+            retired,created,BUFFER_COUNT);
+    return reusable;
+}
+
+void DLSSG_Dx12::ClearNativeGuideFrame(UINT slot)
+{
+    // CPU consumer identity only. The independent recording registry retains
+    // every GPU owner until its successful Reset and exact producer fence.
+    std::unique_lock resources(_resourceMutex[slot]);
+    _nativeGuideFrames[slot]=nullptr;
+    for (auto type : {FG_ResourceType::Depth,FG_ResourceType::Velocity})
+    {
+        _frameResources[slot].erase(type); _resourceReady[slot].erase(type);
+    }
+    _guideTags[slot][0]={}; _guideTags[slot][1]={};
+}
+
+dlssg::NativeSource DLSSG_Dx12::NativeGuideFrameSource(UINT slot) const
+{
+    if (slot>=std::size(_nativeGuideFrames)) return {};
+    const auto* use=_nativeGuideFrames[slot];
+    return use ? use->source : dlssg::NativeSource{};
 }
 
 bool DLSSG_Dx12::NativeGuidesRetired() const
 {
-    for (const auto& use:_nativeGuideUses) if (!NativeGuideRetired(use)) return false;
+    for (const auto& recording:_nativeGuideRecordings)
+        if (recording.use_count()!=1 || !NativeGuideRetired(*recording)) return false;
     return true;
 }
 
-void DLSSG_Dx12::NativeGuidesSubmitting(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
+UINT64 DLSSG_Dx12::NativeGuidesSubmitting(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
 {
-    if (!TracksNativeGuides() || !lists) return;
+    if (!TracksNativeGuides() || !lists) return 0;
     // SDK Present may wait for a worker submitting an unrelated UI/SDK list.
     // That worker must not wait for the source continuity held across Present.
-    if (!_nativeGuideListInterest.MayContain(count,lists)) return;
+    if (!_nativeGuideListInterest.MayContain(count,lists)) return 0;
     std::lock_guard continuityLock(_inputContinuityMutex);
-    if (_teardownQuarantined) return;
-    for (UINT i=0;i<count;++i) for (auto& use:_nativeGuideUses)
+    if (_teardownQuarantined) return 0;
+    if (_nativeGuideExecution>=UINT64_MAX-1)
     {
+        _nativeGuideFailed=true; _managedRetained=true; Deactivate(); return 0;
+    }
+    const auto execution=++_nativeGuideExecution;
+    const auto recordings=_nativeGuideRecordings; // COM callbacks may reenter admission and grow the registry.
+    for (UINT i=0;i<count;++i) for (const auto& recording:recordings)
+    {
+        auto& use=*recording;
         if (!use.list || use.closed ||
             (use.list.Get()!=lists[i] && use.nativeList.Get()!=lists[i])) continue;
         if (use.submitted)
@@ -2655,21 +2709,25 @@ void DLSSG_Dx12::NativeGuidesSubmitting(ID3D12CommandQueue* queue, UINT count, I
         {
             // Reserve before Execute: a concurrent successful Reset cannot
             // mistake an escaped recording for an unsubmitted discard.
-            use.queue=queue; use.submitted=true; use.executing=true;
+            use.queue=queue; use.submitted=true; use.executing=true; use.execution=execution;
         }
     }
+    return execution;
 }
 
-void DLSSG_Dx12::NativeGuidesSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
+void DLSSG_Dx12::NativeGuidesSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists,
+    UINT64 execution)
 {
-    if (!TracksNativeGuides() || !lists) return;
+    if (!execution || !TracksNativeGuides() || !lists) return;
     if (!_nativeGuideListInterest.MayContain(count,lists)) return;
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (_teardownQuarantined) return;
     if (_nativeGuideFailed) { _managedRetained=true; Deactivate(); return; }
-    for (UINT i=0;i<count;++i) for (auto& use:_nativeGuideUses)
+    const auto recordings=_nativeGuideRecordings;
+    for (UINT i=0;i<count;++i) for (const auto& recording:recordings)
     {
-        if (!use.list || !use.executing ||
+        auto& use=*recording;
+        if (!use.list || !use.executing || use.execution!=execution ||
             (use.list.Get()!=lists[i] && use.nativeList.Get()!=lists[i])) continue;
         // Called after the actual Execute, even if another thread Reset already
         // closed the recording. Signal is the only GPU completion authority.
@@ -2684,8 +2742,10 @@ void DLSSG_Dx12::NativeGuidesSubmitted(ID3D12CommandQueue* queue, UINT count, ID
             return;
         }
         use.executing=false; use.signalled=true;
-        const auto slot=static_cast<UINT>(&use-_nativeGuideUses);
-        ObserveGuideSubmission(slot,use.fence.Get(),use.value);
+        const auto slot=static_cast<UINT>(use.source.frame%BUFFER_COUNT);
+        if (_nativeGuideFrames[slot]==&use && _guideObservations[slot].frame==use.source.frame &&
+            _guideObservations[slot].snapshot.epoch==use.source.generation)
+            ObserveGuideSubmission(slot,use.fence.Get(),use.value);
         if (++_nativeGuideSubmissions<=3 || _nativeGuideSubmissions%600==0)
             LOG_INFO("R1058 native FG producer submitted: pid={} frame={} serial={} source_generation={} input_epoch={} sdk_frame={} list={} native_list={} output={} producer_queue={} fence={} target={} sr_succeeded={} SDK_snapshot=ValidNow generated=UNKNOWN",
                 GetCurrentProcessId(),use.source.frame,use.source.serial,use.source.generation,use.source.epoch,use.source.sdkFrame,
@@ -2699,8 +2759,12 @@ void DLSSG_Dx12::NativeGuidesReset(ID3D12CommandList* list)
     if (!TracksNativeGuides() || !list) return;
     if (!_nativeGuideListInterest.MayContain(list)) return;
     std::lock_guard continuityLock(_inputContinuityMutex);
-    for (auto& use:_nativeGuideUses)
+    if (_teardownQuarantined) return;
+    for (auto& recording:_nativeGuideRecordings)
+    {
+        auto& use=*recording;
         if ((use.list.Get()==list || use.nativeList.Get()==list) && !use.closed) use.closed=true;
+    }
     // Reset closes recording replay authority; it is NOT GPU completion.
 }
 
@@ -2708,24 +2772,27 @@ dlssg::NativeSource DLSSG_Dx12::NativeGuideSource(ID3D12CommandList* list)
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (!OwnsNativeZzzSource() || !TracksNativeGuides()) return {};
-    const auto& use=_nativeGuideUses[GetIndex()];
-    return use.list.Get()==list && !use.closed && !use.submitted &&
-        NativeGuideSourceCurrent(use.source) ? use.source : dlssg::NativeSource{};
+    const auto* use=_nativeGuideFrames[GetIndex()];
+    return use && use->list.Get()==list && !use->closed && !use->submitted &&
+        NativeGuideSourceCurrent(use->source) ? use->source : dlssg::NativeSource{};
 }
 
-DLSSG_Dx12::NativeGuideUse* DLSSG_Dx12::FindNativeGuideSource(const dlssg::NativeSource& source)
+std::shared_ptr<DLSSG_Dx12::NativeGuideUse> DLSSG_Dx12::FindNativeGuideSource(const dlssg::NativeSource& source)
 {
     if (!source) return nullptr;
-    for (auto& use:_nativeGuideUses)
+    for (auto& recording:_nativeGuideRecordings)
+    {
+        auto& use=*recording;
         if (use.source==source && (uintptr_t)use.list.Get()==source.list &&
-            (uintptr_t)use.output.Get()==source.output) return &use;
+            (uintptr_t)use.output.Get()==source.output) return recording;
+    }
     return nullptr;
 }
 
 bool DLSSG_Dx12::NativeGuideSourceCurrent(const dlssg::NativeSource& source)
 {
-    const auto* use=FindNativeGuideSource(source);
-    return use && OwnsNativeZzzSource() && CanSubmitInputs() && !_nativeGuideFailed &&
+    const auto use=FindNativeGuideSource(source);
+    return use && _nativeGuideFrames[source.frame%BUFFER_COUNT]==use.get() && OwnsNativeZzzSource() && CanSubmitInputs() && !_nativeGuideFailed &&
         source.sdkFrameKnown && source.providerViewport==static_cast<uint32_t>(viewport) &&
         source.provider==reinterpret_cast<uintptr_t>(this) && use->frameScope &&
         source.upstreamViewport==use->frameScope->origin.viewport &&
@@ -2753,7 +2820,7 @@ bool DLSSG_Dx12::NativeGuidePresentToken(sl::FrameToken*& token, dlssg::NativeSo
     std::lock_guard continuityLock(_inputContinuityMutex);
     token=nullptr;
     const auto key=source ? source : _nativeGuideDispatch;
-    const auto* use=FindNativeGuideSource(key);
+    const auto use=FindNativeGuideSource(key);
     if (!use || !use->dispatched || !IsActive() || IsPaused() || !NativeGuideToken(key,token) ||
         !GuideTagsCurrent(static_cast<int>(key.frame%BUFFER_COUNT),key.frame)) return false;
     source=key; // A later End/Sleep must resolve this same source, never the newest one.
@@ -2763,7 +2830,7 @@ bool DLSSG_Dx12::NativeGuidePresentToken(sl::FrameToken*& token, dlssg::NativeSo
 bool DLSSG_Dx12::BeginNativeGuidePresent(const dlssg::NativeSource& source)
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
-    auto* use=FindNativeGuideSource(source);
+    const auto use=FindNativeGuideSource(source);
     // A successful Dispatch authorizes one actual SDK Present, independently
     // of who sends Reflex markers. Failed/occluded Presents consume it too.
     if (!source || source!=_nativeGuideDispatch || !use || !use->dispatched ||
@@ -2781,9 +2848,12 @@ bool DLSSG_Dx12::NativeGuideBasePresentSafe()
     if (!OwnsNativeZzzSource() || !dlssg::zzz::BasePresentSafe(_teardownPending,_teardownOffAccepted,
         _nativeGuideFailed || _zzzSCFailed || _hookRetiring || _ownerChanging || _teardownCompleting ||
         _teardownQuarantined || g_dlssgTeardownQuarantined.load())) return false;
-    for (const auto& use:_nativeGuideUses)
+    for (const auto& recording:_nativeGuideRecordings)
+    {
+        const auto& use=*recording;
         if (use.executing || (use.submitted && (!use.signalled || !use.queue || !use.fence ||
             !use.value || use.value==UINT64_MAX || use.fence->GetCompletedValue()==UINT64_MAX))) return false;
+    }
     return true;
 }
 
@@ -2791,9 +2861,12 @@ bool DLSSG_Dx12::NativeGuideGapSafe()
 {
     if (!OwnsNativeZzzSource() || !CanSubmitInputs() || _nativeGuideFailed || _zzzSCFailed ||
         !_device || !_gameCommandQueue || _device->GetDeviceRemovedReason()!=S_OK) return false;
-    for (const auto& use:_nativeGuideUses)
+    for (const auto& recording:_nativeGuideRecordings)
+    {
+        const auto& use=*recording;
         if (use.executing || (use.submitted && (!use.signalled || !use.queue || !use.fence ||
             !use.value || use.value==UINT64_MAX || use.fence->GetCompletedValue()==UINT64_MAX))) return false;
+    }
     return true; // A known pending fence retains its owners; Off does not retire it.
 }
 
@@ -2839,11 +2912,12 @@ void DLSSG_Dx12::CompleteNativeGuideSource(ID3D12CommandList* list, const dlssg:
     std::lock_guard continuityLock(_inputContinuityMutex);
     // Evaluate may span a newer source/marker. Resolve the original transaction,
     // never the current ring slot, and never grant it a newer frame identity.
-    auto* use=FindNativeGuideSource(source);
+    const auto use=FindNativeGuideSource(source);
     if (!use || use->list.Get()!=list || use->closed || use->submitted) return;
     use->srSucceeded=succeeded && output==use->output.Get() &&
         source.epoch==_inputOwnerEpoch && source.generation==_inputContinuity.SourceGeneration();
-    const auto colourSlot=static_cast<UINT>(use-_nativeGuideUses);
+    const auto colourSlot=static_cast<UINT>(source.frame%BUFFER_COUNT);
+    if (_nativeGuideFrames[colourSlot]!=use.get()) return; // Old completion cannot touch a newer frame.
     const auto colourSource=_upscalerColourSources[colourSlot];
     if (UpscalerColourCurrent(colourSource) && !colourSource->bridge &&
         colourSource->key.frame==source.frame && colourSource->list==source.list &&
@@ -2853,7 +2927,7 @@ void DLSSG_Dx12::CompleteNativeGuideSource(ID3D12CommandList* list, const dlssg:
     {
         try
         {
-            const auto slot=static_cast<UINT>(use-_nativeGuideUses);
+            const auto slot=colourSlot;
             auto& snapshot=_guideObservations[slot].snapshot;
             if (colourSource && _guideObservations[slot].frame==source.frame && snapshot.epoch==source.generation)
             {
@@ -2871,8 +2945,10 @@ void DLSSG_Dx12::CompleteNativeGuideSource(ID3D12CommandList* list, const dlssg:
 
 bool DLSSG_Dx12::OrderNativeGuides(UINT slot)
 {
-    auto& use=_nativeGuideUses[slot];
     if (!OwnsNativeZzzSource()) return true; // Existing wDX12 UI submission path.
+    const auto recording=FindNativeGuideSource(NativeGuideFrameSource(slot));
+    if (!recording) return false;
+    auto& use=*recording;
     if (!NativeGuideSourceCurrent(use.source)) return false;
     if ((use.fence && use.fence->GetCompletedValue()==UINT64_MAX) ||
         (_device && _device->GetDeviceRemovedReason()!=S_OK))
@@ -2902,17 +2978,17 @@ bool DLSSG_Dx12::GuideTagsCurrent(int slot, UINT64 frame)
     const auto owner=CurrentInputOwner();
     if (slot<0 || slot>=BUFFER_COUNT || frame!=_frameCount ||
         !_inputContinuity.Current(slot,frame,owner)) return false;
-    const auto& native=_nativeGuideUses[slot];
+    const auto* native=_nativeGuideFrames[slot];
     const bool nativeZzz=OwnsNativeZzzSource();
-    if (nativeZzz && (!NativeGuideSourceCurrent(native.source) ||
-        !native.frameScope || !native.frameScope->Consumable(native.srSucceeded) ||
-        !native.srSucceeded || !native.submitted || !native.signalled || !native.ordered)) return false;
+    if (nativeZzz && (!native || !NativeGuideSourceCurrent(native->source) ||
+        !native->frameScope || !native->frameScope->Consumable(native->srSucceeded) ||
+        !native->srSucceeded || !native->submitted || !native->signalled || !native->ordered)) return false;
     std::shared_lock resources(_resourceMutex[slot]);
     for (auto type : {FG_ResourceType::Depth,FG_ResourceType::Velocity})
     {
         const auto& tag=_guideTags[slot][type==FG_ResourceType::Depth ? 0 : 1];
         const auto found=_frameResources[slot].find(type);
-        if (!tag.accepted || tag.frame!=frame || (nativeZzz && tag.nativeSerial!=native.source.serial) ||
+        if (!tag.accepted || tag.frame!=frame || (nativeZzz && tag.nativeSerial!=native->source.serial) ||
             tag.generation!=_inputContinuity.SourceGeneration() || !(tag.owner==owner) ||
             found==_frameResources[slot].end()) return false;
         const auto& a=found->second; const auto& b=tag.input;
@@ -3125,7 +3201,8 @@ bool DLSSG_Dx12::Dispatch()
     if (fIndex < 0)
         return false;
 
-    const auto nativeSource=OwnsNativeZzzSource() ? _nativeGuideUses[fIndex].source : dlssg::NativeSource{};
+    const auto nativeRecording=OwnsNativeZzzSource() ? FindNativeGuideSource(NativeGuideFrameSource(fIndex)) : nullptr;
+    const auto nativeSource=nativeRecording ? nativeRecording->source : dlssg::NativeSource{};
     if (OwnsNativeZzzSource() && !NativeGuideSourceCurrent(nativeSource)) return false;
     if (!IsActive() || IsPaused())
         return false;
@@ -3461,7 +3538,7 @@ bool DLSSG_Dx12::Dispatch()
     if (starRailFrame && !sourceStillCurrent()) return false;
     if (resumingInputGap && (!_isActive || !_inputContinuity.Held())) return false;
     sl::Constants constData = {};
-    if (nativeSource) constData=_nativeGuideUses[fIndex].constants;
+    if (nativeSource) constData=nativeRecording->constants;
     else if (!BuildGuideConstants(fIndex,constData,!genshinFrame)) return false;
 
     if (_depthSourceGap || (resumingInputGap && (!starRailFrame || resetStarRailHistory)))
@@ -3588,7 +3665,7 @@ bool DLSSG_Dx12::Dispatch()
         !_generationState.Accepted(optionsScope, willDispatchFrame)) return false;
     if (nativeSource && options.mode!=sl::DLSSGMode::eOff)
     {
-        _nativeGuideUses[fIndex].dispatched=true;
+        nativeRecording->dispatched=true;
         _nativeGuideDispatch=nativeSource; // Exact successful Dispatch, not a marker or latest-slot lookup.
     }
     if (CanRetainForInputGap()) _managedRetained = true;
@@ -5311,7 +5388,8 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
     const auto sourceFrame = _frameCount;
     // Optional HUD/UI tags use this source's SDK ID too. They cannot allocate
     // an ordinal-derived token in the independent SDK clock.
-    const auto nativeSource=OwnsNativeZzzSource() ? _nativeGuideUses[fIndex].source : dlssg::NativeSource{};
+    const auto nativeRecording=OwnsNativeZzzSource() ? FindNativeGuideSource(NativeGuideFrameSource(fIndex)) : nullptr;
+    const auto nativeSource=nativeRecording ? nativeRecording->source : dlssg::NativeSource{};
     if (OwnsNativeZzzSource() && (!nativeSource || !NativeGuideSourceCurrent(nativeSource))) return false;
     if (checkedGuide && nativeSource && nativeSource.list!=(uintptr_t)inputResource->cmdList)
         return RefuseDepthContract("native-guide-recording-identity");

@@ -224,11 +224,43 @@ unchanged = [
 for signature in unchanged:
     check(body(source, signature) == body(baseline, signature), f"unrelated native contract changed: {signature}")
 
-# A function-pointer getter such as ReflexSleep() is not a blocking invocation.
-# Preserve actual waits and fixed pool uses independently of pacing admission.
-before = [line for line in baseline.splitlines() if re.search(r"WaitForSingleObject|(?<!\w)Sleep\(|SetEventOnCompletion|\bBUFFER_COUNT\b", line)]
-after = [line for line in source.splitlines() if re.search(r"WaitForSingleObject|(?<!\w)Sleep\(|SetEventOnCompletion|\bBUFFER_COUNT\b", line)]
-check(before == after, "wait or pool contract changed")
+# Compare complete wait expressions, including arguments and counts. Structural
+# frame-slot/owner changes may legitimately add BUFFER_COUNT uses. Comments,
+# log strings and a function-pointer getter such as ReflexSleep() are not waits.
+def code_only(text):
+    return re.sub(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
+                  lambda match: " " * len(match[0]), text)
+
+
+def wait_calls(text):
+    code = code_only(text)
+    calls = []
+    pattern = (r'(?:\b(?:WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|Sleep(?:Ex)?)|'
+               r'\b[A-Za-z_]\w*(?:(?:->|\.)[A-Za-z_]\w*)*(?:->|\.)\s*(?:Wait|SetEventOnCompletion))\s*\(')
+    for match in re.finditer(pattern, code):
+        start, end, depth = match.start(), match.end(), 1
+        while depth:
+            depth += (code[end] == "(") - (code[end] == ")")
+            end += 1
+        calls.append(re.sub(r"\s+", "", code[start:end]))
+    return calls
+
+
+check(wait_calls(baseline) == wait_calls(source), "actual CPU/GPU wait calls or their arguments changed")
+sysutils_path = "OptiScaler/SysUtils.h"
+sysutils = (root / sysutils_path).read_text(encoding="utf-8-sig")
+baseline_sysutils = subprocess.check_output(["git", "show", f"HEAD:{sysutils_path}"], cwd=root).decode("utf-8-sig")
+
+
+def buffer_count_definition(text):
+    return re.findall(r"(?m)^\s*#\s*define\s+BUFFER_COUNT\s+([^\n]+)", code_only(text))
+
+
+check(buffer_count_definition(sysutils) == buffer_count_definition(baseline_sysutils) and
+      [definition.strip() for definition in buffer_count_definition(sysutils)] == ["4"],
+      "BUFFER_COUNT definition changed or no longer defines exactly four presentation slots")
+check(not re.search(r"#\s*(?:define|undef)\s+BUFFER_COUNT\b", code_only(source + header)),
+      "provider locally overrides the shared four-slot constant")
 deactivate = body(source, "void DLSSG_Dx12::Deactivate(")
 check(deactivate.index("_reflexOwnership = ReflexOwnership::ReleasePending") <
       deactivate.index("DisableRetainedProvider()") and

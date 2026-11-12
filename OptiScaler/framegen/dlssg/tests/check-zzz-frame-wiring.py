@@ -3,6 +3,7 @@
 This checks real Windows adapters; it does not pretend to execute those TUs/GPU.
 """
 from pathlib import Path
+import re
 
 root = Path(__file__).resolve().parents[3]
 fg = (root / "hooks/FG_Hooks.cpp").read_text(encoding="utf-8-sig")
@@ -13,6 +14,7 @@ provider = (root / "framegen/dlssg/DLSSG_Dx12.cpp").read_text(encoding="utf-8-si
 header = (root / "framegen/dlssg/DLSSG_Dx12.h").read_text(encoding="utf-8-sig")
 contract = (root / "framegen/dlssg/ZzzFrameScope.h").read_text(encoding="utf-8-sig")
 ngx = (root / "hooks/ngx/NativeDx12Hooks.cpp").read_text(encoding="utf-8-sig")
+tracking = (root / "resource_tracking/ResTrack_dx12.cpp").read_text(encoding="utf-8-sig")
 checks = 0
 
 
@@ -72,15 +74,38 @@ check("_zzzFrameAdmission" not in provider + header and "class Admission" not in
 check("frameScope->origin.frame,(uintptr_t)list" in pair, "SDK ID is not copied from synchronous real origin")
 check("use.frameScope=frameScope" in pair, "upstream result not carried with full GPU owner")
 check("_nativeGuideSdkFrame" not in provider + header, "independent SDK counter remains")
-check("NativeGuideRetired(use)" in pair and "CreateFence" in pair, "existing GPU ownership guards disappeared")
+acquire = body(provider, "DLSSG_Dx12::AcquireNativeGuideRecording(")
+clear_frame = body(provider, "void DLSSG_Dx12::ClearNativeGuideFrame(")
+check("AcquireNativeGuideRecording()" in pair and "CreateFence" in pair and
+      "NativeGuideRetired(use)" in acquire, "publication bypasses real retired-owner acquisition/fence")
+check("std::vector<std::shared_ptr<NativeGuideUse>> _nativeGuideRecordings" in header and
+      "NativeGuideUse* _nativeGuideFrames[BUFFER_COUNT]" in header and "_nativeGuideUses" not in provider + header,
+      "recording ownership is still coupled to the four presentation slots")
+check("use_count()" in acquire and "!=1" in re.sub(r"\s+", "", acquire),
+      "recursive acquisition can recycle an owner still leased by the CPU stack")
+for member in ("std::unique_ptr<DS_Dx12> depthScale", "std::unique_ptr<RF_Dx12> flip[2]",
+               "ComPtr<ID3D12Resource> copies[2]"):
+    check(member in header, f"recording lacks independent GPU state: {member}")
+check("_nativeGuideListInterest.Erase(&use)" in acquire and "ClearNativeGuideFrame(slot)" in acquire and
+      "_nativeGuideFrames[slot]!=&use" in acquire and "_nativeGuideRecordings.erase(it)" in acquire,
+      "retirement must prune interests and clear only the retired owner's borrowed frame")
+check("_nativeGuideFrames[slot]=nullptr" in clear_frame and "_frameResources[slot].erase(type)" in clear_frame and
+      "_resourceReady[slot].erase(type)" in clear_frame and "_guideTags[slot][0]={}" in clear_frame and
+      all(term not in clear_frame for term in (".Reset(", "_nativeGuideRecordings", "_nativeGuideListInterest", "SAFE_RELEASE")),
+      "frame identity cleanup can release a recording GPU owner")
+check(pair.index("ClearNativeGuideFrame(slot)") < pair.index("_nativeGuideFrames[slot]=") <
+      pair.index("_nativeGuideListInterest.Publish("), "slot wrap publishes before revoking old consumer identities")
 current = body(provider, "bool DLSSG_Dx12::NativeGuideSourceCurrent(")
 check("source.sdkFrameKnown" in current and "source.providerViewport==static_cast<uint32_t>(viewport)" in current, "source lacks known frame/local viewport check")
 check("source.upstreamViewport==use->frameScope->origin.viewport" in current and "source.provider==reinterpret_cast<uintptr_t>(this)" in current, "game viewport or exact provider association missing")
 check("frameScope->origin.viewport,static_cast<uint32_t>(viewport),true" in pair, "both viewport namespaces not recorded")
 check("source.sdkFrame==use->frameScope->origin.frame" in current and "use->frameScope->Preparing()" in current, "source callback can relabel/revive failed scope")
+check("_nativeGuideFrames[source.frame%BUFFER_COUNT]==use.get()" in current,
+      "current source can borrow an older recording after its frame slot was replaced")
 check("Consumable(use.srSucceeded)" in body(provider, "bool DLSSG_Dx12::OrderNativeGuides("), "pending upstream/failed SR enters ordered consumer")
 tags = body(provider, "bool DLSSG_Dx12::GuideTagsCurrent(")
-check("Consumable(native.srSucceeded)" in tags, "tags consumable after upstream/selected failure")
+check("Consumable(native->srSucceeded)" in tags and "tag.nativeSerial!=native->source.serial" in tags,
+      "tags lack exact native recording identity or upstream/selected success")
 present = body(provider, "bool DLSSG_Dx12::BeginNativeGuidePresent(")
 check("GuideTagsCurrent" in present and "ConsumePresentOnce(use->presented)" in present, "actual Present lacks tested one-shot consumption gate")
 once = body(contract, "inline bool ConsumePresentOnce(")
@@ -92,7 +117,7 @@ complete = body(provider, "void DLSSG_Dx12::CompleteNativeGuideSource(")
 check("use->srSucceeded=succeeded" in complete and "RefuseDepthContract" in complete, "actual selected result does not revoke source")
 check("use.output.Reset" not in complete and "use->output.Reset" not in complete, "SR failure destroys GPU owner")
 for callback in ("NativeGuidesSubmitting", "NativeGuidesSubmitted", "NativeGuidesReset", "CompleteNativeGuideSource"):
-    section = body(provider, f"void DLSSG_Dx12::{callback}(")
+    section = body(provider, f"DLSSG_Dx12::{callback}(")
     check("sdkFrame=" not in section and "source={" not in section, f"{callback} rewrites source numeric identity")
 refusal = body(provider, "bool DLSSG_Dx12::RefuseDepthContract(")
 check("frameKnown &&" in refusal and "source.sdkFrameKnown" in refusal, "null-tag refusal invents unknown frame ID")
@@ -168,6 +193,34 @@ options_call = provider_dispatch[options_start:provider_dispatch.index("const bo
 check(options_call.index("_nativeGapOffProof.Invalidate();") < options_call.index("return setOptions ? StreamlineHooks::SubmitDlssgOptions(setOptions,viewport,options)"), "On/options call can reuse stale Off through failed constants/partial options")
 check("_nativeGapOffProof.Invalidate();" in body(provider, "void DLSSG_Dx12::Deactivate(") and "_nativeGapOffProof.Invalidate();" in body(provider, "bool DLSSG_Dx12::DisableRetainedProvider("), "owner teardown/options changes preserve stale native gap proof")
 submitted = body(provider, "void DLSSG_Dx12::NativeGuidesSubmitted(")
+submitting = body(provider, "UINT64 DLSSG_Dx12::NativeGuidesSubmitting(")
+check("use.execution=execution" in submitting and "use.execution!=execution" in submitted and
+      "UINT64 execution" in header, "post-Execute can claim another recording generation reservation")
+execute = body(tracking, "void ResTrack_Dx12::hkExecuteCommandLists(")
+check(execute.index("fg->NativeGuidesSubmitting(") < execute.index("o_ExecuteCommandLists(") <
+      execute.index("fg->NativeGuidesSubmitted("), "execution receipt does not bracket the real queue Execute")
+check("fgExecution && State::Instance().currentFG==fg" in execute and
+      "ppCommandLists, fgExecution)" in execute, "post-Execute loses exact receipt or current provider gate")
+reset_hook = body(tracking, "static HRESULT STDMETHODCALLTYPE hkLateReset(")
+check(reset_hook.index("o_LateReset(") < reset_hook.index("if (SUCCEEDED(result))") <
+      reset_hook.index("fg->NativeGuidesReset(cmd)"), "failed or unexecuted real Reset can close recording replay authority")
+for callback in ("NativeGuidesSubmitting", "NativeGuidesSubmitted", "NativeGuidesReset"):
+    section = body(provider, f"DLSSG_Dx12::{callback}(")
+    check(section.index("_nativeGuideListInterest.MayContain(") < section.index("std::lock_guard continuityLock"),
+          f"{callback} takes continuity before the short-lock unrelated-list filter")
+check("_nativeGuideFrames[slot]==&use" in submitted and "snapshot.epoch==use.source.generation" in submitted,
+      "old post-Execute can overwrite a newer frame observation")
+for section in (submitting, submitted):
+    check("const auto recordings=_nativeGuideRecordings" in section and
+          "for (const auto& recording:recordings)" in section,
+          "COM callback can invalidate registry iteration or release the active CPU owner")
+check("const auto use=FindNativeGuideSource(source)" in complete and
+      "_nativeGuideFrames[colourSlot]!=use.get()" in complete,
+      "late selected completion loses its CPU lease or modifies a replacement frame")
+quarantine_start = provider.index("recording->quarantineSelf=recording")
+check(quarantine_start < provider.index("_nativeGuideRecordings.clear()", quarantine_start) <
+      provider.index("for (auto& frame:_nativeGuideFrames) frame=nullptr", quarantine_start),
+      "quarantine must self-retain all independent owners before clearing registry/frame identities")
 check("FAILED(queue->Signal(use.fence.Get(),use.value))" in submitted and "_nativeGuideFailed=true;" in submitted and "_managedRetained=true;" in submitted, "native Signal failure loses actual full owner retention")
 retired = body(provider, "bool DLSSG_Dx12::NativeGuideRetired(")
 check("use.fence->GetCompletedValue()" in retired and "done>=use.value" in retired and "if (!use.signalled" in retired, "native owner retirement no longer requires actual source fence")

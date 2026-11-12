@@ -772,19 +772,19 @@ void ResTrack_Dx12::hkCreateUnorderedAccessView(ID3D12Device* This, ID3D12Resour
 
 #pragma endregion
 
-// Only DLSS-NR's finished-picture path uses the queue hook now; frame generation no longer tracks command
-// lists through it (upstream e8c9834d).
+// Notify exact producer recordings on both sides of the actual Execute.
 void ResTrack_Dx12::hkExecuteCommandLists(ID3D12CommandQueue* This, UINT NumCommandLists,
                                           ID3D12CommandList* const* ppCommandLists)
 {
     // Before the submit: the frame's first one is where the game's simulation ends and its render submit starts
     native::lowlatency::OnFirstSubmit(This);
-    if (auto* fg=dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG); fg && fg->TracksNativeGuides())
-        fg->NativeGuidesSubmitting(This, NumCommandLists, ppCommandLists);
+    auto* fg=dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG);
+    const auto fgExecution=fg && fg->TracksNativeGuides() ?
+        fg->NativeGuidesSubmitting(This, NumCommandLists, ppCommandLists) : 0;
     const auto previewReceipt=DlssNr::FinishedPictureSubmitting(This,NumCommandLists,ppCommandLists);
     o_ExecuteCommandLists(This, NumCommandLists, ppCommandLists);
-    if (auto* fg=dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG); fg && fg->TracksNativeGuides())
-        fg->NativeGuidesSubmitted(This, NumCommandLists, ppCommandLists);
+    if (fgExecution && State::Instance().currentFG==fg)
+        fg->NativeGuidesSubmitted(This, NumCommandLists, ppCommandLists, fgExecution);
     HoYoShade::NotifyNativeSubmit(This, NumCommandLists, ppCommandLists);
     DlssNr::FinishedPictureSubmitted(This, NumCommandLists, ppCommandLists,previewReceipt);
 }
