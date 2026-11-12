@@ -1,6 +1,8 @@
 #include "pch.h"
 #include <runtime/F6InputPolicy.h>
 #include <runtime/ModuleLifetime.h>
+#include <runtime/MfgAsiStartup.h>
+#include <framegen/dlssg/MfgUnlockSelection.h>
 #include "integration/HoYoShade.h"
 #include <genshin/GenshinNativeQueryProvenance.h>
 #include "dllmain.h"
@@ -242,9 +244,18 @@ void LoadAsiPlugins()
             std::transform(fileName.begin(), fileName.end(), fileName.begin(),
                            [](wchar_t c) { return std::towlower(c); });
 
-            if (fileName == L"mfgunlocker.asi")
+            if (MfgAsiStartup::OwnsName(fileName))
             {
-                LOG_INFO("Built-in FG path selected; skipping MFGUnlocker.asi");
+                auto* config = Config::Instance();
+                if (fileName != L"mfgunlocker.asi" ||
+                    MfgUnlock::SkipExternalPlugin(fileName, config->FGDLSSGAdaMfgUnlock.value_or_default(),
+                                                  config->FGDLSSGAmpereMfgUnlock.value_or_default()))
+                    LOG_INFO("Built-in MFG owner or plugin alias selected; skipping MFG ASI");
+                else
+                {
+                    MfgAsiStartup::Select(entry.path());
+                    LOG_INFO("MFG ASI selected for post-attach startup worker");
+                }
                 continue;
             }
 
@@ -2134,6 +2145,7 @@ DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
 {
     startupav::SetPhase(startupav::Phase::WorkerEntry);
     startupav::Prepare(dllModule);
+    MfgAsiStartup::Initialize();
     const bool hoYoEnabled = Config::Instance()->HoYoShadeEnabled.value_or_default();
     const unsigned hoYoStage = static_cast<unsigned>(Config::Instance()->HoYoShadeStage.value_or_default());
     // This existing post-attach worker is outside the loader callout. Prepare
@@ -2599,6 +2611,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID /*lpRese
         else
         {
             const auto startupError = GetLastError();
+            MfgAsiStartup::WorkerUnavailable();
             LOG_ERROR("Startup worker creation failed: {}", startupError);
         }
 

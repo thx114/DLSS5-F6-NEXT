@@ -84,6 +84,7 @@ $suites = @(
     @{ Name = 'Sm86Settings'; Source = 'OptiScaler/runtime/tests/Sm86SettingsTests.cpp' },
     @{ Name = 'PrivateFgTestModule'; Source = 'OptiScaler/runtime/tests/PrivateFgTestModuleTests.cpp'; AdditionalSource = 'tests/private-fg-test/fixture.cpp'; StubInclude = 'tests/private-fg-test/stubs'; Libraries = 'bcrypt.lib' },
     @{ Name = 'LoaderStartupContext'; Source = 'OptiScaler/runtime/tests/LoaderStartupContextTests.cpp' },
+    @{ Name = 'PluginStartupGate'; Source = 'OptiScaler/runtime/tests/PluginStartupGateTests.cpp' },
     @{ Name = 'UpscalerFrameParameters'; Source = 'OptiScaler/inputs/FG/tests/UpscalerFrameParametersTests.cpp' },
     @{ Name = 'SceneGuideContract'; Source = 'OptiScaler/dlssnr/tests/nr_scene_guide_contract.cpp' },
     @{ Name = 'NrDetailContinuity'; Source = 'OptiScaler/dlssnr/tests/nr_detail_history_continuity.cpp' },

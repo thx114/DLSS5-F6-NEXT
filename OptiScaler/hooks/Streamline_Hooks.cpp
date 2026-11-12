@@ -20,6 +20,7 @@
 #include <proxies/Streamline_Proxy.h>
 #include <imgui/ImGuiNotify.hpp>
 #include <runtime/GuideDiagnostics.h>
+#include <runtime/MfgAsiStartup.h>
 
 #include <json.hpp>
 #include <sl1_reflex.h>
@@ -615,6 +616,12 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
         return o_slInit(localPref, sdkVersion);
     }
 
+    // Only an effective game FG request consumes the ASI provider. SR/Reflex
+    // requests, including the Opti-owned FG route above, remain independent.
+    if (localPref.featuresToLoad != nullptr &&
+        std::find(localPref.featuresToLoad, localPref.featuresToLoad + localPref.numFeaturesToLoad,
+                  sl::kFeatureDLSS_G) != localPref.featuresToLoad + localPref.numFeaturesToLoad &&
+        !MfgAsiStartup::AwaitGraphicsStartup()) return sl::Result::eErrorNotInitialized;
     return o_slInit(localPref, sdkVersion);
 }
 

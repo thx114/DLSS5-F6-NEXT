@@ -9,6 +9,7 @@
 #include <proxies/KernelBase_Proxy.h>
 #include <hooks/Streamline_Hooks.h>
 #include <framegen/dlssg/MfgUnlock.h>
+#include <runtime/MfgAsiStartup.h>
 
 #include <sl.h>
 #include <sl_pcl.h>
@@ -67,6 +68,7 @@ class StreamlineProxy
 
     static bool LoadStreamline()
     {
+        if (!MfgAsiStartup::AwaitGraphicsStartup()) return false;
         if (_dll != nullptr)
             return true;
 
