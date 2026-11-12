@@ -16,7 +16,7 @@
 | 构建 | Release x64 exit0，2431项冻结输入构建前后不变，全部948导出名称／序号不变；既有警告保留于 `zzz-asi-build.log` |
 | 其他游戏 | 原神、星铁仍选择 `official/F6`，共享及旧四路径 DLL 仍 `1ABD9AFD`／源码 `51fdb7b`，原 File ID／硬链接不变；233项本次保护文件逐字节及身份不变，全局 `OptiScaler/state.json` 未改 |
 | NR／桥 | 绝 NR 仍为310.9.16-SF／`CDFA6C1EC784867182164C7836F324F087B5C9F374D0C9FE46F54999FEABF3ED`；共享 FSR 桥仍 CC301B42，未调整 HDR、HUDless、游戏文件或图形配置 |
-| 验收边界 | 本次未查询、启动、终止或操控游戏。磁盘及单游戏选择已核验，实际加载、生成帧显示和周期卡顿改善未知，用户下次重启绝区零后验收；不重复关闭 FG 对照 |
+| 验收边界 | 本次未查询、启动、终止或操控游戏。磁盘及单游戏选择已核验，实际加载、生成帧显示和周期卡顿改善未知，用户下次重启启动器及绝区零后验收；不重复关闭 FG 对照 |
 
 当前候选与测试指针为 `build/current-{artifact,build,tests}.json`。共享正式部署回执 `build/current-deployment.json` 保持原字节；绝单游戏部署回执单列 `build/current-game-deployment-nap_cn.json`，完整证据为 `build/repair-20261112/zzz-asi-{source,tests,review,artifact,deployment}.json`，部署可复核脚本 `deploy-zzz-asi.py`。启动器CLI只执行 `set_opt_build`，数据库实际只改变 `launch_option_optiscaler_build_nap_cn_x6znKlJ0xK`。回到内置时只需将绝区零构建选择切回 `official/F6`，不覆盖共享 DLL。
 

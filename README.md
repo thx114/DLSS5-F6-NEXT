@@ -1,6 +1,6 @@
 # F6 NEXT
 
-2026-11-12：**绝区零已按用户要求单独切到 `local/F6-ZZZ-ASI`；原神、星铁保持 `official/F6` 内置。隔离 DLL 283B6B07／源码97a2cad已构建和部署，真实加载与卡顿改善待重启游戏验收。HDR暂缓。** 详见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
+2026-11-12：**绝区零已按用户要求单独切到 `local/F6-ZZZ-ASI`；原神、星铁保持 `official/F6` 内置。隔离 DLL 283B6B07／源码97a2cad已构建和部署，真实加载与卡顿改善待重启启动器及游戏验收。HDR暂缓。** 详见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
 
 唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`。绝专属配置保留SR／NR／FG、原6×参数，仅关闭内置Ada／Ampere解锁并从独立插件路径加载既有ASI。独立post-attach startup与FG有界等待保持SR／NR独立。旧正式F6、原神／星铁、四DLL硬链接、233项保护文件、全局选择和旧profiles未改；单游戏回执 `build/current-game-deployment-nap_cn.json`，共享部署仍由原 `current-deployment.json` 记录。
 

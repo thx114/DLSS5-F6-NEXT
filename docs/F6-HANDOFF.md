@@ -18,7 +18,7 @@
 | 构建 | Release x64 exit0，2431项冻结输入构建前后不变，全部948导出名称／序号不变；既有警告保留于 `zzz-asi-build.log` |
 | 其他游戏 | 原神、星铁仍选择 `official/F6`，共享及旧四路径 DLL 仍 `1ABD9AFD`／源码 `51fdb7b`，原 File ID／硬链接不变；233项本次保护文件逐字节及身份不变，全局 `OptiScaler/state.json` 未改 |
 | NR／桥 | 绝 NR 仍为310.9.16-SF／`CDFA6C1EC784867182164C7836F324F087B5C9F374D0C9FE46F54999FEABF3ED`；共享 FSR 桥仍 CC301B42，未调整 HDR、HUDless、游戏文件或图形配置 |
-| 验收边界 | 本次未查询、启动、终止或操控游戏。磁盘及单游戏选择已核验，实际加载、生成帧显示和周期卡顿改善未知，用户下次重启绝区零后验收；不重复关闭 FG 对照 |
+| 验收边界 | 本次未查询、启动、终止或操控游戏。磁盘及单游戏选择已核验，实际加载、生成帧显示和周期卡顿改善未知，用户下次重启启动器及绝区零后验收；不重复关闭 FG 对照 |
 
 当前候选与测试指针为 `build/current-{artifact,build,tests}.json`。共享正式部署回执 `build/current-deployment.json` 保持原字节；绝单游戏部署回执单列 `build/current-game-deployment-nap_cn.json`，完整证据为 `build/repair-20261112/zzz-asi-{source,tests,review,artifact,deployment}.json`，部署可复核脚本 `deploy-zzz-asi.py`。启动器CLI只执行 `set_opt_build`，数据库实际只改变 `launch_option_optiscaler_build_nap_cn_x6znKlJ0xK`。回到内置时只需将绝区零构建选择切回 `official/F6`，不覆盖共享 DLL。
 
@@ -374,4 +374,4 @@ pwsh -NoProfile -File ./tools/runtime/Deploy-F6.ps1 -Artifact $candidate.Artifac
 
 ## 12. 新会话续接提示
 
-> 最新用户要求仅绝区零改 ASI，原神／星铁不变。已新增隔离 local/F6-ZZZ-ASI／runtime A5009284E9948E8D并仅改nap_cn构建选择；DLL283B6B07／源码97a2cad，ASI171AC18D，NR CDFA6C1E。External=false保留Opti输入／呈现，两个内置MFG解锁开关false，用户6×参数不变。Gate、无害Windows loader、有效SL请求矩阵和独立复核通过；真实ASI加载和卡顿改善待下次重启绝区零。原神／星铁official/F6和共享1ABD9AFD四硬链接、233项保护文件、全局选择及旧profiles完全未改。单游戏回执current-game-deployment-nap_cn.json；共享current-deployment.json仍是原字节，不得把新out产物当共享已部署。HDR暂缓，不查询或操控游戏，不复用旧智能体。旧recording修复、候选0C7D6709及证据保留，不把未部署候选标成实测失败。
+> 最新用户要求仅绝区零改 ASI，原神／星铁不变。已新增隔离 local/F6-ZZZ-ASI／runtime A5009284E9948E8D并仅改nap_cn构建选择；DLL283B6B07／源码97a2cad，ASI171AC18D，NR CDFA6C1E。External=false保留Opti输入／呈现，两个内置MFG解锁开关false，用户6×参数不变。Gate、无害Windows loader、有效SL请求矩阵和独立复核通过；真实ASI加载和卡顿改善待下次重启启动器及绝区零。原神／星铁official/F6和共享1ABD9AFD四硬链接、233项保护文件、全局选择及旧profiles完全未改。单游戏回执current-game-deployment-nap_cn.json；共享current-deployment.json仍是原字节，不得把新out产物当共享已部署。HDR暂缓，不查询或操控游戏，不复用旧智能体。旧recording修复、候选0C7D6709及证据保留，不把未部署候选标成实测失败。
