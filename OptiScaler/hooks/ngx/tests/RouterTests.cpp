@@ -14,12 +14,14 @@ struct MockApi
     int nativeCreates = 0, selectedCreates = 0, nativeEvals = 0, selectedEvals = 0;
     int nativeReleases = 0, selectedReleases = 0, deleted = 0, attaches = 0;
     int allocations = 0, parameterDestroys = 0, pendingParameter = 0;
+    int deviceQueries = 0;
     int initDevice = 0, inputDevice = 0;
     bool ready = false, nativeSession = true, attachAllowed = true, destroyAllowed = true;
     bool failCreate = false, partialCreate = false, failRelease = false, failEval = false;
     Handle* forcedOutput = nullptr;
     std::vector<Handle*> allocationsToFree;
     std::function<void()> nativeCallback;
+    std::function<void()> nativeReleaseCallback;
     std::function<void()> selectedCallback;
     struct ReceiptData { Owner owner; const Handle* handle; std::optional<int> feature; std::optional<unsigned> id; };
     std::vector<ReceiptData> receipts;
@@ -32,9 +34,11 @@ struct MockApi
     static bool IsSelectedFeature(int feature) { return feature == 1; }
     void ProviderReady(bool value) { ready = value; }
     bool AcceptInitDevice(int device) { return device && (!initDevice || initDevice == device) && (!inputDevice || inputDevice == device); }
+    bool AcceptShutdownDevice(int device) { return device && (initDevice ? initDevice == device : (!inputDevice || inputDevice == device)); }
     void ObserveInitDevice(int device) { initDevice = device; }
     void ForgetInitDevice() { initDevice = inputDevice = pendingParameter = 0; }
     bool AcceptCommandDevice(int device) { return AcceptInitDevice(device); }
+    int AcquireCommandDevice(int device) { ++deviceQueries; return AcceptCommandDevice(device) ? device : 0; }
     bool AttachInput(int device)
     {
         ++attaches;
@@ -87,7 +91,7 @@ struct MockApi
         if (const auto callback = selectedCallback) callback();
         return failEval ? -4 : 1;
     }
-    int NativeRelease(Handle*) { ++nativeReleases; return failRelease ? -5 : 1; }
+    int NativeRelease(Handle*) { ++nativeReleases; if (const auto callback = nativeReleaseCallback) callback(); return failRelease ? -5 : 1; }
     int SelectedRelease(Handle*) { ++selectedReleases; return failRelease ? -5 : 1; }
     void DeleteSelectedHandle(Handle*) { ++deleted; } // retain memory for address-reuse assertions
 };
@@ -301,8 +305,184 @@ void NativeWorkerInitCannotWaitForItsSelectedCaller()
     assert(r.Release(false, h) == 1);
 }
 
+void SelectedEvaluateRejectsForeignDevice()
+{
+    MockApi a;
+    Router r(a);
+    Handle* selected = nullptr;
+    assert(r.Create(true, 7, 1, &parameters, &selected) == 1);
+    const auto receiptsBefore = a.receipts.size();
+    for (bool external : {false, true})
+    {
+        assert(r.Evaluate(external, 8, selected, &parameters, 0) < 0);
+        assert(r.Evaluate(external, 0, selected, &parameters, 0) < 0);
+    }
+    assert(a.selectedEvals == 0 && a.nativeEvals == 0 && a.receipts.size() == receiptsBefore);
+    assert(r.HasSelected() && a.deleted == 0 && a.selectedReleases == 0);
+    assert(r.Evaluate(false, 7, selected, &parameters, 0) == 1);
+    assert(a.selectedEvals == 1 && a.receipts.size() == receiptsBefore + 1);
+    assert(r.Release(false, selected) == 1 && !r.HasSelected());
+    Handle* backend = nullptr;
+    assert(r.Create(false, 7, 1, &parameters, &backend) == 1);
+    assert(r.Evaluate(true, 8, backend, &parameters, 0) == 1);
+    assert(a.nativeEvals == 1); // device gate never steals native/backend ownership
+    assert(r.Release(false, backend) == 1);
+}
+
+void DeviceAdmissionAndShutdown()
+{
+    for (bool external : {false, true})
+    {
+        MockApi a;
+        Router r(a);
+        assert(r.Init(true, 7, [] { return 1; }, [&](int) { a.inputDevice = 7; return 1; }) == 1);
+        int nativeStops = 0, selectedStops = 0;
+        auto stop = [&] { ++nativeStops; return 1; };
+        auto cleanup = [&](int result) { ++selectedStops; return result; };
+        assert(r.ShutdownDevice(external, 8, stop, cleanup) < 0);
+        assert(r.ShutdownDevice(external, 0, stop, cleanup) < 0);
+        assert(nativeStops == 0 && selectedStops == 0 && a.initDevice == 7 && a.inputDevice == 7 && a.ready);
+        assert(r.ShutdownDevice(external, 7, [&] { ++nativeStops; return -9; }, cleanup) == -9);
+        assert(nativeStops == 1 && selectedStops == 0 && a.initDevice == 7 && a.ready);
+
+        Handle* selected = nullptr;
+        const auto queries = a.deviceQueries;
+        assert(r.Create(true, 7, 1, &parameters, &selected) == 1);
+        assert(a.deviceQueries == queries + 1);
+        assert(r.ShutdownDevice(external, 7, stop, cleanup) < 0 && nativeStops == 1);
+        assert(r.Release(false, selected) == 1);
+        a.inputDevice = 8; // unrelated published device changes after Init
+        assert(r.ShutdownDevice(external, 7, stop, cleanup) == 1);
+        assert(nativeStops == 2 && selectedStops == 1 && !a.ready && a.initDevice == 0 && a.inputDevice == 0);
+    }
+
+    MockApi a;
+    Router r(a);
+    Handle* output = nullptr;
+    assert(r.Create(true, 0, 1, &parameters, &output) < 0);
+    assert(a.deviceQueries == 1 && a.nativeCreates == 0 && a.selectedCreates == 0 && a.attaches == 0);
+}
+
+void NativeCallsPreventShutdown()
+{
+    for (int kind = 0; kind != 4; ++kind)
+    {
+        MockApi a;
+        Router r(a);
+        Handle* handle = nullptr;
+        if (kind == 1 || kind == 2) assert(r.Create(false, 1, 1, &parameters, &handle) == 1);
+        std::promise<void> entered, resume;
+        auto ready = entered.get_future();
+        auto release = resume.get_future().share();
+        auto pause = [&] { entered.set_value(); release.wait(); };
+        if (kind == 2) a.nativeReleaseCallback = pause;
+        else if (kind != 3) a.nativeCallback = pause;
+        auto work = std::async(std::launch::async, [&] {
+            if (kind == 0) return r.Create(false, 1, 1, &parameters, &handle);
+            if (kind == 1) return r.Evaluate(false, 1, handle, &parameters, 0);
+            if (kind == 2) return r.Release(false, handle);
+            return r.InvokeNative([&] { pause(); return 1; });
+        });
+        assert(ready.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        int nativeStops = 0;
+        assert(r.Shutdown(false, [&] { ++nativeStops; return 1; }, [](int result) { return result; }) < 0);
+        assert(nativeStops == 0);
+        resume.set_value();
+        assert(work.get() == 1);
+        a.nativeCallback = nullptr;
+        a.nativeReleaseCallback = nullptr;
+        if (kind == 0 || kind == 1) assert(r.Release(false, handle) == 1);
+        assert(r.Shutdown(false, [&] { ++nativeStops; return 1; }, [](int result) { return result; }) == 1);
+        assert(nativeStops == 1);
+    }
+}
+
+void ShutdownAdmissionDoesNotBlockCallbacks()
+{
+    MockApi a;
+    Router r(a);
+    Handle* handle = nullptr;
+    assert(r.Create(false, 1, 1, &parameters, &handle) == 1);
+    int sameThread = 0, workerNative = 0;
+    const auto failed = r.Shutdown(false, [&] {
+        assert(r.InvokeNative([&] { ++sameThread; return 1; }) < 0);
+        assert(r.Evaluate(false, 1, handle, &parameters, 0) < 0);
+        Handle* selected = nullptr;
+        assert(r.Create(true, 1, 1, &parameters, &selected) < 0);
+        assert(r.Init(false, 1, [] { return 1; }, [](int result) { return result; }) < 0);
+        auto worker = std::async(std::launch::async, [&] {
+            Handle* other = nullptr;
+            assert(r.Create(false, 1, 1, &parameters, &other) < 0);
+            assert(r.Evaluate(false, 1, handle, &parameters, 0) < 0);
+            assert(r.Release(false, handle) < 0);
+            assert(r.Init(false, 1, [] { return 1; }, [](int result) { return result; }) < 0);
+            assert(r.InvokeNative([&] { ++workerNative; return 1; }) < 0);
+        });
+        assert(worker.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        worker.get();
+        return -9;
+    }, [](int result) { return result; });
+    assert(failed == -9 && sameThread == 0 && workerNative == 0);
+    assert(r.Evaluate(false, 1, handle, &parameters, 0) == 1);
+    assert(r.Release(false, handle) == 1);
+    assert(r.Shutdown(false, [] { return 1; }, [](int result) { return result; }) == 1);
+}
+
+void ShutdownPartialReleaseKeepsRoutingAccurate()
+{
+    MockApi a;
+    Router r(a);
+    Handle* handle = nullptr;
+    assert(r.Create(false, 1, 1, &parameters, &handle) == 1);
+    assert(r.Shutdown(false, [&] {
+        assert(r.Release(false, handle, true) == 1);
+        return -9;
+    }, [](int result) { return result; }) == -9);
+    ++handle->id; // an old route would reject the now-reused identity
+    assert(r.Evaluate(true, 1, handle, &parameters, 0) == 1);
+    assert(a.receipts.back().owner == Owner::Unknown && !r.HasSelected());
+    assert(r.Shutdown(false, [] { return 1; }, [](int result) { return result; }) == 1);
+}
+
+void RegisteredHandleWorkerDoesNotDeadlock()
+{
+    for (bool selected : {false, true})
+    {
+        MockApi a;
+        Router r(a);
+        Handle* handle = nullptr;
+        assert(r.Create(selected, 1, 1, &parameters, &handle) == 1);
+        auto callback = [&] {
+            auto worker = std::async(std::launch::async, [&] {
+                assert(r.Evaluate(false, 1, handle, &parameters, 0) < 0);
+                assert(r.Release(false, handle) < 0);
+                if (selected)
+                {
+                    Handle* other = nullptr;
+                    assert(r.Create(true, 1, 1, &parameters, &other) < 0);
+                }
+            });
+            assert(worker.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+            worker.get();
+            assert(r.Evaluate(false, 1, handle, &parameters, 0) < 0);
+        };
+        if (selected) a.selectedCallback = callback;
+        else a.nativeCallback = callback;
+        assert(r.Evaluate(false, 1, handle, &parameters, 0) == 1);
+        a.selectedCallback = nullptr;
+        a.nativeCallback = nullptr;
+        assert(r.Release(false, handle) == 1);
+    }
+}
+
 int main()
 {
+    ShutdownPartialReleaseKeepsRoutingAccurate();
+    RegisteredHandleWorkerDoesNotDeadlock();
+    NativeCallsPreventShutdown();
+    ShutdownAdmissionDoesNotBlockCallbacks();
+    DeviceAdmissionAndShutdown();
+    SelectedEvaluateRejectsForeignDevice();
     PointerIdentityAndUnknownCalls();
     NativeAndBackendDoNotBecomeInputs();
     InitAndShutdownResults();
@@ -312,5 +492,5 @@ int main()
     ChangedIdCannotResurrectAStaleOwner();
     NativeWorkerCanReenterDuringCreate();
     NativeWorkerInitCannotWaitForItsSelectedCaller();
-    std::puts("PASS 9 production-router suites: pointer/id, ownership, lifecycle, failure, late CPU probe, conflicts in both directions, native worker Init");
+    std::puts("PASS 15 production-router suites: device admission, lifecycle, partial shutdown, native and selected worker callbacks");
 }

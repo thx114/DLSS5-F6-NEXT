@@ -7,7 +7,7 @@
 #include <d3d12.h>
 #include <nvsdk_ngx.h>
 #include <wrl/client.h>
-#include <framegen/dlssg/MfgUnlockProvider.h>
+#include <framegen/dlssg/DlssgProviderIdentity.h>
 #include <array>
 #include <atomic>
 #include <mutex>
@@ -122,7 +122,7 @@ inline FARPROC RecordResolved(HMODULE module, LPCSTR name, FARPROC resolved, HMO
         return resolved;
     wchar_t path[2048] {};
     const auto length = GetModuleFileNameW(module, path, _countof(path));
-    if (!length || length >= _countof(path) || !MfgUnlock::Provider::IsProviderPath(std::wstring_view(path, length)))
+    if (!length || length >= _countof(path) || !framegen::IsDlssgProviderPath(std::wstring_view(path, length)))
         return resolved;
     char utf8[8192] {};
     WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, _countof(utf8), nullptr, nullptr);

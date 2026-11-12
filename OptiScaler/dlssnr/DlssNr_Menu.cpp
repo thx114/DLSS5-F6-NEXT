@@ -35,6 +35,7 @@
 #include <native/VkPresentBridge.h>
 #include <resource_tracking/GenericDepth_Vk.h>
 #include <framegen/IFGFeature.h>
+#include <hooks/FG_Hooks.h>
 #include <native/NativeLowLatency.h>
 #include <misc/IdentifyGpu.h>
 #include <upscalers/FeatureProvider_Vk.h>
@@ -1199,7 +1200,7 @@ static void RenderNativeMode(Config* config, bool nrEnabled, bool& finishedPictu
         warningText = "等待游戏为插帧创建新交换链。若无变化，可切换一次窗口模式或分辨率；仍未启动时，请配置插帧输入与输出，保存后重启游戏。";
         break;
     case Warning::NeedsGameUpscaler:
-        warningText = "游戏当前未调用超分接口，请在游戏设置启用 DLSS、FSR 或 XeSS。菜单中可能没有调用，进入游戏后插帧才启动。";
+        warningText = "F6 当前未接入游戏超分调用。若游戏已启用 DLSS、FSR 或 XeSS，请检查输入接入；菜单或加载画面也可能暂停调用。";
         break;
     case Warning::NeedsOn12Backend:
         warningText = "正在切换为游戏超分的 D3D12 副本，以提供插帧输入；下次超分调用时重建。";
@@ -1263,6 +1264,13 @@ static std::string NrOptionsStatusChinese(std::string value)
         { "Waiting for a new successful DLSS source picture.", "等待新的成功 DLSS 源帧。" },
         { "NR is disabled; presenting the current source picture.", "NR 已关闭；显示当前源帧。" },
         { "NR bypass: the current source has no matching guide capture.", "当前源帧缺少匹配的深度／运动；保留当前原图。" },
+        { "NR bypass: the presentation endpoint is unavailable or changing.", "NR 暂停：呈现端点不可用或正在切换。" },
+        { "NR bypass: the current presentation buffer could not be acquired.", "NR 暂停：无法取得当前呈现缓冲区。" },
+        { "NR bypass: the FG input and current source picture do not match.", "NR 暂停：插帧输入与当前源帧不匹配；保留当前原图。" },
+        { "NR bypass: the current source queue or single-write claim is unavailable.", "NR 暂停：当前源帧的队列或单次写入凭据不可用。" },
+        { "NR bypass: the current picture recording could not be reset.", "NR 暂停：当前画面录制无法安全重置。" },
+        { "NR bypass: the current picture could not be recorded completely.", "NR 暂停：当前画面未能完整录制；保留当前原图。" },
+        { "NR bypass: the current picture recording could not be closed.", "NR 暂停：当前画面录制无法封闭。" },
         { "Present -> NR -> detail retention -> FG (current source, one write).", "呈现输入 → NR → 细节保留 → FG；当前源帧已处理并发布一次。" },
         { "Preparing NR; presenting the current unmodified source.", "正在准备 NR；显示当前未修改的源帧。" },
         { "feedback-recorded-awaiting-publication", "细节已录制；等待真实提交／完成回执" },
@@ -1331,6 +1339,7 @@ static std::string NrOptionsStatusChinese(std::string value)
         { "Applying NR to DLSS-G finished-picture inputs (6X compatible).", "正在处理 DLSS-G 的最终画面输入（兼容 6X，保留 HUD）。" },
         { "Preparing NR for the frame-generation input.", "正在为插帧输入准备 NR 模型。" },
         { "NR changes are hidden.", "NR 正在计算，但画面效果已隐藏。" },
+        { "NR bypass: the final picture output could not be written.", "NR 已计算，但当前画面输出失败。" },
         { "not seen yet", "尚未检测到" },
         { "plain FP16", "普通 FP16" },
         { "off for this session (unexpected NR launch order)", "本次会话已关闭（NR 内核调用顺序异常）" },
@@ -1413,6 +1422,21 @@ static bool GenshinPresentedStatus(const NrCommon& nr)
            State::Instance().swapchainInteropApi == SwapchainInteropApi::None;
 }
 
+// Both the current present pipeline and the legacy bridge report publication.
+static bool CurrentPresentedStatus(const NrCommon& nr)
+{
+    return (nr.finishedPicture && !nr.vulkan && DlssNr::UsesGenshinPresentPipeline()) ||
+           GenshinPresentedStatus(nr);
+}
+
+static void RenderFinishedPictureStatus(const NrCommon& nr, const char* fallback = "")
+{
+    if (!nr.finishedPicture || nr.vulkan) return;
+    const auto status = DlssNr::FinishedPictureStatus();
+    if (!status.empty()) MenuText::TextWrapped("%s", NrOptionsStatusChinese(status).c_str());
+    else if (fallback[0]) MenuText::TextWrapped("%s", fallback);
+}
+
 // Both menu layouts consume the same bounded completed-sample publication.
 // Model residency and an old local timer are not current processing evidence.
 static std::optional<double> MenuNrGpuTime(bool vulkan)
@@ -1466,8 +1490,7 @@ static void RenderRunningStatus(Config* config, const NrCommon& nr)
         {
             // On the finished picture (Optical F5Low's NR only among them) there is no upscaler to wait for: what NR
             // says about the picture is the reason it has not started (only the log had it).
-            const std::string status = DlssNr::FinishedPictureStatus();
-            MenuText::TextWrapped("%s", status.empty() ? "等待成品画面。" : status.c_str());
+            RenderFinishedPictureStatus(nr, "等待成品画面。");
         }
         else if (enabled)
             MenuText::TextUnformatted("等待超分器运行。");
@@ -1477,14 +1500,13 @@ static void RenderRunningStatus(Config* config, const NrCommon& nr)
         // Residency is not activity. The completed-sample publication expires
         // even if no later Dispatch arrives to clear the old local timer.
         MenuText::TextDisabled("模型已就绪；最近 5 秒没有可用的 NR GPU 完成样本。");
-        if (finishedPicture)
-        {
-            const std::string status = DlssNr::FinishedPictureStatus();
-            if (!status.empty()) MenuText::TextWrapped("%s", status.c_str());
-        }
+        RenderFinishedPictureStatus(nr);
     }
-    else if (GenshinPresentedStatus(nr))
+    else if (CurrentPresentedStatus(nr))
     {
+        // A completed model timer can outlive a refused final endpoint. Show
+        // the current publication status even while the model remains resident.
+        RenderFinishedPictureStatus(nr);
         MenuText::TextDisabled("最近 NR 总 GPU 区间：%.2f ms。[呈现模式]", *ms);
         const char* reason = DlssNr::FailureReason();
         if (reason[0] != 0)
@@ -1538,7 +1560,7 @@ static void RenderRunningStatus(Config* config, const NrCommon& nr)
     }
 }
 
-// One line of the same status, for the other pages.
+// The same current status and completed timing, for the other pages.
 static void RenderStatusLine(const NrCommon& nr)
 {
     const auto ms = MenuNrGpuTime(nr.vulkan);
@@ -1547,11 +1569,18 @@ static void RenderStatusLine(const NrCommon& nr)
     if (!nr.enabled)
         MenuText::TextDisabled("NR 已关闭。");
     else if (!DlssNr::IsRunning() && !nr.vulkan)
-        MenuText::TextDisabled("NR 未运行，请见“状态与预设”页。");
-    else if (!nr.vulkan && !ms.has_value())
-        MenuText::TextDisabled("模型已就绪；最近 5 秒没有可用的 NR GPU 完成样本。");
-    else if (GenshinPresentedStatus(nr))
     {
+        MenuText::TextDisabled("NR 未运行，请见“状态与预设”页。");
+        RenderFinishedPictureStatus(nr);
+    }
+    else if (!nr.vulkan && !ms.has_value())
+    {
+        MenuText::TextDisabled("模型已就绪；最近 5 秒没有可用的 NR GPU 完成样本。");
+        RenderFinishedPictureStatus(nr);
+    }
+    else if (CurrentPresentedStatus(nr))
+    {
+        RenderFinishedPictureStatus(nr);
         if (ms && std::isfinite(*ms) && *ms >= 0.0)
             MenuText::TextDisabled("最近 NR 总 GPU 区间：%.2f ms。[呈现模式]", *ms);
         else
@@ -4316,7 +4345,8 @@ static HeaderBanner::Inputs HeaderInputs(Config* config, HeaderBanner::Feature f
     in.nrAvailable = config->DlssNrEnabled.value_or_default() && FailureReason()[0] == 0;
     in.f5lowNrOnlyRunning = NativeNrOnlyRunning(api);
     in.nrEnabled = config->DlssNrEnabled.value_or_default() && FailureReason()[0] == 0;
-    in.frameGeneration = state.currentFG != nullptr && state.currentFG->IsActive() && !state.currentFG->IsPaused();
+    in.frameGeneration = state.currentFG != nullptr && state.currentFG->IsActive() && !state.currentFG->IsPaused() &&
+        (state.externalFrameGeneration || FGHooks::SwapchainHookStatus() == S_OK);
     return in;
 }
 
@@ -4329,6 +4359,12 @@ bool RenderHeaderBanner(Config* config, HeaderBanner::Feature feature, bool upsc
     const NativeApi api = CurrentNativeApi();
     const Banner banner = Decide(HeaderInputs(config, feature, upscalerFiles));
 
+    const auto hookStatus = FGHooks::SwapchainHookStatus();
+    if (!State::Instance().externalFrameGeneration && config->FGEnabled.value_or_default() &&
+        hookStatus != S_OK && hookStatus != HRESULT_FROM_WIN32(ERROR_NOT_READY))
+        MenuText::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+            "FG 接入失败（0x%08X），需要重启后重试；NR 可继续使用。", static_cast<unsigned>(hookStatus));
+
     switch (banner.line)
     {
     case Line::Blank:
@@ -4339,11 +4375,11 @@ bool RenderHeaderBanner(Config* config, HeaderBanner::Feature feature, bool upsc
     case Line::OfferWithFiles:
         MenuText::TextColored(
             offerColour,
-            "游戏尚未调用超分。请选择 %s 并进入游戏，或使用 Optical F5Low。",
+            "F6 当前未接入游戏超分调用。已启用 %s 时请检查输入接入，或使用 Optical F5Low。",
             upscalerNames.c_str());
         break;
     case Line::OfferNoFiles:
-        MenuText::TextColored(offerColour, "没有找到超分文件，Optical F5Low 仍可独立运行 NR。");
+        MenuText::TextColored(offerColour, "F6 尚未检测到可用的超分输入，Optical F5Low 仍可独立运行 NR。");
         break;
     case Line::F5LowNrAndFrameGen:
         MenuText::TextDisabled("Optical F5Low：对最终画面运行 NR 与插帧（%s 稳定画面）。",
@@ -4464,7 +4500,7 @@ void UpdateF5LowHint(Config* config)
 
     shown = true;
     ImGui::InsertNotification({ ImGuiToastType::Info, 15000,
-                                "游戏目前尚未调用超分器。\n光学 F5Low 可在无超分器时运行 NR：打开菜单，神经渲染，光学 F5Low。" });
+                                "F6 当前未接入游戏超分调用。\n若游戏已启用超分，请检查输入接入。光学 F5Low 也可独立运行 NR：打开菜单，神经渲染，光学 F5Low。" });
 }
 
 static void RenderUnsortedPage(Config* config, float menuResScale)

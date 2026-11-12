@@ -11,6 +11,42 @@ constexpr uint32_t feature=static_cast<uint32_t>(sl::kFeatureDLSS);
 Origin OriginFor(uint32_t frame=4646) { return { api,list,feature,9,frame,true,true }; }
 std::shared_ptr<Receipt> Current() { return Selection::Current(list,featureOwner,0,provider); }
 
+void NativeCreationNeedsCurrentGameCommand()
+{
+    assert(!Scope::InputCommandCurrent(list));
+    Scope game(OriginFor(),true);
+    assert(Scope::InputCommandCurrent(list));
+    assert(!Scope::InputCommandCurrent(0) && !Scope::InputCommandCurrent(list+1));
+    assert(!std::async(std::launch::async,[] { return Scope::InputCommandCurrent(list); }).get());
+    {
+        Scope local(OriginFor(),false);
+        assert(!Scope::InputCommandCurrent(list));
+    }
+    assert(Scope::InputCommandCurrent(list));
+    {
+        Scope wrongList({api,list+1,feature,9,4646,true,true},true);
+        assert(!Scope::InputCommandCurrent(list));
+    }
+    {
+        Scope failed(OriginFor(),true);
+        failed.Finish(false);
+        assert(!Scope::InputCommandCurrent(list));
+    }
+    {
+        Scope completed(OriginFor(),true);
+        completed.Finish(true);
+        assert(!Scope::InputCommandCurrent(list));
+    }
+    gameApi.store(api+1);
+    assert(!Scope::InputCommandCurrent(list));
+    gameApi.store(api);
+    {
+        Selection selected(api,feature,0,list,featureOwner,provider);
+        assert(Current() && !Scope::InputCommandCurrent(list));
+    }
+    assert(!Scope::InputCommandCurrent(list)); // A claimed game scope cannot authorize another input.
+}
+
 // Use the real SDK token interface, with only the external SDK function fake.
 // No test implementation of Scope/Selection/token validation exists.
 struct Token final : sl::FrameToken
@@ -186,6 +222,7 @@ void ZeroAndGameFrameRestart()
         scope.Finish(true);
     }
     gameApi.store(api);
+    NativeCreationNeedsCurrentGameCommand();
     for (unsigned missing=0;missing!=2;++missing)
     {
         auto invalid=OriginFor();
@@ -524,5 +561,5 @@ int main()
     OnAttemptAndReentryRevokeOldOffProof();
     InvalidSourceNeedsFreshOffBeforeBasePresent();
     FailedOffStaysUnsafeAcrossInactivePresents();
-    std::puts("PASS 15 ZZZ production-frame-scope suites: virtual-base selected feature identity, original 8 identity/outcome suites, unattempted pass-through, real Off/base/recovery, unsafe submission or Off failure, On/reentrant stale-proof invalidation, invalid-source safe fallback, cross-Present failed-Off persistence/recovery; CPU does not prove GPU lifecycle");
+    std::puts("PASS 16 ZZZ production-frame-scope suites: native Create origin, virtual-base selected feature identity, original 8 identity/outcome suites, unattempted pass-through, real Off/base/recovery, unsafe submission or Off failure, On/reentrant stale-proof invalidation, invalid-source safe fallback, cross-Present failed-Off persistence/recovery; CPU does not prove GPU lifecycle");
 }

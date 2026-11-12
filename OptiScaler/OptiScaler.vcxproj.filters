@@ -45,6 +45,7 @@
     <ClInclude Include="runtime\GuideCalibrationImages.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="runtime\GuideCalibrationRuntime.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="menu\GuideDiagnosticsMenu.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="menu\DlssPresetMenuPolicy.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="shaders\dlssnr\GuideMetadata.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="shaders\dlssnr\DlssNr_GuideObservation.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="runtime\Dx11RasterBindings.h">
@@ -1060,27 +1061,6 @@
     <ClInclude Include="framegen\dlssg\Kcd2Hdr.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="framegen\dlssg\MfgUnlock.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="framegen\dlssg\MfgUnlockProvider.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="framegen\dlssg\MfgUnlockPlugin.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="framegen\dlssg\MfgUnlockPtx.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="framegen\dlssg\MfgUnlockMethod.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="framegen\dlssg\MfgUnlockFlip.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="framegen\dlssg\AmpereMfgLoader.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="shaders\hud_copy\precompile\HudCopy_Shader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -1786,12 +1766,6 @@
     <ClCompile Include="framegen\dlssg\Kcd2Hdr.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="framegen\dlssg\MfgUnlock.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="framegen\dlssg\AmpereMfgLoader.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="OptiTypes.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1976,5 +1950,17 @@
       <Filter>Source Files</Filter>
     </None>
     <None Include="shaders\magnifier\precompile\Magnifier_Shader_Vk.spv" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="framegen\dlssg\DlssgTelemetry.h" />
+    <ClInclude Include="framegen\dlssg\DlssgProviderIdentity.h" />
+    <ClInclude Include="framegen\dlssg\MfgUnlock.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="framegen\dlssg\MfgUnlockProvider.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="framegen\dlssg\MfgUnlockPlugin.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="framegen\dlssg\MfgUnlockPtx.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="framegen\dlssg\MfgUnlockMethod.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="framegen\dlssg\MfgUnlockFlip.h"><Filter>Header Files</Filter></ClInclude>
+      <ClInclude Include="runtime\LoaderStartupContext.h" />
+    <ClCompile Include="framegen\dlssg\MfgUnlock.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
 </Project>

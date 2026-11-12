@@ -8,8 +8,10 @@ This entry builds the DLL; deployment and release packaging are separate actions
 [CmdletBinding()]
 param(
     [switch]$Clean,
+    [switch]$Relink,
     [ValidateRange(1, 64)]
-    [int]$Jobs = [Math]::Min(8, [Environment]::ProcessorCount)
+    [int]$Jobs = [Math]::Min(8, [Environment]::ProcessorCount),
+    [string]$IntermediateRoot
 )
 
 Set-StrictMode -Version Latest
@@ -18,9 +20,13 @@ $PSNativeCommandUseErrorActionPreference = $false
 
 $root = $PSScriptRoot
 $build = Join-Path $root 'build'
-$objDir = Join-Path $build 'obj'
+$intermediate = $build
+if (![string]::IsNullOrWhiteSpace($IntermediateRoot)) {
+    $intermediate = Join-Path ([IO.Path]::GetFullPath($IntermediateRoot)) 'standard'
+}
+$objDir = Join-Path $intermediate 'obj'
 $outDir = Join-Path $build 'out'
-$tempDir = Join-Path $build 'temp'
+$tempDir = Join-Path $intermediate 'temp'
 $log = Join-Path $build 'msbuild.log'
 $msbuild = 'D:/VS2022BuildTools/MSBuild/Current/Bin/amd64/MSBuild.exe'
 $project = Join-Path $root 'OptiScaler/OptiScaler.vcxproj'
@@ -31,7 +37,7 @@ foreach ($required in @($project, (Join-Path $root 'external'), $msbuild)) {
 }
 
 if ($Clean) {
-    # These are fixed, absolute children of this script's build directory.
+    # These are the selected absolute intermediate folders and build output.
     foreach ($directory in @($objDir, $outDir, $tempDir)) {
         if (Test-Path -LiteralPath $directory) {
             $item = Get-Item -LiteralPath $directory -Force
@@ -69,6 +75,7 @@ try {
         '/p:PostBuildEventUseInBuild=false',
         '/fileLogger', "/fileLoggerParameters:LogFile=$log;Verbosity=normal;Encoding=UTF-8"
     )
+    if ($Relink) { $buildArguments += '/p:Link_MinimalRebuildFromTracking=false' }
     Write-Host "Building Release x64 with $Jobs compiler workers"
     Push-Location -LiteralPath $root
     try {
@@ -91,6 +98,11 @@ if (!(Test-Path -LiteralPath $artifact -PathType Leaf)) {
     throw "Build reported success but the DLL is missing: $artifact"
 }
 $dll = Get-Item -LiteralPath $artifact
+$newerLinkInputs = @(Get-ChildItem -LiteralPath $objDir -File |
+    Where-Object { $_.Extension -in '.obj', '.res' -and $_.LastWriteTimeUtc -gt $dll.LastWriteTimeUtc })
+if ($newerLinkInputs.Count -gt 0) {
+    throw "The DLL predates $($newerLinkInputs.Count) compiled link inputs. Run again with -Relink to refresh linker tracking."
+}
 Write-Host "Artifact: $($dll.FullName)"
 Write-Host "  size: $($dll.Length) bytes"
 Write-Host "  mtime UTC: $($dll.LastWriteTimeUtc.ToString('O'))"

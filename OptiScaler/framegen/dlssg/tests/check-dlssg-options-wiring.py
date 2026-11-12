@@ -40,6 +40,9 @@ query = body(source, "sl::Result DLSSG_Dx12::QueryProviderState(")
 drs_get = body(nvapi, "NvApiHooks::hkNvAPI_DRS_GetSetting(")
 check("SetDispatchOptions(_dlssgOptionsAck" in dispatch, "DLSSG does not consume common policy")
 check("SetDispatchOptions(_reflexOptionsAck" in dispatch, "Reflex does not consume common policy")
+check("dlssg::options::ProviderReflexOptions(" in dispatch and
+      "reflexConst.useMarkersToOptimize = ReflexHooks::gameIsSendingMarkers()" not in dispatch,
+      "observing markers must not opt the provider into unqualified Reflex marker tuning")
 check("StarRail" not in apply and "Genshin" not in apply and "Zzz" not in apply, "cache eligibility is game-specific")
 check("EveryDispatch" in scope and "IsStarRailF5DsOwner" in scope, "F5-DS per-dispatch policy lost")
 check("_dispatchActive || _providerStateQueryActive || _dispatchOptions.InFlight()" in dispatch, "recursive SDK entry is allowed")

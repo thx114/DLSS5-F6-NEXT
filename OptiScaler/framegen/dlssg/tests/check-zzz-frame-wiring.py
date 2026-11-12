@@ -12,6 +12,7 @@ inputs = (root / "inputs/FG/Upscaler_Inputs_Dx12.cpp").read_text(encoding="utf-8
 provider = (root / "framegen/dlssg/DLSSG_Dx12.cpp").read_text(encoding="utf-8-sig")
 header = (root / "framegen/dlssg/DLSSG_Dx12.h").read_text(encoding="utf-8-sig")
 contract = (root / "framegen/dlssg/ZzzFrameScope.h").read_text(encoding="utf-8-sig")
+ngx = (root / "hooks/ngx/NativeDx12Hooks.cpp").read_text(encoding="utf-8-sig")
 checks = 0
 
 
@@ -181,4 +182,12 @@ check("const Origin origin" in contract, "upstream numeric identity is mutable")
 check("if (!previous &&" not in contract and "if (previous ||" not in contract, "blanket nested-scope refusal remains")
 check("scope->claimed" in contract and "Scope::active->receipt!=active->receipt" in contract, "same-scope claim or invalid-shadow isolation missing")
 check("localViewport==active->providerViewport" in contract and "providerOwner==active->provider" in contract, "selection local viewport/provider association missing")
+origin = body(ngx, "InputOrigin ResolveInputOrigin(")
+check(origin.index("nativeDepth || selectedDepth") < origin.index("InputCommandCurrent"), "native/selected backend can borrow game origin")
+check(origin.index("module == dllModule || module == native.dll") < origin.index("InputCommandCurrent"), "own/native module can borrow game origin")
+check(origin.index("Util::IsSubpath") < origin.index("InputCommandCurrent"), "local SDK directory can borrow game origin")
+check("NativeObject(command)" in origin and "nativeCommand.As(&identity)" in origin, "Create list is not canonical COM identity")
+create = body(ngx, "NVSDK_NGX_Result Create(")
+check("ResolveInputOrigin(caller, command)" in create and "origin != InputOrigin::Backend" in create, "actual Create does not use origin classifier")
+check("router.Create(false" in body(ngx, "NVSDK_NGX_Result BCreate("), "provider backend can mint game inputs")
 print(f"PASS {checks} ZZZ actual production wiring checks (static only, no Windows/GPU execution)")

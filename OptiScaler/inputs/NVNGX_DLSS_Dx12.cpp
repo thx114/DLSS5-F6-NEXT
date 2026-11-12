@@ -24,6 +24,7 @@
 
 #include <hooks/D3D12_Hooks.h>
 #include <hooks/ngx/SelectedFeatureRelease.h>
+#include <framegen/dlssg/FgDepthContract.h>
 
 #include <dxgi1_4.h>
 #include <shared_mutex>
@@ -54,17 +55,22 @@ bool CanAttachNativeDx12Input(ID3D12Device* device)
         return false;
     // The existing input/context registry is global, not multi-device. Refuse
     // a switch before changing any private or published device state.
-    return (!D3D12Device || D3D12Device == device) &&
-           (!State::Instance().currentD3D12Device || State::Instance().currentD3D12Device == device);
+    return (!D3D12Device || dlssg::depth_contract::SameOwner(D3D12Device, device)) &&
+           (!State::Instance().currentD3D12Device ||
+            dlssg::depth_contract::SameOwner(State::Instance().currentD3D12Device, device)) &&
+           (!nativeAttachedDevice || dlssg::depth_contract::SameOwner(nativeAttachedDevice, device));
 }
 
 bool AttachNativeDx12Input(ID3D12Device* device)
 {
     if (!CanAttachNativeDx12Input(device))
         return false;
-    if (nativeAttachedDevice == device && D3D12Device == device && State::Instance().nvngxDx12Inited)
+    if (nativeAttachedDevice && D3D12Device == nativeAttachedDevice &&
+        State::Instance().currentD3D12Device == nativeAttachedDevice &&
+        State::Instance().nvngxDx12Inited && dlssg::depth_contract::SameOwner(nativeAttachedDevice, device))
         return true;
     device->AddRef();
+    const auto previousAttachedDevice = nativeAttachedDevice;
     nativeAttachedDevice = device;
     D3D12Device = device;
     State::Instance().currentD3D12Device = device;
@@ -72,6 +78,7 @@ bool AttachNativeDx12Input(ID3D12Device* device)
     D3D12Hooks::HookDevice(device);
     UpscalerInputsDx12::Init(device);
     State::Instance().nvngxDx12Inited = true; // input attached, not observed native Init metadata
+    if (previousAttachedDevice) previousAttachedDevice->Release();
     return true;
 }
 
@@ -82,7 +89,7 @@ bool DetachNativeDx12Input()
     if (!Dx12Contexts.empty())
         return false;
     const auto device = D3D12Device ? D3D12Device : nativeAttachedDevice;
-    if (State::Instance().currentD3D12Device == device)
+    if (dlssg::depth_contract::SameOwner(State::Instance().currentD3D12Device, device))
         State::Instance().currentD3D12Device = nullptr;
     D3D12Device = nullptr;
     State::Instance().nvngxDx12Inited = false;
@@ -94,6 +101,11 @@ bool DetachNativeDx12Input()
     }
     return true;
 }
+}
+
+static bool IsInitializedOnDevice(ID3D12Device* device)
+{
+    return State::Instance().nvngxDx12Inited && dlssg::depth_contract::SameOwner(D3D12Device, device);
 }
 
 class ScopedInitDx12
@@ -258,7 +270,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_Ext(unsigned long long InApp
     if (InFeatureInfo != nullptr && InSDKVersion > 0x0000013)
         State::Instance().NVNGX_Logger = InFeatureInfo->LoggingInfo;
 
-    if (State::Instance().nvngxDx12Inited && InDevice == D3D12Device)
+    if (IsInitializedOnDevice(InDevice))
     {
         LOG_WARN("NVNGX already inited");
         return NVSDK_NGX_Result_Success;
@@ -321,7 +333,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init(unsigned long long InApplica
         }
     }
 
-    if (State::Instance().nvngxDx12Inited && InDevice == D3D12Device)
+    if (IsInitializedOnDevice(InDevice))
     {
         LOG_WARN("NVNGX already inited");
         return NVSDK_NGX_Result_Success;
@@ -388,7 +400,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_ProjectID(const char* InProj
     State::Instance().NVNGX_Engine = InEngineType;
     State::Instance().NVNGX_EngineVersion = std::string(InEngineVersion);
 
-    if (State::Instance().nvngxDx12Inited && InDevice == D3D12Device)
+    if (IsInitializedOnDevice(InDevice))
     {
         LOG_WARN("NVNGX already inited");
         return NVSDK_NGX_Result_Success;

@@ -20,6 +20,7 @@ namespace Util {
 inline bool CheckForRealObject(const char*, IUnknown*, IUnknown**) { return false; }
 }
 #include "../../DlssNr_GpuTime.h"
+#include "../../DlssNr_OrderedLifetime.h"
 
 using Microsoft::WRL::ComPtr;
 namespace {
@@ -224,6 +225,91 @@ void Cases(Gpu& gpu) {
         Check(!timer.ReadGpuTime(gpu.queue.Get()) && timer.TakeFreshEvidence().empty(), "clear cannot republish an old in-flight sample");
     }
 }
+void SharedReceiptCases() {
+    using History = DlssNrGpuLifetime::OrderedHistory<unsigned>;
+    for (unsigned fault = 0; fault < 4; ++fault) {
+        Gpu gpu;
+        DlssNrGpuTime timer(gpu.device.Get(), "shared actual receipt", true);
+        History history;
+        UINT64 published = 0;
+        bool discarded = false;
+        auto publish = [&](History::Record& slot, bool ordered) {
+            DlssNrGpuLifetime::PublishHistoryRecord(slot, ordered, published,
+                [](History::Record&, bool) {});
+        };
+        auto discard = [&] { discarded = true; };
+        auto observed = [](History::Record&) {};
+        Recording first(gpu.device.Get()), second(gpu.device.Get());
+        auto prepare = [&](Recording& r, UINT64 ordinal) {
+            gpu.Start(timer, r, ordinal);
+            Marks(timer, r.list.Get()); timer.End(r.list.Get());
+            auto& slot = history.current;
+            Check(!slot.fence && !slot.value && !slot.retirementQueue,
+                "new history generation starts without an older receipt");
+            slot.commands = r.list.Get(); slot.commandOwner = r.list;
+            slot.queue = gpu.queue.Get(); slot.resourceUse = r.use;
+            slot.contract = 1; slot.ordinal = slot.generation = ordinal;
+            slot.pending = slot.publish = slot.ordered = true;
+        };
+        prepare(first, 1);
+        Hr(first.list->Close(), "close shared consumer recording");
+        ID3D12CommandList* lists[] {first.list.Get()};
+        gpu.queue->ExecuteCommandLists(1, lists);
+        gpu.faults.failSignal = fault == 2;
+        if (fault != 1) gpu.registry.Submitted(gpu.queue.Get(), 1, lists);
+        gpu.faults.failSignal = false;
+        timer.Submitted(gpu.queue.Get(), 1, lists);
+        history.Submitted(gpu.queue.Get(), 1, lists, publish, discard, observed);
+        if (fault == 3) {
+            // D3D12 permits replay only after the prior execution has completed.
+            // Leave the timer unread so isolation is checked before publication.
+            gpu.Wait();
+            gpu.queue->ExecuteCommandLists(1, lists);
+            gpu.registry.Submitted(gpu.queue.Get(), 1, lists);
+            timer.Submitted(gpu.queue.Get(), 1, lists);
+            history.Submitted(gpu.queue.Get(), 1, lists, publish, discard, observed);
+        }
+        if (fault) {
+            gpu.Wait(); timer.ReadGpuTime(gpu.queue.Get());
+            Check(discarded && first.use->quarantined && timer.TakeFreshEvidence().empty(),
+                "missing registry, failed Signal or replay cannot serve either receipt consumer");
+            first.Reset(timer, gpu.registry);
+            history.Reset(first.list.Get(), publish, discard);
+            Check(!first.use->Complete() && !first.use->owners.empty(),
+                "CPU drain and Reset cannot cure an unproven shared execution");
+        } else {
+            auto firstUse = first.use;
+            const auto oldFence = history.current.fence;
+            Check(published == 1 && oldFence == firstUse->executions[0].fence &&
+                history.current.value == firstUse->executions[0].target,
+                "history consumes the exact registry receipt after timer consumed it");
+            Check(history.Advance(true, second.list.Get(), gpu.queue.Get(), 1, 2),
+                "adjacent history advance preserves the previous receipt and owners");
+            prepare(second, 2); gpu.Submit(timer, second);
+            lists[0] = second.list.Get();
+            history.Submitted(gpu.queue.Get(), 1, lists, publish, discard, observed);
+            Check(history.current.fence != oldFence && history.Pending() == 2 && !discarded,
+                "new execution has its own actual receipt while prior generation stays retained");
+            gpu.Wait(); timer.ReadGpuTime(gpu.queue.Get());
+            const auto evidence = timer.TakeFreshEvidence();
+            Check(evidence.size() == 2, "both shared-consumer generations publish completed query evidence");
+            CheckEvidence(evidence[0], gpu, first, 1, true);
+            CheckEvidence(evidence[1], gpu, second, 2, true);
+            second.Reset(timer, gpu.registry);
+            history.Reset(second.list.Get(), publish, discard);
+            Check(history.Pending() == 1 && !firstUse->Complete() && !firstUse->owners.empty(),
+                "out-of-order Reset cannot close the previous executable generation");
+            first.Reset(timer, gpu.registry);
+            history.Reset(first.list.Get(), publish, discard);
+            Check(!history.Pending() && firstUse->Complete() && firstUse->owners.empty(),
+                "both real Reset gates and actual completion retire shared owners");
+        }
+        Hr(first.list->Close(), "close shared consumer reset recording");
+        Hr(second.list->Close(), "close shared consumer second recording");
+        gpu.CheckMessages();
+    }
+}
+
 void LifetimeCases() {
     {
         Gpu gpu;
@@ -324,7 +410,7 @@ void LifetimeCases() {
 }
 int main() {
     try {
-        Gpu gpu; Cases(gpu); gpu.CheckMessages(); LifetimeCases();
+        Gpu gpu; Cases(gpu); gpu.CheckMessages(); LifetimeCases(); SharedReceiptCases();
         std::printf("NR GPU timer: %u WARP checks, no SDK/game performance proof\n", checks);
         return 0;
     } catch (const std::exception& e) { std::fprintf(stderr, "FAIL NR GPU timer: %s (%u checks)\n", e.what(), checks); return 1; }

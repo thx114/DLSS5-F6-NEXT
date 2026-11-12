@@ -11,6 +11,7 @@
 #include <native/MsaaPictureDx11.h>
 #include "GenshinVisibleChild.h"
 #include "Dx11InteropSwapchainPolicy.h"
+#include "InteropQueueDrainReceipt.h"
 #include <framegen/FrameLatencyOwnership.h>
 #include <optional>
 
@@ -88,6 +89,7 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     framegen::latency::Flags _frameLatencyFlags;
     std::mutex _frameLatencyMutex;
     void _RefreshFrameLatencyFlags();
+    framegen::latency::Target _SelectFrameLatencyTarget(void* returnAddress);
     struct NativeCall final {
         Dx11wDx12SC& owner;
         explicit NativeCall(Dx11wDx12SC& value):owner(value){owner.AddRef();}
@@ -141,7 +143,7 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     bool _parentDetached = false, _childRevoked = false, _childRetirementEntered = false;
     std::atomic<bool> _nativeDisplayUnobserved{false};
     void _SuspendUnobservedNativeDisplay() noexcept;
-    // R718: one drain attempt per explicit update after owner snapshot publication.
+    // One recovery probe per Present after owner snapshot publication.
     // A terminal/copy/provider failure cannot be promoted by a later display call.
     bool _childRecoveryAllowed = false, _childRecoveryAttempted = false, _childRecoveryEntered = false;
     // A proven SDK budget refusal waits for a NEW explicit FG resume request.
@@ -273,6 +275,9 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     ID3D12Fence* _presentRetirementFence = nullptr;
     HANDLE _presentRetirementEvent = nullptr;
     UINT64 _presentRetirementValue = 0;
+    // Only the revoked native child may carry these across Present calls.
+    InteropQueueDrainReceipt _recoveryCopyDrain, _recoveryPresentDrain;
+    bool _copyDrainEntered = false;
 
     ID3D11Fence* _dx11Fence = nullptr;
     HANDLE _dx11FenceEvent = nullptr;

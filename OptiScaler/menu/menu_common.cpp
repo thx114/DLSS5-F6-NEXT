@@ -7,6 +7,7 @@
 #include "menu_common.h"
 #include "MenuHotpathContext.h"
 #include "MenuPages.h"
+#include "DlssPresetMenuPolicy.h"
 #include "NextgenUi.h"
 #include "NextgenF5Panels.h"
 #include "GuideDiagnosticsMenu.h"
@@ -16,8 +17,8 @@
 #include <uid/DrawUidPanel.h>
 #include <inputs/GenshinFsrContract.h>
 #include <runtime/F6InputPolicy.h>
+#include <framegen/dlssg/DlssgTelemetry.h>
 #include <framegen/dlssg/MfgUnlock.h>
-#include <framegen/dlssg/AmpereMfgLoader.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
 #include <framegen/GuideOrientation.h>
 #include <dlssnr/DlssNr_ExposureScan.h>
@@ -49,6 +50,7 @@
 #include <framegen/nvngx/Nvngx_FG.h>
 
 #include <nvapi/fakenvapi.h>
+#include <hooks/FG_Hooks.h>
 #include <hooks/Reflex_Hooks.h>
 
 #include <version_check.h>
@@ -240,7 +242,8 @@ static std::vector<std::string> splashText = { "巧用超分，轻松畅玩",
                                                "<在这里填写你的提示>" };
 
 static float lastMenuScale = 0.0f;
-static CustomOptional<uint32_t> comboPreset { 0 };
+static CustomOptional<uint32_t> srPresetDraft { 0 };
+static CustomOptional<uint32_t> rrPresetDraft { 0 };
 static int lastKey = 0;
 static bool inputDlssNr = false;
 static bool inputCurrentOutputCapture = false;
@@ -2109,13 +2112,10 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
                 state.artursFgFileAvailable = enablerExists.Get(optiPath / L"dlss-enabler-headless.dll");
                 state.nukemsFgFileAvailable = nukemsExists.Get(optiPath / L"dlssg_to_fsr3_amd_is_better.dll");
 
-                if (State::Instance().currentFeature != nullptr)
-                {
-                    if (State::Instance().currentFeature->GetUpscalerType() == Upscaler::DLSSD)
-                        comboPreset = config->DLSSDRenderPresetForAll.value_or_default();
-                    else if (State::Instance().currentFeature->GetUpscalerType() == Upscaler::DLSS)
-                        comboPreset = config->RenderPresetForAll.value_or_default();
-                }
+                // A backend can become active while the menu is open. Initialize
+                // both drafts from their own setting, without borrowing RR for SR.
+                srPresetDraft = config->RenderPresetForAll.value_or_default();
+                rrPresetDraft = config->DLSSDRenderPresetForAll.value_or_default();
             }
             else
             {
@@ -3199,14 +3199,16 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
 
     // Upscaler state is one line in every case, so the panes below never move when it changes.
     const bool upscalerFiles = state.nvngxExists || state.nvngxReplacement.has_value() ||
-                               (state.libxessExists || XeSSProxy::Module() != nullptr);
+                               state.NVNGX_DLSS_Path.has_value() || NVNGXProxy::NVNGXModule() != nullptr ||
+                               state.fsrHooks || state.libxessExists || XeSSProxy::Module() != nullptr;
 
     std::vector<std::string> upscalers;
 
     if (state.fsrHooks)
         upscalers.push_back("FSR");
 
-    if (state.nvngxExists || state.nvngxReplacement.has_value() || primaryGpu.dlssCapable)
+    if (state.nvngxExists || state.nvngxReplacement.has_value() || state.NVNGX_DLSS_Path.has_value() ||
+        NVNGXProxy::NVNGXModule() != nullptr || primaryGpu.dlssCapable)
         upscalers.push_back("DLSS");
 
     if (state.libxessExists || XeSSProxy::Module() != nullptr)
@@ -3236,7 +3238,7 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
         if (upscalerFiles)
         {
             MenuText::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)),
-                               "请在游戏选择 %s 超分，并进入游戏场景以启用这些设置。",
+                               "F6 尚未接入游戏超分调用。已启用 %s 时请检查输入接入；菜单或加载画面可能暂停调用。",
                                joinedUpscalers.c_str());
             // Troubleshooting reads remain lazy, while hovering the status text.
             if (MenuText::ItemHelpHovered() && ImGui::BeginTooltip())
@@ -3252,7 +3254,7 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
         else
         {
             MenuText::TextColored(toneMapColor(ImVec4(1.f, 0.4f, 0.35f, 1.f)),
-                               "未找到 nvngx.dll、libxess.dll 或 FSR 输入，超分支持不可用。");
+                               "F6 尚未检测到可用的超分输入，游戏加载期间也可能尚未接入。");
         }
     }
     else if (currentFeature->IsFrozen())
@@ -3613,7 +3615,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         if (primaryGpu.dlssCapable && !state.NVNGX_DLSS_Path.has_value())
         {
             ImGui::Spacing();
-            MenuText::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)), "未找到 nvngx_dlss.dll，DLSS 已关闭。");
+            MenuText::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)), "F6 未找到 nvngx_dlss.dll，F6 的 DLSS 后端已关闭。");
         }
     }
 
@@ -4014,11 +4016,12 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         }
 
         // DLSS -----------------
-        if ((config->DLSSEnabled.value_or_default() && currentBackend == Upscaler::DLSS &&
-             currentFeature->Version().major > 2) ||
-            usesDlssd)
+        const auto presetBackend = currentFeature->GetUpscalerType();
+        const auto presetPage = DlssPresetMenu::SettingsFor(presetBackend, config->DLSSEnabled.value_or_default(),
+                                                          currentFeature->Version().major);
+        if (presetPage != DlssPresetMenu::Page::Hidden)
         {
-
+            auto& comboPreset = usesDlssd ? rrPresetDraft : srPresetDraft;
             if (usesDlssd)
                 MenuText::SeparatorText("光线重建设置");
             else
@@ -4106,144 +4109,63 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                           comboPreset.value_or_default());
 
                 if (usesDlssd)
-                {
                     config->DLSSDRenderPresetForAll = comboPreset.value_or_default();
-                    state.newBackend = Upscaler::DLSSD;
-                }
                 else
-                {
                     config->RenderPresetForAll = comboPreset.value_or_default();
-                    state.newBackend = currentBackend;
-                }
 
+                // Recreate the active SR or RR feature on its original route.
+                state.newBackend = presetBackend;
                 MARK_ALL_BACKENDS_CHANGED();
             }
 
             ImGui::Spacing();
 
-            if (auto ch = ScopedCollapsingHeader(usesDlssd ? "高级光线重建设置" : "高级 DLSS 设置");
-                ch.IsHeaderOpen())
+            // Keep the existing advanced NGX options on their original routes.
+            if (usesDlssd || presetBackend == Upscaler::DLSS)
             {
-                ScopedIndent indent {};
-                ImGui::Spacing();
-
-                bool appIdOverride = config->UseGenericAppIdWithDlss.value_or_default();
-                if (MenuText::Checkbox("DLSS 使用通用应用编号", &appIdOverride))
-                    config->UseGenericAppIdWithDlss = appIdOverride;
-
-                ShowHelpMarker("NGX 使用通用应用编号，可解决部分游戏预设覆盖不生效的问题。需要重启游戏。");
-
-                ImGui::BeginDisabled(!config->RenderPresetOverride.value_or_default() || overridden);
-                ImGui::Spacing();
-                ImGui::PushItemWidth(135.0f * menuResScale);
-
-                if (usesDlssd)
+                if (auto ch = ScopedCollapsingHeader(usesDlssd ? "高级光线重建设置" : "高级 DLSS 设置");
+                    ch.IsHeaderOpen())
                 {
-                    AddDLSSDRenderPreset("DLAA 预设", &config->DLSSDRenderPresetDLAA);
-                    AddDLSSDRenderPreset("超高质量预设", &config->DLSSDRenderPresetUltraQuality);
-                    AddDLSSDRenderPreset("质量预设", &config->DLSSDRenderPresetQuality);
-                    AddDLSSDRenderPreset("均衡预设", &config->DLSSDRenderPresetBalanced);
-                    AddDLSSDRenderPreset("性能预设", &config->DLSSDRenderPresetPerformance);
-                    AddDLSSDRenderPreset("极致性能预设", &config->DLSSDRenderPresetUltraPerformance);
-                }
-                else
-                {
-                    AddDLSSRenderPreset("DLAA 预设", &config->RenderPresetDLAA);
-                    AddDLSSRenderPreset("超高质量预设", &config->RenderPresetUltraQuality);
-                    AddDLSSRenderPreset("质量预设", &config->RenderPresetQuality);
-                    AddDLSSRenderPreset("均衡预设", &config->RenderPresetBalanced);
-                    AddDLSSRenderPreset("性能预设", &config->RenderPresetPerformance);
-                    AddDLSSRenderPreset("极致性能预设", &config->RenderPresetUltraPerformance);
-                }
-                ImGui::PopItemWidth();
-                ImGui::EndDisabled();
+                    ScopedIndent indent {};
+                    ImGui::Spacing();
 
-                ImGui::Spacing();
-                ImGui::Spacing();
+                    bool appIdOverride = config->UseGenericAppIdWithDlss.value_or_default();
+                    if (MenuText::Checkbox("DLSS 使用通用应用编号", &appIdOverride))
+                        config->UseGenericAppIdWithDlss = appIdOverride;
+
+                    ShowHelpMarker("NGX 使用通用应用编号，可解决部分游戏预设覆盖不生效的问题。需要重启游戏。");
+
+                    ImGui::BeginDisabled(!config->RenderPresetOverride.value_or_default() || overridden);
+                    ImGui::Spacing();
+                    ImGui::PushItemWidth(135.0f * menuResScale);
+
+                    if (usesDlssd)
+                    {
+                        AddDLSSDRenderPreset("DLAA 预设", &config->DLSSDRenderPresetDLAA);
+                        AddDLSSDRenderPreset("超高质量预设", &config->DLSSDRenderPresetUltraQuality);
+                        AddDLSSDRenderPreset("质量预设", &config->DLSSDRenderPresetQuality);
+                        AddDLSSDRenderPreset("均衡预设", &config->DLSSDRenderPresetBalanced);
+                        AddDLSSDRenderPreset("性能预设", &config->DLSSDRenderPresetPerformance);
+                        AddDLSSDRenderPreset("极致性能预设", &config->DLSSDRenderPresetUltraPerformance);
+                    }
+                    else
+                    {
+                        AddDLSSRenderPreset("DLAA 预设", &config->RenderPresetDLAA);
+                        AddDLSSRenderPreset("超高质量预设", &config->RenderPresetUltraQuality);
+                        AddDLSSRenderPreset("质量预设", &config->RenderPresetQuality);
+                        AddDLSSRenderPreset("均衡预设", &config->RenderPresetBalanced);
+                        AddDLSSRenderPreset("性能预设", &config->RenderPresetPerformance);
+                        AddDLSSRenderPreset("极致性能预设", &config->RenderPresetUltraPerformance);
+                    }
+                    ImGui::PopItemWidth();
+                    ImGui::EndDisabled();
+
+                    ImGui::Spacing();
+                    ImGui::Spacing();
+                }
             }
         }
     }
-}
-
-// Options for the built-in RTX 40 unlock, shown only while it is on and not overridden by another
-// unlocker. Startup settings: they apply when DLSSG loads, so a change needs a restart, and the result of
-// each is shown directly under it.
-static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& status,
-                                   void (*showHelp)(const char*))
-{
-    if (!MenuText::CollapsingHeader("RTX 40（Ada）多倍插帧解锁选项"))
-        return;
-
-    ImGui::Indent();
-
-    // Frame timing fix. Auto is resolved inline, like the RTX 20/30 "Kernel Image" combo below.
-    const auto resolved = MfgUnlock::ConfiguredTemporalMethod();
-    const std::string autoLabel = resolved == MfgUnlock::TemporalMethod::None
-                                      ? "自动（AdaBlackwellKernels=false，关闭）"
-                                      : "自动（复用 Blackwell 内核）";
-    const char* options[] = { autoLabel.c_str(), "复用 Blackwell 内核", "重写混合权重（PTX）" };
-
-    const std::string chosen = config->FGDLSSGAdaTemporalFix.value_or("自动");
-    int index = chosen == "重定向" ? 1 : chosen == "Ptx" ? 2 : 0;
-
-    if (MenuText::Segmented("帧计时修正##ada", &index, options, 3))
-    {
-        const char* stored[] = { "自动", "重定向", "Ptx" };
-        config->FGDLSSGAdaTemporalFix = std::string(stored[index]);
-    }
-    showHelp("超过 2X 时，生成帧可能都落在两个真实帧的中点，帧数增加却不更流畅。此功能给各帧独立时间位置。\n自动／复用 Blackwell 内核：使用模块已有内插内核，默认方案。\n重写混合权重：修改已识别 Ada 内核的 PTX，仅运动不更流畅时尝试。\n对应 [DLSSG] AdaTemporalFix，保存并重启。");
-
-    // The result, directly under the control (which method applied, or the specific reason it did not).
-    if (!status.ModuleFound)
-    {
-        MenuText::TextDisabled("尚未应用：DLSS-G 未加载。");
-    }
-    else if (status.KernelsRewritten > 0)
-    {
-        const bool ptx = status.TemporalAttempted == MfgUnlock::TemporalMethod::Ptx;
-        MenuText::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "已应用：%s，%u %s",
-                           ptx ? "重写混合权重" : "复用 Blackwell 内核", status.KernelsRewritten,
-                           ptx ? "个描述符" : "个内核组");
-    }
-    else
-    {
-        MenuText::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "未应用：%s。",
-                           status.TemporalDetail.empty() ? "未记录原因" : status.TemporalDetail.c_str());
-    }
-
-    if (status.ModuleFound && status.TemporalAttempted != resolved)
-        MenuText::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "保存设置并重启后生效。");
-
-    ImGui::Spacing();
-
-    // Software frame pacing. Second because it is the rarer need: a freeze above 2X, not a setting every
-    // unlock user wants.
-    bool softwarePacing = config->FGDLSSGAdaFlipMeteringPatch.value_or_default();
-
-    if (MenuText::Checkbox("软件帧调度（仅 3X 以上卡死时尝试）##ada", &softwarePacing))
-        config->FGDLSSGAdaFlipMeteringPatch = softwarePacing;
-    showHelp("硬件翻转计量开启时，多生成帧可能令画面停住。此功能在识别到受支持插件时，修改内存中的 Streamline DLSS-G 插件，改用软件帧调度。仅 3X 以上卡死时尝试；可先用更温和的 INI 设置 [NvApi] DisableFlipMetering=true。\n对应 [DLSSG] AdaFlipMeteringPatch，保存并重启。");
-
-    const std::string_view pacing = status.FlipMetering;
-
-    if (pacing.empty())
-    {
-        if (softwarePacing)
-            MenuText::TextDisabled("尚未应用：Streamline DLSS-G 插件未加载。");
-    }
-    else if (pacing == "已修补")
-    {
-        MenuText::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "已应用到 %u 处。", status.FlipSites);
-    }
-    else if (pacing != "关闭")
-    {
-        MenuText::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "未应用：%s。", status.FlipMetering);
-    }
-
-    if (!pacing.empty() && softwarePacing != status.FlipRequested)
-        MenuText::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "保存设置并重启后生效。");
-
-    ImGui::Unindent();
 }
 
 // One line under the DLSSG override slider. The slider says what was requested; this says whether it
@@ -4251,7 +4173,7 @@ static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& stat
 // presented at the last check. Nothing is drawn while DLSS-G is off.
 static void RenderDlssgTelemetry()
 {
-    const auto& telemetry = MfgUnlock::GetTelemetry();
+    const auto& telemetry = framegen::DlssgTelemetry::Get();
 
     if (!telemetry.optionsSeen.load(std::memory_order_acquire) || !telemetry.active.load(std::memory_order_relaxed))
         return;
@@ -4267,19 +4189,15 @@ static void RenderDlssgTelemetry()
     const unsigned int presented = telemetry.presented.load(std::memory_order_relaxed);
     const unsigned int result = telemetry.result.load(std::memory_order_relaxed);
 
-    const bool agrees = result == 0 && presented == sentX;
+    const bool accepted = result == 0;
     const ImVec4 green(0.4f, 0.9f, 0.5f, 1.0f);
     const ImVec4 amber(0.95f, 0.70f, 0.20f, 1.0f);
 
-    MenuText::TextColored(agrees ? green : amber, "游戏请求 %uX，发送 %uX，Streamline 呈现 %u 帧（最高 %u）",
+    MenuText::TextColored(accepted ? green : amber, "游戏请求 %uX，发送 %uX；上次查询间隔呈现 %u 帧（区间最高 %u）",
                        requestedX, sentX, presented, telemetry.maxPresented.load(std::memory_order_relaxed));
 
     if (result != 0)
         MenuText::TextColored(amber, "此次请求的 slDLSSGSetOptions 返回值：%u。", result);
-
-    // Only when the symptom is there: 3X or more sent, fewer presented, and nothing pacing in software.
-    if (result == 0 && sentX > 2 && presented < sentX && MfgUnlock::UnlockedMax() > 0 && !MfgUnlock::SoftwarePacing())
-        MenuText::TextColored(amber, "画面停住时，可尝试 RTX 40 解锁设置中的软件帧调度。");
 }
 
 void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
@@ -4288,21 +4206,9 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     auto config = ctx.config;
     DlssNr::RenderF5LowFrameGenHint(config, ctx.currentFeature == nullptr || !ctx.currentFeature->IsInited());
     bool external = config->ExternalFrameGeneration.value_or_default();
-    const bool ampereActive = config->FGDLSSGAmpereMfgUnlock.value_or_default();
-    if (ampereActive)
-    {
-        external = true;
-        ImGui::BeginDisabled();
-        MenuText::Checkbox("禁用内置帧生成###外部插帧／多倍插帧解锁器", &external);
-        ImGui::EndDisabled();
-        ShowHelpMarker("Ampere SM86 多倍插帧解锁器已启用，此选项自动锁定为开启。若需关闭，请先关闭下方 SM86 解锁。");
-    }
-    else
-    {
-        if (MenuText::Checkbox("禁用内置帧生成###外部插帧／多倍插帧解锁器", &external))
-            config->ExternalFrameGeneration = external;
-        ShowHelpMarker("让游戏或外部模组控制 Streamline、Reflex 和插帧。NR 和 NGX 超分仍可用。保存后重启；此开关不安装解锁器，也不为不支持的游戏添加插帧。");
-    }
+    if (MenuText::Checkbox("禁用内置帧生成###外部插帧", &external))
+        config->ExternalFrameGeneration = external;
+    ShowHelpMarker("让游戏或外部模块控制 Streamline、Reflex 和插帧。NR 和 NGX 超分仍可用。保存后重启。");
     if (external != state.externalFrameGeneration)
         MenuText::TextWrapped("更改插帧控制方需要保存设置并重启游戏。");
 
@@ -4314,124 +4220,55 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     const bool vulkanNoFg = state.swapchainApi == API::Vulkan && state.swapchainInteropApi != SwapchainInteropApi::VkwDx12 &&
                             (MenuPrimaryGpu().usesDxvk || !config->DlssNrEnabled.value_or_default());
 
-    /// FG INPUTS
-    bool adaUnlock = config->FGDLSSGAdaMfgUnlock.value_or_default();
-    const bool disableAda = ampereActive || state.externalFrameGeneration;
-
-    if (disableAda)
+    if (config->FGDLSSGAmpereMfgUnlock.value_or_default())
     {
-        ImGui::BeginDisabled();
-        MenuText::Checkbox("40系 多倍帧生成解锁###内置 RTX 40 多倍插帧解锁（实验功能，需重启）", &adaUnlock);
-        ImGui::EndDisabled();
-        if (ampereActive)
-        {
-            ShowHelpMarker("RTX 30 SM86 解锁已启用，此功能关闭。请先关闭 AmpereMfgUnlock，保存并重启。");
-        }
-        else
-        {
-            ShowHelpMarker("外部插帧已启用，此功能关闭。请先关闭外部插帧，保存并重启。");
-        }
-    }
-    else
-    {
-        if (MenuText::Checkbox("40系 多倍帧生成解锁###内置 RTX 40 多倍插帧解锁（实验功能，需重启）", &adaUnlock))
-            config->FGDLSSGAdaMfgUnlock = adaUnlock;
-        ShowHelpMarker("解锁 RTX 40 多倍插帧。需支持的 DLSS-G 运行库和 Streamline 2.7.1 以上，保存并重启生效。勿与其他解锁器混用；此处尚未完成 RTX 40 实测。");
-    }
-    if (adaUnlock && !disableAda)
-    {
-        const auto& status = MfgUnlock::LastStatus();
-        MenuText::TextWrapped("DLSS-G %s：能力 %s，验证 %s，重定向内核组 %u，Streamline 插件上限 %s",
-                           status.SnippetVersion.empty() ? "未修补" : status.SnippetVersion.c_str(),
-                           status.AdvertiseMatched ? "匹配" : "不匹配",
-                           status.ValidateMatched ? "匹配" : "不匹配", status.KernelsRewritten,
-                           status.PluginCeiling[0] != '\0' ? status.PluginCeiling : "尚未检测到");
-
-        RenderAdaUnlockOptions(config, status, [](const char* tip) { ShowHelpMarker(tip); });
+        MenuText::TextWrapped("旧 Ampere 外部解锁设置仍已启用，会阻止内置 Ada 多倍插帧；本版不加载该外部路径。");
+        if (MenuText::Button("关闭旧 Ampere 设置（保存后重启）"))
+            config->FGDLSSGAmpereMfgUnlock = false;
     }
 
-    // ── Ampere/Turing (SM86/SM75) MFG Unlock ─────────────────────────
-    if (MenuText::CollapsingHeader("RTX 20／30（SM75／SM86）多倍插帧解锁"))
+    bool builtinMfg = config->FGDLSSGAdaMfgUnlock.value_or_default();
+    ImGui::BeginDisabled(state.externalFrameGeneration);
+    if (MenuText::Checkbox("内置多倍插帧（需重启）", &builtinMfg))
+        config->FGDLSSGAdaMfgUnlock = builtinMfg;
+    ImGui::EndDisabled();
+    ShowHelpMarker("使用现有内置兼容路径，保存设置并重启后生效。实际倍率仍以运行库接受的配置为准。");
+    if (builtinMfg && !state.externalFrameGeneration)
     {
-        ImGui::Indent();
-
-        bool ampereUnlock = config->FGDLSSGAmpereMfgUnlock.value_or_default();
-
-        // Mutual exclusion: disable if Ada is already enabled
-        const bool adaActive = config->FGDLSSGAdaMfgUnlock.value_or_default();
-        if (adaActive)
+        const auto builtinStatus = MfgUnlock::LastStatus();
+        MenuText::TextWrapped("内置 FG：运行库 %s，能力匹配 %s，时序处理 %u，插件状态 %s",
+            builtinStatus.SnippetVersion.empty() ? "尚未加载" : builtinStatus.SnippetVersion.c_str(),
+            builtinStatus.AdvertiseMatched && builtinStatus.ValidateMatched ? "是" : "否",
+            builtinStatus.KernelsRewritten,
+            builtinStatus.PluginCeiling[0] ? builtinStatus.PluginCeiling : "尚未就绪");
+        if (MenuText::CollapsingHeader("内置 FG 兼容设置"))
         {
-            ImGui::BeginDisabled();
-            MenuText::Checkbox("启用 SM86／SM75 多倍插帧（实验功能，需重启）##ampere", &ampereUnlock);
-            ImGui::EndDisabled();
-            ShowHelpMarker("RTX 40 Ada 解锁已启用，此功能关闭。请先关闭 AdaMfgUnlock，保存并重启。");
-        }
-        else
-        {
-            if (MenuText::Checkbox("启用 SM86／SM75 多倍插帧（实验功能，需重启）##ampere", &ampereUnlock))
+            const auto method = config->FGDLSSGAdaTemporalFix.value_or("Auto");
+            int choice = method == "Retarget" ? 1 : method == "Ptx" ? 2 : 0;
+            const char* choices[] = { "自动", "重定向", "PTX" };
+            if (MenuText::Segmented("时序处理##builtinFg", &choice, choices, IM_ARRAYSIZE(choices)))
             {
-                config->FGDLSSGAmpereMfgUnlock = ampereUnlock;
-                if (ampereUnlock)
-                {
-                    config->ExternalFrameGeneration = true;
-                    config->FGDLSSGAdaMfgUnlock = false;
-                }
+                const char* stored[] = { "Auto", "Retarget", "Ptx" };
+                config->FGDLSSGAdaTemporalFix = std::string(stored[choice]);
             }
-            ShowHelpMarker("sdli1995 Ampere／Turing 解锁器，侧载 dlssg_for_sm86 代理。自动启用外部插帧，倍数由游戏菜单控制。支持 RTX 20 与 RTX 30，保存并重启生效。勿与 Ada 或其他外部解锁器混用。");
+            bool pacing = config->FGDLSSGAdaFlipMeteringPatch.value_or_default();
+            if (MenuText::Checkbox("软件帧调度##builtinFg", &pacing))
+                config->FGDLSSGAdaFlipMeteringPatch = pacing;
+            MenuText::TextDisabled("保存设置并重启游戏后生效。");
         }
-
-        if (ampereUnlock)
-        {
-            // Status display
-            const auto& status = AmpereMfgLoader::LastStatus();
-            if (!status.ErrorMessage.empty())
-                MenuText::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "错误：%s", status.ErrorMessage.c_str());
-            else
-            {
-                std::string routerStr = AmpereMfgLoader::ResolveRouter();
-                MenuText::TextWrapped("DLL：%s | 路由器：%s | INI：%s | 已加载：%s",
-                                   status.DllFound ? "已找到" : "缺失",
-                                   routerStr.c_str(),
-                                   status.IniWritten ? "已写入" : "未写入",
-                                   status.DllLoaded ? "是" : "no");
-            }
-
-            // MaxGeneratedFrames slider
-            int maxFrames = config->FGDLSSGAmpereMfgMaxFrames.value_or_default();
-            const char* frameLabels[] = { "兼容默认（3 个生成帧）", "1 (2X)", "2 (3X)", "3 (4X)", "4 (5X)", "5 (6X)" };
-            const char* currentLabel = (maxFrames >= 0 && maxFrames <= AmpereMfgLoader::MaximumGeneratedRequest) ? frameLabels[maxFrames] : frameLabels[0];
-            if (MenuText::SliderInt("最大生成帧数##sm86", &maxFrames, 0, AmpereMfgLoader::MaximumGeneratedRequest, currentLabel))
-                config->FGDLSSGAmpereMfgMaxFrames = maxFrames;
-            ShowHelpMarker("请求生成帧上限：1＝2X，3＝4X，5＝6X。6X 需要支持它的运行时；实际数量仍受 SDK 能力与成功配置限制。0 保留兼容默认值 3 个生成帧。保存并重启生效。");
-
-            // KernelImage combo
-            std::string resolvedAuto = AmpereMfgLoader::ResolveAutoKernelImage();
-            std::string autoLabel = (resolvedAuto != "自动") ? "自动（" + resolvedAuto + "，当前 GPU）" : "自动";
-            const char* kernelOptions[] = { autoLabel.c_str(), "PTX", "Cubin" };
-            std::string current = config->FGDLSSGAmpereMfgKernelImage.value_or("自动");
-            int kernelIdx = (current == "PTX") ? 1 : (current == "Cubin") ? 2 : 0;
-            if (MenuText::Segmented("内核映像##sm86", &kernelIdx, kernelOptions, 3))
-            {
-                const char* storedOptions[] = { "自动", "PTX", "Cubin" };
-                config->FGDLSSGAmpereMfgKernelImage = std::string(storedOptions[kernelIdx]);
-            }
-            ShowHelpMarker("自动选择格式。PTX 由驱动即时编译，适合 Linux／Proton、RTX 3080 Ti 和 RTX 20。Cubin 为预编译二进制，Windows 下需精确匹配物理 SM。保存并重启。");
-
-            // HardwareBilinear checkbox
-            bool hwBilinear = config->FGDLSSGAmpereMfgHardwareBilinear.value_or_default();
-            if (MenuText::Checkbox("硬件双线性（近似采样）##sm86", &hwBilinear))
-                config->FGDLSSGAmpereMfgHardwareBilinear = hwBilinear;
-            ShowHelpMarker("仅 SM86／RTX 30。0 为默认精确输出；1 为可选近似硬件双线性，可能额外降低约 2–4% GPU 延迟。保存并重启。");
-        }
-
-        ImGui::Unindent();
     }
 
     if (state.externalFrameGeneration)
     {
-        MenuText::TextWrapped("外部插帧已启用，请在游戏或解锁器中设置倍数。");
+        MenuText::TextWrapped("外部插帧已启用，请在游戏或外部模块中设置倍数。");
         return;
     }
+
+    const auto hookStatus = FGHooks::SwapchainHookStatus();
+    if (config->FGEnabled.value_or_default() &&
+        hookStatus != S_OK && hookStatus != HRESULT_FROM_WIN32(ERROR_NOT_READY))
+        MenuText::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+            "FG 接入失败（0x%08X），需要重启后重试；NR 可继续使用。", static_cast<unsigned>(hookStatus));
 
     // Match startup routing without rewriting the persisted legacy selection.
     const auto effectiveInput = [](FGInput saved) {
@@ -5052,7 +4889,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         ShowHelpMarker("请求启用帧生成；实际插帧仍需当前画面的深度、运动与呈现链路就绪。");
         const int maxInterpolationCount = dlssgRuntimeControlsReady
             ? fgOutput->GetMaxInterpolationCount()
-            : (std::max)(static_cast<int>(MfgUnlock::UnlockedMax()), state.dlssgMfgMax.value_or(0));
+            : state.dlssgMfgMax.value_or(0);
         const int savedFrames = config->FGDLSSGInterpolationCount.value_or_default();
         const bool hasMultiplierRange = maxInterpolationCount > 1;
         const bool dynamicMFG = config->FGDLSSGForceDMFG.value_or_default();

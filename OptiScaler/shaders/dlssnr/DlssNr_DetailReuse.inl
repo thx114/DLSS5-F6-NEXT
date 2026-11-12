@@ -214,7 +214,6 @@ const char* historyReadiness = "no-history";
 const char* recordingReadiness = "no-recording";
 // Defined beside Late's private slots in this TU; never resets a borrowed list.
 void RetireCompletedNativeRecordings(const Frame& f);
-ID3D12Device* historyFenceDevice = nullptr; // identity; never retained/dereferenced
 bool historyPublished = false;
 DlssNrCadence::NrCadenceLedger ledger;
 DlssNrCadence::ReuseDecision reuseEvidence;
@@ -1166,17 +1165,6 @@ Plan BeforeModel(const Frame& f)
             want.wanted = false; want.keep = true;
         }
     }
-    if (want.wanted && historyFenceDevice != f.device)
-    {
-        temporalRecording.fence.Reset();
-        historyFenceDevice = f.device;
-    }
-    if (want.wanted && temporalRecording.fence == nullptr && FAILED(f.device->CreateFence(
-        0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&temporalRecording.fence))))
-    {
-        reuseEvidence.cacheReason = DlssNrCadence::CacheReason::FenceUnknown;
-        want.wanted = false; want.keep = true;
-    }
     const auto resourceUse = NrRecording(f.device, f.cmdList);
     if (!resourceUse || resourceUse->quarantined) { want.wanted = false; want.keep = true; }
     plan.active = Prepare(f, want.wanted, want.keep, want.steady, want.fill, want.measure, want.spread,
@@ -1222,6 +1210,7 @@ Plan BeforeModel(const Frame& f)
         slot.contract = Contract(f); slot.ordinal = f.frameNumber; slot.generation = ++recordingGeneration;
         slot.bytes = reuseEvidence.bytes;
         slot.pending = true; slot.submitted = slot.publish = slot.shown = slot.quarantined = slot.retirementProven = slot.retirementAmbiguous = false;
+        slot.fence.Reset(); slot.value = 0; // assigned only by the actual submission receipt
         slot.retirementQueue.Reset();
         DlssNrWatchedLists::Add(slot.commands);
     }
@@ -1795,7 +1784,6 @@ void Release()
     sourceFenceIdentity = 0;
     historyReadiness = "no-history"; recordingReadiness = "no-recording";
     publishedContract = {}; temporalHistoryQueue = nullptr;
-    historyFenceDevice = nullptr;
     allocationBudget.clear(); budgetDevice = nullptr;
     temporalFusedFormat = DXGI_FORMAT_UNKNOWN;
     temporalFusedReadable = temporalEstimateReady = false;

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <utility>
 
 namespace framegen::latency
 {
@@ -25,5 +26,22 @@ constexpr Target Select(const Flags& flags, Caller caller, bool sdkLoaded,
     if (!nativeOnly && hasProvider && flags.providerKnown && (flags.effectiveProvider & WaitableFlag))
         return Target::Provider;
     return Target::Preserve;
+}
+
+constexpr Target Resolve(Target selected, Target preserved) noexcept
+{
+    return selected == Target::Preserve ? preserved : selected;
+}
+
+// All three latency APIs must use the same receiver. In particular, an app
+// waiting on the native object must never overwrite the provider's queue depth.
+// Resolve ownership before forwarding and release bookkeeping locks before DXGI.
+template<class Chain, class Result, class Call>
+Result Forward(Target target, Chain* native, Chain* provider, Call&& call,
+               Result denied, Result missing)
+{
+    if (target == Target::None) return denied;
+    auto* chain = target == Target::Native ? native : target == Target::Provider ? provider : nullptr;
+    return chain ? std::forward<Call>(call)(*chain) : missing;
 }
 }

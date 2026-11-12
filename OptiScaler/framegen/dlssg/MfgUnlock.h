@@ -77,6 +77,8 @@ TemporalMethod ConfiguredTemporalMethod();
 // Applies the patches once per process. Silent and harmless when the config option is off, when
 // nvngx_dlssg.dll is not loaded, or when a signature does not match exactly once.
 void TryApply(HMODULE module = nullptr);
+// Later provider loads still need interception after the first capability attempt.
+bool ShouldInterceptProviderLoad();
 bool Pending();
 
 // The generated frame ceiling the patches opened, or 0 when they did not land.

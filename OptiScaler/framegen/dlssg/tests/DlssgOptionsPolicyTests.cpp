@@ -597,6 +597,25 @@ void UserInterfaceRecompositionRequiresAcceptedCurrentPair()
     CHECK(!CanRecomposeUserInterface(true, true, false));
     CHECK(CanRecomposeUserInterface(true, true, true));
 }
+
+void ProviderReflexUsesQualifiedSdkDefaults()
+{
+    for (bool boost : {false, true})
+    {
+        const auto options = ProviderReflexOptions(boost);
+        CHECK(options.mode == (boost ? sl::ReflexMode::eLowLatencyWithBoost : sl::ReflexMode::eLowLatency));
+        CHECK(!options.useMarkersToOptimize);
+        CHECK(options.frameLimitUs == 0 && options.virtualKey == 0 && options.idThread == 0);
+        CHECK(Known(options));
+        Fixture f;
+        CHECK(f.Apply(f.reflex, options).confirmed);
+        CHECK(!f.Apply(f.reflex, options).submitted);
+        auto old = options;
+        old.useMarkersToOptimize = true;
+        CHECK(f.Apply(f.reflex, old).submitted);
+        CHECK(f.Apply(f.reflex, options).submitted);
+    }
+}
 }
 
 int main()
@@ -617,5 +636,6 @@ int main()
     RawCapabilityBoundsRequestedAndAcceptedConfiguration();
     CapFailuresSchemasAndDynamicModeRemainIndependent();
     UserInterfaceRecompositionRequiresAcceptedCurrentPair();
+    ProviderReflexUsesQualifiedSdkDefaults();
     std::printf("DlssgOptionsPolicy CPU contracts: %u checks passed\n", checks);
 }

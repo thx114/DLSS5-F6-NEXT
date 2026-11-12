@@ -2334,10 +2334,19 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetSourceSize(UINT* pWidth, UI
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetMaximumFrameLatency(UINT MaxLatency)
 {
     const auto caller = _ReturnAddress();
-    const auto result = _real2->SetMaximumFrameLatency(MaxLatency);
-    if (!GenshinHookCpuTiming::Enabled()) return result;
+    const auto target = _SelectFrameLatencyTarget(caller);
+    const auto result = framegen::latency::Forward<IDXGISwapChain2, HRESULT>(target, _real2, nullptr,
+        [MaxLatency](auto& chain) { return chain.SetMaximumFrameLatency(MaxLatency); },
+        DXGI_ERROR_INVALID_CALL, E_NOINTERFACE);
+    _ObserveFrameLatencySetter(caller, MaxLatency, result);
+    return result;
+}
+
+void WrappedIDXGISwapChain4::_ObserveFrameLatencySetter(const void* caller, UINT MaxLatency, HRESULT result)
+{
+    if (!GenshinHookCpuTiming::Enabled()) return;
     static const bool starRail = _wcsicmp(Util::ExePath().filename().c_str(), L"StarRail.exe") == 0;
-    if (!starRail) return result;
+    if (!starRail) return;
 
     // Observe this existing physical setter only. SDK calls that bypass this
     // wrapper are outside coverage; never take the source-owned provider lock.
@@ -2371,7 +2380,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetMaximumFrameLatency(UINT Ma
     previous.request = MaxLatency;
     previous.result = result;
     const auto now = GetTickCount64();
-    if (!previous.changes || (previous.emitted && now - previous.lastRow < 500)) return result;
+    if (!previous.changes || (previous.emitted && now - previous.lastRow < 500)) return;
 
     HMODULE callerModule = nullptr;
     char callerPath[MAX_PATH] {};
@@ -2389,25 +2398,33 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetMaximumFrameLatency(UINT Ma
     previous.calls = previous.changes = previous.failedCalls = 0;
     previous.minimum = UINT_MAX;
     previous.maximum = 0;
-    return result;
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetMaximumFrameLatency(UINT* pMaxLatency)
 {
-    return _real2->GetMaximumFrameLatency(pMaxLatency);
+    const auto target = _SelectFrameLatencyTarget(_ReturnAddress());
+    return framegen::latency::Forward<IDXGISwapChain2, HRESULT>(target, _real2, nullptr,
+        [pMaxLatency](auto& chain) { return chain.GetMaximumFrameLatency(pMaxLatency); },
+        DXGI_ERROR_INVALID_CALL, E_NOINTERFACE);
 }
 
 HANDLE STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetFrameLatencyWaitableObject(void)
 {
-    const auto caller = StreamlineHooks::FrameLatencyCaller(_ReturnAddress());
+    const auto target = _SelectFrameLatencyTarget(_ReturnAddress());
+    return framegen::latency::Forward<IDXGISwapChain2, HANDLE>(target, _real2, nullptr,
+        [](auto& chain) { return chain.GetFrameLatencyWaitableObject(); }, nullptr, nullptr);
+}
+
+framegen::latency::Target WrappedIDXGISwapChain4::_SelectFrameLatencyTarget(void* returnAddress)
+{
+    const auto caller = StreamlineHooks::FrameLatencyCaller(returnAddress);
     const bool sdkLoaded = StreamlineHooks::DlssgPluginLoaded();
     framegen::latency::Flags flags;
     { std::lock_guard lock(_frameLatencyMutex);flags=_frameLatencyFlags; }
     const auto target = framegen::latency::Select(flags, caller, sdkLoaded,
         _real2 != nullptr, false, true);
     StreamlineHooks::ReportFrameLatencyAccess(this, flags, caller, sdkLoaded, target);
-    if (target == framegen::latency::Target::None) return nullptr;
-    return _real2 ? _real2->GetFrameLatencyWaitableObject() : nullptr;
+    return framegen::latency::Resolve(target, framegen::latency::Target::Native);
 }
 
 void WrappedIDXGISwapChain4::_RefreshFrameLatencyFlags()

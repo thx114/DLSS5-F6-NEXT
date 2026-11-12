@@ -10,6 +10,9 @@
 #include <string>
 #include <type_traits>
 #include <vector>
+#include "../InteropQueueDrainReceipt.h"
+
+using Microsoft::WRL::ComPtr;
 
 // Observable CPU operands only. The generated includes contain the actual
 // production class, wait overloads and writer/Reset/submission blocks.
@@ -60,12 +63,28 @@ struct ID3D12CommandAllocator : RefCounted
 };
 struct ID3D12CommandList : RefCounted {};
 struct ID3D12Resource : RefCounted {};
-struct ID3D12Device : RefCounted {};
+struct ID3D12Device : RefCounted
+{
+    HRESULT CreateFence(UINT64, int, ID3D12Fence**) { std::abort(); } // fixtures supply owned fences
+};
+#undef IID_PPV_ARGS
+#define IID_PPV_ARGS(p) (p)
+constexpr int D3D12_FENCE_FLAG_NONE = 0;
+HANDLE FixtureCreateEvent(LPSECURITY_ATTRIBUTES, BOOL, BOOL, LPCWSTR) { std::abort(); }
+#define CreateEventW FixtureCreateEvent
 struct IDXGISwapChain : RefCounted {};
 struct ID3D12CommandQueue : RefCounted
 {
-    HRESULT signalResult = S_OK;
-    unsigned executes = 0, signals = 0;
+    HRESULT signalResult = S_OK, waitResult = S_OK;
+    unsigned executes = 0, signals = 0, waits = 0;
+    ID3D12Fence* waited = nullptr;
+    UINT64 waitTarget = 0;
+    HRESULT GetDevice(ID3D12Device**) { std::abort(); }
+    HRESULT Wait(ID3D12Fence* fence, UINT64 target)
+    {
+        ++waits; waited = fence; waitTarget = target;
+        return waitResult;
+    }
     ID3D12CommandList* executed = nullptr;
     ID3D12Fence* signalled = nullptr;
     UINT64 value = 0;
@@ -86,7 +105,7 @@ struct State
 };
 namespace CallerCpuTrace
 {
-enum class Op { CopyAllocatorWait, CopyAllocatorReset, CopyExecute, CopySignal };
+enum class Op { CopyAllocatorWait, CopyAllocatorReset, CopyExecute, CopySignal, QueueIdle, QueueIdleWait, CopyIdleWait };
 struct Scope
 {
     template<class... Args> explicit Scope(Args&&...) {}
@@ -95,8 +114,17 @@ struct Scope
     UINT64 EndQpc() const { return 0; }
 };
 }
+namespace native::nrfilter
+{
+template<class Ring> bool HasUncertainCopy(const Ring& ring)
+{
+    for (auto value : ring) if (value == UINT64_MAX) return true;
+    return false;
+}
+}
 namespace GenshinBridgeFg
 {
+const void* Identity(const ID3D12CommandQueue* queue) { return queue; }
 struct PresentScope
 {
     static inline bool active = false;
@@ -174,6 +202,19 @@ class Dx11wDx12SC : public RefCounted
     UINT64 _copyFenceValue = 18, _lastInteropCopyFenceValue = 18;
     unsigned writes = 0;
     unsigned faultReports = 0;
+    bool _childRecoveryEntered = false, _copyDrainEntered = false;
+    InteropQueueDrainReceipt _recoveryCopyDrain, _recoveryPresentDrain;
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> _interopPresentQueue;
+    ID3D12Fence* _presentRetirementFence = nullptr;
+    HANDLE _presentRetirementEvent = nullptr;
+    UINT64 _presentRetirementValue = 0;
+    void* _dx11Context4 = this;
+    void* _dx11Fence = this;
+    ID3D12Fence* _dx12SharedFence = nullptr;
+    std::vector<int> _copyCommandLists {1}, _nrCopyCommandLists, _sharedDx11BackBufferCopies, _openedDx11BackBuffers;
+    unsigned producerDrains = 0;
+    bool _WaitDx11ThenDx12() { ++producerDrains; return true; }
+    bool _WaitForCopyQueueIdle();
     // Logging is observational: the exact extracted production wait below
     // still decides completion/Reset. No simulated device loss grants reuse.
     void _ReportCopyFenceFault(const char*,UINT,UINT64,UINT64,DWORD) { ++faultReports; }
@@ -206,6 +247,7 @@ class Dx11wDx12SC : public RefCounted
     }
 };
 #include "InteropCopyWaitProduction.inl"
+#include "InteropQueueDrainProduction.inl"
 
 namespace
 {
@@ -229,6 +271,7 @@ struct Fixture
     Fixture()
     {
         owner._copyFence = &fence; owner._copyFenceEvent = &event;
+        owner._dx12SharedFence = &fence;
         owner._copyAllocators = { &allocator }; owner._copyAllocatorFenceValues = { 18 };
         owner._dx12CommandQueue = &queue; owner._dx12Device = &device; owner._fgSwapChain = &chain;
         fence.completed = 17; event.completedAfterWait = 18;
@@ -290,6 +333,77 @@ void RefusalsNeverWriteOrReset()
                   "early admission preserves the caller's nonterminal native Busy classification");
         }
     }
+}
+void RecoveryPollsTheSameSubmittedDrain()
+{
+    for (bool separate : {false, true})
+    {
+        Fixture f;
+        ID3D12Fence presentFence;
+        auto& o = f.owner;
+        o._nativeParentRoute = o._childRecoveryEntered = true;
+        o._nrCopyAllocatorFenceValues = {16};
+        if (separate)
+        {
+            o._interopPresentQueue = &f.otherQueue;
+            o._presentRetirementFence = &presentFence;
+        }
+        Check(!o._WaitForCopyQueueIdle() && !o._WaitForCopyQueueIdle(), "first and repeated probe refuse live copy work");
+        Check(f.queue.signals == 1 && f.queue.value == 19 && o.producerDrains == 1 && f.event.waits == 0 &&
+              f.fence.arms == 0 && f.otherQueue.signals == 0 && o._copyAllocatorFenceValues[0] == 18,
+              "pending copy probe keeps the same target and leaves both rings in flight");
+        Check(f.queue.waits == unsigned(separate) && (!separate || (f.queue.waited == &f.fence && f.queue.waitTarget == 18)),
+              "copy marker is ordered after the preceding colour writer on the separate queue");
+        f.fence.completed = 19;
+        if (separate)
+        {
+            Check(!o._WaitForCopyQueueIdle() && !o._WaitForCopyQueueIdle(), "present queue still in flight after copy completion");
+            Check(f.queue.signals == 1 && f.otherQueue.signals == 1 && f.otherQueue.signalled == &presentFence &&
+                  presentFence.arms == 0 && o._nrCopyAllocatorFenceValues[0] == 16,
+                  "present marker uses its own fence and is never moved by polling");
+            presentFence.completed = 1;
+        }
+        Check(o._WaitForCopyQueueIdle() && o._copyAllocatorFenceValues[0] == 0 &&
+              o._nrCopyAllocatorFenceValues[0] == 0 && o._lastInteropCopyFenceValue == 0 &&
+              o._recoveryCopyDrain.target == 0 && o._recoveryPresentDrain.target == 0,
+              "only both actual completions retire allocator receipts and consume the drain");
+    }
+}
+void RecoveryRejectsUnprovenCompletion()
+{
+    Fixture f;
+    auto& o = f.owner;
+    o._nativeParentRoute = o._childRecoveryEntered = true;
+    f.queue.signalResult = E_FAIL;
+    Check(!o._WaitForCopyQueueIdle() && o._recoveryCopyDrain.target == 0 && o._lastInteropCopyFenceValue == 18,
+          "failed submission is not cached as a drain receipt");
+    f.queue.signalResult = S_OK;
+    Check(!o._WaitForCopyQueueIdle() && o._recoveryCopyDrain.target == 20,
+          "next probe establishes a real marker after a failed Signal");
+    f.fence.completed = UINT64_MAX;
+    Check(!o._WaitForCopyQueueIdle() && f.queue.signals == 2 && o._copyAllocatorFenceValues[0] == 18,
+          "device removal is never GPU retirement");
+    f.fence.completed = 20;
+    o._childRecoveryEntered = false;
+    f.event.completedAfterWait = 21;
+    Check(o._WaitForCopyQueueIdle() && f.queue.signals == 3 && f.queue.value == 21 && f.event.waits == 1,
+          "blocking resize/teardown submits a fresh marker instead of borrowing the recovery receipt");
+}
+void DrainReceiptRequiresExactIdentityAndTimeline()
+{
+    ID3D12CommandQueue q1, q2;
+    ID3D12Fence f1, f2;
+    InteropQueueDrainReceipt receipt;
+    UINT64 value = 4;
+    unsigned submissions = 0;
+    auto submit = [&] { ++submissions; ++value; return true; };
+    Check(receipt.ReuseOrSubmit(&q1, &f1, value, submit) && receipt.target == 5 && submissions == 1,
+          "receipt publishes the value accepted by the actual submission");
+    Check(receipt.ReuseOrSubmit(&q1, &f1, value, submit) && submissions == 1, "identical probe does not resubmit");
+    Check(receipt.ReuseOrSubmit(&q2, &f1, value, submit) && submissions == 2, "different queue starts a new drain");
+    Check(receipt.ReuseOrSubmit(&q2, &f2, value, submit) && submissions == 3, "different fence starts a new drain");
+    ++value;
+    Check(receipt.ReuseOrSubmit(&q2, &f2, value, submit) && submissions == 4, "changed timeline starts a new drain");
 }
 void ProofCannotCrossIdentityOrTimeline()
 {
@@ -365,6 +479,9 @@ int main()
     static_assert(!std::is_move_constructible_v<CopySlotAdmission>);
     ReaderRetiresBeforeWriteOnce();
     RefusalsNeverWriteOrReset();
+    RecoveryPollsTheSameSubmittedDrain();
+    RecoveryRejectsUnprovenCompletion();
+    DrainReceiptRequiresExactIdentityAndTimeline();
     ProofCannotCrossIdentityOrTimeline();
     FailedSignalPinsActualOperandsOnEveryRoute();
     std::printf("PASS %u common interop production CPU checks; GPU/SDK/game untested\n", checks);

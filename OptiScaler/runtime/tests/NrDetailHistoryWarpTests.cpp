@@ -1309,18 +1309,13 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
     c.FeedbackStabilitySeconds=.2f;c.FeedbackStabilityFloor=.8f;c.FeedbackStabilityClamp=.08f;
     inputs[6]=Image({-.02f,-.02f,-.02f,0});
     const float nan=std::numeric_limits<float>::quiet_NaN();
-    for(unsigned test=0;test<7;++test)
+    for(unsigned test=0;test<2;++test)
     {
         auto sample=inputs;
-        if(test==1)Fill(sample[5],{nan,0,0,0});
-        if(test==2)Motion(sample,nan,nan);
-        if(test==3)Motion(sample,10000,0);
-        if(test==4){Fill(sample[5],{.95f,0,0,0});Motion(sample,nan,0);}
-        if(test==5)sample[4]=Image({},0,0); // truly unbound guide in shader test only
-        if(test==6)sample[5]=Image({},0,0);
+        if(test==1)Fill(sample[5],{.416f,0,0,0}); // Valid surface, softly reduced depth confidence.
         const auto result=gpu.Run(sample,c,true);
         checks.Expect(result.primary.Probe().r<sample[1].Probe().r-.008f,
-                      "positive low-trust floor filters NR despite invalid/untrusted pixel guides "+std::to_string(test));
+                      "positive low-trust floor filters NR within valid correspondence "+std::to_string(test));
         checks.Expect(result.primary.Probe().a==sample[1].Probe().a||std::abs(result.primary.Probe().a-sample[1].Probe().a)<.001f,
                       "stabilization preserves current alpha");
         checks.Expect(result.stability.Probe().a>0&&result.stability.Probe().a<c.FeedbackStabilitySeconds,
@@ -1330,10 +1325,11 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
         checks.Expect(std::abs(result.secondary.Probe().r-(a.r-b.r))<.0001f,
                       "stabilizer never writes filtered output into long-detail ancestry");
     }
-    auto fallback=inputs;Motion(fallback,nan,0);c.FeedbackStabilityFloor=0;
-    checks.ImageEquals(gpu.Run(fallback,c).primary,inputs[1],"zero low-trust floor restores guide veto");
+    auto fallback=inputs;Fill(fallback[5],{.416f,0,0,0});c.FeedbackStabilityFloor=0;
+    const float noFloor=gpu.Run(fallback,c).primary.Probe().r;
     c.FeedbackStabilityFloor=1;
     const float shortWindowResult=gpu.Run(fallback,c).primary.Probe().r;
+    checks.Expect(shortWindowResult<noFloor-.005f,"user floor strengthens low-confidence valid surface stabilization");
     c.FeedbackStabilitySeconds=.8f;
     checks.Expect(gpu.Run(fallback,c).primary.Probe().r<shortWindowResult,
                   "larger user stability time gives stronger temporal smoothing");
@@ -1362,7 +1358,7 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
     const auto bounded=gpu.Run(fallback,c).primary.Probe();
     checks.Expect(std::abs(bounded.r-inputs[1].Probe().r)<=.05001f&&std::abs(bounded.g-inputs[1].Probe().g)<=.05001f,
                   "malformed huge old residual is bounded in both directions");
-    // Appearance changes remain immediate even under fully untrusted guides.
+    // Appearance changes remain immediate even with the maximum user floor.
     for(auto& pixel:fallback[0].pixels)pixel={.9f,.05f,.02f,1};NoFreshResidual(fallback);
     checks.ImageEquals(gpu.Run(fallback,c).primary,fallback[1],"newly revealed surface does not inherit unrelated NR edits");
 
@@ -1391,6 +1387,102 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
     checks.Expect(inspected.primary.Probe().r>.1f,"stability weight inspector uses the same production evaluator");
     checks.ImageEquals(inspected.stability,Image{},"inspector never writes filtered history");
 }
+
+void TestStabilizerSurfaceAdmission(Fixture& gpu, Checks& checks)
+{
+    const float nan=std::numeric_limits<float>::quiet_NaN();
+    const float inf=std::numeric_limits<float>::infinity();
+    // Match the reported settings, keep long detail enabled, and repeat at the
+    // maximum floor. Identical raw RGB deliberately defeats an appearance veto.
+    for(const bool fp16:{false,true}) for(const float floor:{.6f,1.0f})
+    {
+        auto c=FeedbackConstants();
+        c.FeedbackDurationSeconds=.177f;c.FeedbackDeltaSeconds=.016f;
+        c.FeedbackStabilitySeconds=.4f;c.FeedbackStabilityClamp=.075f;c.FeedbackStabilityFloor=floor;
+        for(unsigned test=0;test<31;++test)
+        {
+            auto inputs=FlatInputs();NoFreshResidual(inputs);
+            Fill(inputs[2],{.001f,.001f,.001f,.2f});
+            inputs[6]=Image({.06f,-.04f,.03f,.1f});
+            auto sample=c;
+            const std::string name="surface admission "+std::to_string(test)+
+                (fp16?" FP16":" FP32")+" floor="+std::to_string(floor);
+            switch(test)
+            {
+            case 0: Fill(inputs[5],{.9f,0,0,0});break; // Same-colour background vs old grass.
+            case 1: Fill(inputs[5],{nan,0,0,0});break;
+            case 2: Fill(inputs[5],{inf,0,0,0});break;
+            case 3: Fill(inputs[5],{-.1f,0,0,0});break;
+            case 4: Fill(inputs[5],{1.1f,0,0,0});break;
+            case 5: inputs[5]=Image({},0,0);break;
+            case 6: Fill(inputs[3],{.4f,.5f,.6f,nan});break;
+            case 7: Fill(inputs[3],{.4f,.5f,.6f,inf});break;
+            case 8: Fill(inputs[3],{.4f,.5f,.6f,-1});break;
+            case 9: Fill(inputs[3],{.4f,.5f,.6f,1.1f});break;
+            case 10: Motion(inputs,nan,0);break;
+            case 11: Motion(inputs,0,inf);break;
+            case 12: Motion(inputs,-inf,0);break;
+            case 13: Motion(inputs,10000,0);break;
+            case 14: Motion(inputs,-10000,0);break;
+            case 15: Motion(inputs,0,10000);break;
+            case 16: inputs[4]=Image({},0,0);break;
+            case 17: sample.NativeMotionPhaseUvX=2;break;
+            case 18: sample.NativeDepthPhaseUvX=2;break;
+            case 19: sample.FeedbackRasterOffsetUvX=2;break;
+            case 20: sample.DepthTolerance=nan;break;
+            case 21: sample.DepthTolerance=-.05f;break;
+            case 22: sample.DepthTolerance=inf;break;
+            case 27: case 28: case 29: case 30:
+                // Finite, in-bounds centre MV disagrees with its neighbours.
+                // Explicit motion rejection must not become a soft floor case.
+                inputs[4].At(kProbeX,kProbeY)={1.1f,0,0,0};sample.MotionReject=.5f;
+                if(test==28)sample.FeedbackDurationSeconds=0;
+                if(test==29)sample.FeedbackStrength=0;
+                if(test==30)Fill(inputs[2],{.001f,.001f,.001f,sample.FeedbackMaxAgeSeconds});
+                break;
+            default:
+                // Four-way fractional footprint: ANY positive tap on another
+                // surface must veto before blending, even with matching RGB.
+                Motion(inputs,.5f,.5f);
+                inputs[3].At(kProbeX+((test-23)&1u),kProbeY+((test-23)>>1u)).a=.9f;
+                break;
+            }
+            const auto result=gpu.Run(inputs,sample,fp16);
+            const auto fresh=inputs[1].Probe(),proxy=inputs[0].Probe();
+            const auto answer=result.primary.Probe(),stable=result.stability.Probe();
+            const float epsilon=fp16?.001f:kEpsilon;
+            checks.Expect(std::abs(answer.r-fresh.r)<epsilon&&std::abs(answer.g-fresh.g)<epsilon&&
+                          std::abs(answer.b-fresh.b)<epsilon&&std::abs(answer.a-fresh.a)<epsilon,
+                          name+" rejects old grass rather than filtering same-colour background");
+            checks.Expect(stable.a==0&&std::abs(stable.r-(fresh.r-proxy.r))<epsilon&&
+                          std::abs(stable.g-(fresh.g-proxy.g))<epsilon&&std::abs(stable.b-(fresh.b-proxy.b))<epsilon,
+                          name+" reseeds independent residual and lag from this source");
+            checks.Expect(result.secondary.Probe().a==0,name+" cannot renew long-detail ancestry");
+            auto inspect=sample;inspect.Mode=DlssNrDetailReuse_FeedbackInspect;inspect.DebugView=6;
+            checks.PixelEquals(gpu.Run(inputs,inspect).primary.Probe(),{0,.15f,1,1},name+" inspector has zero stability weight");
+        }
+        // A weak wrong-surface edit used to pull a detailed fresh model answer
+        // down toward the background, even though long detail correctly refused it.
+        auto inputs=FlatInputs();FreshFromProxy(inputs,.08f);
+        Fill(inputs[2],{.001f,0,0,.2f});inputs[6]=Image({.001f,0,0,.1f});
+        Fill(inputs[5],{.9f,0,0,0});
+        const auto answer=gpu.Run(inputs,c,fp16).primary.Probe();
+        checks.Expect(std::abs(answer.r-inputs[1].Probe().r)<.001f,
+                      "NR fresh detail is not diluted by weak history from a different surface");
+    }
+    // The floor remains a real user control below the hard rejection threshold.
+    auto inputs=FlatInputs();NoFreshResidual(inputs);inputs[6]=Image({.04f,0,0,0});
+    Fill(inputs[2],{0,0,0,.2f});Fill(inputs[3],{.4f,.5f,.6f,.416f});
+    auto c=FeedbackConstants();c.FeedbackDurationSeconds=0;c.FeedbackStrength=0;
+    c.FeedbackStabilitySeconds=.4f;c.FeedbackStabilityClamp=.075f;
+    c.FeedbackStabilityFloor=0;
+    const float withoutFloor=gpu.Run(inputs,c).primary.Probe().r;
+    c.FeedbackStabilityFloor=.6f;
+    const auto admitted=gpu.Run(inputs,c);
+    checks.Expect(admitted.primary.Probe().r>withoutFloor+.005f,
+                  "valid same-surface low-confidence correspondence retains the user floor");
+    checks.Expect(admitted.stability.Probe().a>0,"valid low-confidence surface carries real filtered lag");
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -1418,6 +1510,7 @@ int main(int argc, char** argv)
         TestInspectorMatchesActualEvaluation(gpu,checks);
         TestTunableThresholds(gpu,checks);
         TestIndependentStabilizer(gpu,checks);
+        TestStabilizerSurfaceAdmission(gpu,checks);
         return checks.Finish();
     }
     catch (const std::exception& error)

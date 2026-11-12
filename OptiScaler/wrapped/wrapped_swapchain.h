@@ -125,6 +125,8 @@ class DECLSPEC_UUID("3af622a3-82d0-49cd-994f-cce05122c222") WrappedIDXGISwapChai
     framegen::latency::Flags _frameLatencyFlags;
     std::mutex _frameLatencyMutex;
     void _RefreshFrameLatencyFlags();
+    framegen::latency::Target _SelectFrameLatencyTarget(void* returnAddress);
+    void _ObserveFrameLatencySetter(const void* caller, UINT requested, HRESULT result);
     std::uint64_t _genshinPresentIdentity = 0;
     std::unique_ptr<framegen::final_output::Endpoint> _finalOutput;
     bool _providerOutput = false; // Immutable creation identity; source Present owns Reflex updates.

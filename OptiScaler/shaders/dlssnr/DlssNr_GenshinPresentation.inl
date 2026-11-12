@@ -50,22 +50,34 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
     if (!admission || !swapchain || !queue || !orderedProducerQueue ||
         State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx11wDx12 ||
         HoYoShade::ColorConsumers(swapchain) != HoYoShade::ConsumerAccess::Safe)
+    {
+        Late::Say("NR bypass: the presentation endpoint is unavailable or changing.");
         return outcome;
+    }
     Late::ComPtr<IDXGISwapChain3> sc;
     Late::ComPtr<ID3D12Resource> color;
     Late::ComPtr<ID3D12Device> device;
     if (FAILED(swapchain->QueryInterface(IID_PPV_ARGS(&sc))) ||
         FAILED(sc->GetBuffer(sc->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&color))) ||
-        FAILED(queue->GetDevice(IID_PPV_ARGS(&device)))) return outcome;
+        FAILED(queue->GetDevice(IID_PPV_ARGS(&device))))
+    {
+        Late::Say("NR bypass: the current presentation buffer could not be acquired.");
+        return outcome;
+    }
     outcome.color = DlssNrFgTrace::Identity(color.Get());
     outcome.device = DlssNrFgTrace::Identity(device.Get());
     const auto attempt = sourceClock.Attempt();
     const auto source = sourceClock.CurrentSource();
-    if (!sourceClock.Available(attempt, source) || !currentMetadata ||
-        (selectedSource && selectedSource != currentMetadata))
+    if (!sourceClock.Available(attempt, source) || !currentMetadata)
     {
         outcome.reason = FinishedPictureReason::NoCurrentInput;
         Late::Say("Waiting for a new successful DLSS source picture.");
+        return outcome;
+    }
+    if (selectedSource && selectedSource != currentMetadata)
+    {
+        outcome.reason = FinishedPictureReason::NoCurrentInput;
+        Late::Say("NR bypass: the FG input and current source picture do not match.");
         return outcome;
     }
     outcome.source = currentMetadata;
@@ -102,7 +114,11 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
     if (!DlssNrGpuLifetime::SameDevice(color.Get(), present) ||
         !DlssNrGpuLifetime::SameDevice(slot.motion.Get(), present) ||
         present->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT ||
-        !sourceClock.Claim(attempt, source)) return outcome;
+        !sourceClock.Claim(attempt, source))
+    {
+        Late::Say("NR bypass: the current source queue or single-write claim is unavailable.");
+        return outcome;
+    }
     slot.pending = false; // claim precedes every recording, including warmup/failure
     outcome.fence = slot.fence;
     outcome.fenceValue = slot.ready;
@@ -113,6 +129,7 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
         outcome.result = FinishedPictureResult::FailedUncertain;
         outcome.reason = FinishedPictureReason::RecordingFailed;
         lastWrittenSource = {};
+        Late::Say("NR bypass: the current picture recording could not be reset.");
         return outcome;
     }
     auto* cmd = slot.commands.Get();
@@ -128,6 +145,7 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
         slot.quarantined = !closed;
         lastWrittenSource = {};
         outcome.reason = FinishedPictureReason::RecordingFailed;
+        Late::Say("NR bypass: the current picture could not be recorded completely.");
         return outcome;
     };
     auto colorSpace = desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ?
@@ -154,6 +172,7 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
     {
         cmd->Close();
         outcome.reason = FinishedPictureReason::UnsupportedColour;
+        Late::Say("This screen colour format is not supported.");
         return outcome;
     }
     const bool pq = choice.screen == Screen::Pq, scrgb = choice.screen == Screen::Scrgb;
@@ -216,7 +235,8 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
                             slot.presentWork.Get(), frame, present);
     }
     const bool recorded = g_nr.successfulDispatches > before;
-    bool written = recorded && cfg.DlssNrApplyModel.value_or_default();
+    const bool applyModel = cfg.DlssNrApplyModel.value_or_default();
+    bool written = recorded && applyModel;
     ID3D12Resource* finalColor = slot.presentWork.Get();
     if (written && pq)
     {
@@ -240,6 +260,7 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
         outcome.result = FinishedPictureResult::FailedUncertain;
         outcome.reason = FinishedPictureReason::RecordingFailed;
         lastWrittenSource = {};
+        Late::Say("NR bypass: the current picture recording could not be closed.");
         return outcome;
     }
     ID3D12CommandList* lists[] {cmd};
@@ -254,6 +275,7 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
         outcome.result = FinishedPictureResult::FailedUncertain;
         outcome.reason = FinishedPictureReason::SubmissionFailed;
         lastWrittenSource = {};
+        Late::Say("The graphics queue stopped. Restart the game to retry.");
         return outcome;
     }
     outcome.fenceValue = slot.done;
@@ -263,7 +285,9 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
     lastOutputOwner = outcome.owner;
     lastOutputQueue = outcome.queue;
     Late::Say(written ? "Present -> NR -> detail retention -> FG (current source, one write)." :
-                        "Preparing NR; presenting the current unmodified source.");
+        recorded && !applyModel ? "NR changes are hidden." :
+        recorded ? "NR bypass: the final picture output could not be written." :
+                   "Preparing NR; presenting the current unmodified source.");
     static uint64_t sources = 0, writes = 0;
     writes += written;
     if (++sources <= 3 || sources % 300 == 0)

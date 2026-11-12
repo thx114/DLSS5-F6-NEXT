@@ -51,6 +51,17 @@ wait_signature = "bool Dx11wDx12SC::_WaitForCopyAllocator(UINT slot, std::vector
 consume_signature = wait_signature[:-1] + ", CopySlotAdmission& admission)"
 wait = function(source, wait_signature)
 consume = function(source, consume_signature)
+queue_drain = function(source, "bool WaitForQueueIdle(")
+copy_drain = function(source, "bool Dx11wDx12SC::_WaitForCopyQueueIdle()")
+recover = function(source, "bool Dx11wDx12SC::_TryRecoverNativeChild()")
+native_drain = function(source, "bool Dx11wDx12SC::_TryDrainNativeChild()")
+revoke = function(source, "void Dx11wDx12SC::_RevokeNativeChild(")
+check(recover.index("_childRecoveryEntered = true") < recover.index("_TryDrainNativeChild()") <
+      recover.index("_childRevoked = false"), "only the revoked child polls before re-opening admission")
+check(native_drain.index("PrepareForSwapchainChange()") < native_drain.index("_WaitForCopyQueueIdle()") <
+      native_drain.index("_ReleaseInteropBackBuffers()"), "provider and both real queues gate release")
+check("_recoveryCopyDrain = {};" in revoke and "_recoveryPresentDrain = {};" in revoke,
+      "a new revocation invalidates the entire drain")
 admission = block(header, "    class CopySlotAdmission final", "    // Interop slot admission end")
 writer_admission = block(writer, "    // Interop shared writer admission begin",
                          "    // Interop shared writer admission end")
@@ -131,6 +142,7 @@ if args.cpu:
         for name, content in {
             "InteropSlotAdmissionProduction.h": admission,
             "InteropCopyWaitProduction.inl": wait + "\n" + consume,
+            "InteropQueueDrainProduction.inl": queue_drain + "\n" + copy_drain,
             "InteropWriterAdmissionProduction.inl": writer_admission,
             "InteropCopyResetProduction.inl": reset,
             "InteropCopySubmissionProduction.inl": submission,

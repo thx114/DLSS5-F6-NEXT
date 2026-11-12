@@ -438,8 +438,19 @@ static void Fresh()
     Check(world.pass.calls[0].resources[0] == world.input.Get() && world.pass.calls[0].resources[1] == world.fresh.Get() &&
         world.pass.calls[0].resources[4] == world.motion.Get() && world.pass.calls[0].resources[7] == world.depth.Get(), "actual fresh/guide bindings reach the shader seam");
     Check(!DetailHistory::Status().published, "recording alone grants no publication");
+    Check(!DetailHistory::recordings.current.fence, "history creates no speculative completion fence before Execute");
     world.Execute(first);
     auto use = DetailHistory::recordings.current.resourceUse;
+    const auto* receipt = DlssNrGpuLifetime::ActualSubmission(use, first.list.Get(), world.queue.Get());
+    Check(receipt && DetailHistory::recordings.current.fence == receipt->fence &&
+        DetailHistory::recordings.current.value == receipt->target &&
+        DetailHistory::recordings.current.retirementQueue == receipt->queue,
+        "history uses the exact already-signalled recording receipt without an extra Signal");
+    Check(!DlssNrGpuLifetime::ActualSubmission(use, first.list.Get(), world.otherQueue.Get()),
+        "a different actual queue cannot borrow this submission receipt");
+    auto other = world.New();
+    Check(!DlssNrGpuLifetime::ActualSubmission(use, other.list.Get(), world.queue.Get()),
+        "another executable recording cannot borrow this submission receipt");
     Check(DetailHistory::Status().published && DetailHistory::Status().queueOrdered &&
         DetailHistory::Status().historySource == 1, "post Execute and successful signal publish exact ordered source");
     Check(!use->GpuComplete() && !use->Complete(), "real queue gate keeps execution incomplete after logical publication");
@@ -447,6 +458,8 @@ static void Fresh()
     Check(DetailHistory::detail[0] != nullptr && !use->owners.empty(), "Release never frees open pending owners");
     // Reset closes the executable generation, but cannot complete its GPU work.
     world.Reset(first);
+    Check(!DlssNrGpuLifetime::ActualSubmission(use, first.list.Get(), world.queue.Get()),
+        "Reset never relabels the old generation receipt as a new execution");
     Check(use->closed && !use->Complete() && !DetailHistory::SafeToRelease(), "Reset alone cannot retire a queue-blocked execution");
     gate.Open(); world.Drain(); DetailHistory::Collect();
     Check(use->Complete() && use->owners.empty(), "real fence completion plus Reset retires token owners");
@@ -579,7 +592,7 @@ static void Fault(const std::string& kind)
     auto a = world.Frame(first, 1);
     Check(DetailHistory::Before(a).active, "fault setup capture admitted"); Capture(world, a);
     auto use = DetailHistory::recordings.current.resourceUse;
-    if (kind == "history-signal") faults.failHistorySignal = true;
+    if (kind == "history-signal") faults.missingHistoryReceipt = true; // preserve the existing fault-case CLI
     if (kind == "registry-signal") faults.failSignal = true;
     auto* actual = kind == "wrong-queue" ? world.otherQueue.Get() : world.queue.Get();
     world.Execute(first, actual); world.Drain(actual);

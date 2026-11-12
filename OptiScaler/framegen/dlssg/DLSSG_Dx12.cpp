@@ -30,9 +30,10 @@
 #include <resource_tracking/ResTrack_dx12.h>
 
 #include <hooks/Reflex_Hooks.h>
+#include <hooks/FG_Hooks.h>
 #include <hooks/Streamline_Hooks.h>
 #include <native/NativeLowLatency.h>
-#include "MfgUnlock.h"
+#include "DlssgTelemetry.h"
 #include <hooks/DxgiFactory_Hooks.h>
 
 #include <magic_enum.hpp>
@@ -1133,6 +1134,14 @@ FGExecutionGuard DLSSG_Dx12::GuardExecution(FGExecutionScope scope)
 bool DLSSG_Dx12::CanSubmitInputs()
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
+    // An SDK provider may exist before source creation finishes. Preserve that
+    // warmup, but a failed source hook must never accept more game inputs.
+    // This observation grants no resource retirement or teardown authority.
+    const auto& state = State::Instance();
+    const auto hookStatus = FGHooks::SwapchainHookStatus();
+    if (state.currentFG == this && !state.externalFrameGeneration && state.activeFgOutput == FGOutput::DLSSG &&
+        hookStatus != S_OK && hookStatus != HRESULT_FROM_WIN32(ERROR_NOT_READY))
+        return false;
     return !_hookRetiring && !_ownerChanging && !_teardownCompleting && !_teardownPending && !_teardownQuarantined &&
         !g_dlssgTeardownQuarantined.load() && !_unretainedOffPending &&
         _reflexOwnership != ReflexOwnership::ReleasePending && !_starRailUiBusy && !_starRailUiFailed &&
@@ -3239,14 +3248,14 @@ bool DLSSG_Dx12::Dispatch()
             }
         }
         if (optionsSubmitted)
-            MfgUnlock::RecordSetOptions(static_cast<unsigned int>((std::max)(requestedInterpolationCount, 0)),
+            framegen::DlssgTelemetry::RecordSetOptions(static_cast<unsigned int>((std::max)(requestedInterpolationCount, 0)),
                 options.numFramesToGenerate, options.mode != sl::DLSSGMode::eOff,
                 static_cast<unsigned int>(outcome.sdkResult));
         // GetState consumes numFramesActuallyPresented. Genshin observes it
         // only in the existing EndGenshinPresent query, after original Present.
         // Pre-Present telemetry explicitly describes an older observation.
         if (!genshinFrame && stateResult == sl::Result::eOk)
-            MfgUnlock::RecordState(actualState.numFramesActuallyPresented);
+            framegen::DlssgTelemetry::RecordState(actualState.numFramesActuallyPresented);
         // Source metadata is read under Dispatch's existing continuity lock.
         // Reuse the one vendor result/query above; presented is a consumed,
         // previous observation, not this source frame's generated output.
@@ -3323,10 +3332,8 @@ bool DLSSG_Dx12::Dispatch()
         return result;
     };
     const auto setReflexOptions = [&]() {
-        sl::ReflexOptions reflexConst {};
-        reflexConst.mode = native::lowlatency::WantsBoostForFrameGeneration() ? sl::ReflexMode::eLowLatencyWithBoost
-                                                                               : sl::ReflexMode::eLowLatency;
-        reflexConst.useMarkersToOptimize = ReflexHooks::gameIsSendingMarkers();
+        const auto reflexConst = dlssg::options::ProviderReflexOptions(
+            native::lowlatency::WantsBoostForFrameGeneration());
         _reflexOwnership = ReflexOwnership::Running;
         _reflexOffReported = false;
         const auto outcome = SetDispatchOptions(_reflexOptionsAck, optionsScope, fIndex, reflexConst,
@@ -4795,7 +4802,7 @@ void DLSSG_Dx12::EndGenshinPresent(const std::shared_ptr<const GenshinInputRetir
                 _genshinStateObservation.status=postPresentStatus;
                 _genshinStateObservation.presented=postPresentCount;
                 _genshinStateObservation.cap=actualState.numFramesToGenerateMax;
-                MfgUnlock::RecordState(postPresentCount);
+                framegen::DlssgTelemetry::RecordState(postPresentCount);
             }
             return result == sl::Result::eOk;
         };

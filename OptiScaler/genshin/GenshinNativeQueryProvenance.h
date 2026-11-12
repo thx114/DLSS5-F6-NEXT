@@ -3846,17 +3846,26 @@ inline LONG PrepareOptionalOwnEntry(PVOID hook,OwnEntryPreflight& prepared)noexc
     if(status==OwnEntryStatus::UnsupportedEncoding)return ERROR_NOT_SUPPORTED;
     candidate.hook=hook;prepared=candidate;return NO_ERROR;
 }
+inline LONG BeginDetourTransaction()noexcept {
+    const auto result=DetourTransactionBegin();
+    // The linked Detours acquires ownership before making trampoline pages writable.
+    // ERROR_INVALID_OPERATION alone rejects Begin without acquiring that ownership.
+    if(result!=NO_ERROR && result!=ERROR_INVALID_OPERATION){
+        if(DetourTransactionAbort()!=NO_ERROR)GenshinNativeQuery::Revoke();
+    }
+    return result;
+}
 inline LONG Begin(InstallRequirement requirement=InstallRequirement::Mandatory)noexcept {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return DetourTransactionBegin();
+    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return BeginDetourTransaction();
     using namespace detail;LiveLedgerScope live;
     if(pending.held)return ERROR_INVALID_OPERATION;
-    if(Revoked())return DetourTransactionBegin();
+    if(Revoked())return BeginDetourTransaction();
     if(store.busy.test_and_set(std::memory_order_acquire))return ERROR_RETRY;
     if(requirement==InstallRequirement::Optional &&
        Ledger().transitionCount==Ledger().setupTransitions.size()){
         store.busy.clear(std::memory_order_release);ResumeSetup();return ERROR_NOT_ENOUGH_MEMORY;
     }
-    const auto result=DetourTransactionBegin();
+    const auto result=BeginDetourTransaction();
     if(result!=NO_ERROR){store.busy.clear(std::memory_order_release);ResumeSetup();
         if(requirement==InstallRequirement::Mandatory)detail::Revoke("detour-begin-refused");return result;}
     pending.held=true;pending.count=0;pending.from=0;

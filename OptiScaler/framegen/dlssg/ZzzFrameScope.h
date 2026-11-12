@@ -90,6 +90,17 @@ class Scope
     }
     Scope(const Scope&)=delete;
     Scope& operator=(const Scope&)=delete;
+    // Creation can pass through an intermediary whose immediate module is not
+    // the game. Only the live, unclaimed game invocation and its exact native
+    // command list authorize input. This grants no GPU retirement authority.
+    static bool InputCommandCurrent(uintptr_t list)
+    {
+        if (!active || active->claimed || !active->receipt || !list) return false;
+        const auto& receipt=*active->receipt;
+        return receipt.origin.api==gameApi.load(std::memory_order_acquire) &&
+            receipt.origin.list==list &&
+            receipt.upstream.load(std::memory_order_acquire)==Outcome::Pending;
+    }
     void Finish(bool success)
     {
         if (!receipt) return;

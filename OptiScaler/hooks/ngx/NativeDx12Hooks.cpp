@@ -5,6 +5,8 @@
 #include <proxies/NVNGX_Proxy.h>
 #include <inputs/NVNGX_DLSS.h>
 #include <upscalers/GameRoutePolicy.h>
+#include <framegen/dlssg/FgDepthContract.h>
+#include <framegen/dlssg/ZzzFrameScope.h>
 #include <TlHelp32.h>
 #include <intrin.h>
 #include <array>
@@ -23,6 +25,8 @@ NvngxModule selected;
 std::atomic_bool installed { false };
 std::mutex installMutex;
 thread_local unsigned nativeDepth = 0;
+thread_local unsigned nativeInitDepth = 0;
+thread_local unsigned nativeStopDepth = 0;
 thread_local unsigned selectedDepth = 0;
 thread_local std::optional<NVSDK_NGX_Result> initReplay;
 thread_local std::optional<NVSDK_NGX_Result> shutdownReplay;
@@ -54,35 +58,55 @@ HMODULE ModuleAt(const void* address)
     return module;
 }
 
-bool External(const void* caller)
+bool NativeDelegation(const void* caller)
+{ return nativeDepth && native.dll && ModuleAt(caller) == native.dll; }
+bool NativeInitDelegation(const void* caller)
+{ return nativeInitDepth && NativeDelegation(caller); }
+bool NativeStopDelegation(const void* caller)
+{ return nativeStopDepth && NativeDelegation(caller); }
+
+enum class InputOrigin { Backend, GameModule, SynchronousGame };
+
+InputOrigin ResolveInputOrigin(const void* caller, ID3D12GraphicsCommandList* command = nullptr)
 {
     if (nativeDepth || selectedDepth || !Enabled())
-        return false;
+        return InputOrigin::Backend;
     const auto module = ModuleAt(caller);
     if (!module || module == dllModule || module == native.dll)
-        return false;
+        return InputOrigin::Backend;
     const auto& state = State::Instance();
     if (module == state.optiSlInterposer || module == state.optiSlCommon || module == state.optiDLSSG ||
         module == state.optiSlDLSSG || module == state.optiSlReflex || module == state.optiSlPCL)
-        return false;
+        return InputOrigin::Backend;
     if (module == GetModuleHandleW(nullptr))
-        return true;
+        return InputOrigin::GameModule;
 
     wchar_t buffer[32768];
     const auto length = GetModuleFileNameW(module, buffer, static_cast<DWORD>(std::size(buffer)));
     if (!length || length == std::size(buffer))
-        return false;
+        return InputOrigin::Backend;
     const std::filesystem::path path(buffer);
     const auto localSl = std::filesystem::path(Config::Instance()->MainDllPath.value()) / L"streamline";
     if (Util::IsSubpath(path.lexically_normal(), localSl.lexically_normal()))
-        return false;
+        return InputOrigin::Backend;
     const auto name = path.filename().wstring();
-    // Unknown DLLs (including snippets and independent NR forwarders) are
-    // native backend callers. Only actual game NGX consumers may create input.
-    return _wcsicmp(name.c_str(), L"sl.common.dll") == 0 || _wcsicmp(name.c_str(), L"sl.dlss.dll") == 0 ||
+    if (_wcsicmp(name.c_str(), L"sl.common.dll") == 0 || _wcsicmp(name.c_str(), L"sl.dlss.dll") == 0 ||
            (_wcsicmp(name.c_str(), L"UnityPlayer.dll") == 0 &&
-            Util::IsSubpath(path.lexically_normal(), Util::ExePath().parent_path().lexically_normal()));
+            Util::IsSubpath(path.lexically_normal(), Util::ExePath().parent_path().lexically_normal())))
+        return InputOrigin::GameModule;
+
+    // Preserve the backend/recursion exclusions above. A live game Streamline
+    // origin and the same canonical command list can identify a game Create
+    // even when an intermediary changes the immediately calling module.
+    const auto nativeCommand = dlssg::depth_contract::NativeObject(command);
+    Microsoft::WRL::ComPtr<IUnknown> identity;
+    if (nativeCommand && SUCCEEDED(nativeCommand.As(&identity)) &&
+        dlssg::zzz::Scope::InputCommandCurrent(reinterpret_cast<uintptr_t>(identity.Get())))
+        return InputOrigin::SynchronousGame;
+    return InputOrigin::Backend;
 }
+
+bool External(const void* caller) { return ResolveInputOrigin(caller) != InputOrigin::Backend; }
 
 // Receipts are bounded per entry/owner; there are no frame-index activity
 // claims. Unknown handles have an unknown feature and id, even if their Id
@@ -106,6 +130,16 @@ template <class F, class... Args> NVSDK_NGX_Result NativeCall(F function, Args..
     Depth scope(nativeDepth);
     return function ? function(args...) : NVSDK_NGX_Result_FAIL_FeatureNotSupported;
 }
+template <class F, class... Args> NVSDK_NGX_Result NativeInitCall(F function, Args... args)
+{
+    Depth scope(nativeInitDepth);
+    return NativeCall(function, args...);
+}
+template <class F, class... Args> NVSDK_NGX_Result NativeStopCall(F function, Args... args)
+{
+    Depth scope(nativeStopDepth);
+    return NativeCall(function, args...);
+}
 template <class F, class... Args> NVSDK_NGX_Result SelectedCall(F function, Args... args)
 {
     Depth scope(selectedDepth);
@@ -126,13 +160,17 @@ struct Api
     { return Success(result) && AttachNativeDx12Input(device) ? result : Fail(); }
     static void ProviderReady(bool ready) { NVNGXProxy::SetDx12Inited(ready); }
     static bool AcceptInitDevice(ID3D12Device* device)
-    { return device && (!observedInitDevice || observedInitDevice == device) && CanAttachNativeDx12Input(device); }
+    { return device && (!observedInitDevice || dlssg::depth_contract::SameOwner(observedInitDevice, device)) &&
+             CanAttachNativeDx12Input(device); }
+    static bool AcceptShutdownDevice(ID3D12Device* device)
+    { return device && (observedInitDevice ? dlssg::depth_contract::SameOwner(observedInitDevice, device) :
+                                            CanAttachNativeDx12Input(device)); }
     static void ObserveInitDevice(ID3D12Device* device)
     {
-        if (observedInitDevice == device) return;
+        if (dlssg::depth_contract::SameOwner(observedInitDevice, device)) return;
+        device->AddRef();
         if (observedInitDevice) observedInitDevice->Release();
         observedInitDevice = device;
-        device->AddRef();
     }
     static void ForgetInitDevice()
     {
@@ -144,22 +182,22 @@ struct Api
         if (observedInitDevice) observedInitDevice->Release();
         observedInitDevice = nullptr;
     }
-    static bool AcceptCommandDevice(ID3D12GraphicsCommandList* command)
+    static Microsoft::WRL::ComPtr<ID3D12Device> AcquireCommandDevice(ID3D12GraphicsCommandList* command)
     {
-        if (!command) return false;
-        ID3D12Device* device = nullptr;
-        if (FAILED(command->GetDevice(IID_PPV_ARGS(&device))) || !device) return false;
-        const bool accepted = (!observedInitDevice || observedInitDevice == device) && CanAttachNativeDx12Input(device);
-        device->Release();
-        return accepted;
+        Microsoft::WRL::ComPtr<ID3D12Device> device;
+        if (!command || FAILED(command->GetDevice(IID_PPV_ARGS(&device))) || !device ||
+            !AcceptInitDevice(device.Get())) return {};
+        return device;
     }
+    static bool AcceptCommandDevice(ID3D12GraphicsCommandList* command)
+    { return AcquireCommandDevice(command) != nullptr; }
     static void Receipt(const char* entry, Owner owner, const Handle* handle,
                         std::optional<Feature> feature, std::optional<unsigned> id)
     { NgxInput::Receipt(entry, owner, handle, feature, id); }
 
-    static bool AttachInput(ID3D12GraphicsCommandList* command)
+    static bool AttachInput(const Microsoft::WRL::ComPtr<ID3D12Device>& device)
     {
-        if (!AcceptCommandDevice(command)) return false;
+        if (!device || !AcceptInitDevice(device.Get())) return false;
         // SDK contract: AllocateParameters may only succeed after NGX Init.
         // This is a CPU-side probe; unlike Create it records no GPU work.
         if (!pendingProbe)
@@ -175,10 +213,7 @@ struct Api
             return false;
         }
         pendingProbe = nullptr;
-        ID3D12Device* device = nullptr;
-        if (FAILED(command->GetDevice(IID_PPV_ARGS(&device))) || !device) return false;
-        const bool attached = AttachNativeDx12Input(device);
-        device->Release();
+        const bool attached = AttachNativeDx12Input(device.Get());
         if (attached)
         {
             ProviderReady(true);
@@ -213,6 +248,10 @@ bool InternalProjectCall(bool project, const void* caller)
 {
     return project && selectedDepth && !nativeDepth && ModuleAt(caller) == dllModule;
 }
+bool InternalReplay(const void* caller)
+{
+    return selectedDepth && !nativeDepth && ModuleAt(caller) == dllModule;
+}
 
 NVSDK_NGX_Result Init(bool project, const void* caller, unsigned long long app, const wchar_t* path,
                       ID3D12Device* device, const NVSDK_NGX_FeatureCommonInfo* info, NVSDK_NGX_Version version)
@@ -220,10 +259,11 @@ NVSDK_NGX_Result Init(bool project, const void* caller, unsigned long long app, 
     if (InternalProjectCall(project, caller))
         return SelectedCall(selected.D3D12_Init, app, path, device, info, version);
     if (initReplay)
-        return *initReplay;
-    if (nativeDepth) return NativeCall(native.D3D12_Init, app, path, device, info, version);
+        return InternalReplay(caller) ? *initReplay : NVSDK_NGX_Result_Fail;
+    if (NativeInitDelegation(caller)) return NativeInitCall(native.D3D12_Init, app, path, device, info, version);
+    if (nativeDepth) return NVSDK_NGX_Result_Fail;
     return router.Init(External(caller) && path && device, device,
-        [&] { return NativeCall(native.D3D12_Init, app, path, device, info, version); },
+        [&] { return NativeInitCall(native.D3D12_Init, app, path, device, info, version); },
         [&](auto result) {
             Replay replay(initReplay, result);
             return Api::FinishInputInit(SelectedCall(selected.D3D12_Init, app, path, device, info, version), device);
@@ -235,10 +275,11 @@ NVSDK_NGX_Result InitExt(bool project, const void* caller, unsigned long long ap
     if (InternalProjectCall(project, caller))
         return SelectedCall(selected.D3D12_Init_Ext, app, path, device, version, info);
     if (initReplay)
-        return *initReplay;
-    if (nativeDepth) return NativeCall(native.D3D12_Init_Ext, app, path, device, version, info);
+        return InternalReplay(caller) ? *initReplay : NVSDK_NGX_Result_Fail;
+    if (NativeInitDelegation(caller)) return NativeInitCall(native.D3D12_Init_Ext, app, path, device, version, info);
+    if (nativeDepth) return NVSDK_NGX_Result_Fail;
     return router.Init(External(caller) && path && device, device,
-        [&] { return NativeCall(native.D3D12_Init_Ext, app, path, device, version, info); },
+        [&] { return NativeInitCall(native.D3D12_Init_Ext, app, path, device, version, info); },
         [&](auto result) {
             Replay replay(initReplay, result);
             return Api::FinishInputInit(SelectedCall(selected.D3D12_Init_Ext, app, path, device, version, info), device);
@@ -251,10 +292,11 @@ NVSDK_NGX_Result InitProject(bool project, const void* caller, const char* id, N
     if (InternalProjectCall(project, caller))
         return SelectedCall(selected.D3D12_Init_ProjectID, id, engine, engineVersion, path, device, version, info);
     if (initReplay)
-        return *initReplay;
-    if (nativeDepth) return NativeCall(native.D3D12_Init_ProjectID, id, engine, engineVersion, path, device, version, info);
+        return InternalReplay(caller) ? *initReplay : NVSDK_NGX_Result_Fail;
+    if (NativeInitDelegation(caller)) return NativeInitCall(native.D3D12_Init_ProjectID, id, engine, engineVersion, path, device, version, info);
+    if (nativeDepth) return NVSDK_NGX_Result_Fail;
     return router.Init(External(caller) && id && engineVersion && path && device, device,
-        [&] { return NativeCall(native.D3D12_Init_ProjectID, id, engine, engineVersion, path, device, version, info); },
+        [&] { return NativeInitCall(native.D3D12_Init_ProjectID, id, engine, engineVersion, path, device, version, info); },
         [&](auto result) {
             Replay replay(initReplay, result);
             return Api::FinishInputInit(SelectedCall(selected.D3D12_Init_ProjectID, id, engine, engineVersion, path, device, version, info), device);
@@ -263,9 +305,9 @@ NVSDK_NGX_Result InitProject(bool project, const void* caller, const char* id, N
 NVSDK_NGX_Result Stop(bool project, const void* caller)
 {
     if (shutdownReplay)
-        return *shutdownReplay;
-    if (nativeDepth) return NativeCall(native.D3D12_Shutdown);
-    return router.Shutdown(External(caller), [&] { return NativeCall(native.D3D12_Shutdown); },
+        return InternalReplay(caller) ? *shutdownReplay : NVSDK_NGX_Result_Fail;
+    if (NativeStopDelegation(caller)) return NativeStopCall(native.D3D12_Shutdown);
+    return router.Shutdown(External(caller), [&] { return NativeStopCall(native.D3D12_Shutdown); },
         [&](auto result) {
             Replay replay(shutdownReplay, result);
             return SelectedCall(selected.D3D12_Shutdown);
@@ -274,9 +316,9 @@ NVSDK_NGX_Result Stop(bool project, const void* caller)
 NVSDK_NGX_Result StopDevice(bool project, const void* caller, ID3D12Device* device)
 {
     if (shutdownReplay)
-        return *shutdownReplay;
-    if (nativeDepth) return NativeCall(native.D3D12_Shutdown1, device);
-    return router.Shutdown(External(caller), [&] { return NativeCall(native.D3D12_Shutdown1, device); },
+        return InternalReplay(caller) ? *shutdownReplay : NVSDK_NGX_Result_Fail;
+    if (NativeStopDelegation(caller)) return NativeStopCall(native.D3D12_Shutdown1, device);
+    return router.ShutdownDevice(External(caller), device, [&] { return NativeStopCall(native.D3D12_Shutdown1, device); },
         [&](auto result) {
             Replay replay(shutdownReplay, result);
             return SelectedCall(selected.D3D12_Shutdown1, device);
@@ -304,89 +346,141 @@ NVSDK_NGX_Result Create(ID3D12GraphicsCommandList* command, NVSDK_NGX_Feature fe
 {
     // A native core's export-to-export delegation is part of the same Create,
     // not a second backend owner for the external Create's returned pointer.
-    if (nativeDepth) return NativeCall(native.D3D12_CreateFeature, command, feature, params, out);
-    return router.Create(External(_ReturnAddress()), command, feature, params, out);
+    const auto caller = _ReturnAddress();
+    const bool nativeCleanup = NativeStopDelegation(caller);
+    if (NativeDelegation(caller) && !nativeCleanup)
+        return NativeCall(native.D3D12_CreateFeature, command, feature, params, out);
+    const auto origin = ResolveInputOrigin(caller, command);
+    static std::array<std::atomic<unsigned>, 3> rows {};
+    if (rows[static_cast<unsigned>(origin)].fetch_add(1, std::memory_order_relaxed) < 4)
+        LOG_INFO("ZZZ NGX DX12 Create origin={} caller={} native_depth={} selected_depth={} feature={}",
+                 static_cast<unsigned>(origin), Util::WhoIsTheCaller(caller), nativeDepth, selectedDepth,
+                 static_cast<int>(feature));
+    return router.Create(origin != InputOrigin::Backend, command, feature, params, out, nativeCleanup);
 }
 NVSDK_NGX_Result Evaluate(ID3D12GraphicsCommandList* command, const NVSDK_NGX_Handle* handle,
                           const NVSDK_NGX_Parameter* params, PFN_NVSDK_NGX_ProgressCallback callback)
-{ return router.Evaluate(External(_ReturnAddress()), command, handle, params, callback); }
+{
+    const auto caller = _ReturnAddress();
+    return router.Evaluate(External(caller), command, handle, params, callback, NativeStopDelegation(caller));
+}
 NVSDK_NGX_Result Release(NVSDK_NGX_Handle* handle)
-{ return router.Release(External(_ReturnAddress()), handle); }
+{
+    const auto caller = _ReturnAddress();
+    return router.Release(External(caller), handle, NativeStopDelegation(caller));
+}
 
 NVSDK_NGX_Result Parameters(NVSDK_NGX_Parameter** out)
 {
-    const auto result = NativeCall(native.D3D12_GetParameters, out);
-    if (Api::Success(result) && out && *out)
-    {
-        std::lock_guard lock(parameterMutex);
-        persistentParameters.insert(*out);
-    }
-    return result;
+    const auto caller = _ReturnAddress();
+    return router.InvokeNative([&] {
+        const auto result = NativeCall(native.D3D12_GetParameters, out);
+        if (Api::Success(result) && out && *out)
+        {
+            std::lock_guard lock(parameterMutex);
+            persistentParameters.insert(*out);
+        }
+        return result;
+    }, NativeStopDelegation(caller));
 }
 NVSDK_NGX_Result Allocate(NVSDK_NGX_Parameter** out)
-{ return NativeCall(native.D3D12_AllocateParameters, out); }
+{
+    const auto caller = _ReturnAddress();
+    return router.InvokeNative([&] { return NativeCall(native.D3D12_AllocateParameters, out); }, NativeStopDelegation(caller));
+}
 NVSDK_NGX_Result Capabilities(NVSDK_NGX_Parameter** out)
-{ return NativeCall(native.D3D12_GetCapabilityParameters, out); }
+{
+    const auto caller = _ReturnAddress();
+    return router.InvokeNative([&] { return NativeCall(native.D3D12_GetCapabilityParameters, out); }, NativeStopDelegation(caller));
+}
 NVSDK_NGX_Result Destroy(NVSDK_NGX_Parameter* params)
 {
-    if (!nativeDepth)
-    {
-        std::lock_guard lock(parameterMutex);
-        if (persistentParameters.contains(params)) return NVSDK_NGX_Result_FAIL_InvalidParameter;
-    }
-    return NativeCall(native.D3D12_DestroyParameters, params);
+    const auto caller = _ReturnAddress();
+    const bool vendorCaller = NativeDelegation(caller);
+    return router.InvokeNative([&] {
+        if (!vendorCaller)
+        {
+            std::lock_guard lock(parameterMutex);
+            if (persistentParameters.contains(params)) return NVSDK_NGX_Result_FAIL_InvalidParameter;
+        }
+        const auto result = NativeCall(native.D3D12_DestroyParameters, params);
+        if (vendorCaller && Api::Success(result))
+        {
+            std::lock_guard lock(parameterMutex);
+            persistentParameters.erase(params);
+        }
+        return result;
+    }, NativeStopDelegation(caller));
 }
 NVSDK_NGX_Result Scratch(NVSDK_NGX_Feature feature, const NVSDK_NGX_Parameter* params, size_t* size)
-{ return NativeCall(native.D3D12_GetScratchBufferSize, feature, params, size); }
+{
+    const auto caller = _ReturnAddress();
+    return router.InvokeNative([&] { return NativeCall(native.D3D12_GetScratchBufferSize, feature, params, size); }, NativeStopDelegation(caller));
+}
 
 // These are proxy backend exits, never game input. A thread-local scope covers
 // native export-to-export calls and callbacks that reenter another hooked API.
 NVSDK_NGX_Result BInit(unsigned long long a, const wchar_t* p, ID3D12Device* d,
                        const NVSDK_NGX_FeatureCommonInfo* i, NVSDK_NGX_Version v)
 {
-    if (initReplay) return *initReplay;
-    if (nativeDepth) return NativeCall(native.D3D12_Init, a,p,d,i,v);
-    return router.Init(false, d, [&] { return NativeCall(native.D3D12_Init, a,p,d,i,v); }, [](auto r) { return r; });
+    const auto caller = _ReturnAddress();
+    if (initReplay) return InternalReplay(caller) ? *initReplay : NVSDK_NGX_Result_Fail;
+    if (NativeInitDelegation(caller)) return NativeInitCall(native.D3D12_Init, a,p,d,i,v);
+    if (nativeDepth) return NVSDK_NGX_Result_Fail;
+    return router.Init(false, d, [&] { return NativeInitCall(native.D3D12_Init, a,p,d,i,v); }, [](auto r) { return r; });
 }
 NVSDK_NGX_Result BInitExt(unsigned long long a, const wchar_t* p, ID3D12Device* d,
                           NVSDK_NGX_Version v, const NVSDK_NGX_FeatureCommonInfo* i)
 {
-    if (initReplay) return *initReplay;
-    if (nativeDepth) return NativeCall(native.D3D12_Init_Ext, a,p,d,v,i);
-    return router.Init(false, d, [&] { return NativeCall(native.D3D12_Init_Ext, a,p,d,v,i); }, [](auto r) { return r; });
+    const auto caller = _ReturnAddress();
+    if (initReplay) return InternalReplay(caller) ? *initReplay : NVSDK_NGX_Result_Fail;
+    if (NativeInitDelegation(caller)) return NativeInitCall(native.D3D12_Init_Ext, a,p,d,v,i);
+    if (nativeDepth) return NVSDK_NGX_Result_Fail;
+    return router.Init(false, d, [&] { return NativeInitCall(native.D3D12_Init_Ext, a,p,d,v,i); }, [](auto r) { return r; });
 }
 NVSDK_NGX_Result BInitProject(const char* id, NVSDK_NGX_EngineType e, const char* ev, const wchar_t* p,
                               ID3D12Device* d, NVSDK_NGX_Version v, const NVSDK_NGX_FeatureCommonInfo* i)
 {
-    if (initReplay) return *initReplay;
-    if (nativeDepth) return NativeCall(native.D3D12_Init_ProjectID, id,e,ev,p,d,v,i);
-    return router.Init(false, d, [&] { return NativeCall(native.D3D12_Init_ProjectID, id,e,ev,p,d,v,i); }, [](auto r) { return r; });
+    const auto caller = _ReturnAddress();
+    if (initReplay) return InternalReplay(caller) ? *initReplay : NVSDK_NGX_Result_Fail;
+    if (NativeInitDelegation(caller)) return NativeInitCall(native.D3D12_Init_ProjectID, id,e,ev,p,d,v,i);
+    if (nativeDepth) return NVSDK_NGX_Result_Fail;
+    return router.Init(false, d, [&] { return NativeInitCall(native.D3D12_Init_ProjectID, id,e,ev,p,d,v,i); }, [](auto r) { return r; });
 }
 NVSDK_NGX_Result BStop()
 {
-    if (shutdownReplay) return *shutdownReplay;
-    if (nativeDepth) return NativeCall(native.D3D12_Shutdown);
-    return router.Shutdown(false, [&] { return NativeCall(native.D3D12_Shutdown); }, [](auto r) {
+    const auto caller = _ReturnAddress();
+    if (shutdownReplay) return InternalReplay(caller) ? *shutdownReplay : NVSDK_NGX_Result_Fail;
+    if (NativeStopDelegation(caller)) return NativeStopCall(native.D3D12_Shutdown);
+    return router.Shutdown(false, [&] { return NativeStopCall(native.D3D12_Shutdown); }, [](auto r) {
         Replay replay(shutdownReplay, r);
         return SelectedCall(selected.D3D12_Shutdown);
     });
 }
 NVSDK_NGX_Result BStopDevice(ID3D12Device* device)
 {
-    if (shutdownReplay) return *shutdownReplay;
-    if (nativeDepth) return NativeCall(native.D3D12_Shutdown1, device);
-    return router.Shutdown(false, [&] { return NativeCall(native.D3D12_Shutdown1, device); }, [&](auto r) {
+    const auto caller = _ReturnAddress();
+    if (shutdownReplay) return InternalReplay(caller) ? *shutdownReplay : NVSDK_NGX_Result_Fail;
+    if (NativeStopDelegation(caller)) return NativeStopCall(native.D3D12_Shutdown1, device);
+    return router.ShutdownDevice(false, device, [&] { return NativeStopCall(native.D3D12_Shutdown1, device); }, [&](auto r) {
         Replay replay(shutdownReplay, r);
         return SelectedCall(selected.D3D12_Shutdown1, device);
     });
 }
 NVSDK_NGX_Result BCreate(ID3D12GraphicsCommandList* command, NVSDK_NGX_Feature feature,
                          NVSDK_NGX_Parameter* params, NVSDK_NGX_Handle** out)
-{ return router.Create(false, command, feature, params, out); }
+{
+    return router.Create(false, command, feature, params, out, NativeStopDelegation(_ReturnAddress()));
+}
 NVSDK_NGX_Result BEvaluate(ID3D12GraphicsCommandList* command, const NVSDK_NGX_Handle* handle,
                            const NVSDK_NGX_Parameter* params, PFN_NVSDK_NGX_ProgressCallback callback)
-{ return router.Evaluate(false, command, handle, params, callback); }
-NVSDK_NGX_Result BRelease(NVSDK_NGX_Handle* handle) { return router.Release(false, handle); }
+{
+    return router.Evaluate(false, command, handle, params, callback, NativeStopDelegation(_ReturnAddress()));
+}
+NVSDK_NGX_Result BRelease(NVSDK_NGX_Handle* handle)
+{
+    return router.Release(false, handle, NativeStopDelegation(_ReturnAddress()));
+}
 
 #define DX12_ENTRIES(X) \
     X(Init, NInit, PInit, BInit) \

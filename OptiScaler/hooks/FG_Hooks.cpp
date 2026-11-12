@@ -10,6 +10,7 @@
 #include "FG_Hooks.h"
 #include "FGQueueIdleGate.h"
 #include <memory>
+#include <atomic>
 #include <optional>
 #include <mutex>
 #include <utility>
@@ -232,6 +233,10 @@ struct FGSwapchainOwner
     IFGFeature_Dx12* provider = nullptr; // Observer; refuse if the active provider no longer matches.
     HWND window = nullptr;
     bool quarantined = false;
+    // Hook failure cannot prove retirement of SDK initialization work. Keep both
+    // our pin and the unreturned create reference, with the actual bound queue.
+    IDXGISwapChain* unpublishedCreateReference = nullptr;
+    HRESULT hookInstallFailure = S_OK;
     enum class RetireStage { Idle, BeforeProvider, Provider, AfterProvider, Ready };
     RetireStage retireStage = RetireStage::Idle;
     UINT64 queueTarget = 0, retirementSerial = 0; // One target per phase; never refreshed on pending.
@@ -261,6 +266,7 @@ struct FGSwapchainOwner
 // Deliberately no static COM destructor: pending/quarantined F5 references survive process teardown.
 // Only a positively drained, retired owner is deleted during an ordinary hook call.
 FGSwapchainOwner* fgOwner = nullptr;
+std::atomic<HRESULT> fgHookStatus { HRESULT_FROM_WIN32(ERROR_NOT_READY) };
 
 // Caller holds fgLifetimeMutex and has a successful create/QI result.
 bool CaptureStarRailSourceFrameLatencyOwner(IDXGISwapChain* createdSwapchain)
@@ -425,6 +431,7 @@ template<class Release> ULONG ReleaseFGPin(FGSwapchainOwner* owner, Release rele
     auto& state = State::Instance();
     if (state.currentFGSwapchain == pin) state.currentFGSwapchain = nullptr;
     if (state.currentSwapchain == pin) state.currentSwapchain = nullptr;
+    fgHookStatus.store(HRESULT_FROM_WIN32(ERROR_NOT_READY), std::memory_order_release);
     fgOwner = nullptr;
     const auto remaining = release(pin); // One F5-owned reference; never a loop or a guessed zero.
     delete owner; // Queue/fence/event were drained before provider retirement.
@@ -449,6 +456,10 @@ FGHookRetirementResult CompleteExistingFGTeardown(FGSwapchainOwner* owner, bool 
 
 template<class Release> HRESULT RetireFGForCreate(FGSwapchainOwner* owner, Release release)
 {
+    if (!owner || !owner->pin) return E_INVALIDARG;
+    // In particular, a failed hook install has no original Release trampoline.
+    // Refuse BEFORE teardown, AddRef probes or any indirect call; keep all owners.
+    if (owner->quarantined || !release) return DXGI_ERROR_WAS_STILL_DRAWING;
     ScopedFGCallback callback;
     if (owner->retireStage == FGSwapchainOwner::RetireStage::Idle)
     {
@@ -558,7 +569,8 @@ HRESULT FGHooks::CreateSwapChain(IDXGIFactory* pFactory, IUnknown* pDevice, DXGI
     std::unique_lock lifetime(fgLifetimeMutex, std::try_to_lock);
     if (!lifetime.owns_lock() || fgLifecycleCallback || State::Instance().isShuttingDown)
         return DXGI_ERROR_WAS_STILL_DRAWING;
-    if (fgOwner && fgOwner->quarantined) return DXGI_ERROR_WAS_STILL_DRAWING;
+    if (fgOwner && (fgOwner->quarantined || !_fgHooksInstalled || !o_FGRelease))
+        return DXGI_ERROR_WAS_STILL_DRAWING;
     if (State::Instance().currentFGSwapchain && (!fgOwner || fgOwner->pin != State::Instance().currentFGSwapchain))
         return E_UNEXPECTED;
     // Failed admission must leave the caller's descriptor and the selected game/provider route intact.
@@ -675,9 +687,18 @@ HRESULT FGHooks::CreateSwapChain(IDXGIFactory* pFactory, IUnknown* pDevice, DXGI
         nextOwner->provider = fg;
         nextOwner->window = pDesc->OutputWindow;
         fgOwner = nextOwner.release();
+        const auto hookResult = SetFGSwapchain(*ppSwapChain, pDesc->OutputWindow);
+        if (hookResult != S_OK)
+        {
+            fgOwner->quarantined = true;
+            fgOwner->hookInstallFailure = hookResult;
+            fgOwner->unpublishedCreateReference = std::exchange(*ppSwapChain, nullptr);
+            fgHookStatus.store(hookResult, std::memory_order_release);
+            LOG_ERROR("FG create quarantined: hook hr {:X}; SDK create reference, pin and queue/fence retained; restart required",
+                      (UINT)hookResult);
+            return hookResult;
+        }
         *callerDesc = *pDesc;
-
-        SetFGSwapchain(*ppSwapChain, pDesc->OutputWindow);
         if (sourceFrameLatencyOwner != nullptr)
             *sourceFrameLatencyOwner = CaptureStarRailSourceFrameLatencyOwner((IDXGISwapChain*) *ppSwapChain);
 
@@ -699,7 +720,8 @@ HRESULT FGHooks::CreateSwapChainForHwnd(IDXGIFactory* pFactory, IUnknown* pDevic
     std::unique_lock lifetime(fgLifetimeMutex, std::try_to_lock);
     if (!lifetime.owns_lock() || fgLifecycleCallback || State::Instance().isShuttingDown)
         return DXGI_ERROR_WAS_STILL_DRAWING;
-    if (fgOwner && fgOwner->quarantined) return DXGI_ERROR_WAS_STILL_DRAWING;
+    if (fgOwner && (fgOwner->quarantined || !_fgHooksInstalled || !o_FGRelease))
+        return DXGI_ERROR_WAS_STILL_DRAWING;
     if (State::Instance().currentFGSwapchain && (!fgOwner || fgOwner->pin != State::Instance().currentFGSwapchain))
         return E_UNEXPECTED;
     // Failed admission must leave the caller's descriptor and the selected game/provider route intact.
@@ -816,9 +838,18 @@ HRESULT FGHooks::CreateSwapChainForHwnd(IDXGIFactory* pFactory, IUnknown* pDevic
         nextOwner->provider = fg;
         nextOwner->window = hWnd;
         fgOwner = nextOwner.release();
+        const auto hookResult = SetFGSwapchain((IDXGISwapChain*) *ppSwapChain, hWnd);
+        if (hookResult != S_OK)
+        {
+            fgOwner->quarantined = true;
+            fgOwner->hookInstallFailure = hookResult;
+            fgOwner->unpublishedCreateReference = std::exchange(*ppSwapChain, nullptr);
+            fgHookStatus.store(hookResult, std::memory_order_release);
+            LOG_ERROR("FG create quarantined: hook hr {:X}; SDK create reference, pin and queue/fence retained; restart required",
+                      (UINT)hookResult);
+            return hookResult;
+        }
         *callerDesc = *pDesc;
-
-        SetFGSwapchain((IDXGISwapChain*) *ppSwapChain, hWnd);
         if (sourceFrameLatencyOwner != nullptr)
             *sourceFrameLatencyOwner = CaptureStarRailSourceFrameLatencyOwner((IDXGISwapChain*) *ppSwapChain);
 
@@ -828,10 +859,20 @@ HRESULT FGHooks::CreateSwapChainForHwnd(IDXGIFactory* pFactory, IUnknown* pDevic
     return E_INVALIDARG;
 }
 
-void FGHooks::SetFGSwapchain(IDXGISwapChain* pSwapChain, HWND hWnd)
+HRESULT FGHooks::SwapchainHookStatus() noexcept
 {
-    if (pSwapChain == nullptr)
-        return;
+    return fgHookStatus.load(std::memory_order_acquire);
+}
+
+HRESULT FGHooks::SetFGSwapchain(IDXGISwapChain* pSwapChain, HWND hWnd)
+{
+    if (pSwapChain == nullptr) return E_INVALIDARG;
+    std::unique_lock lifetime(fgLifetimeMutex, std::try_to_lock);
+    if (!lifetime.owns_lock() || fgLifecycleCallback || State::Instance().isShuttingDown)
+        return DXGI_ERROR_WAS_STILL_DRAWING;
+    if (fgOwner && fgOwner->quarantined) return DXGI_ERROR_WAS_STILL_DRAWING;
+    const auto hookResult = HookFGSwapchain(pSwapChain);
+    if (hookResult != S_OK) return hookResult;
 
     _hwnd = hWnd;
 
@@ -844,7 +885,8 @@ void FGHooks::SetFGSwapchain(IDXGISwapChain* pSwapChain, HWND hWnd)
     State::Instance().currentFGSwapchain = pSwapChain;
     State::Instance().currentSwapchain = pSwapChain;
 
-    HookFGSwapchain(pSwapChain);
+    fgHookStatus.store(S_OK, std::memory_order_release);
+    return S_OK;
 }
 
 void FGHooks::SetDx12InteropPresentSC(IDXGISwapChain* pSwapChain, HWND hWnd)
@@ -949,12 +991,55 @@ bool FGHooks::OwnsMenuOverlay(HWND hWnd)
            state.currentFG->GetCommandQueue() != nullptr;
 }
 
-void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
+HRESULT FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
 {
-    if (o_FGSCPresent != nullptr || pSwapChain == nullptr)
-        return;
+    // Create/Set hold fgLifetimeMutex. An original pointer is not an install
+    // acknowledgement; only a fully committed transaction may be reused.
+    if (pSwapChain == nullptr) return E_INVALIDARG;
+    if (_fgHooksInstalled) return S_OK;
+    if (_fgHookInstallFailure != S_OK) return _fgHookInstallFailure;
+
+    const auto clearOriginals = []() {
+        o_FGRelease = nullptr;
+        o_FGSCPresent = nullptr;
+        o_FGSCSetFullscreenState = nullptr;
+        o_FGSCGetFullscreenState = nullptr;
+        o_FGSCResizeBuffers = nullptr;
+        o_FGSCResizeTarget = nullptr;
+        o_FGSCGetFullscreenDesc = nullptr;
+        o_FGSCPresent1 = nullptr;
+        o_FGSCResizeBuffers1 = nullptr;
+        o_FGSCGetFrameLatencyWaitableObject = nullptr;
+    };
+    bool transactionActive = false;
+    const auto fail = [&](const char* stage, LONG error) {
+        const HRESULT hr = HRESULT_FROM_WIN32(error);
+        LOG_ERROR("FG hook install failed: stage={} win32={} hr={:X}; no source published, restart required",
+                  stage, error, (UINT)hr);
+        bool rollbackKnown = true;
+        if (transactionActive)
+        {
+            const auto abortResult = DetourTransactionAbort();
+            transactionActive = false;
+            if (abortResult != NO_ERROR)
+            {
+                rollbackKnown = false;
+                LOG_ERROR("FG hook install failed: stage=Abort win32={} hr={:X}; originals retained, no retry",
+                          abortResult, (UINT)HRESULT_FROM_WIN32(abortResult));
+            }
+        }
+        // Commit failure rolls back its transaction. An unknown Abort result
+        // instead retains all original slots, but never grants readiness/retry.
+        if (rollbackKnown) clearOriginals();
+        _fgHookInstallFailure = hr;
+        fgHookStatus.store(hr, std::memory_order_release);
+        return hr;
+    };
 
     void** pFactoryVTable = *reinterpret_cast<void***>(pSwapChain);
+    if (!pFactoryVTable) return fail("VTable", ERROR_INVALID_ADDRESS);
+    for (const auto index : { 2, 8, 10, 13, 14 })
+        if (!pFactoryVTable[index]) return fail("RequiredEntry", ERROR_INVALID_ADDRESS);
 
     o_FGRelease = (PFN_Release) pFactoryVTable[2];
     o_FGSCPresent = (PFN_Present) pFactoryVTable[8];
@@ -967,68 +1052,46 @@ void FGHooks::HookFGSwapchain(IDXGISwapChain* pSwapChain)
     o_FGSCGetFrameLatencyWaitableObject = (PFN_GetFrameLatencyWaitableObject) pFactoryVTable[33];
     o_FGSCResizeBuffers1 = (PFN_ResizeBuffers1) pFactoryVTable[39];
 
-    if (o_FGSCPresent != nullptr)
+    const bool xe = State::Instance().activeFgOutput == FGOutput::XeFG;
+    const bool waitable = xe && (Config::Instance()->SimulateWaitableObject.value_or_default() ||
+                                State::Instance().gameEngine == GameEngineType::Unity);
+    struct HookTarget { const char* stage; PVOID* original; PVOID hook; bool enabled; };
+    const HookTarget targets[] = {
+        { "Attach.Release", &(PVOID&)o_FGRelease, (PVOID)hkFGRelease, true },
+        { "Attach.Present", &(PVOID&)o_FGSCPresent, (PVOID)hkFGPresent, true },
+        { "Attach.ResizeTarget", &(PVOID&)o_FGSCResizeTarget, (PVOID)hkResizeTarget, true },
+        { "Attach.ResizeBuffers", &(PVOID&)o_FGSCResizeBuffers, (PVOID)hkResizeBuffers, true },
+        { "Attach.SetFullscreenState", &(PVOID&)o_FGSCSetFullscreenState, (PVOID)hkSetFullscreenState, true },
+        { "Attach.Present1", &(PVOID&)o_FGSCPresent1, (PVOID)hkFGPresent1, true },
+        { "Attach.ResizeBuffers1", &(PVOID&)o_FGSCResizeBuffers1, (PVOID)hkResizeBuffers1, true },
+        { "Attach.GetFullscreenState", &(PVOID&)o_FGSCGetFullscreenState, (PVOID)hkGetFullscreenState, xe },
+        { "Attach.GetFullscreenDesc", &(PVOID&)o_FGSCGetFullscreenDesc, (PVOID)hkGetFullscreenDesc, xe },
+        { "Attach.GetFrameLatencyWaitableObject", &(PVOID&)o_FGSCGetFrameLatencyWaitableObject,
+          (PVOID)hkGetFrameLatencyWaitableObject, waitable },
+    };
+    LOG_INFO("Hooking FG SwapChain present");
+    ScopedFGCallback callback;
+    auto result = DetourTransactionBegin();
+    // In the linked Detours library, ERROR_INVALID_OPERATION rejects an
+    // existing transaction before taking ownership. Other Begin errors follow
+    // ownership acquisition (for example trampoline-page VirtualProtect) and
+    // still require Abort. Never abort the pre-existing transaction.
+    transactionActive = result != ERROR_INVALID_OPERATION;
+    if (result != NO_ERROR) return fail("Begin", result);
+    result = DetourUpdateThread(GetCurrentThread());
+    if (result != NO_ERROR) return fail("UpdateThread", result);
+    for (const auto& target : targets)
     {
-        LOG_INFO("Hooking FG SwapChain present");
-        LOG_TRACE("FGRelease: {:X}", (size_t) o_FGRelease);
-        LOG_TRACE("FGSCPresent: {:X}", (size_t) o_FGSCPresent);
-        LOG_TRACE("FGSCSetFullscreenState: {:X}", (size_t) o_FGSCSetFullscreenState);
-        LOG_TRACE("FGSCGetFullscreenState: {:X}", (size_t) o_FGSCGetFullscreenState);
-        LOG_TRACE("FGSCResizeBuffers: {:X}", (size_t) o_FGSCResizeBuffers);
-        LOG_TRACE("FGSCResizeTarget: {:X}", (size_t) o_FGSCResizeTarget);
-        LOG_TRACE("FGSCGetFullscreenDesc: {:X}", (size_t) o_FGSCGetFullscreenDesc);
-        LOG_TRACE("FGSCPresent1: {:X}", (size_t) o_FGSCPresent1);
-        LOG_TRACE("FGSCResizeBuffers1: {:X}", (size_t) o_FGSCResizeBuffers1);
-        LOG_TRACE("FGSCGetFrameLatencyWaitableObject: {:X}", (size_t) o_FGSCGetFrameLatencyWaitableObject);
-
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-
-        DetourAttach(&(PVOID&) o_FGRelease, hkFGRelease);
-        DetourAttach(&(PVOID&) o_FGSCPresent, hkFGPresent);
-        DetourAttach(&(PVOID&) o_FGSCResizeTarget, hkResizeTarget);
-        DetourAttach(&(PVOID&) o_FGSCResizeBuffers, hkResizeBuffers);
-        DetourAttach(&(PVOID&) o_FGSCSetFullscreenState, hkSetFullscreenState);
-
-        if (o_FGSCPresent1 != nullptr)
-            DetourAttach(&(PVOID&) o_FGSCPresent1, hkFGPresent1);
-
-        if (o_FGSCResizeBuffers1 != nullptr)
-            DetourAttach(&(PVOID&) o_FGSCResizeBuffers1, hkResizeBuffers1);
-
-        if (State::Instance().activeFgOutput == FGOutput::XeFG)
-        {
-            if (o_FGSCGetFullscreenState != nullptr)
-                DetourAttach(&(PVOID&) o_FGSCGetFullscreenState, hkGetFullscreenState);
-
-            if (o_FGSCGetFullscreenDesc != nullptr)
-                DetourAttach(&(PVOID&) o_FGSCGetFullscreenDesc, hkGetFullscreenDesc);
-
-            if ((Config::Instance()->SimulateWaitableObject.value_or_default() ||
-                 (State::Instance().gameEngine == GameEngineType::Unity &&
-                  State::Instance().activeFgOutput == FGOutput::XeFG)) &&
-                o_FGSCGetFrameLatencyWaitableObject != nullptr)
-            {
-                DetourAttach(&(PVOID&) o_FGSCGetFrameLatencyWaitableObject, hkGetFrameLatencyWaitableObject);
-            }
-        }
-
-        auto detourResult = DetourTransactionCommit();
-        if (detourResult != NO_ERROR)
-        {
-            LOG_ERROR("Failed to attach detour: {:X}", detourResult);
-            o_FGRelease = nullptr;
-            o_FGSCPresent = nullptr;
-            o_FGSCSetFullscreenState = nullptr;
-            o_FGSCGetFullscreenState = nullptr;
-            o_FGSCResizeBuffers = nullptr;
-            o_FGSCResizeTarget = nullptr;
-            o_FGSCGetFullscreenDesc = nullptr;
-            o_FGSCPresent1 = nullptr;
-            o_FGSCResizeBuffers1 = nullptr;
-            o_FGSCGetFrameLatencyWaitableObject = nullptr;
-        }
+        if (!target.enabled || !*target.original) continue;
+        LOG_TRACE("FG hook {} target {:X}", target.stage, (size_t)*target.original);
+        result = DetourAttach(target.original, target.hook);
+        if (result != NO_ERROR) return fail(target.stage, result);
     }
+    result = DetourTransactionCommit();
+    transactionActive = false; // Commit consumes the transaction even on failure.
+    if (result != NO_ERROR) return fail("Commit", result);
+    _fgHooksInstalled = true;
+    return S_OK;
 }
 
 HRESULT FGHooks::hkSetFullscreenState(IDXGISwapChain* This, BOOL Fullscreen, IDXGIOutput* pTarget)
@@ -1901,7 +1964,10 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     // bridge. Physical SDK outputs have their immutable wrapper role and do
     // not enter this input-chain Present. Reentry cannot claim another wait.
     static const bool genshinDirectExecutable = GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
-    const bool directDlssSource = F6InputPolicy::DirectDlssInputs && genshinDirectExecutable &&
+    // Both admitted source routes use the same retained-token pacing boundary.
+    // StarRail's DX11->DX12 producer must not sleep under FG/continuity locks
+    // merely because the earlier direct-DLSS repair only named Genshin.
+    const bool directDlssSource = F6InputPolicy::DirectDlssInputs && (genshinDirectExecutable || starRailTimingRoute) &&
         willPresent && !state.externalFrameGeneration && This == state.currentFGSwapchain &&
         state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::DLSSG &&
         executionOwner != nullptr && state.currentFG == fg && dynamic_cast<DLSSG_Dx12*>(fg) != nullptr;
@@ -2481,7 +2547,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     // All provider reads stay inside the existing guard, after teardown. The
     // optional scope epoch is its real Present epoch, never a fabricated provider epoch.
     FgPacingContext pacingContext;
-    const bool collectPacing = genshinPacing && GenshinHookCpuTiming::Enabled();
+    const bool collectPacing = genshinPacing && !starRailTimingRoute && GenshinHookCpuTiming::Enabled();
     if (collectPacing)
     {
         fgPacingWindow.Begin(GenshinHookCpuTiming::monitorEpoch.load(std::memory_order_acquire));
@@ -2523,6 +2589,8 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     const float pacingCapFps=config->FramerateLimit.value_or_default();
     const bool pacingProviderKnown=genshinPacing && state.currentFG==fg;
     const uint64_t pacingProviderFrame=pacingProviderKnown ? fg->FrameCount() : 0;
+    if (genshinPacing && collectStarRailPacing)
+        starRailReflexContext=starRailPacingContext("leased-reflex-after-unlock");
     // Release THIS call's FG mutex first, under continuity, so no raw provider
     // or OwnedMutex access can race destruction after execution Finish().
     presentMutexRelease.Release();
@@ -2572,9 +2640,13 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         GenshinHookCpuTiming::WallSample reflexWall;
         if (callReflex)
         {
-            GenshinHookCpuTiming::Scope timing(GenshinHookCpuTiming::Stage::FgReflexSleep,collectPacing);
+            GenshinHookCpuTiming::Scope timing(GenshinHookCpuTiming::Stage::FgReflexSleep,collectPacing || collectStarRailPacing);
             const auto sleepResult=pacingLease->Sleep();
             reflexWall = timing.Finish();
+            if (collectStarRailPacing) {
+                starRailReflexWall=reflexWall;
+                starRailReflexCalled=true;
+            }
             if(genshinSdkTransaction){
                 genshinReflex.sleepToken=sourcePacingTokenFrame;
                 genshinReflex.sleepCalled=true;genshinReflex.sleepResult=static_cast<int>(sleepResult);

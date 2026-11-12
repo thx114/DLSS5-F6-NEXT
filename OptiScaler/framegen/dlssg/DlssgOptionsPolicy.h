@@ -71,6 +71,17 @@ inline bool Same(const sl::ReflexOptions& a, const sl::ReflexOptions& b)
 inline bool Running(const sl::DLSSGOptions& o) { return o.mode != sl::DLSSGMode::eOff; }
 inline bool Running(const sl::ReflexOptions& o) { return o.mode != sl::ReflexMode::eOff; }
 
+inline sl::ReflexOptions ProviderReflexOptions(bool boost)
+{
+    sl::ReflexOptions options {};
+    options.mode = boost ? sl::ReflexMode::eLowLatencyWithBoost : sl::ReflexMode::eLowLatency;
+    // The SDK reserves marker-driven tuning for integrations qualified by its
+    // Reflex team. Observing game markers does not establish that contract;
+    // our Present markers may also belong to a different device/frame domain.
+    options.useMarkersToOptimize = false;
+    return options;
+}
+
 inline bool CanRecomposeUserInterface(bool hudlessTagAccepted, bool uiTagAccepted, bool currentSource)
 {
     return hudlessTagAccepted && uiTagAccepted && currentSource;

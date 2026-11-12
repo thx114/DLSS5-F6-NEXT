@@ -18,8 +18,12 @@ class FGHooks
                                           IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain,
                                           bool* sourceFrameLatencyOwner = nullptr);
 
-    // Registers a real FG swapchain created through FGHooks::CreateSwapChain*().
-    static void SetFGSwapchain(IDXGISwapChain* pSwapChain, HWND hWnd);
+    // Publishes a real FG swapchain only after its hook transaction succeeds.
+    // Failure does not authorize releasing an already-created SDK chain.
+    static HRESULT SetFGSwapchain(IDXGISwapChain* pSwapChain, HWND hWnd);
+    // S_OK only after successful installation AND source publication. Observation
+    // only: this is not a GPU retirement receipt and cannot release resources.
+    static HRESULT SwapchainHookStatus() noexcept;
 
     // Registers a plain/external DX12 presenting swapchain used by DX11->DX12 interop fallback.
     // This must not mark State::currentFGSwapchain and must not install FG present hooks.
@@ -61,6 +65,8 @@ class FGHooks
     inline static PFN_Present1 o_FGSCPresent1 = nullptr;
     inline static PFN_Release o_FGRelease = nullptr;
     inline static PFN_GetFrameLatencyWaitableObject o_FGSCGetFrameLatencyWaitableObject = nullptr;
+    inline static bool _fgHooksInstalled = false; // Protected by fgLifetimeMutex; raw originals are not readiness.
+    inline static HRESULT _fgHookInstallFailure = S_OK; // Failed installation is terminal, never guessed retry.
     inline static HWND _hwnd = nullptr;
     inline static IDXGISwapChain* _dx12InteropPresentSC = nullptr;
     inline static HWND _dx12InteropPresentHwnd = nullptr;
@@ -72,7 +78,7 @@ class FGHooks
     inline static double _lastFGFrameTime = -1.0;
     inline static std::shared_mutex _resizeMutex;
 
-    static void HookFGSwapchain(IDXGISwapChain* pSwapChain);
+    static HRESULT HookFGSwapchain(IDXGISwapChain* pSwapChain);
 
     static HRESULT hkSetFullscreenState(IDXGISwapChain* This, BOOL Fullscreen, IDXGIOutput* pTarget);
     static HRESULT hkGetFullscreenDesc(IDXGISwapChain1* This, DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pDesc);

@@ -39,7 +39,6 @@ public:
     using Record = HistoryRecord<Key>;
     Record current;
     std::array<Record, DlssNrOrderedReuse::RetirementCapacity> retained {};
-    UINT64 signalValue = 0;
     template <class F> void Each(F&& visit)
     {
         visit(current);
@@ -75,9 +74,7 @@ public:
             publish(slot, false);
             if (!slot.resourceUse->Complete()) return;
             slot.resourceUse->RetireOwners();
-            auto fence = slot.fence;
             slot = {};
-            if (&slot == &current) slot.fence = std::move(fence);
         });
     }
     bool Advance(bool authenticated, ID3D12CommandList* nextList, ID3D12CommandQueue* nextQueue,
@@ -107,9 +104,7 @@ public:
         proof.freeRetirement = free != nullptr;
         if (!slot.pending || !DlssNrOrderedReuse::Allows(proof)) return false;
         *free = std::move(slot);
-        auto fence = free->fence;
         slot = {};
-        slot.fence = std::move(fence);
         return true;
     }
     template <class Publish, class Discard> void Reset(ID3D12CommandList* list,
@@ -134,36 +129,31 @@ public:
             for (UINT i = 0; i < count; ++i)
             {
                 if (lists[i] != slot.commands) continue;
-                const bool valid = slot.fence && SameDevice(slot.commands, queue) &&
-                    SameDevice(slot.fence.Get(), queue) && queue &&
-                    queue->GetDesc().Type == slot.commands->GetType();
+                const auto* execution = ActualSubmission(slot.resourceUse, slot.commands, queue);
+#if defined(DLSSNR_LIFETIME_TEST_SEAM)
+                if (slot.resourceUse && slot.resourceUse->faults && slot.resourceUse->faults->missingHistoryReceipt)
+                    execution = nullptr;
+#endif
                 const bool repeated = slot.submitted;
                 slot.submitted = true;
                 if (repeated && (!slot.retirementProven || slot.retirementQueue.Get() != queue))
                     slot.retirementAmbiguous = true;
                 // UINT64_MAX is the device-loss sentinel, never a usable signal target.
-                if (!valid || queue != slot.queue || repeated || !Healthy(slot) || signalValue >= UINT64_MAX - 1)
+                if (!execution || queue != slot.queue || repeated || !Healthy(slot))
                 {
                     slot.quarantined = true;
                     if (slot.resourceUse) slot.resourceUse->quarantined = true;
                     discard();
                     observed(slot); break;
                 }
-                slot.value = ++signalValue;
-                slot.retirementQueue = queue;
-                HRESULT result = E_FAIL;
-#if defined(DLSSNR_LIFETIME_TEST_SEAM)
-                if (!(slot.resourceUse->faults && (slot.resourceUse->faults->failSignal ||
-                                                  slot.resourceUse->faults->failHistorySignal)))
-#endif
-                    result = queue->Signal(slot.fence.Get(), slot.value);
-                slot.retirementProven = SUCCEEDED(result);
-                if (!slot.retirementProven)
-                {
-                    slot.quarantined = slot.resourceUse->quarantined = true;
-                    discard();
-                }
-                else if (slot.ordered) publish(slot, true); // post-Execute; CPU fence may be pending
+                // The history writes are inside this same executed list. Reuse
+                // its immutable actual-queue receipt; a second Signal adds no
+                // ownership proof. Keep both GPU completion AND Reset below.
+                slot.fence = execution->fence;
+                slot.value = execution->target;
+                slot.retirementQueue = execution->queue;
+                slot.retirementProven = true;
+                if (slot.ordered) publish(slot, true); // post-Execute; CPU fence may be pending
                 observed(slot); break;
             }
         });

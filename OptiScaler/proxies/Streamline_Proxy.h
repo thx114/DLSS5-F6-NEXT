@@ -97,6 +97,7 @@ class StreamlineProxy
             State::Instance().optiSlCommon = NtdllProxy::LoadLibraryExW_Ldr(slCommonPath.c_str(), NULL, NULL);
             auto dlssgPath = localSlPath / L"nvngx_dlssg.dll"; // TODO: maybe some search?
             State::Instance().optiDLSSG = NtdllProxy::LoadLibraryExW_Ldr(dlssgPath.c_str(), NULL, NULL);
+            MfgUnlock::TryApply(State::Instance().optiDLSSG);
 
             return HookStreamline(_dll);
         }
@@ -173,8 +174,6 @@ class StreamlineProxy
         std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
         localSlPath = localSlPath / L"streamline" / L"sl.dlss_g.dll";
         auto dlssg = NtdllProxy::LoadLibraryExW_Ldr(localSlPath.c_str(), NULL, NULL);
-
-        // Register before first use, including repeated loads.
         MfgUnlock::OnStreamlinePluginLoaded(dlssg);
 
         // if already hooked
@@ -319,7 +318,6 @@ class StreamlineProxy
         auto& state = State::Instance();
         ok &= ResolveActiveFeature(sl::kFeatureDLSS_G, "slDLSSGSetOptions", _slDLSSGSetOptions, state.optiSlDLSSG);
         ok &= ResolveActiveFeature(sl::kFeatureDLSS_G, "slDLSSGGetState", _slDLSSGGetState, state.optiSlDLSSG);
-        // Register the plugin actually selected by the interposer (including OTA).
         MfgUnlock::OnStreamlinePluginLoaded(state.optiSlDLSSG);
         ok &= ResolveActiveFeature(sl::kFeatureReflex, "slReflexGetState", _slReflexGetState, state.optiSlReflex);
         ok &= ResolveActiveFeature(sl::kFeatureReflex, "slReflexSleep", _slReflexSleep, state.optiSlReflex);

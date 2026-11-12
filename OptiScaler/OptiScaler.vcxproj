@@ -328,8 +328,10 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="runtime\GuideCalibrationImages.h" />
     <ClInclude Include="runtime\GuideCalibrationRuntime.h" />
     <ClInclude Include="menu\GuideDiagnosticsMenu.h" />
+    <ClInclude Include="menu\DlssPresetMenuPolicy.h" />
     <ClInclude Include="upscalers\NgxDx12ResourceView.h" />
     <ClInclude Include="with_dx12\Dx11InteropSwapchainPolicy.h" />
+    <ClInclude Include="with_dx12\InteropQueueDrainReceipt.h" />
     <ClInclude Include="runtime\ManagedIni.h" />
     <ClInclude Include="runtime\CpuSnapshotBytes.h" />
     <ClInclude Include="runtime\CpuChangedByteRanges.h" />
@@ -373,14 +375,16 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="exports\winmm.h" />
     <ClInclude Include="framegen\FinalOutputEndpoint.h" />
     <ClInclude Include="framegen\dlssg\DLSSG_Dx12.h" />
-    <ClInclude Include="framegen\dlssg\Kcd2Hdr.h" />
+    <ClInclude Include="framegen\dlssg\DlssgTelemetry.h" />
+    <ClInclude Include="framegen\dlssg\DlssgProviderIdentity.h" />
     <ClInclude Include="framegen\dlssg\MfgUnlock.h" />
     <ClInclude Include="framegen\dlssg\MfgUnlockProvider.h" />
     <ClInclude Include="framegen\dlssg\MfgUnlockPlugin.h" />
     <ClInclude Include="framegen\dlssg\MfgUnlockPtx.h" />
     <ClInclude Include="framegen\dlssg\MfgUnlockMethod.h" />
     <ClInclude Include="framegen\dlssg\MfgUnlockFlip.h" />
-    <ClInclude Include="framegen\dlssg\AmpereMfgLoader.h" />
+    <ClInclude Include="runtime\LoaderStartupContext.h" />
+    <ClInclude Include="framegen\dlssg\Kcd2Hdr.h" />
     <ClInclude Include="dlssnr\PassProfiles.h" />
     <ClInclude Include="framegen\ffx\FSRFG_Dx12.h" />
     <ClInclude Include="framegen\IFGFeature.h" />
@@ -752,7 +756,6 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="framegen\dlssg\DLSSG_Dx12.cpp" />
     <ClCompile Include="framegen\dlssg\Kcd2Hdr.cpp" />
     <ClCompile Include="framegen\dlssg\MfgUnlock.cpp" />
-    <ClCompile Include="framegen\dlssg\AmpereMfgLoader.cpp" />
     <ClCompile Include="framegen\ffx\FSRFG_Dx12.cpp" />
     <ClCompile Include="framegen\IFGFeature.cpp" />
     <ClCompile Include="framegen\IFGFeature_Dx12.cpp" />

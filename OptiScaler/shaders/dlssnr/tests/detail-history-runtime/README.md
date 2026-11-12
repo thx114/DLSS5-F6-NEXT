@@ -16,7 +16,7 @@ Real WARP devices, DIRECT queues, textures, command allocators/lists, GPU Wait,
 queue Signal, CPU fence observations, Execute and successful list Reset supply
 the lifecycle operands. A deliberately blocked queue makes incomplete GPU work
 deterministic. Post-Execute callbacks call registry then DetailHistory, matching
-the production hook order. Reset callbacks run only after a real successful
+  the production hook order. Reset callbacks run only after a real successful
 Reset. Pending old allocators stay alive; list Reset uses a fresh allocator.
 
 From an initialized x64 MSVC environment, Lead can compile this one TU from the
@@ -55,7 +55,8 @@ The 17 cases cover:
 - `completion-only`: a queue hint lacks ordered authority; completed work can
   publish logically but still cannot retire an executable generation.
 - `wrong-queue`, `history-signal`, `registry-signal`, `replay`: actual wrong-queue
-  Execute, existing production signal fault seams, and actual second Execute of
+  Execute, missing actual submission receipt (legacy `history-signal` case name),
+  failed registry Signal, and actual second Execute of
   the same closed generation. History invalidates, further work blocks, owners
   remain pinned even after queue drain and successful Reset.
 - `reconfigure-strength`, `reconfigure-revision`, `reconfigure-encoding`,

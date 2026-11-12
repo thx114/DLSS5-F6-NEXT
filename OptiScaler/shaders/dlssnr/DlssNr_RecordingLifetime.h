@@ -14,7 +14,7 @@
 namespace DlssNrGpuLifetime
 {
 #if defined(DLSSNR_LIFETIME_TEST_SEAM)
-struct TestFaults { bool failSignal = false, failHistorySignal = false, deviceRemoved = false; };
+struct TestFaults { bool failSignal = false, missingHistoryReceipt = false, deviceRemoved = false; };
 #endif
 struct Token
 {
@@ -99,6 +99,19 @@ inline ID3D12CommandQueue* SelectProducerQueue(bool authenticated, ID3D12Command
                                               ID3D12CommandQueue* observed)
 {
     return authenticated ? current : observed ? observed : current;
+}
+// Registry::Submitted must have run for this exact executable generation,
+// under the same NR lock. This reads its successful post-Execute Signal only;
+// it neither creates synchronization nor treats queue ordering as completion.
+inline const Token::Submission* ActualSubmission(const Use& use, ID3D12CommandList* list,
+                                                 ID3D12CommandQueue* queue)
+{
+    if (!use || !list || !queue || use->closed || use->discarded || use->quarantined ||
+        !use->submitted || use->listOwner.Get() != list) return nullptr;
+    for (const auto& execution : use->executions)
+        if (execution.queue.Get() == queue && execution.fence && execution.target &&
+            execution.target != UINT64_MAX) return &execution;
+    return nullptr;
 }
 class Registry
 {

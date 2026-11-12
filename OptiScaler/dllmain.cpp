@@ -31,7 +31,6 @@
 #include "inputs/FG/FSR3_Dx12_FG.h"
 
 #include <fsr4/FSR4ModelSelection.h>
-#include <framegen/dlssg/AmpereMfgLoader.h>
 
 #include <hooks/Dxgi_Hooks.h>
 #include <hooks/D3D11_Hooks.h>
@@ -218,8 +217,6 @@ static void RunAgilityUpgrade(HMODULE dx12Module)
     }
 }
 
-#include <framegen/dlssg/MfgUnlockSelection.h>
-
 void LoadAsiPlugins()
 {
     std::filesystem::path pluginPath(Config::Instance()->PluginPath.value_or(L"plugins"));
@@ -244,10 +241,9 @@ void LoadAsiPlugins()
             std::transform(fileName.begin(), fileName.end(), fileName.begin(),
                            [](wchar_t c) { return std::towlower(c); });
 
-            if (MfgUnlock::SkipExternalPlugin(fileName, Config::Instance()->FGDLSSGAdaMfgUnlock.value_or_default(),
-                                             Config::Instance()->FGDLSSGAmpereMfgUnlock.value_or_default()))
+            if (fileName == L"mfgunlocker.asi")
             {
-                LOG_INFO("MFG unlock: internal provider owner selected; skipping MFGUnlocker.asi");
+                LOG_INFO("Built-in FG path selected; skipping MFGUnlocker.asi");
                 continue;
             }
 
@@ -2171,7 +2167,6 @@ DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
 
     // This existing worker runs after DLL_PROCESS_ATTACH has returned. GPU
     // enumeration and loading another graphics proxy must not run in DllMain.
-    AmpereMfgLoader::TrySetup();
 
     return 0;
 }
@@ -2279,8 +2274,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #endif
 
         // Initial state of FG
-        State::Instance().externalFrameGeneration = Config::Instance()->ExternalFrameGeneration.value_or_default() ||
-                                                    Config::Instance()->FGDLSSGAmpereMfgUnlock.value_or_default();
+        State::Instance().externalFrameGeneration = Config::Instance()->ExternalFrameGeneration.value_or_default();
         if (State::Instance().externalFrameGeneration)
         {
             // Only runtime overrides: preserve the user's OptiFG configuration for the next
@@ -2293,7 +2287,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             cfg->ForceXeLL.set_volatile_value(false);
             cfg->UseFakenvapi.set_volatile_value(false);
             cfg->FN_ForceReflex.set_volatile_value(ForceReflex::InGame);
-            LOG_INFO("External frame generation: leaving Streamline/Reflex and MFG control to the game or unlocker; NR/SR remain available");
+            LOG_INFO("External frame generation: leaving Streamline/Reflex and FG control to the game or external module; NR/SR remain available");
         }
 
         // Init Kernel proxies
@@ -2596,7 +2590,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         spdlog::info("---------------------------------------------");
         spdlog::info("");
 
-        CreateThread(nullptr, 0, getGpuInfo, GetDllNameWModule(&dx12NamesW), 0, nullptr);
+        const auto startupThread = CreateThread(nullptr, 0, getGpuInfo, GetDllNameWModule(&dx12NamesW), 0, nullptr);
+        if (startupThread)
+            CloseHandle(startupThread);
+        else
+        {
+            const auto startupError = GetLastError();
+            LOG_ERROR("Startup worker creation failed: {}", startupError);
+        }
 
 #ifndef _DEBUG
         if (Config::Instance()->LogLevel.value_or_default() == 0 && Config::Instance()->LogToFile.value_or_default())

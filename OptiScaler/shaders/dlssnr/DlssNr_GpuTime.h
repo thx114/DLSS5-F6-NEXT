@@ -266,10 +266,8 @@ class DlssNrGpuTime
                     // Registry::Submitted ran first, after this actual Execute.
                     // Reuse its exact queue/fence/value instead of issuing one
                     // Signal per total/model/layer timer on every source frame.
-                    if (queue && s.lifetime->submitted && !s.lifetime->quarantined)
-                        for (const auto& execution : s.lifetime->executions)
-                            if (execution.queue.Get() == queue && execution.fence && execution.target)
-                            { s.fence = execution.fence; s.value = execution.target; break; }
+                    if (const auto* execution = DlssNrGpuLifetime::ActualSubmission(s.lifetime, s.commands, queue))
+                    { s.fence = execution->fence; s.value = execution->target; }
                     if (!s.fence) { ++counters.missingReceipt; break; }
                     if (FAILED(queue->GetTimestampFrequency(&s.frequency)) || !s.frequency)
                     { s.frequency = 0; ++counters.frequencyFailed; }

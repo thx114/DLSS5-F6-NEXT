@@ -1,12 +1,16 @@
 # DLSS5_NEXT
 
-用户已确认 **7C281A54** 解决 NR＋FG 的卡顿/旧帧闪回；细节持续保留、旋转发白与卡死尚未验收。正式部署仍为 **81DBE9A5**，已有 PID153992/164004 新局日志。2026-11-12 候选 **DD53514B 已构建、未部署**：修正 Look 诊断视图冲突，计时器复用真实 recording fence，移除重复 Signal 并增加低频 GPU 分段。按用户要求改用 **gpt-6.1-sol / high** 检索和独立复核，主会话核对、修改，详见 [性能审查](docs/F6-PERFORMANCE-REVIEW.md)。已定位复制 reader 与隐藏 Present 的长等待，尚未验收延迟改善。
+2026-11-12：**普通内置 FG 修复版本 5265915D 已按用户授权部署，待实机验证。** 正式 DLL 与三个游戏缓存的 SHA256 一致，硬链接不变；FSR 桥 CC301B42 保持已部署。设备身份路由、生命周期重入和星铁锁外 pacing 的定向回归及独立静态复核完成，详见[交接第 0 节](docs/F6-HANDOFF.md)。FG 使用内置实现，新版本跳过残留 MFGUnlocker.asi。产品 HEAD 9ab9686，既有未提交改动保留，不 reset/clean。
+
+**部署前用户反馈：崩铁 OK，绝区零仍未检测到 DLSS。** ZZZ PID180352 固定日志显示游戏确实运行了 DLSS，两个句柄均被旧版 8FCB8632 归为 backend。这局不能作为刚部署的 5265915D 的验收证据。详情见[交接第 0 节](docs/F6-HANDOFF.md)。
+
+本次 F6 回退为原安装 8FCB8632，精确备份与核验见 build/current-deployment.json；2,535 项受保护文件哈希不变，未改配置／profiles 或操控游戏。旧版 ASI 运行反馈不能认证新版本内置 FG。current-artifact/build/tests 对应 5265915D；原冻结清单遗漏 FgDepthContract.h，身份验证边界保留于交接。
 
 保留 SR J/K/L/M、FG A/B/C、外部桥 HUD 对接约定及已验证的共享资源/队列交接。细节保留、轻微 FG 残影、GPU 卡死、HUD 保护、真实显示率与延迟分别验收。
 
 原神默认 **真实源帧呈现输入 → NR → 细节保留 → FG**；原有单选条现可实际切换 SR 前／SR 后入口作对照。内部 FSR 桥继续禁用，保留外部桥 2.4 ABI、用户参数、独立 NR／FG 坐标设置及真实 queue/fence/Reset 退休门。
 
-OptiScaler F6 隔离工作树，Windows x64 / C++ / MSVC。工作树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`，累计产品保存点 `ea8c304`；本次交接后续提交只整理文档和 Git 忽略说明。候选仍是保存前构建的原字节，内嵌版本不能用新 HEAD 冒认。原根 `D:/CODE/DLSS5_NEXT`、旧工作区与历史恢复资料继续保留。
+OptiScaler F6，Windows x64 / C++ / MSVC。唯一产品写树 D:/CODE/DLSS5_NEXT-workers/f6-rewrite，codex/f6-rewrite，HEAD 9ab9686，历史累计保存点 ea8c304；最新改动尚未提交。build/repair-20261112/verification-next/source.json 记录 1,245 项声明输入；旧 input-integration／queue-latency 指纹保留原身份。旧根与恢复资料保留。
 
 ## 目录
 
@@ -33,7 +37,9 @@ pwsh -NoProfile -File ./tools/tests/Run-CommonCoreTests.ps1
 
 产物为 [build/out/OptiScaler.dll](build/out/OptiScaler.dll)，日志见 [msbuild.log](build/msbuild.log) 与 [common-core-tests.log](build/common-core-tests.log)；构建失败返回真实 MSBuild 退出码。
 
-此前已实施 FG 源帧锁外 pacing、集中 SDK 统计、waitable 所有权与独立全分辨率 GPU 单选预览。最新构建、测试和部署身份分别以 `build/current-{build,tests,artifact,deployment}.json` 为准。旧局录像的编码帧率及 SDK 回调频率均不能代替真实显示率。细节持续保留的栅栏/人物跟随仍需复测，使用 [深度与运动预览](docs/F6-GUIDE-DIAGNOSTICS.md)；桥作者可参照 [HUD 输入约定](docs/FG-BRIDGE-HUD-CONTRACT.md)。
+当前仅用普通构建与内置 MfgUnlock.cpp；私有 ASI 参数、工程与启动入口已移除，残留源码／离线测试保留历史。普通 Release x64 已重新链接，核验 53 必要 NGX 导出、PE 版本及声明输入指纹；构建不等于部署或游戏通过，详情见交接第 0 节。
+
+此前已实施 FG 源帧锁外 pacing、集中 SDK 统计、waitable 所有权与独立全分辨率 GPU 单选预览。历史构建、测试和部署身份分别以 `build/current-{build,tests,artifact,deployment}.json` 为准。旧局录像的编码帧率及 SDK 回调频率均不能代替真实显示率。细节持续保留的栅栏/人物跟随仍需复测，使用 [深度与运动预览](docs/F6-GUIDE-DIAGNOSTICS.md)；桥作者可参照 [HUD 输入约定](docs/FG-BRIDGE-HUD-CONTRACT.md)。
 
 ## 文档
 

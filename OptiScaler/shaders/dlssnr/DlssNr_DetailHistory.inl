@@ -395,19 +395,6 @@ Plan Before(const Frame& f)
     if (!f.pass->DetailReuseReady()) return reject("feedback-shader-unavailable");
     if (!PrepareResources(f)) return {};
     auto& slot = recordings.current;
-    if (!slot.fence || resourceDevice != f.device)
-    {
-        slot.fence.Reset();
-        if (FAILED(f.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&slot.fence))))
-            return reject("feedback-fence-unavailable");
-    }
-    // Fence objects are device-specific even across a resize/rebuild.
-    if (!DlssNrGpuLifetime::SameDevice(slot.fence.Get(), queue))
-    {
-        slot.fence.Reset();
-        if (FAILED(f.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&slot.fence))))
-            return reject("feedback-fence-unavailable");
-    }
     const auto use = NrRecording(f.device, f.cmdList);
     if (!DlssNrGpuLifetime::Retain(use, { detail[0], detail[1], colourDepth[0], colourDepth[1],
                                          fused, stability[0], stability[1], f.modelInput, f.motion, f.depth }))
@@ -416,9 +403,7 @@ Plan Before(const Frame& f)
     if(NrHistoryDebug::Wanted())
     {debugFrame.delta=history.deltaSeconds;debugFrame.historySource=history.usable?publishedKey.sample.ordinal:0;}
     activeWrite = publishedWrite ^ 1u;
-    auto fence = slot.fence;
     slot = {};
-    slot.fence = std::move(fence);
     slot.commands = list; slot.commandOwner = list; slot.queue = queue; slot.resourceUse = use;
     slot.contract = activeKey; slot.ordinal = f.frameNumber; slot.generation = ++generation;
     slot.bytes = AddBytes(allocatedBytes, ParkedBytes()); slot.write = activeWrite;

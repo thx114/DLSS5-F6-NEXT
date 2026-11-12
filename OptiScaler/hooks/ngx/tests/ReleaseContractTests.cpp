@@ -107,6 +107,7 @@ struct ReleaseApi
     void ObserveInitDevice(int) {}
     void ForgetInitDevice() {}
     bool AcceptCommandDevice(int) { return true; }
+    int AcquireCommandDevice(int device) { return device; }
     bool AttachInput(int) { return true; }
     void Receipt(const char*, NgxInput::Owner, const Handle*, std::optional<Feature>, std::optional<unsigned>) {}
 

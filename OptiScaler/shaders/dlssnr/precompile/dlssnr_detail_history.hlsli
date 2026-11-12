@@ -128,6 +128,36 @@ bool DhBirthProxy(float2 uv, float3 current, out float3 value, out float error, 
     return DhFinite3(value);
 }
 
+bool DhMotionField(float2 centreMotion, float2 neighbourMotion[4], float motionJump,
+                   out float confidence)
+{
+    confidence = 0.0;
+    const float2 pixels = float2(workWidth, workHeight);
+    const float curvature = min(length((0.5 * (neighbourMotion[0] + neighbourMotion[1]) - centreMotion) * pixels),
+                                length((0.5 * (neighbourMotion[2] + neighbourMotion[3]) - centreMotion) * pixels));
+    const float limit = DhFinite(motionReject) && motionReject > 0.0 ? motionReject : 0.75;
+    if (!DhFinite(curvature) || curvature >= limit) return false;
+    confidence = 1.0 / (1.0 + 0.125 * max(motionJump - 1.0, 0.0));
+    confidence *= 1.0 - smoothstep(limit / 3.0, limit, curvature);
+    return true;
+}
+
+// Independent stabilization must validate motion even if long detail is off or
+// expired. Successful long-detail validation reuses its existing vector reads.
+bool DhCurrentMotionField(uint2 p, float2 centreMotion)
+{
+    float2 neighbourMotion[4] = {float2(0, 0), float2(0, 0), float2(0, 0), float2(0, 0)};
+    float motionJump = 0.0;
+    [unroll] for (uint i = 0u; i < 4u; ++i)
+    {
+        const int2 q = clamp(int2(p) + DhCross(i + 1u), int2(0, 0), int2(workWidth, workHeight) - 1);
+        if (!DhMotion((float2(q) + 0.5) / float2(workWidth, workHeight), neighbourMotion[i])) return false;
+        motionJump = max(motionJump, length((neighbourMotion[i] - centreMotion) * float2(workWidth, workHeight)));
+    }
+    float confidence;
+    return DhMotionField(centreMotion, neighbourMotion, motionJump, confidence);
+}
+
 // Match each raw-proxy point at ITS OWN actual correspondence. Camera rotation,
 // perspective and articulated motion do not translate a whole patch rigidly.
 // Neighbours validate structure only; the centre's residual/geometry never use
@@ -145,7 +175,7 @@ bool DhStructure(uint2 p, float2 previousUv, float2 centreMotion,
     float3 birthSpread = 0.0;
     float error = 0.0;
     float motionJump = 0.0;
-    float2 neighbourMotion[4];
+    float2 neighbourMotion[4] = {float2(0, 0), float2(0, 0), float2(0, 0), float2(0, 0)};
     [unroll] for (uint i = 0u; i < 5u; ++i)
     {
         const int2 q = clamp(int2(p) + DhCross(i), int2(0, 0), int2(workWidth, workHeight) - 1);
@@ -201,13 +231,8 @@ bool DhStructure(uint2 p, float2 previousUv, float2 centreMotion,
     // least one opposite pair must agree locally with the actual centre field.
     // An affine camera warp passes exactly; a thin vertical/horizontal surface
     // can use its coherent axis without borrowing any residual from that axis.
-    const float2 pixels = float2(workWidth, workHeight);
-    const float curvature = min(length((0.5 * (neighbourMotion[0] + neighbourMotion[1]) - centreMotion) * pixels),
-                                length((0.5 * (neighbourMotion[2] + neighbourMotion[3]) - centreMotion) * pixels));
-    const float motionLimit = DhFinite(motionReject) && motionReject > 0.0 ? motionReject : 0.75;
-    if (!DhFinite(curvature) || curvature >= motionLimit) { rejection = 5u; return false; }
-    motionConfidence = 1.0 / (1.0 + 0.125 * max(motionJump - 1.0, 0.0));
-    motionConfidence *= 1.0 - smoothstep(motionLimit / 3.0, motionLimit, curvature);
+    if (!DhMotionField(centreMotion, neighbourMotion, motionJump, motionConfidence))
+        { rejection = 5u; return false; }
     return confidence > 0.0 && DhFinite3(amplitude) && DhFinite3(rawCrossContrast);
 }
 
@@ -267,6 +292,7 @@ struct DhResult
     float3 reprojected;
     float weight;
     uint reason;
+    bool motionVerified;
 };
 
 DhResult DhEvaluateDetail(uint2 p)
@@ -316,6 +342,7 @@ DhResult DhEvaluateDetail(uint2 p)
     float motionConfidence;
     float3 amplitude, rawCrossContrast;
     if (!DhStructure(p, previousUv, mv, colourConfidence, amplitude, rawCrossContrast, motionConfidence, result.reason)) return result;
+    result.motionVerified = true;
     // Only the displayed contribution fades. The original residual AND its
     // original fingerprint travel together; comparing with last frame's raw
     // colour instead would allow gradual drift to keep an unrelated old edit.
@@ -371,11 +398,11 @@ DhResult DhEvaluateDetail(uint2 p)
     return result;
 }
 
-// Independent, opt-in residual filter. Geometry confidence may become zero;
-// the explicit floor still admits a bounded correction. It never averages the
-// old displayed frame or feeds a filtered answer into long-detail ancestry.
-// A bad guide uses screen-space residuals and is labelled as such, not a
-// fabricated motion vector. Source identity/completion remain host authority.
+// Independent, opt-in residual filter. The user floor applies only AFTER an
+// actual motion/depth correspondence passes: low confidence on a valid surface
+// may admit a bounded correction, but invalid guides or another surface cannot.
+// It never averages the old displayed frame or feeds a filtered answer into
+// long-detail ancestry. Source identity/completion remain host authority.
 DhResult DhEvaluate(uint2 p)
 {
     DhResult result = DhEvaluateDetail(p);
@@ -391,52 +418,52 @@ DhResult DhEvaluate(uint2 p)
         !DhFinite(feedbackStabilityFloor) || !DhFinite(feedbackStabilityClamp) || feedbackStabilityClamp <= 0.0 ||
         !DhFinite2(float2(feedbackRasterOffsetUvX, feedbackRasterOffsetUvY))) return result;
     if (!DhWorkTexture(t6) || !DhWorkTexture(t3)) return result;
+    if (result.reason == 5u) return result;
+    if (!DhFinite(depthTolerance) || depthTolerance < 0.0) return result;
+    float z;
+    if (!DhDepth(t5, WorkUv(p), z)) { result.reason = 3u; return result; }
     float2 mv;
-    bool guided = DhMotion(WorkUv(p), mv);
-    float2 previousUv = WorkUv(p) + (guided ? mv : float2(0.0, 0.0)) +
-                        float2(feedbackRasterOffsetUvX, feedbackRasterOffsetUvY);
+    if (!DhMotion(WorkUv(p), mv)) { result.reason = 5u; return result; }
+    const float2 previousUv = WorkUv(p) + mv + float2(feedbackRasterOffsetUvX, feedbackRasterOffsetUvY);
     if (!DhFinite2(previousUv) || any(previousUv < 0.0) || any(previousUv >= 1.0))
-    {
-        // A wild/out-of-frame vector grants no permission to clamp onto an edge.
-        // Screen-space stabilization is a separately selected low-trust fallback.
-        guided = false;
-        previousUv = WorkUv(p) + float2(feedbackRasterOffsetUvX, feedbackRasterOffsetUvY);
-    }
+        { result.reason = 6u; return result; }
+    if (!result.motionVerified && !DhCurrentMotionField(p, mv))
+        { result.reason = 5u; return result; }
     int2 base; float2 fraction;
     DhFootprint(previousUv, base, fraction);
     float3 old = 0.0, oldRaw = 0.0;
     float oldLag = 0.0, depthTrust = 1.0;
-    float z;
-    const bool validDepth = DhDepth(t5, WorkUv(p), z);
+    const float tolerance = max(depthTolerance, 1e-6);
+    // Every contributing tap must independently name this surface. Reject
+    // before interpolation; neither matching RGB nor the user's floor can
+    // authorize even one cross-surface tap in a fractional footprint.
     [unroll] for (uint i = 0u; i < 4u; ++i)
     {
         const float w = DhTapWeight(i, fraction);
         if (w <= 0.0) continue;
         const int2 q = DhTap(base, i);
-        if (!DhInside(q)) return result;
+        if (!DhInside(q)) { result.reason = 6u; return result; }
         const float4 saved = t6.Load(int3(q, 0));
         const float4 context = t3.Load(int3(q, 0));
-        if (!DhFinite4(saved) || saved.a < 0.0 || !DhFinite3(context.rgb)) return result;
+        if (!DhFinite4(saved) || saved.a < 0.0 || !DhFinite4(context) || context.a < 0.0 || context.a > 1.0)
+            { result.reason = 7u; return result; }
+        const float relative = abs(z - context.a) / max(max(z, context.a), 1e-6);
+        if (depthTolerance < 1.0)
+        {
+            if (relative >= tolerance) { result.reason = 9u; return result; }
+            depthTrust = min(depthTrust, 1.0 - smoothstep(0.5 * tolerance, tolerance, relative));
+        }
         old += w * saved.rgb;
         oldRaw += w * context.rgb;
         oldLag = max(oldLag, saved.a);
-        if (!validDepth || !DhFinite(context.a) || context.a < 0.0 || context.a > 1.0)
-            depthTrust = 0.0;
-        else
-        {
-            const float relative = abs(z - context.a) / max(max(z, context.a), 1e-6);
-            const float tolerance = max(depthTolerance, 1e-6);
-            depthTrust = min(depthTrust, depthTolerance >= 1.0 ? 1.0 :
-                1.0 - smoothstep(0.5 * tolerance, tolerance, relative));
-        }
     }
     if (!DhFinite3(old) || !DhFinite3(oldRaw) || !DhFinite(oldLag + feedbackDeltaSeconds)) return result;
     // Raw scene changes are kept current. Only the NR edit is filtered. A
-    // current-appearance gate limits silhouettes/cuts; depth and motion alone
-    // never veto the user's positive low-trust floor.
+    // current-appearance gate limits silhouettes/cuts. The floor controls soft
+    // confidence only within the motion/depth correspondence admitted above.
     const float appearanceLimit = max(0.03, 2.0 * feedbackStabilityClamp);
     const float appearance = 1.0 - smoothstep(0.5 * appearanceLimit, appearanceLimit, DhPeak(abs(raw.rgb - oldRaw)));
-    const bool reliable = guided && result.reason != 5u && result.reason != 10u && depthTrust > 0.0;
+    const bool reliable = result.reason != 5u && result.reason != 10u && depthTrust > 0.0;
     const float guideTrust = reliable ? depthTrust : 0.0;
     const float trust = lerp(saturate(feedbackStabilityFloor), 1.0, guideTrust);
     float weight = min(0.9999, exp(-feedbackDeltaSeconds / feedbackStabilitySeconds)) * trust * appearance;

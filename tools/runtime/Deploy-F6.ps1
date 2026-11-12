@@ -2,6 +2,7 @@
 <#
 Deploy an already built F6 DLL by writing the existing destination object.
 This preserves its runtime hardlinks. No game or profile operations occur here.
+If the destination is in use, stage the candidate beside it as OptiScaler.dll.next.
 #>
 [CmdletBinding()]
 param(
@@ -10,14 +11,6 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-# The official file is hard-linked into all three runtimes. A running game
-# therefore protects the same object even when it is not the selected profile.
-$activeGames = @(Get-CimInstance Win32_Process -Filter "Name='YuanShen.exe' OR Name='GenshinImpact.exe' OR Name='StarRail.exe' OR Name='ZenlessZoneZero.exe'" |
-    Where-Object { $_.ThreadCount -gt 0 -or $_.HandleCount -gt 0 })
-if ($activeGames.Count) {
-    $identities = ($activeGames | ForEach-Object { "$($_.Name) PID$($_.ProcessId)" }) -join ', '
-    throw "Candidate retained; active game protects the shared F6 DLL: $identities. No installed file was opened for writing."
-}
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 if (!$Artifact) { $Artifact = Join-Path $projectRoot 'build/out/OptiScaler.dll' }
 $artifactPath = (Get-Item -LiteralPath $Artifact -ErrorAction Stop).FullName
@@ -35,9 +28,52 @@ try {
         throw 'Artifact does not contain a PE DOS header.'
     }
     $source.Position = 0
+    $artifactHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($source))
+    $source.Position = 0
     # Open, never Create/rename/replace: the official file object must survive.
-    # If the DLL is shared or unavailable, fail before writing, without retries.
-    $target = [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    # Actual file contention decides staging; process names are irrelevant.
+    try {
+        $target = [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch {
+        $nativeError = $_.Exception.GetBaseException().HResult -band 0xffff
+        # ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION / ERROR_USER_MAPPED_FILE.
+        # Permission, missing-file and storage failures remain errors.
+        if ($nativeError -notin @(32, 33, 1224)) { throw }
+        $nextPath = $destination + '.next'
+        if (![StringComparer]::OrdinalIgnoreCase.Equals($artifactPath, $nextPath)) {
+            # Publish only a complete, verified sidecar; retain an older .next on failure.
+            $temporaryPath = $nextPath + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+            try {
+                $pending = [IO.File]::Open($temporaryPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+                try {
+                    $source.CopyTo($pending)
+                    $pending.Flush($true)
+                    $pending.Position = 0
+                    $pendingHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($pending))
+                    if ($pending.Length -ne $source.Length -or $pendingHash -ne $artifactHash) {
+                        throw 'Pending DLL verification failed; installed file was not changed.'
+                    }
+                } finally { $pending.Dispose() }
+                [IO.File]::SetLastWriteTimeUtc($temporaryPath, $artifactTime)
+                [IO.File]::Move($temporaryPath, $nextPath, $true)
+            } finally {
+                if ([IO.File]::Exists($temporaryPath)) { [IO.File]::Delete($temporaryPath) }
+            }
+        }
+        [pscustomobject]@{
+            Status = 'STAGED_NEXT_FILE_IN_USE'
+            Artifact = $artifactPath
+            Destination = $destination
+            PendingArtifact = $nextPath
+            SHA256 = $artifactHash
+            Bytes = $source.Length
+            LastWriteTimeUtc = $artifactTime.ToString('O')
+            NativeError = $nativeError
+            InstalledChanged = $false
+            ProfilesChanged = $false
+        } | ConvertTo-Json
+        return
+    }
     $restored = $false
     try {
         $null = [IO.Directory]::CreateDirectory($backupRoot)
@@ -78,9 +114,11 @@ try {
         Status = 'DEPLOYED_IN_PLACE'
         Artifact = $artifactPath
         Destination = $destination
+        SHA256 = $artifactHash
         Bytes = $source.Length
         LastWriteTimeUtc = $artifactTime.ToString('O')
         Rollback = $backupPath
+        InstalledChanged = $true
         ProfilesChanged = $false
     } | ConvertTo-Json
 } finally { $source.Dispose() }

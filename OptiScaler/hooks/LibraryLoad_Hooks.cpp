@@ -136,7 +136,7 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
     // Optional Ada unlock before NGX caches capabilities. External FG already returned above. Covers the
     // driver's OTA copy (models\dlssg\...\<hash>.bin) as well as the game's nvngx_dlssg.dll, which the
     // .bin branch below would otherwise load without patching.
-    if (MfgUnlock::Provider::IsProviderPath(normalizedPath) && MfgUnlock::Pending())
+    if (MfgUnlock::Provider::IsProviderPath(normalizedPath) && MfgUnlock::ShouldInterceptProviderLoad())
     {
         auto snippet = NtdllProxy::LoadLibraryExW_Ldr(lpLibFullPath, NULL, 0);
         if (snippet)

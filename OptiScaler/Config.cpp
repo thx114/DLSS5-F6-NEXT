@@ -14,7 +14,6 @@
 #include <shaders/dlssnr/DlssNr_ProxyCurve.h>
 
 #include <SimpleIni.h>
-#include <framegen/dlssg/AmpereMfgLoader.h>
 
 static CSimpleIniA ini;
 
@@ -177,27 +176,6 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             FGDLSSGAdaFlipMeteringPatch.set_from_config(readBool("DLSSG", "AdaFlipMeteringPatch"));
             FGDLSSGAmpereMfgUnlock.set_from_config(readBool("DLSSG", "AmpereMfgUnlock"));
-            FGDLSSGAmpereMfgMaxFrames.set_from_config(readInt("DLSSG", "AmpereMfgMaxFrames"));
-            if (FGDLSSGAmpereMfgMaxFrames.has_value() &&
-                (FGDLSSGAmpereMfgMaxFrames.value() < 0 || FGDLSSGAmpereMfgMaxFrames.value() > AmpereMfgLoader::MaximumGeneratedRequest))
-                FGDLSSGAmpereMfgMaxFrames.reset();
-
-            if (auto ampereKernel = readString("DLSSG", "AmpereMfgKernelImage"); ampereKernel.has_value())
-            {
-                if (lstrcmpiA(ampereKernel.value().c_str(), "ptx") == 0)
-                    FGDLSSGAmpereMfgKernelImage.set_from_config("PTX");
-                else if (lstrcmpiA(ampereKernel.value().c_str(), "cubin") == 0)
-                    FGDLSSGAmpereMfgKernelImage.set_from_config("Cubin");
-                else
-                    FGDLSSGAmpereMfgKernelImage.set_from_config("Auto");
-            }
-            FGDLSSGAmpereMfgHardwareBilinear.set_from_config(readBool("DLSSG", "AmpereMfgHardwareBilinear"));
-
-            if (FGDLSSGAmpereMfgUnlock.value_or_default())
-            {
-                ExternalFrameGeneration.set_from_config(true);
-                FGDLSSGAdaMfgUnlock.set_from_config(false);
-            }
             FGDebugView.set_from_config(readBool("FrameGen", "DebugView"));
 
             if (auto FGInputString = readString("FrameGen", "FGInput"); FGInputString.has_value())
@@ -1590,22 +1568,14 @@ void Config::WriteSettings(Sink& target, const GenshinLegacy::Settings& genshinS
 
     // Frame Generation
     {
-        bool ampereUnlock = this->FGDLSSGAmpereMfgUnlock.value_for_config_or(false);
-        bool adaUnlock = this->FGDLSSGAdaMfgUnlock.value_for_config_or(false);
-        if (ampereUnlock && adaUnlock)
-            adaUnlock = false;
-
         target.SetValue("FrameGen", "Enabled", GetBoolValue(this->FGEnabled.value_for_config()).c_str());
         target.SetValue("FrameGen", "StarRailForceResident", GetBoolValue(this->StarRailForceFGResident.value_for_config()).c_str());
-        target.SetValue("FrameGen", "External", GetBoolValue(this->ExternalFrameGeneration.value_for_config_or(false) || ampereUnlock).c_str());
-        target.SetValue("DLSSG", "AdaMfgUnlock", GetBoolValue(adaUnlock).c_str());
+        target.SetValue("FrameGen", "External", GetBoolValue(this->ExternalFrameGeneration.value_for_config_or(false)).c_str());
+        target.SetValue("DLSSG", "AdaMfgUnlock", GetBoolValue(this->FGDLSSGAdaMfgUnlock.value_for_config()).c_str());
         target.SetValue("DLSSG", "AdaBlackwellKernels", GetBoolValue(this->FGDLSSGAdaBlackwellKernels.value_for_config()).c_str());
         target.SetValue("DLSSG", "AdaTemporalFix", this->FGDLSSGAdaTemporalFix.value_for_config_or("auto").c_str());
         target.SetValue("DLSSG", "AdaFlipMeteringPatch", GetBoolValue(this->FGDLSSGAdaFlipMeteringPatch.value_for_config()).c_str());
-        target.SetValue("DLSSG", "AmpereMfgUnlock", GetBoolValue(ampereUnlock).c_str());
-        target.SetValue("DLSSG", "AmpereMfgMaxFrames", GetIntValue(this->FGDLSSGAmpereMfgMaxFrames.value_for_config()).c_str());
-        target.SetValue("DLSSG", "AmpereMfgKernelImage", this->FGDLSSGAmpereMfgKernelImage.value_for_config_or("auto").c_str());
-        target.SetValue("DLSSG", "AmpereMfgHardwareBilinear", GetBoolValue(this->FGDLSSGAmpereMfgHardwareBilinear.value_for_config()).c_str());
+        target.SetValue("DLSSG", "AmpereMfgUnlock", GetBoolValue(this->FGDLSSGAmpereMfgUnlock.value_for_config()).c_str());
         target.SetValue("FrameGen", "DebugView", GetBoolValue(this->FGDebugView.value_for_config()).c_str());
         std::string FGInputString = "auto";
         if (auto FGInputHeld = this->FGInput.value_for_config(); FGInputHeld.has_value())

@@ -16,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+// INSERT_LATENCY_ADAPTERS
+
 // INSERT_EXECUTION_GUARD
 
 namespace
@@ -254,6 +256,7 @@ void WaitableOwnership()
 int main() try
 {
     PacingAndTeardown();SourcePolicy();CounterIntervals();ConcurrentQueriesAndOptions();WaitableOwnership();
+    latency_adapter_tests::Run();
     std::printf("PASS %u FG scheduling/query/waitable CPU checks (no SDK/game/GPU)\n",checks);
     return 0;
 }

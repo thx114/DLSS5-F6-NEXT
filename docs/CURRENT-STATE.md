@@ -1,40 +1,33 @@
 # F6 当前状态
 
-更新：2026-11-12（Asia/Shanghai，UTC+08）。唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。完整架构、代码导航、问题、命令与验收顺序见[项目交接](F6-HANDOFF.md)；参考来源见[独立仓库清单](../../../DLSS5_NEXT/docs/REFERENCE-REPOSITORIES.md)。
+更新：2026-11-12，**普通内置 FG 修复版本 5265915D 与 FSR 桥 CC301B42 均已部署，待用户实机验证。** 最新修复、测试和边界见[完整报告第 0 节](F6-HANDOFF.md)。唯一产品写树 D:/CODE/DLSS5_NEXT-workers/f6-rewrite，codex/f6-rewrite，HEAD 9ab9686；大量既有未提交改动保留，不 reset/clean。
 
-## 当前保存与候选身份
-
-| 对象 | 当前事实 |
+| 项目 | 当前事实 |
 |---|---|
-| 累计产品保存点 | `ea8c304c3810408e4ec8c7ca1378718cc37cd02a`，保留累计源码、生产shader、未跟踪测试及工具；后续交接提交仅涉及文档与忽略说明 |
-| 候选 | **DD53514B已构建、未部署**；SHA256 `DD53514B481D4E2DCAAA5F9D95ABA269E1DEB8834CFDEB6BD3E62852AD526646`，33,959,936 B |
-| 构建 | Release x64 exit0，39 warning records／0 errors，14项必要NGX导出齐全；文件时间UTC `2026-11-11T16:37:07.912677Z` |
-| 安装 | 仍为**81DBE9A5**，SHA256 `81DBE9A53B90990FA06BF4CB3790B240B187AAF46841906C7D665E9C0FFF8875`，33,951,744 B；部署回执2026-11-11 22:09:48（UTC+08），4路径同一硬链接对象，7份配置未改 |
-| 已有新局 | PID153992／164004已有日志及用户反馈；不能继续写“尚未启动新局”，但两局不证明未部署候选已加载 |
-| 实际加载／画面／性能 | loaded-memory SHA未知；DD53514B未运行游戏，Look、持续细节、卡死恢复和延迟改善未验收 |
+| 用户反馈 | 崩铁 OK、ZZZ 仍未检测 DLSS；优先验证 ZZZ 接入，FG 用内置，不用 ASI。旧 F6 在 ZZZ 本局实际调用 MFGUnlocker.asi；崩铁反馈不认证新候选的内置 FG 或性能 |
+| 普通候选 | build/out/OptiScaler.dll；5265915DF9DC34951F10E3D60CB11819EADB5FAAABD427F7F4DDA846B1360238；33,949,696 B，Release x64 exit 0 |
+| 链接／导出 | MfgUnlock.obj 已链接，无私有模块／旧 ASI 对象，53 必要 NGX 导出齐全；全部导出名称／序号不变 |
+| 源码身份 | build/repair-20261112/verification-next/source.json；1,245 项声明输入指纹不变。清单遗漏 FgDepthContract.h，亦不含生成版本头和全部外部传递依赖，不能单凭清单认证被遗漏文件的构建时字节 |
+| 机器指针 | current-artifact.json／current-build.json／current-tests.json 对应 5265915D；current-deployment.json 记录本次实际部署，旧回执已另存 |
+| F6 安装复核 | 正式 DLL 和三个游戏缓存的磁盘 SHA256 均为 5265915D，四路径原文件身份／硬链接不变；原安装 8FCB8632 已备份，2,535 项保护文件不变，loaded-memory SHA 未知 |
+| ZZZ 最新运行 | PID180352 固定日志有两组 DLSS Create／Evaluate，均 owner=backend，selected 为 0；缺 Create origin/caller，不能定位具体来源拒绝，也不能作为 5265915D 的失败证据 |
+| 未决 | 5265915D 已部署，ZZZ 接入与内置 FG 待新局实测；崩铁记部署前用户反馈通过，精确 FG 显示率、排队改善及旧 hook 错误 8 根因仍未测定 |
+| FSR 桥 | 按用户要求已将上游 1865c585 的 Release x64 桥原位部署到启动器实际选中的 temp3/Dx11FsrBridge (2).dll，SHA CC301B42；旧桥已备份，配置及 F6 DLL 未改，游戏效果待验；[审计与回退](../../fsr-bridge-upstream-1865c585/AUDIT.md) |
 
-候选是在 `db0e646` 加当时改动上构建的原字节；事后提交不会改写内嵌版本。21项关键源码哈希与原构建回执匹配，不能拿新Git HEAD冒认旧候选内嵌commit。当前身份分别见 `build/current-{build,tests,artifact,deployment}.json`；部署回执仍绑定81DB，不能用现在同名out文件替代当时字节。
+7D 阶段补菜单 FG_Hooks 声明依赖；分离能力 Pending 与后续 provider 加载处理；保留旧配置并提供明确提示／手动关闭按钮。独立复核发现工厂公共 Begin 在取得 Detours 所有权后失败会遗留事务，已统一在原始 Begin 包装器中清理，绝不 Abort 已有事务；不改变真实 queue/fence/Reset 退休门或 FG quarantine。
 
-## 已完成与未完成
+最终定向测试回执为 `build/repair-20261112/verification-next/tests/tests.json`：17 组通过，设备 66 项、Router 15 套、Release 7 套、生命周期 40 项、caller 49 项及 11 套核心 CPU／WARP 等通过，负控按预期检出。独立静态复核未留确定阻断，记录在同目录上层 `review.json`；实际 SDK、游戏和显示未验证。旧 `build/repair-20261112/tests.json` 保持原身份。下文为 7D 阶段记录，当前以第 0 节为准。
 
-用户确认**7C281A54解决呈现NR＋FG明显卡顿和旧帧闪回**。保留共享source queue、真实Evaluate提前封存guides、同源最终颜色汇合及实际queue/fence/Reset退休。原神默认真实源帧呈现输入→NR→持续细节保留→FG；SR前／后入口保留对照。内部FSR桥和探测禁用，外部桥2.4 ABI保留；独立NR／FG方向与用户分辨率、层数、Look、历史及倍率不变。
+最终通过 FG hook 54 场景／1867 检查，caller 42、admission 38、内置谓词 41、Begin 清理 26 检查；五种独立负控检出预期错误。ZZZ scope 16 套／wiring 107、NGX Router 9／Release 7、latency adapter 1380／调度 1065 及十一套 CPU／WARP 核心定向回归通过。shared 段在最后工厂修复前执行成功，修复后不冒称全量公共套件重跑。gpt-6.1-sol / high 独立复核及主会话核实详见 build/input-integration-review.json。
 
-DD53514B修复实际Look修改／查看最终效果被`debugView=2`遮住的问题；timer复用真实recording的queue/fence/value，不另建fence或Signal，GPU完成才读、真实Reset＋完成才复用。前3次及每64次dispatch低频形成7段GPU跨度，没有新增CPU等待或像素读回；不是独占GPU活跃时间。
+候选、源码、测试与日志见 build/input-integration-{standard-artifact,source,tests,review}.json，旧普通 8C9418B6／私有 92D1BACE 在 build/rollback/queue-latency-* 原位保留。离线测试不证明 SDK 推理、游戏画面、真实显示率或延迟。
 
-持续保留已与旧间隔复用解耦，有独立容差、最终历史稳定滑条和每源帧调试窗；81DB已部署这些控件和生产shader。但用户仍报告全屏拒绝、转镜头发白／噪声变化及卡死，**像素效果仍未通过**。SR J/K/L/M与FG A/B/C已接配置，实际模型加载须验；HUD-less/UI标签已准备，外部桥生产回调和alpha-only ABI未接，无输入时标UI未保护。
+## 2026-11-12 10:18–10:30 实测补充
 
-最新关联回归整体exit0：Look控件80、生产HLSL/WARP392、timer WARP668、18个真实历史runtime场景、FG handoff15场景／564检查、呈现输出1596检查及shared/pacing/Reflex/options/热重建等。错误颜色域负控按预期24项像素失败。离线夹具不执行NGX／游戏，不证明画质或提速。
+三局已独立锁定：[崩铁大世界 PID129300](../build/starrail-129300-20261112/analysis.md)、[绝区零 DX12 PID197852](../build/zzz-197852-20261112/analysis.md)、[崩铁副本 PID181400](../build/starrail-181400-20261112/analysis.md)。副本完整日志 21,726,659 B 已保住，非仅启动器 16 MiB 尾段；完整索引见[固定测试记录](../build/runtime-tests-20261112.md)。
 
-## 性能与撤回事项
+大世界用户反馈插帧卡顿／延迟高，性能未通过。稳定分析窗口源入口约 24.67 Hz，中位间隔 40.492 ms，最高 81.398 ms；Reflex 报告中位／P95 为 46.978／72.421 ms，最高 106.432 ms 中 GPU 前排队 69.117 ms。副本报告中位／P95 为 45.597／85.916 ms，也有排队尖峰；3.287 秒独立异常主要发生在 queue 开始前，不是持续 GPU 耗时。两局均有 FG 成功提交，但真实显示率未知；场景／焦点不同，不能当修复对照。
 
-[性能审查](F6-PERFORMANCE-REVIEW.md)记录PID153992的166.103ms报告，以及PID164004的317对NR total/model中位39.630/31.759ms、逐对模型外差值中位5.288ms。已核copy reader等待83.962／98.681／22.469ms，另有hidden Present101.810／92.761／173.323ms；普通interop本局只有1个共享颜色slot，不能只轮转3个allocator或删除真实wait。包含区间不相加，稀疏样本不当整局平均，160ms唯一根因和实际改善**未闭环**。
+绝区零确有成功的 DX12 DLSS Create／Evaluate，两个句柄均被记为 backend，未接入 selected 超分输入，不是游戏没开 DLSS。三局都有私有 FG 模块初始化记录，**不是未部署的普通内置 7D042E99 验收**；精确 loaded-memory SHA 未知。本轮只锁日志、分析和更新记录，不改产品、用户参数或部署。
 
-此前误用输入描述符制造36项“旧色”失败的夹具已修正，相关根因及“省一次生产复制”声明已撤回。当前24次Look resolve均为原始模型预览是另一条明确证据，不证明全部残影根因。旧日志的其它模块也不能解释用户确认只加载OptiScaler的特定会话。
-
-## 接续边界
-
-本次只整理报告和Git，未重构算法、重建、部署、改profiles或操控游戏。问题检索／独立复核按用户最新要求使用当前会话新建的**gpt-6.1-sol / high**，不再用DS；核心由主会话核实。
-
-下一步按原参数分组验SR、SR＋NR、SR＋FG、SR＋NR＋FG，每组预热5秒、采30秒，分别记源率、SDK累计区间、真实display事件及Reflex合法端点；无真实显示事件则显示率未知。持续历史关闭／开启／最终稳定分开，原神通过后星铁、ZZZ各自回归。详见[完整报告](F6-HANDOFF.md)、[诊断操作](F6-GUIDE-DIAGNOSTICS.md)与[HUD合同](FG-BRIDGE-HUD-CONTRACT.md)。
-
-`build/`还保存候选、回退、原始日志及回执，虽被Git忽略仍须保留。旧候选详情已在保存点`ea8c304`的本页及[运行状态](F6-STATUS.md)、[历史运行研究](F6-RUNTIME-REVIEW.md)留存；旧根、其它工作树不删除，不把迁移基线或旧验收冒充当前。共享研究616项CPU测试本次通过，存于主树；本轮不以Git干净或构建成功代替游戏修复。
+后续部署只按目标 DLL 实际占用处理：可写原位保留硬链接，被占用写同目录 OptiScaler.dll.next，仅记待替换；不查询或终止游戏。用户手动启动／进入场景，分别绑定新 PID／加载身份／当局日志。保留独立 SR／NR／FG、用户参数、内部 FSR 禁用和外部桥 2.4 ABI。[参考来源](../../../DLSS5_NEXT/docs/REFERENCE-REPOSITORIES.md)。

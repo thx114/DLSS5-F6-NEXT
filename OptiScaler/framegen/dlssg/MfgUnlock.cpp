@@ -730,14 +730,14 @@ unsigned int MfgUnlock::UnlockedMax()
                ? kMaxGeneratedFrames : 0;
 }
 
+bool MfgUnlock::ShouldInterceptProviderLoad()
+{
+    return AdaUnlockWanted();
+}
+
 bool MfgUnlock::Pending()
 {
-    if (!Config::Instance()->FGDLSSGAdaMfgUnlock.value_or_default() ||
-        Config::Instance()->FGDLSSGAmpereMfgUnlock.value_or_default() ||
-        State::Instance().externalFrameGeneration)
-        return false;
-    const auto& gpu = IdentifyGpu::getPrimaryGpu();
-    return gpu.vendorId == VendorId::Nvidia && gpu.nvidiaArchInfo.architecture_id == NV_GPU_ARCHITECTURE_AD100;
+    return AdaUnlockWanted() && !LastStatus().ModuleFound;
 }
 
 MfgUnlock::Status MfgUnlock::LastStatus()

@@ -365,29 +365,30 @@ bool AllowPrivateCopyFailureLog()
 }
 
 bool WaitForQueueIdle(ID3D12CommandQueue* queue, ID3D12Fence* fence, HANDLE fenceEvent, UINT64& fenceValue,
-                      bool allowCpuWait = true)
+                      InteropQueueDrainReceipt* pendingDrain = nullptr)
 {
     CallerCpuTrace::Scope callerCpuScope(CallerCpuTrace::Op::QueueIdle, queue, reinterpret_cast<uint64_t>(fence), State::Instance().frameCount);
-    if (queue == nullptr || fence == nullptr || fenceEvent == nullptr)
-        return true;
+    if (!queue || !fence || (!pendingDrain && !fenceEvent))
+        return pendingDrain == nullptr;
 
-    if(fenceValue>=UINT64_MAX-1)return false;
-    const UINT64 waitValue = ++fenceValue;
-    auto result = queue->Signal(fence, waitValue);
-    if (FAILED(result))
-    {
-        LOG_ERROR("FG/present queue idle Signal failed: {:X}", (UINT) result);
+    auto submit = [&] {
+        if (fenceValue >= UINT64_MAX - 1) return false;
+        const auto result = queue->Signal(fence, ++fenceValue);
+        if (FAILED(result))
+            LOG_ERROR("FG/present queue idle Signal failed: {:X}", (UINT) result);
+        return SUCCEEDED(result);
+    };
+    if (pendingDrain ? !pendingDrain->ReuseOrSubmit(queue, fence, fenceValue, submit) : !submit())
         return false;
-    }
-
+    const auto waitValue = fenceValue;
     const auto completed=fence->GetCompletedValue();
     if(completed==UINT64_MAX)return false;
     if (completed >= waitValue)
         return true;
-    if (!allowCpuWait)
+    if (pendingDrain)
         return false;
 
-    result = fence->SetEventOnCompletion(waitValue, fenceEvent);
+    const auto result = fence->SetEventOnCompletion(waitValue, fenceEvent);
     if (FAILED(result))
     {
         LOG_ERROR("FG/present queue idle SetEventOnCompletion failed. fence {}, completed {}, result {:X}", waitValue,
@@ -1360,20 +1361,18 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetSourceSize(UINT* pWidth, UINT* pHeight
 
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::SetMaximumFrameLatency(UINT MaxLatency)
 {
-    if (_nativeParentRoute) return _real2 ? _real2->SetMaximumFrameLatency(MaxLatency) : E_NOINTERFACE;
-    if ((!_sourceFrameLatencyOwner || _starRailF5DsTransport) && _fgSwapChain != nullptr)
-        return _fgSwapChain->SetMaximumFrameLatency(MaxLatency);
-
-    return _real2 != nullptr ? _real2->SetMaximumFrameLatency(MaxLatency) : DXGI_ERROR_DEVICE_REMOVED;
+    const auto target = _SelectFrameLatencyTarget(_ReturnAddress());
+    return framegen::latency::Forward<IDXGISwapChain2, HRESULT>(target, _real2, _fgSwapChain,
+        [MaxLatency](auto& chain) { return chain.SetMaximumFrameLatency(MaxLatency); },
+        DXGI_ERROR_INVALID_CALL, _nativeParentRoute ? E_NOINTERFACE : DXGI_ERROR_DEVICE_REMOVED);
 }
 
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetMaximumFrameLatency(UINT* pMaxLatency)
 {
-    if (_nativeParentRoute) return _real2 ? _real2->GetMaximumFrameLatency(pMaxLatency) : E_NOINTERFACE;
-    if ((!_sourceFrameLatencyOwner || _starRailF5DsTransport) && _fgSwapChain != nullptr)
-        return _fgSwapChain->GetMaximumFrameLatency(pMaxLatency);
-
-    return _real2 != nullptr ? _real2->GetMaximumFrameLatency(pMaxLatency) : DXGI_ERROR_DEVICE_REMOVED;
+    const auto target = _SelectFrameLatencyTarget(_ReturnAddress());
+    return framegen::latency::Forward<IDXGISwapChain2, HRESULT>(target, _real2, _fgSwapChain,
+        [pMaxLatency](auto& chain) { return chain.GetMaximumFrameLatency(pMaxLatency); },
+        DXGI_ERROR_INVALID_CALL, _nativeParentRoute ? E_NOINTERFACE : DXGI_ERROR_DEVICE_REMOVED);
 }
 
 void Dx11wDx12SC::_RefreshFrameLatencyFlags()
@@ -1390,21 +1389,23 @@ void Dx11wDx12SC::_RefreshFrameLatencyFlags()
 
 HANDLE STDMETHODCALLTYPE Dx11wDx12SC::GetFrameLatencyWaitableObject(void)
 {
-    const auto caller = StreamlineHooks::FrameLatencyCaller(_ReturnAddress());
+    const auto target = _SelectFrameLatencyTarget(_ReturnAddress());
+    return framegen::latency::Forward<IDXGISwapChain2, HANDLE>(target, _real2, _fgSwapChain,
+        [](auto& chain) { return chain.GetFrameLatencyWaitableObject(); }, nullptr, nullptr);
+}
+
+framegen::latency::Target Dx11wDx12SC::_SelectFrameLatencyTarget(void* returnAddress)
+{
+    const auto caller = StreamlineHooks::FrameLatencyCaller(returnAddress);
     const bool sdkLoaded = StreamlineHooks::DlssgPluginLoaded();
     framegen::latency::Flags flags;
     { std::lock_guard lock(_frameLatencyMutex);flags=_frameLatencyFlags; }
     const auto target = framegen::latency::Select(flags, caller, sdkLoaded,
         _real2 != nullptr, _fgSwapChain != nullptr, _nativeParentRoute);
     StreamlineHooks::ReportFrameLatencyAccess(this, flags, caller, sdkLoaded, target);
-    if (target == framegen::latency::Target::None) return nullptr;
-    if (target == framegen::latency::Target::Native) return _real2->GetFrameLatencyWaitableObject();
-    if (target == framegen::latency::Target::Provider) return _fgSwapChain->GetFrameLatencyWaitableObject();
-    if (_nativeParentRoute) return _real2 ? _real2->GetFrameLatencyWaitableObject() : nullptr;
-    if ((!_sourceFrameLatencyOwner || _starRailF5DsTransport) && _fgSwapChain != nullptr)
-        return _fgSwapChain->GetFrameLatencyWaitableObject();
-
-    return _real2 != nullptr ? _real2->GetFrameLatencyWaitableObject() : nullptr;
+    const auto preserved = !_nativeParentRoute && (!_sourceFrameLatencyOwner || _starRailF5DsTransport) &&
+        _fgSwapChain != nullptr ? framegen::latency::Target::Provider : framegen::latency::Target::Native;
+    return framegen::latency::Resolve(target, preserved);
 }
 
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::SetMatrixTransform(const DXGI_MATRIX_3X2_F* pMatrix)
@@ -2813,31 +2814,44 @@ bool Dx11wDx12SC::_WaitForInteropCopyOnPresentQueue()
 
 bool Dx11wDx12SC::_WaitForCopyQueueIdle()
 {
+    auto* entered = _nativeParentRoute ? &_copyDrainEntered : nullptr;
+    if (entered && *entered) return false;
+    if (entered) *entered = true;
+    struct DrainScope { bool* entered; ~DrainScope() { if (entered) *entered = false; } } drain{entered};
+    // Only the revoked child under the native lifecycle lock can retry the
+    // same drain. Normal resize and teardown always establish fresh markers.
+    const bool recovery = _nativeParentRoute && _childRecoveryEntered;
+    if (_nativeParentRoute && !recovery) { _recoveryCopyDrain = {}; _recoveryPresentDrain = {}; }
     if ((_sourceCopyUncertain.load(std::memory_order_acquire) || native::nrfilter::HasUncertainCopy(_nrCopyAllocatorFenceValues))) return false;
     const bool haveObjects=!_copyCommandLists.empty() || !_nrCopyCommandLists.empty() ||
         !_sharedDx11BackBufferCopies.empty() || !_openedDx11BackBuffers.empty() || _interopPresentQueue!=nullptr;
     if(!haveObjects)return true;
     if(!_dx12CommandQueue || !_copyFence || !_copyFenceEvent ||
        !_dx11Context4 || !_dx11Fence || !_dx12SharedFence)return false;
-    // Cover pending DX11 copies even when the ordinary Present aborted before
-    // its handoff; a prior allocator value alone cannot witness that work.
-    if(!_WaitDx11ThenDx12())return false;
-    if((_nativeParentRoute || _sourceFrameLatencyOwner) && _copyFenceValue>=UINT64_MAX-1)return false;
-    // R846 native color signals now belong to the retained presenting queue.
-    // Before advancing the same copy-fence timeline from the legacy producer
-    // queue during lifecycle drain, order it after the exact last color signal.
-    // Otherwise a higher value could falsely retire still-live copy allocators.
-    if (_nativeParentRoute && _interopPresentQueue &&
-        GenshinBridgeFg::Identity(_interopPresentQueue.Get()) != GenshinBridgeFg::Identity(_dx12CommandQueue) &&
-        _lastInteropCopyFenceValue &&
-        FAILED(_dx12CommandQueue->Wait(_copyFence, _lastInteropCopyFenceValue))) return false;
-    const auto waitValue=++_copyFenceValue;
-    if(FAILED(_dx12CommandQueue->Signal(_copyFence,waitValue)))return false;
-    _lastInteropCopyFenceValue=waitValue; // remember the ACTUAL submitted value before waiting
+    auto submitCopyDrain = [&] {
+        // If the copy epoch changed, re-establish both markers in order.
+        if (recovery) _recoveryPresentDrain = {};
+        // An aborted Present can leave DX11 writes without a handoff. The
+        // idle marker must cover those too, not just earlier allocator values.
+        if (_copyFenceValue >= UINT64_MAX - 1 || !_WaitDx11ThenDx12()) return false;
+        // Do not advance a shared timeline from a different queue until the
+        // exact last color submission on the retained queue is ordered first.
+        if (_nativeParentRoute && _interopPresentQueue &&
+            GenshinBridgeFg::Identity(_interopPresentQueue.Get()) != GenshinBridgeFg::Identity(_dx12CommandQueue) &&
+            _lastInteropCopyFenceValue &&
+            FAILED(_dx12CommandQueue->Wait(_copyFence, _lastInteropCopyFenceValue))) return false;
+        const auto waitValue=++_copyFenceValue;
+        if (FAILED(_dx12CommandQueue->Signal(_copyFence,waitValue))) return false;
+        _lastInteropCopyFenceValue=waitValue;
+        return true;
+    };
+    if (recovery ? !_recoveryCopyDrain.ReuseOrSubmit(_dx12CommandQueue, _copyFence, _copyFenceValue, submitCopyDrain)
+                 : !submitCopyDrain()) return false;
+    const auto waitValue = _copyFenceValue;
     auto completed=_copyFence->GetCompletedValue();
     if(completed==UINT64_MAX)return false;
     if(completed<waitValue) {
-        if(_childRecoveryEntered)return false; // retry once on a later Present, never sleep here
+        if (recovery) return false; // poll this same marker on a later Present
         if(FAILED(_copyFence->SetEventOnCompletion(waitValue,_copyFenceEvent)))return false;
         CallerCpuTrace::Scope copyIdleCpu(CallerCpuTrace::Op::CopyIdleWait,this,reinterpret_cast<uint64_t>(_handle),
             State::Instance().frameCount,UINT64_MAX,waitValue,completed,false,true);
@@ -2851,10 +2865,13 @@ bool Dx11wDx12SC::_WaitForCopyQueueIdle()
             if(FAILED(_interopPresentQueue->GetDevice(IID_PPV_ARGS(&device))) ||
                FAILED(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&_presentRetirementFence))))return false;
         }
-        if(!_presentRetirementEvent)_presentRetirementEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);
-        if(!_presentRetirementEvent || !WaitForQueueIdle(_interopPresentQueue.Get(),_presentRetirementFence,
-            _presentRetirementEvent,_presentRetirementValue,!_childRecoveryEntered))return false;
+        if (!recovery && !_presentRetirementEvent)
+            _presentRetirementEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if ((!recovery && !_presentRetirementEvent) ||
+            !WaitForQueueIdle(_interopPresentQueue.Get(), _presentRetirementFence,
+                _presentRetirementEvent, _presentRetirementValue, recovery ? &_recoveryPresentDrain : nullptr)) return false;
     }
+    if (recovery) { _recoveryCopyDrain = {}; _recoveryPresentDrain = {}; }
     for(auto& value:_copyAllocatorFenceValues)value=0;
     for(auto& value:_nrCopyAllocatorFenceValues)value=0;
     _lastInteropCopyFenceValue=0;
@@ -3040,6 +3057,8 @@ HRESULT Dx11wDx12SC::_PresentNativeParent(UINT sync,UINT flags,const DXGI_PRESEN
 
 void Dx11wDx12SC::_RevokeNativeChild(bool recoverableDisplayChange)
 {
+    _recoveryCopyDrain = {};
+    _recoveryPresentDrain = {};
     // Terminal failure is sticky. A display setter cannot launder unknown GPU
     // completion, stale provider ownership, or an unsupported Present thread.
     if (_childDisplaySerial == UINT64_MAX) recoverableDisplayChange = false;
@@ -3095,7 +3114,7 @@ bool Dx11wDx12SC::_TryRecoverNativeChild()
         return !_parentDetached && _childRevoked && _childRecoveryAllowed &&
             _childDisplaySerial == displaySerial;
     };
-    _childRecoveryAttempted = true; // at most one actual drain attempt per update
+    _childRecoveryAttempted = true; // at most one probe this Present
     auto* provider = dynamic_cast<DLSSG_Dx12*>(_visibleProvider);
     if (!provider || !provider->SwapchainContext()) return false;
     auto execution = provider->GuardExecution(FGExecutionScope::Lifecycle);

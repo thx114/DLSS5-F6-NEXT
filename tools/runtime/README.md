@@ -2,7 +2,11 @@
 
 `Deploy-F6.ps1` 将已构建 DLL 流写到正式文件原对象，保留 runtime hardlink，并备份原字节；构建、部署和实际游戏验收分别记录。
 
+部署不查询游戏进程，只尝试独占打开目标DLL。目标被实际占用时，将候选写至正式DLL旁的 `OptiScaler.dll.next`，校验完整字节后发布，返回 `STAGED_NEXT_FILE_IN_USE`、`PendingArtifact`、SHA256及 `InstalledChanged=false`。这是待替换，不更新正式部署回执；权限、磁盘等其它错误仍失败。占用解除后，用候选或 `.next` 作为 `-Artifact` 再执行同一脚本原位部署，保持正式文件硬链接；不自动重命名替换。部署回归：`pwsh -NoProfile -File ./tools/tests/Test-F6Deployment.ps1`，仅操作独立夹具，不修改正式安装。
+
 `Get-F6RunEvidence.ps1` 从已关闭或保存的日志提取版本、PID、DX11/DX12 输入日志、NR cadence、FG 深度标签、ZZZ 入口归属/SDK source、原神 SDK 输入/物理输出/owner 显示及 GPU 完成字段。它拒绝版本/PID 不符及读取期间变化的文件，输出保留原行号和最后若干样本。计数均为可能限频的日志行数，不是总调用数或成功数；owner shown 也不证明生成帧像素。Streamline Evaluate 不证明 F6 输入，queue-ordered history 不等于 GPU 完成，interval 不可相加。画面与性能验收另行进行。
+
+`-Latency` 将每条有效 Reflex 报告拆为报告开始至队列入口 `PreQueueReportMs`、GPU 前队列、GPU 区间、GPU 结束至报告末尾四段；四段重建同一报告总长。按 PID、frame 和六个端点去重，`DuplicateReflexRows` 保留重复计数。启停边界与稳态应分开看，报告总长不能直接称作 GPU 排队。解析回归：`pwsh -NoProfile -File ./tools/tests/Test-F6LatencyEvidence.ps1`。
 
 ```powershell
 pwsh -NoProfile -File ./tools/runtime/Get-F6RunEvidence.ps1 `
