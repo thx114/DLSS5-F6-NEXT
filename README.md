@@ -1,4 +1,4 @@
-# DLSS5_NEXT
+# F6 NEXT
 
 2026-11-12：**FG 排队锁环修复、退出保护、完整英文已集成；内置 FG 候选 ADFF3486 构建通过，未部署。HDR 暂缓。** 最新事实见[当前状态](docs/CURRENT-STATE.md)与[交接第0节](docs/F6-HANDOFF.md)。
 
