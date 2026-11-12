@@ -1,12 +1,10 @@
 # DLSS5_NEXT
 
-更新：2026-11-12。**绝区零已按最新用户指令独立改用 ASI，原神、星铁保持内置。** 新绝专属 `local/F6-ZZZ-ASI`／DLL283B6B07／源码97a2cad已构建、定向验证和隔离部署；runtime为`A5009284E9948E8D`，真实加载与卡顿改善待重启启动器及绝区零验收，HDR暂缓。详见[产品当前状态](../DLSS5_NEXT-workers/f6-rewrite/docs/CURRENT-STATE.md)和[完整交接](../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)。
+更新：2026-11-12。**原神、星铁、绝区零均已选择 `local/F6-ASI`，三游戏隔离 runtime 已部署菜单输入候选 `6D377DD4`／源码 `3665de5`。ASI 仅负责 MFG 解锁，F6 保留 SR／NR／FG、`External=false` 和各游戏 NR／6×请求。冷开菜单点击与周期卡顿仍待实机验收，HDR 暂缓。**
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`；本根保留导航／迁移基线。启动器仅改nap_cn一个构建选择键，其他两游戏仍`official/F6`；共享1ABD9AFD四DLL原硬链接、233项保护文件、全局state和旧profiles未改。绝专属配置`External=false`，两个内置解锁关闭，既有ASI171AC18D从独立插件目录加载；SR／NR、原6×及NR版本保持。原FSR桥CC301B42未动。
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`；本根仅导航／迁移基线。新 DLL、三 runtime 硬链接和 1589 项升级前保护文件已核验，旧共享正式部署、旧绝专属包／runtimes、全局 state、原配置及回退保留。菜单输入隔离、单次平台采样和可见性 policy 通过真实 ImGui 受控回归，不能替代游戏画面或性能验收。须从托盘完整退出启动器后重启，CLI 写数据库不刷新现有 GUI 缓存。
 
-新生产ASI在post-attach worker初始化，FG有界等待保留SR／NR独立；Gate28、loader context5、options1132、builtin41、Reflex19、7种无害Windows loader与16种有效SL请求组合通过，2431输入和948导出核验，独立gpt-6.1-sol/high终审无确定blocker。未操控或查询游戏，不称卡顿已修好。单游戏回执`current-game-deployment-nap_cn.json`与共享`current-deployment.json`分开；不把build/out新文件冒充共享已部署。
-
-旧recording修复8df406c及未部署候选0C7D6709、旧日志和回退保留。GitHub目标仍`thx114/DLSS5-F6-NEXT`。新证据为产品`build/repair-20261112/zzz-asi-*`，详细约束以产品当前状态为准。
+详见[产品当前状态](../DLSS5_NEXT-workers/f6-rewrite/docs/CURRENT-STATE.md)和[完整交接](../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)。
 
 | 入口 | 用途 |
 |---|---|
@@ -27,10 +25,10 @@ pwsh -NoProfile -File ./tools/tests/Run-CommonCoreTests.ps1
 
 需要 PowerShell 7、MSVC v143；本机 MSBuild 为 `D:/VS2022BuildTools/MSBuild/Current/Bin/amd64/MSBuild.exe`。默认 Release x64、最多8个编译工作进程，可传 `-Jobs N`；`-Clean`仅在明确需要清中间件时使用。产物 `build/out/OptiScaler.dll`、UTF-8日志 `build/msbuild.log`；失败返回真实退出码。普通DLL构建使用现有嵌入shader头，不必运行[Look生成工具](tools/shaders/README.md)。
 
-本根的同名 `build.ps1` 仍可构建迁移基线，但结果不能当作F6最新候选。本次仅新增绝区零隔离ASI部署；共享正式F6和其他游戏未改。实际加载、画面和性能仍需分别核验。
+本根的同名 `build.ps1` 仍可构建迁移基线，但结果不能当作F6最新候选。本次三游戏均选择隔离ASI包，菜单输入候选已部署；共享正式F6保留。实际加载、冷开点击、画面和性能仍需分别核验。
 
 ## 资料保留
 
 `OptiScaler/` 与 `external/` 保持同级；[LICENSE](LICENSE)、[Licenses/](Licenses/)及各依赖许可证保留。`build/`被Git忽略，但内有候选、回退、运行证据和回执，不能整目录当临时文件删除。
 
-旧根 `D:/DATA/Documents/ChatGPT/DLSS F5 NEXT` 与其它登记工作树保留；[docs/history/](docs/history/)按原历史上下文理解。导航和产品分别保存在 `codex/navigation-20261112`、`codex/f6-rewrite`，推送目标为用户授权的 `thx114/DLSS5-F6-NEXT`；远端提交身份见产品树 `build/repair-20261112/repair-current-git.json`。启动器历史接口见[CLI.md](CLI.md)。
+旧根 `D:/DATA/Documents/ChatGPT/DLSS F5 NEXT` 与其它登记工作树保留；[docs/history/](docs/history/)按原历史上下文理解。导航和产品分别保存在 `codex/navigation-20261112`、`codex/f6-rewrite`，推送目标为用户授权的 `thx114/DLSS5-F6-NEXT`；远端提交身份见产品树 `build/repair-20261112/menu-input-git.json`。启动器历史接口见[CLI.md](CLI.md)。
