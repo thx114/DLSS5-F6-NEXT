@@ -1,47 +1,31 @@
 # F6 项目完整交接报告
 
-## 0. 恢复续接完成：2026-11-12 当前候选
+## 0. 当前交接：FG 排队／退出／英文，HDR 暂缓
 
-### 最新用户反馈与 ZZZ 日志
+更新：2026-11-12。**FG 排队锁环修复、退出入口保护、全界面英文已完成源码和离线验证；Release x64 候选 ADFF3486 已构建，未部署。HDR 按用户要求暂缓。**
 
-- F6 联合部署：用户要求“一起部署”后，2026-11-12 13:52（UTC+08）已原位部署 `5265915DF9DC34951F10E3D60CB11819EADB5FAAABD427F7F4DDA846B1360238`，正式 DLL 和原神／星铁／ZZZ 三个缓存均核验一致，原文件身份和硬链接保留。FSR 桥仍为 CC301B42；2,535 项配置／插件等受保护文件哈希不变。旧安装 8FCB8632 备份为 `build/rollback/OptiScaler-20261112T055228736-54ed1a92ea794805b190d79fb2f46ff2.dll`；旧部署回执另存 `build/f6-deploy-5265915D-previous-deployment.json`，完整核验见 `build/f6-deploy-5265915D-verified.json` 和 `build/current-deployment.json`。新版本内置 FG，保留但跳过残留 MFGUnlocker.asi；尚未观测新局加载或效果，不将部署当作 ZZZ／FG／性能验收。
-- FSR 桥：按用户后续要求，当前会话新建子智能体获取 Aizawa 上游固定提交 `1865c585e02679d38881b9020611dfee8d44a9de`，隔离构建并部署到启动器实际选择的 `D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/temp3/Dx11FsrBridge (2).dll`。新 SHA256 `CC301B42EC7AA31059B9FCD10B29B3915B9EB21DBE363D5F431ED9201CB904A1`；旧桥 `FA27D3D7` 和原 INI 已备份，文件身份与 2,531 项受保护文件哈希保持，主会话重新独立核对全部哈希一致。三项无 GPU 测试及独立诊断 family 测试通过，不代表游戏通过。审计与回退见 [桥更新记录](../../fsr-bridge-upstream-1865c585/AUDIT.md)，机器指针 `build/current-bridge-deployment.json`；该操作未替换 F6 DLL。
-- 部署前用户反馈崩铁 OK、绝区零仍未检测到 DLSS；这一反馈不自动认证新版本内置 FG、精确 FG 显示率或排队性能。ZZZ 旧局日志显示旧 F6 实际调用 `MFGUnlocker.asi`；5265915D 现已部署，待新局游戏验证。
-- ZZZ PID180352 的启动器固定日志已保存为 `build/repair-20261112/zzz-180352.log`，SHA256 `9982F1F00CC16F3014D2D429B8B2C8AEAE696B1F1C0DE186FD73C4D4E22D7052`，解析结果见同目录 `zzz-180352-evidence.json`。游戏创建了两个 DLSSContext，Create／Evaluate 均记录 `owner=backend`，selected 记录为零；旧日志没有 origin/caller，无法判断具体来源拒绝分支。日志显示私有测试模块初始化，不能作为新候选实测。
-- 部署前正式安装与三个游戏缓存的磁盘 DLL 均为 `8FCB8632011D46FC4FC87075516E7441F966F676A6A7CEFFD8A741AB5F6ACFA6`，四路径为硬链接，历史快照 `build/repair-20261112/zzz-180352-installed-identity.json` 保留。现安装已按上文更新为 5265915D，实际 loaded-memory SHA 仍未知。1,245 项声明输入重新验 hash 不变。
-- 新候选已有游戏模块识别和同线程、同 canonical command-list 的游戏 Streamline scope fallback；独立复核未发现必然失败的代码缺陷，但这条路径不覆盖 scope 外、不同线程或其他 command-list，真实游戏是否命中尚未知。WARP caller/Router 测试不是 Streamline 到实际 SDK 的端到端验证。
-- 独立复核发现冻结清单遗漏 `OptiScaler/framegen/dlssg/FgDepthContract.h`，其中 `NativeObject`／`SameOwner` 参与来源和设备判断。该文件当前 Git 无修改，两个 helper 与目前保存的生成测试夹具一致，但不能单凭这些事实认证其构建时字节；补充复核见 `build/repair-20261112/zzz-180352-review.json`，不改写原始回执。5265915D 现已部署，是否修复 ZZZ 仍需绑定新局验证。
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`；产品源码提交 `b1ee21020a58`。导航树为 `D:/CODE/DLSS5_NEXT`，分支 `codex/navigation-20261112`。GitHub 目标 `thx114/DLSS5-F6-NEXT`，本轮修复单独提交，远端身份以本轮 Git 回执核验。
 
-用户要求继续中断工作后，已完成源码修复、独立静态复核、定向回归及普通内置 FG 构建；**5265915D 现已按用户授权部署，未实机验证。** 本节覆盖下方较早的暂停、未部署和 7D 阶段表述，历史证据保留原身份。
+| 项目 | 当前事实 |
+|---|---|
+| 最新用户实测 | ZZZ 关闭 FG 后周期性卡顿消失，仍观察到 GPU 等待。此反馈针对旧部署，不代表新候选通过 |
+| DLSS 接入 | 固定日志 `build/repair-20261112/zzz-186740.log` 已出现 `owner=selected`；不再沿用旧 PID180352 的 backend-only 结论 |
+| FG 修复 | 无关 native list 的 Reset/Execute 通知先以独立短锁核对身份，避开 Present 持 continuity 等待 SDK worker 的锁环；相关／未知 list 仍走原检查，保留真实 queue/fence/Reset 退休门 |
+| 退出保护 | 进程寿命 pin、attach 缓存 loader probe、退出／loader context 的 owner/NGX/DLSSG/重配／child 退休入口拒绝；拒绝保留完整对象，并释放当前线程 CPU lease。不支持热卸载，不取消已在途 SDK 调用 |
+| 界面英文 | 新增354词条，共2013；覆盖监视、NR持续调试、弹窗、通知与动态状态。已显示通知随语言切换，用户路径、格式参数和 ImGui ID 保留；视觉布局未实测 |
+| HDR | 暂缓；本轮 HDR helper、测试及色彩状态改动已撤出。留存 `build/repair-20261112/hdr-deferred-20261112.zip`，不进入候选 |
+| HUDless/UI | 桥固定提交1865c585没有独立HUD-less/UI发布ABI；不能用SR颜色或reactive/transparency mask冒充；[真实输入契约](FG-BRIDGE-HUD-CONTRACT.md)保持 |
+| 新候选 | `build/out/OptiScaler.dll`；SHA256 `ADFF3486F21C52FCD0FE72D73A14BB3AFA93E599A2A73AD72DCC7EAD1F790372`；33,985,536 B，内置FG，无新增ASI，Release x64构建通过；编译／链接警告保留在日志，不称零警告 |
+| 身份验证 | 2425项输入（含FgDepthContract.h与vendored依赖）构建前后不变；生成版本头另存；53必要NGX导出及全部948导出名称／序号核验一致 |
+| 定向验证 | 16组通过，含105项清理接线、真实Windows生命周期21项、wrapper Release28项、FG Hook55场景／1873项、NGX生命周期50项、英文6061项／6负控、native guides29项及旧缺陷负控、ZZZ16套／107接线、12套核心CPU/WARP；详见本轮tests.json |
+| 正式部署 | 保持5265915DF9DC34951F10E3D60CB11819EADB5FAAABD427F7F4DDA846B1360238；本轮不写正式DLL或profiles，不查询／操控游戏 |
+| FSR桥 | 保持已部署 `CC301B42EC7AA31059B9FCD10B29B3915B9EB21DBE363D5F431ED9201CB904A1`，本轮未改 |
 
-### 目标与实际状态
+本轮回执平铺在 `build/repair-20261112/repair-current-{source,tests,review,artifact}.json` 及对应日志；当前构建指针 `build/current-{artifact,build,tests}.json` 指新候选，`build/current-deployment.json` 仍指旧安装。旧5265915D候选另存 `build/rollback/repair-pre-5265915D.dll`，旧回执保留。
 
-- 目标是排队延迟、绝区零已开启 DLSS 却提示未接入、星铁只有 NR 没有 FG；FG 使用内置实现，不使用 ASI。
-- 唯一产品写树为 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`，HEAD `9ab9686`。工作树有大量既有未提交和未跟踪内容，不 reset、clean 或覆盖；本根 `D:/CODE/DLSS5_NEXT` 仅为迁移基线和导航。
-- 普通内置 FG 版本 `build/out/OptiScaler.dll` 的 SHA256 为 `5265915DF9DC34951F10E3D60CB11819EADB5FAAABD427F7F4DDA846B1360238`，33,949,696 B，Release x64 构建成功、已部署、未实机验证。旧 7D 候选字节及回执保留于 `build/rollback/input-integration-7D042E99/`。
-- `build/current-artifact.json`、`current-build.json` 和 `current-tests.json` 对应新版本；`build/current-deployment.json` 已更新为 5265915D 实际部署核验，旧安装回执另存，旧字节已备份；进程内字节未知。
+游戏加载身份、FG实际显示率、GPU等待／周期卡顿改善、退出正常性、英文布局仍需用户在新版本中分别验证。离线检查和构建成功不代替这些验收。FG使用内置实现，跳过残留MFGUnlocker.asi；不修改用户配置或跨游戏借用结论。
 
-### 候选之后的源码与验证
-
-- `OptiScaler/hooks/FG_Hooks.cpp` 将符合条件的星铁源帧纳入既有 token lease 锁外 pacing，原 7D 版本存于 `build/repair-20261112/FG_Hooks.cpp.before`。已独立静态复核，未发现确定阻断；lease 预约失败、真实 SDK 回调、重复 Present 和显示节奏仍需实机验证。旧日志不能证明此改动改善延迟。
-- `OptiScaler/hooks/ngx/NativeDx12Hooks.cpp`、`NativeDx12Router.h` 和 `OptiScaler/inputs/NVNGX_DLSS_Dx12.cpp` 调整 Create／Evaluate／Shutdown 的设备准入、持有及 COM 身份比较；相应更新设备、路由和 release 测试。目标是消除设备身份与路由不一致，具体 ZZZ 拒绝分支仍未由旧日志确定。
-- 本轮进一步修复 native 调用与 Shutdown 的准入竞态、合法 Shutdown1 被无关设备拒绝、应用回调绕过生命周期准入、部分 Shutdown 释放的路由记录、已登记句柄 worker 重入等待、内部 replay 和持久参数销毁的调用来源边界。准入锁不跨厂商调用；有冲突的 selected／同句柄调用及时拒绝，不等待厂商正在等待的 worker。真实 queue／fence／Reset 退休门保留。
-- 最终证据在 `build/repair-20261112/verification-next/`：`source.json` 冻结 1,245 项声明输入（不含生成版本头和全部外部传递依赖），`review.json` 记录本会话 `gpt-6.1-sol`／`high` 独立静态复核及剩余边界，`tests/tests.json` 的 17 组检查通过。设备 66 项、Router 15 套、Release 7 套、生命周期 40 项、caller 49 项、pacing／FG hook／admission 与 11 套核心 CPU／WARP 等通过；3 项独立负控及核心套件内负控按预期检出。shared 全量段明确跳过，未执行厂商推理或游戏；Streamline proxy 解包仍缺动态覆盖。
-- 构建和核验日志为该目录的 `build.log`、`msbuild.log`；确认实际链接 `MfgUnlock.obj`，无私有模块／旧 ASI 对象，53 个必要 NGX 导出齐全，948 个导出名称和序号与旧普通候选一致，PE 版本核验通过，构建前后输入指纹一致。现有编译／链接警告保留，不称零警告。该目录 `previous-*` 保留原候选回执及旧 MSBuild 日志；旧 `build/repair-20261112/tests.json` 不改写为已独立复核。
-
-### 运行证据与未知项
-
-- 固定旧局详见 `build/runtime-tests-20261112.md`：星铁大世界源入口约 24.67 Hz，某报告 GPU 前排队 69.117 ms、GPU 区间 37.315 ms；副本也有排队尖峰。两局有 FG Dispatch 成功，但实际生成图像、显示率和唯一根因未知；星铁旧 hook 错误 8 根因亦未知。
-- ZZZ 旧局 PID 197852 确有 DX12 DLSS Create／Evaluate，F6 当时将其记为 backend；旧日志没有足够信息定位具体拒绝分支。这些局有私有测试模块初始化记录，不能作为 7D 候选或当前源码的实测。
-
-### 后续验收与边界
-
-1. F6 5265915D 和桥 CC301B42 已完成磁盘部署核验；下一步由用户启动新局，分别验进程实际加载、画面及性能，不能用旧局反馈代替。
-2. 用户手动启动游戏，每局绑定新 PID、加载 DLL 身份和固定日志，分别验证 ZZZ 输入、星铁内置 FG 输出与排队延迟。不要以旧 PID、旧日志或 SDK 接受配置代替结果。
-3. 重点观察冲突准入返回失败后的恢复、部分 Shutdown 失败、真实模块委托及 SDK worker 回调；Init 与普通 native 调用并发的厂商契约、参数对象返回后的直接方法调用仍未验证。保留证据不足项，不宣称实际 FG 或延迟通过。
-4. 如需继续改源码，重新冻结输入并复核／重跑受影响测试；不要直接运行固定写旧证据的 `build/record-input-integration.py`，也不要覆盖本轮 `verification-next` 回执。三个本会话新建智能体已结束，不调用旧会话实例。
-
-始终保留用户配置和独立 SR／NR／FG 语义；资源退休必须由真实所属 queue／fence 和必要 Reset 证明，不删拒绝条件、不借旧帧、不扩大池子。本轮按用户要求部署 F6 与桥，未改 profiles 或旧根，不清理 `build/`，不操控游戏。
+以下1–11节保留历史候选与调查原身份；旧路径、部署状态和验收结论不能覆盖本节。
 
 ## 1. 7D 候选阶段：2026-11-12 历史状态
 
@@ -393,4 +377,4 @@ pwsh -NoProfile -File ./tools/runtime/Deploy-F6.ps1 -Artifact $candidate.Artifac
 
 ## 12. 新会话续接提示
 
-> 先读第 0 节。用户要求“一起部署”后，F6 内置 FG 修复版 5265915D 与桥 CC301B42 已部署，待新局实测。正式 F6 与三个游戏缓存 SHA 一致、原文件身份／硬链接不变，旧安装 8FCB8632 已备份，2,535 项保护文件不变。唯一写树 D:/CODE/DLSS5_NEXT-workers/f6-rewrite，HEAD 9ab9686，保留全部未提交内容。FG 使用内置实现、跳过残留 MFGUnlocker.asi。后续分别验 ZZZ 输入、星铁内置 FG 输出与排队改善，不能用旧局反馈或 SDK 接受代替实际结果。
+> 先读第0节。当前源码提交b1ee21020a58，候选ADFF3486已构建、未部署；正式保持5265915D，桥保持CC301B42。用户已确认ZZZ关闭FG后卡顿消失，旧186740日志已有selected接入；新锁环修复和退出保护尚无游戏验收。HDR暂缓，独立HUDless/UI缺桥输入，不伪造标签。英文与通知语言切换已补齐，视觉布局待验。只在产品写树继续；保留所有真实queue/fence/Reset门、用户配置和旧证据。构建与安装回执分开，后续不查询或操控游戏；部署须另按任务授权与实际DLL占用处理。
