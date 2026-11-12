@@ -15,7 +15,7 @@
 |---|---:|---:|---:|
 | `external/` 体积 | **147,410,233 B（140.58 MiB）** | **35,714,743 B（34.06 MiB）** | **−111,695,490 B（−106.53 MiB，−75.8%）** |
 | `external/` 文件数 | **3287** | **679** | **−2608** |
-| 子目录数 | 19 | **18**（`RTX40MFG-Unlock` 空目录移除） | −1 |
+| 子目录数 | 19 | **18**（历史空目录移除） | −1 |
 
 > 最终 34.06 MiB 高于旧报告预期的 ~30.5 MiB：因为按 Lead 约束**保留了 26 个第三方 LICENSE/NOTICE/版权文件**，且**未执行旧报告的 B 级（Vulkan-Hpp 未引用头 3.72 MiB）激进删除**——B 级不在本次批准范围内，全部保留。此差异是安全侧保守结果，非遗漏。
 
@@ -29,7 +29,6 @@
 | 2 | vulkan | 32,019,050 | 18,215,166 | **13,803,884** | 79 | 60 | 删 `registry/` `tests/` |
 | 3 | FidelityFX-SDK-v2 | 30,571,048 | 146,983 | **30,424,065** | 743 | 13 | 删 `Kits/` 非许可内容 + `Samples/` + `docs/` 非许可内容 |
 | 4 | xess | 4,522,209 | 220,651 | **4,301,558** | 393 | 25 | 删 `doc/` `samples/`（保留许可） |
-| 5 | RTX40MFG-Unlock | 0 | —（目录移除） | 0 | 0 | 0 | 空目录，`rmdir` |
 | — | 其余 14 库 | — | — | **0** | — | — | **完全未动** |
 | | **合计** | **147,410,233** | **35,714,743** | **111,695,490** | **3287** | **679** | |
 
@@ -89,8 +88,8 @@
 **删除**：`doc/`（2,828,756 B / 275 文件）、`samples/` 主体（1,473,942 B / 94）。
 **保留**：`inc/{xess,xell,xess_fg}/`、`lib/{libxess,libxess_dx11,libxess_fg,libxell}.lib`（4 个 .lib 与源码引用一一对应）、`bin/`（含 `basic_sample_shaders/`，PostBuild `copy bin\*.dll` 目标目录，**目录结构保留**）、`LICENSE.txt`、`third-party-programs.txt`、`README.md`、`SECURITY.md`，以及 **`samples/LICENSE.md`（1,140 B，MIT / Sascha Willems 版权声明，删除 samples 时单独上提保留）**。
 
-### 2.5 RTX40MFG-Unlock
-空目录（0 文件、不在 git 索引），`MfgUnlock` 逻辑实现在 `OptiScaler\OptiScaler\Config.cpp`，与本目录无关。已用 `rmdir`（非递归）移除，确认目录内无内容。
+### 2.5 历史空目录
+历史空目录（0 文件、不在 git 索引）。已用 `rmdir`（非递归）移除，确认目录内无内容。
 
 ---
 

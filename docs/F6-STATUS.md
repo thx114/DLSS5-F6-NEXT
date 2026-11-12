@@ -1,10 +1,12 @@
-# F6 开发、部署与测试状态（已恢复）
+# F6 开发、部署与测试状态（2026-11-04 历史快照）
+
+本页“当前／本次”和 goal 状态均指当时阶段，不作为现行任务、部署或子智能体指令。当前产品及部署身份见[当前状态](CURRENT-STATE.md)和[产品交接入口](F6-HANDOFF.md)。
 
 **2026-11-04 用户已恢复持续开发、分派编码、统一构建部署与三游戏验证；长期 goal 为 active。** 暂停时的完整快照见根 [HANDOFF.md](../HANDOFF.md)。本次恢复轮次 1，每完成 10 轮依据实际提交与运行效果重新评估实现方案；服务错误和重复等待不计作已完成开发轮次。
 
 接手实测：主树保存点 `726430b`、产品及正式 DLL `ed7e598` / 34,816,000 B，二者 SHA256 相同，正式位与三游戏 cache 的四个硬链接完整，接手时三游戏与编译进程数均为 0。当前 Lead 执行会话实测**未提权**，交接时 DSH 已提权的结论不适用于当前会话。恢复后尚未重新构建、部署或运行游戏。
 
-当前三个互不冲突任务：Sol 在 `D:/CODE/DLSS5_NEXT-workers/genshin-output` 完成原神实际 SDK output stream/queue-tail/owner reveal 生命周期；Sol 在 `D:/CODE/DLSS5_NEXT-workers/nr-detail` 核查并修复三游戏 NR 深度、相邻历史与细节保留的确证缺陷；DeepSeek 只读定位 ZZZ PID61120 日志断点。星铁现有 adamfg/F5-DS 式 FG 保持独立，GIMI/BeforeSR 次优先。Lead 是唯一集成、构建与游戏操作 owner。
+当前三个互不冲突任务：Sol 在 `D:/CODE/DLSS5_NEXT-workers/genshin-output` 完成原神实际 SDK output stream/queue-tail/owner reveal 生命周期；Sol 在 `D:/CODE/DLSS5_NEXT-workers/nr-detail` 核查并修复三游戏 NR 深度、相邻历史与细节保留的确证缺陷；DeepSeek 只读定位 ZZZ PID61120 日志断点。星铁现有 F5-DS 式独立 FG 保持独立，GIMI/BeforeSR 次优先。Lead 是唯一集成、构建与游戏操作 owner。
 
 两名 Sol 首次因 `429 Too Many Requests` 终止；Lead 已核工作树并向原会话发送继续指令，未增加重复写者。原神已有合并提交 `b904cae`（`2384a45` + 主树 `726430b`），NR 独立树位于 `726430b`；均未有本次功能交件。按 `efficient-waiting` 技能接收完成通知，观察超时不授权重启。
 
@@ -14,7 +16,7 @@
 
 ## 当前轮次与目标
 
-长期目标轮次 1/256，每第 10 轮重新评估实际编码产出与运行效果。主优先级为原神、星铁、ZZZ 的真实 NR/FG 深度、相邻历史复用、细节与连续性。星铁保留 adamfg/F5-DS 独立 FG，不为统一框架增加同步或池重建。GIMI/BeforeSR 次优先。
+长期目标轮次 1/256，每第 10 轮重新评估实际编码产出与运行效果。主优先级为原神、星铁、ZZZ 的真实 NR/FG 深度、相邻历史复用、细节与连续性。星铁保留 F5-DS 独立 FG，不为统一框架增加同步或池重建。GIMI/BeforeSR 次优先。
 
 ## 已集成与正在完成
 

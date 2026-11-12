@@ -69,18 +69,17 @@
 |---|---|---|---|
 | RTX Encore v2.0.1 | ZIP `D:/DL/RTX-Encore-v2.0.1.zip`；DLL `D:/CODE/DLSS5_NEXT-workers/f7-clean-rewrite/build/research/rtx-encore-v2.0.1/extracted/rtx-encore.dll`，42,682,368 B，SHA256 `06A7FD63EE0F0E95574F3869D70C3C9AE4AAF326BA53FF8C864064410A5F1217`；另有`rtx-encore-generic-astra`／`rtx-encore-generic-review-20261106T1306037701675Z` | 已做有界静态反汇编、DXBC、DX11→12、guide rect、NR失败不解码回写、FG输入fence和SDK标签研究；主树[研究目录](../tools/research/encore-f7/README.md)保存数学／ABI参考及固定输入。F6运行报告引用机制取舍，不等于整库移植 | 继续核精确单位、直接payload ABI、跨API同步成本；未执行目标DLL，不证明硬件支持、原神画质或6×成立 |
 | Encore公开来源 | 既有研究标识`SilyNoMeta/rtx-encore@3607a171`；见[F7参考页](../../DLSS5_NEXT-workers/f7-clean-rewrite/docs/REFERENCE-RESEARCH.md) | 当时是文字／发布基准，实际机制来自上行固定二进制 | 既有“无实现源码／根LICENSE”结论仅限当时审阅，本轮不声称远端现状 |
-| `sdli1995/dlssg_for_sm86`及旧SilyNoMeta分支 | `D:/DATA/Documents/ChatGPT/DLSS F5 NEXT/audit/v3-r952-dlssg-041-package-20261102/_refbin`和`_pkgtext`；未定位独立Git克隆 | [R952审包报告](<D:/DATA/Documents/ChatGPT/DLSS F5 NEXT/audit/v3-r952-dlssg-041-package-20261102/RESULT.md>)及现有`AmpereMfgLoader.cpp`／MFG许可用于加载、包结构、选项和限制研究 | backend/kernel/runtime tuple整体兼容，不能只换一个DLL。自称0.4.1的本地包被判重打包／源码归属未知，不能声称官方0.4.1已集成 |
+| `sdli1995/dlssg_for_sm86`及旧SilyNoMeta分支 | `D:/DATA/Documents/ChatGPT/DLSS F5 NEXT/audit/v3-r952-dlssg-041-package-20261102/_refbin`和`_pkgtext`；未定位独立Git克隆 | [R952审包报告](<D:/DATA/Documents/ChatGPT/DLSS F5 NEXT/audit/v3-r952-dlssg-041-package-20261102/RESULT.md>)及历史许可用于包结构与来源研究 | backend/kernel/runtime tuple整体兼容，不能只换一个DLL。自称0.4.1的本地包被判重打包／源码归属未知，不能声称官方0.4.1已集成 |
 | 历史NR参考DLL／forwarder | 入口与SHA索引在`D:/CODE/DLSS5_NEXT/tools/research/encore-f7/evidence/nr-reference-entrypoints.json`、`nr-historical-reference-exports.json`、`nr-forwarder-exports.json` | 已研究参数对象、Create/Evaluate/Shutdown、rect helper及direct/forwarder导出区分；历史参考SHA `CDFA6C1E…`与Encore DLL不同 | 不是F7选定payload，更不是当前F6模型字节证明；私有ABI须精确认证，不能仅凭导出名移植 |
 
 共享研究已保存于主树提交`df97f06f5c2f7bdb3657633200d3c70f874c2697`。本次实际运行其 **616项CPU测试，全部通过，149.070秒**；结果在主树`build/handoff-research-tests.log`。这些测试不执行目标DLL、不认证GPU完成、也不证明游戏性能。研究内的二进制指令／反汇编／固定日志为可复核输入，不为“清目录”删除或统一改格式。
 
-## 5. 已采用的其它来源与署名
+## 5. 其它来源与署名（含历史记录）
 
 | 来源 | 实际位置 | 已采用功能 | 待参考／注意 |
 |---|---|---|---|
 | PeripheralWarp（BeliyG3） | `D:/CODE/DLSS5_NEXT-workers/f6-rewrite/external/peripheral_warp`；源码明确`64902dd6` | `DlssNr_Spatial.h`、spatial HLSL沿wilsjo2 v0.8.9适配，保MIT许可；中心／边缘映射 | guide端点、量化grid和非零中心合同；压边不是语义角色mask，也不证明性能收益 |
-| RenoDX / clshortfuse | 第2节摘录；`D:/CODE/HoyoDLSS5/_research/renodx`为另一邻接研究树 | 颜色合成、hue、gamut及相关MFG归属见`Licenses/RenoDX_ATTRIBUTION.txt` | 每段代码按其来源声明保留署名，不能给整个fork重标许可 |
-| MFGUnlock（Dreamt / mavismmg） | `D:/CODE/HoyoDLSS5/_ref_MFGAdaUnlock`，origin `mavismmg/MFGAdaUnlock-RenoDx`，`a2ca96f`（10-02），净；产品`framegen/dlssg/MfgUnlock*.h`、`AmpereMfgLoader.cpp` | 现有MFG适配及`Licenses/MFGUnlock_LICENSE.txt` | 进程内解锁、插件加载和实际SDK倍率是不同验收项 |
+| RenoDX / clshortfuse | 第2节摘录；`D:/CODE/HoyoDLSS5/_research/renodx`为另一邻接研究树 | 颜色合成、hue、gamut归属见`Licenses/RenoDX_ATTRIBUTION.txt` | 每段代码按其来源声明保留署名，不能给整个fork重标许可 |
 | DLSS5-Feeder | `D:/CODE/HoyoDLSS5/_research/dlss5-feeder/DLSS5-Feeder-main`（源码目录，未绑定独立Git HEAD） | `OptiScaler/motion/TrustMask_Dx12.h`明确仅参考验证思想：遮挡、深度／运动／luma一致性及衰减；**本地自行实现，未复制源码** | trust mask的单位、phase、真实guides和scene cut，不能由光流假造深度；保`DLSS5Feeder_LICENSE.txt` |
 | Inter字体 | `D:/CODE/DLSS5_NEXT-workers/f6-rewrite/OptiScaler/menu/font` | `Inter_Compressed.cpp`，SIL OFL许可`Licenses/Inter_OFL.txt` | 字体不是NR/FG性能算法来源 |
 

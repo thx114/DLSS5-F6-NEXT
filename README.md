@@ -1,8 +1,10 @@
 # DLSS5_NEXT
 
-更新：2026-11-12。**原神、星铁、绝区零均已选择 `local/F6-ASI`，三游戏隔离 runtime 已部署菜单输入候选 `6D377DD4`／源码 `3665de5`。ASI 仅负责 MFG 解锁，F6 保留 SR／NR／FG、`External=false` 和各游戏 NR／6×请求。冷开菜单点击与周期卡顿仍待实机验收，HDR 暂缓。**
+更新：2026-11-12。**原神、星铁、绝区零的 `local/F6-ASI` 包及三个隔离 runtime 已原位部署 `A6D12031`，源码基于 `75d7a27` 的未提交工作树。F6 保留 SR／NR／FG、`External=false` 和各游戏 NR／6×请求。此前菜单点击／焦点已获用户初步通过反馈，新版加载、画面和周期卡顿尚待观察，HDR 暂缓。**
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`；本根仅导航／迁移基线。新 DLL、三 runtime 硬链接和 1589 项升级前保护文件已核验，旧共享正式部署、旧绝专属包／runtimes、全局 state、原配置及回退保留。菜单输入隔离、单次平台采样和可见性 policy 通过真实 ImGui 受控回归，不能替代游戏画面或性能验收。须从托盘完整退出启动器后重启，CLI 写数据库不刷新现有 GUI 缓存。
+本轮源码已移除旧功能入口和实现，保留通用 ASI 插件加载；新建包工具只引用用户自备插件目录，不复制插件。本次仅更新既有包 DLL，没有复制或运行用户 ASI；2421项冻结构建输入、948个导出核验通过，四个DLL alias的新字节及原FileId／硬链接完整，1857项保护文件未变。源码、离线验证和部署证据见产品树 `build/repair-20261112/asi-only-*`。
+
+唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`；本根仅导航／迁移基线。旧共享正式部署、旧绝专属包／runtimes、全局 state、用户配置／插件及回退保留。本次构建选择未变，由用户手动重开游戏加载新版；离线回归和磁盘部署不能替代游戏画面或性能验收。
 
 详见[产品当前状态](../DLSS5_NEXT-workers/f6-rewrite/docs/CURRENT-STATE.md)和[完整交接](../DLSS5_NEXT-workers/f6-rewrite/docs/F6-HANDOFF.md)。
 
@@ -25,7 +27,7 @@ pwsh -NoProfile -File ./tools/tests/Run-CommonCoreTests.ps1
 
 需要 PowerShell 7、MSVC v143；本机 MSBuild 为 `D:/VS2022BuildTools/MSBuild/Current/Bin/amd64/MSBuild.exe`。默认 Release x64、最多8个编译工作进程，可传 `-Jobs N`；`-Clean`仅在明确需要清中间件时使用。产物 `build/out/OptiScaler.dll`、UTF-8日志 `build/msbuild.log`；失败返回真实退出码。普通DLL构建使用现有嵌入shader头，不必运行[Look生成工具](tools/shaders/README.md)。
 
-本根的同名 `build.ps1` 仍可构建迁移基线，但结果不能当作F6最新候选。本次三游戏均选择隔离ASI包，菜单输入候选已部署；共享正式F6保留。实际加载、冷开点击、画面和性能仍需分别核验。
+本根的同名 `build.ps1` 仍可构建迁移基线，但结果不能当作F6最新候选。本次三游戏均选择隔离ASI包，通用插件候选已部署；共享正式F6保留。此前菜单点击／焦点已有用户初步通过反馈；新版实际加载、画面和性能仍需分别核验。
 
 ## 资料保留
 
