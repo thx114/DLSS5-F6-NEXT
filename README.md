@@ -77,6 +77,8 @@ LoadAsiPlugins = true
 
 使用本项目的帧生成链路时，`[FrameGen] External = false`；ASI 插件与这一设置是不同的配置项。
 
+星铁可选用自备的 `NgxFeatureCache.asi` 缓存 SR 对象，减少进入、退出 UI 时反复创建功能的开销。将插件及其 `NgxFeatureCache.ini` 一起放入星铁专用插件目录，再配置上述 `Path`。当前 F6 已移除内置 PersistentSR 对象池；该插件单独负责 SR 对象复用，NR 和 FG 仍独立配置。插件不随项目分发，UI 卡顿是否改善需要按设备实测；它不提供缺少深度、运动输入时的菜单 FG。
+
 ## 三游戏配置
 
 以下为 **2026-11-13** 从三款游戏各自当前运行目录导出的配置快照，保留各自的 SR、NR、细节保留、FG 和界面参数，供参考和调整。

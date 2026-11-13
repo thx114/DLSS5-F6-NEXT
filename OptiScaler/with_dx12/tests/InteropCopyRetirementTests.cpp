@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <optional>
 #include <string>
@@ -79,10 +80,12 @@ struct ID3D12CommandQueue : RefCounted
     unsigned executes = 0, signals = 0, waits = 0;
     ID3D12Fence* waited = nullptr;
     UINT64 waitTarget = 0;
+    std::function<void()> duringWait;
     HRESULT GetDevice(ID3D12Device**) { std::abort(); }
     HRESULT Wait(ID3D12Fence* fence, UINT64 target)
     {
         ++waits; waited = fence; waitTarget = target;
+        if (duringWait) duringWait();
         return waitResult;
     }
     ID3D12CommandList* executed = nullptr;
@@ -98,14 +101,30 @@ struct ID3D12CommandQueue : RefCounted
         ++signals; signalled = fence; value = required; return signalResult;
     }
 };
+struct IFrameGen
+{
+    virtual ~IFrameGen() = default;
+    ID3D12CommandQueue* queue = nullptr;
+    virtual ID3D12CommandQueue* GetCommandQueue() { return queue; }
+};
+enum class FGExecutionScope { Inputs };
+struct DLSSG_Dx12 : IFrameGen
+{
+    struct Guard { ~Guard() {} };
+    Guard GuardExecution(FGExecutionScope) { return {}; }
+    ComPtr<ID3D12CommandQueue> GenshinColorWriteQueue(IDXGISwapChain*, ID3D12Device*) { return queue; }
+};
+UINT ResolvePrivateCopySlot(const void*, UINT slot) { return slot; }
 struct State
 {
     UINT64 frameCount = 31;
+    IFrameGen* currentFG = nullptr;
     static State& Instance() { static State value; return value; }
 };
 namespace CallerCpuTrace
 {
-enum class Op { CopyAllocatorWait, CopyAllocatorReset, CopyExecute, CopySignal, QueueIdle, QueueIdleWait, CopyIdleWait };
+enum class Op { CopyAllocatorWait, CopyAllocatorReset, CopyExecute, CopySignal, QueueIdle, QueueIdleWait, CopyIdleWait,
+                PresentQueueWaitSubmit };
 struct Scope
 {
     template<class... Args> explicit Scope(Args&&...) {}
@@ -128,7 +147,9 @@ const void* Identity(const ID3D12CommandQueue* queue) { return queue; }
 struct PresentScope
 {
     static inline bool active = false;
-    static bool Current() { return active; }
+    static PresentScope* Current() { static PresentScope scope; return active ? &scope : nullptr; }
+    void CopiedOrderedOnPresentQueue(ID3D12CommandQueue*, ID3D12Fence*, UINT64) {}
+    void Waited(ID3D12CommandQueue*, ID3D12Fence*, UINT64) {}
 };
 }
 namespace GenshinHookCpuTiming
@@ -196,6 +217,8 @@ class Dx11wDx12SC : public RefCounted
     std::vector<ID3D12CommandAllocator*> _copyAllocators;
     std::vector<UINT64> _copyAllocatorFenceValues, _nrCopyAllocatorFenceValues;
     ID3D12CommandQueue* _dx12CommandQueue = nullptr;
+    IFrameGen* _fg = nullptr;
+    UINT _currentFakeIndex = 0;
     ID3D12Device* _dx12Device = nullptr;
     IDXGISwapChain* _fgSwapChain = nullptr;
     void* _handle = nullptr;
@@ -215,6 +238,8 @@ class Dx11wDx12SC : public RefCounted
     unsigned producerDrains = 0;
     bool _WaitDx11ThenDx12() { ++producerDrains; return true; }
     bool _WaitForCopyQueueIdle();
+    bool _WaitForInteropCopyOnPresentQueue();
+    bool _WaitForInteropCopyOnPresentQueueLegacy();
     // Logging is observational: the exact extracted production wait below
     // still decides completion/Reset. No simulated device loss grants reuse.
     void _ReportCopyFenceFault(const char*,UINT,UINT64,UINT64,DWORD) { ++faultReports; }
@@ -248,6 +273,7 @@ class Dx11wDx12SC : public RefCounted
 };
 #include "InteropCopyWaitProduction.inl"
 #include "InteropQueueDrainProduction.inl"
+#include "InteropPresentQueueProduction.inl"
 
 namespace
 {
@@ -262,7 +288,8 @@ struct Fixture
     ID3D12Fence fence;
     ID3D12CommandAllocator allocator;
     ID3D12CommandList list;
-    ID3D12CommandQueue queue, otherQueue;
+    ID3D12CommandQueue queue, otherQueue, newQueue;
+    DLSSG_Dx12 provider;
     ID3D12Device device;
     ID3D12Resource color;
     IDXGISwapChain chain;
@@ -276,9 +303,108 @@ struct Fixture
         owner._dx12CommandQueue = &queue; owner._dx12Device = &device; owner._fgSwapChain = &chain;
         fence.completed = 17; event.completedAfterWait = 18;
         GenshinBridgeFg::PresentScope::active = false;
+        State::Instance().currentFG = nullptr;
         HoYoShade::isolation = {};
     }
 };
+void PresentQueueOwnerTransitions(bool legacy = false)
+{
+    for (int destination = 0; destination != 4; ++destination)
+    {
+        Fixture f;
+        ID3D12Fence presentFence;
+        Event presentEvent;
+        auto& o = f.owner;
+        // No FG, FG with null queue, copy queue, or a different backend queue.
+        o._fg = destination == 0 ? nullptr : &f.provider;
+        auto* next = destination < 2 ? nullptr : destination == 2 ? &f.queue : &f.newQueue;
+        f.provider.queue = next;
+        o._interopPresentQueue = &f.otherQueue;
+        o._presentRetirementFence = &presentFence;
+        o._presentRetirementEvent = &presentEvent;
+        f.event.completedAfterWait = 19;
+        presentEvent.completedAfterWait = 1;
+        f.event.duringWait = presentEvent.duringWait = [&] {
+            Check(o._interopPresentQueue.Get() == &f.otherQueue && f.otherQueue.references == 2,
+                  "old owner stays pinned until both actual queue markers retire");
+        };
+        const auto run = legacy ? &Dx11wDx12SC::_WaitForInteropCopyOnPresentQueueLegacy :
+                                  &Dx11wDx12SC::_WaitForInteropCopyOnPresentQueue;
+        Check((o.*run)(), "owner transition succeeds after both real drains");
+        Check(o._interopPresentQueue.Get() == next,
+              "successful retirement adopts the exact new owner, including null");
+        Check(f.otherQueue.references == 1 && (!next || next->references == 2),
+              "real ComPtr releases the retired owner and pins the new owner");
+        Check(o._lastInteropCopyFenceValue == 18 && o._copyFenceValue == 19,
+              "drain marker does not replace the current copiedValue receipt");
+        Check(f.queue.signals == 1 && f.otherQueue.signals == 1 &&
+              f.queue.signalled == &f.fence && f.otherQueue.signalled == &presentFence &&
+              f.event.waits == 1 && presentEvent.waits == 1,
+              "transition drains the copy and exact old presenting queue once");
+        Check(f.queue.waits == 0 && f.otherQueue.waits == 0 && f.newQueue.waits == unsigned(destination == 3),
+              "null and copy queue add no GPU Wait; different queue waits on this copy");
+        for (unsigned frame = 0; frame != 3; ++frame)
+        {
+            const auto copiedValue = ++o._copyFenceValue;
+            o._lastInteropCopyFenceValue = copiedValue;
+            Check((o.*run)() && o._lastInteropCopyFenceValue == copiedValue,
+                  "following frame keeps its own copy receipt");
+            Check(o.producerDrains == 1 && f.queue.signals == 1 && f.otherQueue.signals == 1 &&
+                  f.event.waits == 1 && presentEvent.waits == 1,
+                  "unchanged null or queue owner never repeats the CPU drain");
+            Check(f.queue.waits == 0 && (!next || destination == 2 ||
+                  (next->waits == frame + 2 && next->waited == &f.fence && next->waitTarget == copiedValue)),
+                  "only a different presenting queue waits on each fresh copy");
+        }
+    }
+}
+void PresentQueueDrainFailuresRetainOwner()
+{
+    for (bool nextIsNull : {false, true})
+    for (int failure = 0; failure != 6; ++failure)
+    {
+        Fixture f;
+        ID3D12Fence presentFence;
+        Event presentEvent;
+        auto& o = f.owner;
+        o._fg = &f.provider;
+        f.provider.queue = nextIsNull ? nullptr : &f.newQueue;
+        o._interopPresentQueue = &f.otherQueue;
+        o._presentRetirementFence = &presentFence;
+        o._presentRetirementEvent = &presentEvent;
+        f.event.completedAfterWait = 19;
+        presentEvent.completedAfterWait = 1;
+        if (failure == 0) f.queue.signalResult = E_FAIL;
+        if (failure == 1) f.event.result = WAIT_TIMEOUT;
+        if (failure == 2) f.otherQueue.signalResult = E_FAIL;
+        if (failure == 3) presentEvent.result = WAIT_TIMEOUT;
+        if (failure == 4) presentEvent.completedAfterWait = 0; // spurious wake
+        if (failure == 5) presentFence.completed = UINT64_MAX; // device removed
+        Check(!o._WaitForInteropCopyOnPresentQueue() && lastFailure == "PreviousCopyQueueRetirementRefused",
+              "copy or old-present drain failure propagates to the caller");
+        Check(o._interopPresentQueue.Get() == &f.otherQueue && f.otherQueue.references == 2 &&
+              f.newQueue.references == 1 && f.newQueue.waits == 0 && o._copyAllocatorFenceValues[0] == 18,
+              "failed retirement retains old ownership and denies new queue work and slot reuse");
+    }
+}
+void PresentQueueWaitPinsOwnerBeforeFailure()
+{
+    Fixture f;
+    auto& o = f.owner;
+    o._fg = &f.provider;
+    f.provider.queue = &f.newQueue;
+    f.newQueue.waitResult = E_FAIL;
+    f.newQueue.duringWait = [&] {
+        Check(o._interopPresentQueue.Get() == &f.newQueue && f.newQueue.references == 2,
+              "actual owner is pinned before a potentially partially accepted Wait");
+    };
+    Check(!o._WaitForInteropCopyOnPresentQueue() && lastFailure == "PresentQueueCopyFenceWaitFailed",
+          "new queue Wait failure propagates");
+    Check(o._interopPresentQueue.Get() == &f.newQueue && f.newQueue.references == 2 &&
+          f.newQueue.waited == &f.fence && f.newQueue.waitTarget == 18 && o.producerDrains == 0 &&
+          o._lastInteropCopyFenceValue == 18,
+          "failed Wait keeps its actual owner and current copy receipt without an unrelated drain");
+}
 void ReaderRetiresBeforeWriteOnce()
 {
     for (bool starRail : { false, true })
@@ -473,10 +599,18 @@ void FailedSignalPinsActualOperandsOnEveryRoute()
     Check(!f.owner.SubmitCopy(0, &f.queue, &f.color, &f.list, nullptr, &copied) && !copied, "failed Signal never returns an optional colour witness");
 }
 }
-int main()
+int main(int argc, char** argv)
 {
     static_assert(!std::is_copy_constructible_v<CopySlotAdmission>);
     static_assert(!std::is_move_constructible_v<CopySlotAdmission>);
+    if (argc == 2 && std::strcmp(argv[1], "--negative-null-owner") == 0)
+    {
+        PresentQueueOwnerTransitions(true);
+        return 0;
+    }
+    PresentQueueOwnerTransitions();
+    PresentQueueDrainFailuresRetainOwner();
+    PresentQueueWaitPinsOwnerBeforeFailure();
     ReaderRetiresBeforeWriteOnce();
     RefusalsNeverWriteOrReset();
     RecoveryPollsTheSameSubmittedDrain();

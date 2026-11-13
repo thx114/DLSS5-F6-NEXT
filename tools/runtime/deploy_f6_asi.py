@@ -201,7 +201,9 @@ class Deployment:
             if not path.is_file() or path.suffix.lower() not in {".dll", ".txt"}:
                 continue
             relative = path.relative_to(source)
-            if relative.parts[0].lower() in {"profiles", "plugins"}:
+            # Notices below Licenses are copied once from the explicit product
+            # list. A previously installed runtime can also be the payload.
+            if relative.parts[0].lower() in {"profiles", "plugins", "licenses"}:
                 continue
             if path.is_symlink() or path.is_junction():
                 raise ValueError(f"Unsupported payload reparse point: {path}")
@@ -243,12 +245,30 @@ class Deployment:
         self.protected(pre)
         self.verify(require_selected=False)
 
+    def selection_steps(self, game, settings):
+        key = game["SelectionKey"]
+        prefix = "launch_option_optiscaler_build_"
+        game_prefix = prefix + game["Biz"] + "_"
+        if not isinstance(key, str) or not key.startswith(game_prefix) or len(key) == len(game_prefix):
+            raise ValueError("Cannot map SelectionKey to enable setting: " + game["Biz"])
+        enable_key = "launch_option_use_optiscaler_" + key[len(prefix):]
+        value = settings.get(enable_key)
+        if not isinstance(value, str) or value.lower() not in {"true", "false"}:
+            raise ValueError("Prepared enable setting must be True or False: " + enable_key)
+        # set_opt_build also enables OptiScaler. Restore the prepared preference
+        # in the same CLI action; verify still permits only build-key changes.
+        return [{"action": "set_opt_build", "build": self.build_id},
+                {"action": "set_opt", "enabled": value.lower() == "true"}]
+
     def select(self):
         self.verify(require_selected=False)
-        action = self.evidence_file("select.json")
-        save(action, {"steps": [{"action": "set_opt_build", "build": self.build_id}]})
+        settings = load(self.evidence_file("pre.json"))["Settings"]
+        # Validate every game before the first CLI can change any settings.
+        actions = [(game, self.selection_steps(game, settings)) for game in self.plan["Games"]]
         exe = self.hub / (self.hub / "version.ini").read_text(encoding="utf-8-sig").strip().split("=", 1)[1]
-        for game in self.plan["Games"]:
+        for game, steps in actions:
+            action = self.evidence_file("select-" + game["Biz"] + ".json")
+            save(action, {"steps": steps})
             output = self.evidence_file("select-" + game["Biz"] + ".log")
             with output.open("wb") as log:
                 process = subprocess.Popen([str(exe), "run", "--biz", game["Biz"], "--file", str(action)],

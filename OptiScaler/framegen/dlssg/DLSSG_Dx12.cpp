@@ -1,6 +1,7 @@
 #include "pch.h"
 #include <runtime/F6InputPolicy.h>
 #include <runtime/ModuleLifetime.h>
+#include <runtime/D3D12DeviceIdentity.h>
 #include <with_dx12/dx11_with_dx12.h>
 #include <runtime/GuideCapture.h>
 #include <runtime/GuideSourceMetadata.h>
@@ -14,6 +15,7 @@
 #include <hooks/SwapchainCreateRule.h>
 #include "StarRailF5DsPolicy.h"
 #include <runtime/StarRailResidencyPolicy.h>
+#include <upscalers/CallerCpuTrace.h>
 #include "FgDepthContract.h"
 #include <resource_tracking/ResTrack_dx12.h>
 #include <cmath>
@@ -21,6 +23,7 @@
 #include <string_view>
 #include <utility>
 #include <iterator>
+#include <type_traits>
 #include <inputs/GenshinFsrContract.h>
 #include <genshin/GenshinHookCpuTiming.h>
 #include <inputs/FG/GenshinBridge_Present_Dx12.h>
@@ -424,8 +427,8 @@ bool DLSSG_Dx12::SuspendForInputGap()
         return false;
     if (IsStarRailContinuousOwner())
     {
-        // Called after the F5-DS Present-counter threshold, or an explicit
-        // source discontinuity. Off/null tags are not GPU completion.
+        // Suppress the first missing source, or an explicit discontinuity.
+        // Off/null tags are not GPU completion.
         _inputContinuity.Hold(_frameCount, CurrentInputOwner());
         _starRailDispatchPending = false;
         return SuppressStarRailGapForPresent();
@@ -613,23 +616,10 @@ bool DLSSG_Dx12::PresentStarRailInputGap()
 {
     if (!IsStarRailF5DsOwner() || !_haveRunningOptions ||
         !(CurrentInputOwner() == _runningInputOwner)) return false;
-    // This provider requires current depth + motion. Forced mode keeps the
-    // session/GPU allocations but sends Off+retain at the FIRST absent-source
-    // boundary. The SDK then presents this original, with no old FG output
-    // redispatched during the default route's four-Present grace period.
-    using StarRailResidency::FgGapAction;
-    switch (StarRailResidency::SelectFgGapAction(ForceStarRailFgResident(), _inputContinuity.Held(),
-        _starRailPresentCounted, _fgFramePresentId - _lastFGFramePresentId))
-    {
-    case FgGapAction::SuppressHeld: return SuppressStarRailGapForPresent();
-    case FgGapAction::Suspend: return SuspendForInputGap();
-    case FgGapAction::AlreadyCounted: return true;
-    case FgGapAction::CountPresent:
-        ++_fgFramePresentId;
-        _starRailPresentCounted = true;
-        return true;
-    }
-    return false;
+    // A retained provider has no new source token to pace. Leaving SDK On for
+    // several original Presents would require markers for an absent source.
+    // Keep its allocations, but suppress generation at the first such boundary.
+    return _inputContinuity.Held() ? SuppressStarRailGapForPresent() : SuspendForInputGap();
 }
 
 bool DLSSG_Dx12::SuppressStarRailGapForPresent()
@@ -651,15 +641,33 @@ bool DLSSG_Dx12::SuppressStarRailGapForPresent()
             generation == _inputContinuity.SourceGeneration() && lifecycle == _providerOptionsLifecycle;
     };
     _starRailGapSuppressing = true;
-    struct FinishSuppression { bool& active; ~FinishSuppression() { active = false; } } finish {_starRailGapSuppressing};
+    struct FinishSuppression
+    {
+        DLSSG_Dx12& provider;
+        bool completed=false;
+        ~FinishSuppression()
+        {
+            provider._starRailGapSuppressing=false;
+            // Includes C++ exceptions from Off/token/tag callbacks, and cached
+            // Off paths which only attempted this Present's null tags.
+            if (!completed) provider.InvalidateDispatchOptions();
+        }
+    } finish {*this};
     auto options = _lastRunningOptions;
     options.mode = sl::DLSSGMode::eOff;
     options.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff;
     if (!StarRailResidency::SuppressFgGap(_starRailGapOffAccepted, current,
         [&]() {
-            InvalidateDispatchOptions(); // Resume must really send On, even after a partial failure.
+            // FG is Off, but Reflex stays running on this exact owner. Revoke
+            // only FG's acknowledgement; a fresh source must really send On.
+            InvalidateDlssgOptions();
+            CallerCpuTrace::Scope optionsCpu(CallerCpuTrace::Op::FgDlssgOptions, this,
+                lifecycle, frame);
             const auto setOptions = StreamlineProxy::DLSSGSetOptions();
-            return setOptions && StreamlineHooks::SubmitDlssgOptions(setOptions,viewport,options) == sl::Result::eOk;
+            const auto result = setOptions ? StreamlineHooks::SubmitDlssgOptions(setOptions,viewport,options) :
+                sl::Result::eErrorMissingOrInvalidAPI;
+            optionsCpu.Finish(static_cast<uint32_t>(result), true);
+            return result == sl::Result::eOk;
         }, [&]() {
             // Reacquire a token only for the actual observed source ordinal.
             // Never truncate/wrap an unknown source into another SDK frame.
@@ -677,6 +685,7 @@ bool DLSSG_Dx12::SuppressStarRailGapForPresent()
             tags[3].type = sl::kBufferTypeUIColorAndAlpha;
             return setTags(*token, viewport, tags, 4, nullptr) == sl::Result::eOk;
         })) return false;
+    finish.completed=true;
     if (_starRailGapOffAccepted) return true; // Only Off was cached; THIS frame's null tags just succeeded.
     // F5-DS leaves Reflex running during input gaps. User Off and real
     // resize/device teardown still use the existing complete Off recipe.
@@ -712,6 +721,14 @@ void DLSSG_Dx12::InvalidateDispatchOptions()
 {
     _dispatchOptions.Invalidate();
     _dlssgOptionsAck.valid = _reflexOptionsAck.valid = false;
+    _generationState.InvalidateApplied();
+    _framesToInterpolate = 0;
+}
+
+void DLSSG_Dx12::InvalidateDlssgOptions()
+{
+    _dispatchOptions.InvalidateDlssg();
+    _dlssgOptionsAck.valid = false;
     _generationState.InvalidateApplied();
     _framesToInterpolate = 0;
 }
@@ -824,8 +841,6 @@ dlssg::options::Scope DLSSG_Dx12::CurrentDispatchScope(int index) const
     scope.inputPath = static_cast<uint32_t>(state.activeFgInput);
     scope.outputPath = static_cast<uint32_t>(state.activeFgOutput);
     scope.interop = static_cast<uint32_t>(state.swapchainInteropApi);
-    scope.scheduling = static_cast<uint32_t>(IsStarRailF5DsOwner() ?
-        dlssg::options::SubmissionPolicy::EveryDispatch : dlssg::options::SubmissionPolicy::OnChange);
     scope.guideFlags = (uint32_t)_constants.flags[FG_Flags::Hdr] |
         ((uint32_t)_constants.flags[FG_Flags::InvertedDepth] << 1) |
         ((uint32_t)_constants.flags[FG_Flags::JitteredMVs] << 2) |
@@ -871,8 +886,34 @@ dlssg::options::Submission DLSSG_Dx12::SetDispatchOptions(dlssg::options::Acknow
         !StreamlineHooks::IsWrappedReflexInterface(StreamlineProxy::ReflexSetOptions());
     try
     {
-        return _dispatchOptions.Apply(cache, scope, options, sourceFrame, cacheable, force,
-            static_cast<dlssg::options::SubmissionPolicy>(scope.scheduling), current, std::forward<Submit>(submit));
+        constexpr bool reflex = std::is_same_v<Options, sl::ReflexOptions>;
+        const auto outcome = _dispatchOptions.Apply(cache, scope, options, sourceFrame, cacheable, force,
+            current, [&]() {
+                CallerCpuTrace::Scope optionsCpu(reflex ? CallerCpuTrace::Op::FgReflexOptions :
+                    CallerCpuTrace::Op::FgDlssgOptions, this, scope.provider.lifecycle, sourceFrame, index);
+                const auto result = std::forward<Submit>(submit)();
+                optionsCpu.Finish(static_cast<uint32_t>(result), true);
+                return result;
+            });
+        auto& counts = _dispatchOptionsCounts[reflex ? 1 : 0];
+        ++counts.attempts;
+        counts.submitted += outcome.submitted;
+        counts.reused += !outcome.submitted && outcome.confirmed;
+        counts.failed += outcome.Result() != sl::Result::eOk;
+        counts.forced += force;
+        counts.keepalive += outcome.reason == dlssg::options::Reason::Keepalive;
+        counts.scopeChanged += outcome.reason == dlssg::options::Reason::ScopeChanged;
+        counts.payloadChanged += outcome.reason == dlssg::options::Reason::PayloadChanged;
+        counts.invalidated += outcome.reason == dlssg::options::Reason::Invalidated;
+        counts.uncacheable += outcome.reason == dlssg::options::Reason::NotCacheable;
+        if (counts.attempts == 1 || counts.attempts % 600 == 0 ||
+            (outcome.Result() != sl::Result::eOk && counts.failed <= 3))
+            LOG_INFO("F6 FG configuration totals: kind={} source={} owner={} lifecycle={} completed_attempts={} submit_attempts={} ack_hits={} failed={} forced={} keepalive={} scope_changed={} payload_changed={} invalidated={} uncacheable={} last_reason={} result={}; counters=dispatch_only excludes_throwing_calls=true no_retirement_authority=true",
+                reflex ? "Reflex" : "DLSSG", sourceFrame, scope.provider.instance, scope.provider.lifecycle,
+                counts.attempts, counts.submitted, counts.reused, counts.failed, counts.forced,
+                counts.keepalive, counts.scopeChanged, counts.payloadChanged, counts.invalidated, counts.uncacheable,
+                dlssg::options::ReasonName(outcome.reason), static_cast<int>(outcome.Result()));
+        return outcome;
     }
     catch (...)
     {
@@ -897,6 +938,9 @@ bool DLSSG_Dx12::WaitForStarRailF5DsUIAllocator(UINT index)
     const auto fenceValue = _uiAllocatorFenceValues[index];
     if (fenceValue == 0) return true;
     if (!_uiFence || !_uiFenceEvent) return false;
+
+    CallerCpuTrace::Scope allocatorCpu(CallerCpuTrace::Op::FgUiAllocatorWait, this,
+        _providerOptionsLifecycle, _frameCount, index, fenceValue, _uiFence->GetCompletedValue(), false, true);
 
     // A timed-out SetEventOnCompletion registration can signal this shared
     // auto-reset event during a later slot's wait. That early wake is not a
@@ -1002,6 +1046,16 @@ bool DLSSG_Dx12::WaitForUIAllocator(UINT index)
         PollUIAllocator(index) == UIAllocatorStatus::Ready;
 }
 
+void DLSSG_Dx12::RecordDx11GuideSubmission(UINT slot) noexcept
+{
+    if (!_dx11GuideBorrowed[slot]) return;
+    const auto& depth=_guideTags[slot][0];const auto& motion=_guideTags[slot][1];
+    if (!depth.accepted || !motion.accepted || depth.frame!=motion.frame ||
+        depth.generation!=motion.generation || !(depth.owner==motion.owner) ||
+        depth.input.cmdList!=_uiCommandList[slot] || motion.input.cmdList!=_uiCommandList[slot]) return;
+    _dx11GuideSubmissions[slot]={depth.frame,depth.generation,_uiAllocatorFenceValues[slot],_uiFence,_gameCommandQueue};
+}
+
 bool DLSSG_Dx12::SubmitUICommandList(UINT index)
 {
     if (_starRailUiFailed || !CanSubmitInputs()) return false;
@@ -1021,6 +1075,7 @@ bool DLSSG_Dx12::SubmitUICommandList(UINT index)
                 (ID3D12CommandList**)&_uiCommandList[index],previewReceipt);
         _uiCommandListResetted[index]=false; // Execute cannot be replayed after a failed Signal.
         if (FAILED(_gameCommandQueue->Signal(_uiFence,_uiAllocatorFenceValues[index]))) return false;
+        RecordDx11GuideSubmission(index);
         ObserveGuideSubmission(index,_uiFence,_uiAllocatorFenceValues[index]);
         return true;
     }
@@ -1040,13 +1095,15 @@ bool DLSSG_Dx12::SubmitUICommandList(UINT index)
         FailStarRailUiFrame();
         return false;
     }
+    RecordDx11GuideSubmission(index);
     ObserveGuideSubmission(index,_uiFence,_uiAllocatorFenceValues[index]);
     return true;
 }
 
-DLSSG_Dx12::StarRailPresent DLSSG_Dx12::PrepareStarRailPresent(bool beforeSdkPresent)
+DLSSG_Dx12::StarRailPresent DLSSG_Dx12::PrepareStarRailPresent(bool beforeSdkPresent, UINT64* dispatchedFrame)
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
+    if (dispatchedFrame) *dispatchedFrame = 0;
     if (_starRailUiFailed) return StarRailPresent::Failed;
     if (beforeSdkPresent && OwnsUpscalerDepthContract() && _starRailDispatchPending &&
         !GuideTagsCurrent(_starRailDispatchFrame%BUFFER_COUNT,_starRailDispatchFrame))
@@ -1059,7 +1116,6 @@ DLSSG_Dx12::StarRailPresent DLSSG_Dx12::PrepareStarRailPresent(bool beforeSdkPre
     }
     if (IsStarRailContinuousOwner() && _haveRunningOptions)
     {
-        if (!beforeSdkPresent) _starRailPresentCounted = false;
         const auto owner = CurrentInputOwner();
         if (!(owner == _runningInputOwner) ||
             (_inputContinuity.Held() && (!_inputContinuity.OwnerMatches(owner) ||
@@ -1077,6 +1133,7 @@ DLSSG_Dx12::StarRailPresent DLSSG_Dx12::PrepareStarRailPresent(bool beforeSdkPre
                 _starRailDispatchOwner == owner &&
                 _inputContinuity.Current(_starRailDispatchFrame % BUFFER_COUNT, _starRailDispatchFrame, owner))
             {
+                if (dispatchedFrame) *dispatchedFrame = _starRailDispatchFrame;
                 _starRailDispatchPending = false;
                 return StarRailPresent::Proceed;
             }
@@ -1091,8 +1148,8 @@ DLSSG_Dx12::StarRailPresent DLSSG_Dx12::PrepareStarRailPresent(bool beforeSdkPre
                 return StarRailPresent::Proceed;
         }
 
-        // Only the real final SDK Present boundary advances the old counter.
-        // Early NR selection cannot create a second missing-source observation.
+        // Only final SDK admission changes generation state. Early NR selection
+        // cannot authorize an On Present without a successful fresh Dispatch.
         if (beforeSdkPresent && !PresentStarRailInputGap())
         {
             FailStarRailUiFrame();
@@ -1265,7 +1322,6 @@ void DLSSG_Dx12::Deactivate()
     _starRailDispatchPending = false;
     _starRailRecordingGeneration = 0;
     _starRailGapOffAccepted = false;
-    _starRailPresentCounted = false;
     _starRailF5DsMarker.store(UINT64_MAX, std::memory_order_release);
     _starRailUiBusy = _starRailUiGap = false;
     _inputContinuity.Clear();
@@ -1367,8 +1423,8 @@ bool DLSSG_Dx12::CompletePendingTeardown()
         if (_teardownFenceValue >= UINT64_MAX - 1 || drain.device->GetDeviceRemovedReason() != S_OK ||
             drain.queue->GetDevice(IID_PPV_ARGS(&queueDevice)) != S_OK ||
             drain.fence->GetDevice(IID_PPV_ARGS(&fenceDevice)) != S_OK ||
-            !SameGenshinComOwner(queueDevice.Get(), drain.device.Get()) ||
-            !SameGenshinComOwner(fenceDevice.Get(), drain.device.Get()))
+            !D3D12DeviceIdentity::Same(queueDevice.Get(), drain.device.Get()) ||
+            !D3D12DeviceIdentity::Same(fenceDevice.Get(), drain.device.Get()))
         {
             QuarantineFailedTeardown();
             return false;
@@ -2031,6 +2087,27 @@ void DLSSG_Dx12::RequestGuideHooks()
     _guideHooksRequested=true;
 }
 
+void DLSSG_Dx12::ResetCompletedGuideRecordings() noexcept
+{
+    // Three diagnostic slots must not wait for the four-slot producer ring to
+    // wrap. End only a sampled, already-submitted recording's replay lifetime;
+    // the real UI owner fence (not the sampler's fence) authorizes its Reset.
+    // No new recording/fence reservation, resource reuse or GPU wait occurs.
+    for (UINT slot=0;slot<BUFFER_COUNT;++slot)
+    {
+        if (_uiCommandListResetted[slot] || _uiCloseFailed[slot] ||
+            !_uiCommandList[slot] || !_uiCommandAllocator[slot] ||
+            !GuideCapture::NeedsReset(_uiCommandList[slot]) ||
+            PollUIAllocator(slot)!=UIAllocatorStatus::Ready) continue;
+        if (FAILED(_uiCommandAllocator[slot]->Reset())) continue;
+        if (FAILED(_uiCommandList[slot]->Reset(_uiCommandAllocator[slot],nullptr))) continue;
+        DlssNr::FinishedPictureResetCommandList(_uiCommandList[slot]);
+        // Leave it closed and unreserved. The ordinary owner opens/reserves it
+        // on its next use; an unsignalled target here would strand that slot.
+        if (FAILED(_uiCommandList[slot]->Close())) _uiCloseFailed[slot]=true;
+    }
+}
+
 bool DLSSG_Dx12::TryOpenGuidePreviewRecording(UINT slot) noexcept
 {
     // Present holds continuity and has already ordered the real producer.
@@ -2050,16 +2127,25 @@ bool DLSSG_Dx12::TryOpenGuidePreviewRecording(UINT slot) noexcept
 
 void DLSSG_Dx12::CaptureAcceptedGuides(UINT slot) noexcept
 {
-    GuideCapture::SampleToken sample;
-    const bool preview=GuideCapture::TryBeginSample(GuideCapture::Stream::Fg,sample);
+    const bool previewWanted=GuideCapture::PreviewWanted(GuideCapture::Stream::Fg);
     const bool offline=GuideCapture::OfflineWanted(GuideCapture::Stream::Fg);
+    if (!previewWanted&&!offline) return;
+    const auto mode=GuideCapture::GetPreviewMode();
+    const bool wantsColour=previewWanted && mode==GuideCapture::PreviewMode::FgColour;
+    // An early guide submission has no final colour yet. Do not reserve a
+    // colour sample (and consume its rate-limit interval) before Present joins
+    // that exact source's final endpoint. Offline guide capture is independent.
+    const bool colourReady=slot<std::size(_upscalerFinalColours) && _upscalerFinalColours[slot] &&
+        UpscalerColourCurrent(_upscalerFinalColours[slot]->source);
+    GuideCapture::SampleToken sample;
+    const bool preview=(!wantsColour || colourReady) &&
+        GuideCapture::TryBeginSample(GuideCapture::Stream::Fg,sample);
+    const bool colourOnly=preview && mode==GuideCapture::PreviewMode::FgColour;
     if (!preview&&!offline) return;
     struct Cancel {GuideCapture::SampleToken& token;~Cancel(){GuideCapture::CancelSample(token);}} cancel{sample};
     try
     {
         if (slot>=std::size(_guideObservations) || _uiCloseFailed[slot]) return;
-        const auto demand=GuideCapture::GetPreviewDemand();
-        const bool colourOnly=preview && demand.mode==GuideCapture::PreviewMode::FgColour;
         const auto& depth=_guideTags[slot][0];const auto& motion=_guideTags[slot][1];
         const auto owner=CurrentInputOwner();
         if (!depth.accepted || !motion.accepted || depth.frame!=_frameCount || motion.frame!=_frameCount ||
@@ -2290,8 +2376,9 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
     if ((scale || flip) && dlssg::depth_contract::Game()==GameRouting::Identity::StarRail &&
         (!_starRailGuideSwapchain || !_starRailGuideQueueCurrent))
         return RefuseDepthContract("starrail-conversion-not-on-presenting-queue",false);
+    const auto game=dlssg::depth_contract::Game();
     const bool sharedDx11=ownedRecording &&
-        dlssg::depth_contract::Game()==GameRouting::Identity::Genshin &&
+        (game==GameRouting::Identity::Genshin || game==GameRouting::Identity::StarRail) &&
         State::Instance().swapchainInteropApi==SwapchainInteropApi::Dx11wDx12;
     if (sharedDx11)
     {
@@ -2305,6 +2392,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
         // Pin immediately before the first conversion or SDK snapshot.
         _dx11GuideInputs[slot][0]=depth; _dx11GuideInputs[slot][1]=motion;
         _dx11GuideBorrowed[slot]=true; _dx11GuideSealedFrame[slot]=0;
+        _dx11GuideSubmissions[slot]={};
     };
     // Once commands/tags can be recorded, even an undispatched frame owns real
     // GPU/SDK state. A CPU failure cannot bypass the established teardown path.
@@ -2465,7 +2553,6 @@ bool DLSSG_Dx12::SealDx11GuideInputs(bool tagsAccepted, ID3D12CommandQueue* sour
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
     const auto slot=GetIndex();
-    if (!_dx11GuideBorrowed[slot]) return tagsAccepted; // Warmup/validation recorded no borrowed read.
     const auto fail=[&] {
         // No next shared upload, provider replacement or later fence can make
         // an uncertain borrowed read safe. Keep all actual owners retained.
@@ -2473,14 +2560,39 @@ bool DLSSG_Dx12::SealDx11GuideInputs(bool tagsAccepted, ID3D12CommandQueue* sour
         _managedRetained=true; Deactivate(); QuarantineFailedTeardown();
         return false;
     };
+    // A frame/marker change cannot hide an older shared reader from the next
+    // cache writer. Its current source no longer authenticates that recording.
+    for (UINT other=0;other<BUFFER_COUNT;++other)
+        if (other!=slot && _dx11GuideBorrowed[other]) return fail();
+    if (!_dx11GuideBorrowed[slot]) return tagsAccepted; // Warmup/validation recorded no borrowed read.
+    const auto& depth=_guideTags[slot][0];const auto& motion=_guideTags[slot][1];
+    const auto owner=CurrentInputOwner();
     if (!tagsAccepted || !CanSubmitInputs() ||
         !dlssg::depth_contract::SameOwner(sourceQueue,_gameCommandQueue) ||
         !dlssg::depth_contract::SameOwner(sourceQueue,Dx11WithDx12::GetD3D12CommandQueue()) ||
-        !_uiCommandListResetted[slot] || _uiCloseFailed[slot]) return fail();
-    // Sample actual guides while their original recording is still open.
-    // Final colour is joined later; never reopen this raw shared-guide read.
-    CaptureAcceptedGuides(slot);
-    if (!SubmitUICommandList(slot) || !Dx11WithDx12::SyncDx12ToDx11(_gameCommandQueue)) return fail();
+        _uiCloseFailed[slot] || !depth.accepted || !motion.accepted ||
+        depth.frame!=_frameCount || motion.frame!=_frameCount ||
+        depth.generation!=_inputContinuity.SourceGeneration() || motion.generation!=depth.generation ||
+        !(depth.owner==owner) || !(motion.owner==owner)) return fail();
+    if (_uiCommandListResetted[slot])
+    {
+        // Capture only on the original still-open producer. Guide/offline
+        // diagnostics defer StarRail sealing until its final colour is joined;
+        // normal source handback precedes that independent Present work.
+        CaptureAcceptedGuides(slot);
+        if (!SubmitUICommandList(slot)) return fail();
+    }
+    else
+    {
+        // An earlier real submission may already have closed this recording.
+        // Its exact successful owner Signal, not a Ready bit, permits handback.
+        const auto& submission=_dx11GuideSubmissions[slot];
+        if (submission.frame!=_frameCount || submission.generation!=depth.generation ||
+            submission.fence!=_uiFence || !submission.value ||
+            submission.value!=_uiAllocatorFenceValues[slot] ||
+            !dlssg::depth_contract::SameOwner(submission.queue,_gameCommandQueue)) return fail();
+    }
+    if (!Dx11WithDx12::SyncDx12ToDx11(_gameCommandQueue)) return fail();
     _dx11GuideSealedFrame[slot]=_frameCount;
     _dx11GuideBorrowed[slot]=false;
     // The shared fence Signal was queued after the SDK's real snapshot read;
@@ -3471,7 +3583,7 @@ bool DLSSG_Dx12::Dispatch()
         _reflexOwnership = ReflexOwnership::Running;
         _reflexOffReported = false;
         const auto outcome = SetDispatchOptions(_reflexOptionsAck, optionsScope, fIndex, reflexConst,
-            willDispatchFrame, resumingInputGap && (!starRailFrame || restartStarRailRuntime),
+            willDispatchFrame, resumingInputGap && !starRailFrame,
             [&]() {
                 const auto setOptions = StreamlineProxy::ReflexSetOptions();
                 return setOptions ? setOptions(reflexConst) : sl::Result::eErrorMissingOrInvalidAPI;
@@ -3920,6 +4032,7 @@ bool DLSSG_Dx12::ReleaseObjectsChecked()
         // Host drain and SDK free preceded release of these executable lists.
         _dx11GuideInputs[i][0].Reset(); _dx11GuideInputs[i][1].Reset();
         _dx11GuideBorrowed[i]=false; _dx11GuideSealedFrame[i]=0;
+        _dx11GuideSubmissions[i]={};
 
         // Reset command list state
         _scCommandListResetted[i] = false;
@@ -4237,6 +4350,7 @@ bool DLSSG_Dx12::Present()
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (!CanSubmitInputs()) return false;
+    ResetCompletedGuideRecordings();
     if (OwnsUpscalerDepthContract() && _depthSourceRejected) return false;
     const bool inputGap = _inputContinuity.Held();
     if (inputGap)
@@ -4266,7 +4380,7 @@ bool DLSSG_Dx12::Present()
         return CanSubmitInputs() ? RefuseDepthContract("native-source-not-submitted",false) : false;
     if (!inputGap && OwnsUpscalerDepthContract() &&
         (_dx11GuideSealedFrame[fIndex]!=_frameCount ||
-         GuideCapture::GetPreviewDemand().mode==GuideCapture::PreviewMode::FgColour))
+         GuideCapture::GetPreviewMode()==GuideCapture::PreviewMode::FgColour))
         CaptureAcceptedGuides(static_cast<UINT>(fIndex));
     if (!genshinFrame || DetailedGenshinFrameLog(_frameCount)) LOG_DEBUG("fIndex: {}", fIndex);
 
@@ -4399,6 +4513,11 @@ bool DLSSG_Dx12::Present()
 
     // if (IsActive() && !IsPaused())
     {
+        // SR's earlier output handback does not cover these later FG guide
+        // reads. Queue the reverse dependency after their actual submission,
+        // before DX11 is allowed to overwrite the shared input cache.
+        if (_dx11GuideBorrowed[fIndex] &&
+            !SealDx11GuideInputs(true,_gameCommandQueue)) return failSubmission();
         if (IsStarRailUiOwner())
         {
             if (!SubmitUICommandList(static_cast<UINT>(fIndex))) return false;
@@ -4430,7 +4549,9 @@ bool DLSSG_Dx12::Present()
         }
     }
 
-    if (inputGap) return Dispatch();
+    // StarRail uses the successful fresh Dispatch at final SDK admission, never
+    // the generic Present-counter grace to authorize missing-source generation.
+    if (inputGap || IsStarRailF5DsOwner()) return Dispatch();
 
     if ((_fgFramePresentId - _lastFGFramePresentId) > 3 && IsActive() && !_waitingNewFrameData)
     {
@@ -4442,7 +4563,6 @@ bool DLSSG_Dx12::Present()
     }
 
     _fgFramePresentId++;
-    if (IsStarRailF5DsOwner()) _starRailPresentCounted = true;
 
     return Dispatch();
 }
@@ -5825,13 +5945,13 @@ FGHookRetirementReceipt DLSSG_Dx12::RetireSwapchainForHook(const FGHookRetiremen
     if (_hookRetired)
     {
         if (_inputOwnerEpoch != _hookRetiredEpoch ||
-            !SameGenshinComOwner(request.queue, _gameCommandQueue) || !SameGenshinComOwner(request.device, _device))
+            !SameGenshinComOwner(request.queue, _gameCommandQueue) || !D3D12DeviceIdentity::Same(request.device, _device))
             return refused(DXGI_ERROR_INVALID_CALL);
         return FGHookRetirementReceipt(request, _genshinOwnerGeneration, _hookRetiredEpoch, &_inputOwnerEpoch,
                                        std::move(execution));
     }
     if (request.window != _hwnd || !SameGenshinComOwner(request.chain, _swapChain) ||
-        !SameGenshinComOwner(request.queue, _gameCommandQueue) || !SameGenshinComOwner(request.device, _device))
+        !SameGenshinComOwner(request.queue, _gameCommandQueue) || !D3D12DeviceIdentity::Same(request.device, _device))
         return refused(DXGI_ERROR_INVALID_CALL);
 
     _hookRetirementActive = true;

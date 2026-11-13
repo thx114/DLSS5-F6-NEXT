@@ -47,7 +47,10 @@ class HandoffWiring(unittest.TestCase):
         self.assertLess(body.index('GuardExecution(FGExecutionScope::Inputs)'), body.index('SetUpscalerGuidePair('))
         start = body.index('const bool tagged=own->SetUpscalerGuidePair(')
         end = body.index('return;', start)
-        self.assertIn('Game()==GameRouting::Identity::Genshin', body[start:end])
+        self.assertIn('game==GameRouting::Identity::Genshin', body[start:end])
+        self.assertIn('game==GameRouting::Identity::StarRail && !starRailDiagnosticRead', body[start:end])
+        self.assertIn('GuideCapture::NeedsOpenFgGuideRecording()', body[start:end])
+        self.assertNotIn('GetPreviewDemand()', body[start:end])
         self.assertIn('own->SealDx11GuideInputs(tagged,_dx12CommandQueue)', body[start:end])
 
     def test_borrowed_inputs_pinned_before_first_publication(self):
@@ -67,6 +70,34 @@ class HandoffWiring(unittest.TestCase):
         self.assertLess(body.index('SyncDx12ToDx11(_gameCommandQueue)'), body.index('_dx11GuideSealedFrame[slot]=_frameCount'))
         for required in ('BlockFgGuideWrites()', 'QuarantineFailedTeardown()', 'SameOwner(sourceQueue,_gameCommandQueue)'):
             self.assertIn(required, body)
+
+    def test_every_shared_cache_write_follows_reader_seal(self):
+        body = parser.extract(DX11, 'Dx11WithDx12::PrepareResourcesResult Dx11WithDx12::PrepareUpscalerResources(')
+        guard = body.index('GuardExecution(FGExecutionScope::Lifecycle)')
+        seal = body.index('guideOwner->SealDx11GuideInputs(true,Dx12CommandQueue)')
+        self.assertLess(guard, seal)
+        self.assertLess(seal, body.index('cache.frameId = frameId'))
+        self.assertLess(seal, body.index('PrepareCachedResource('))
+        self.assertNotIn('GuardExecution(FGExecutionScope::Inputs)', body)
+        sealing = parser.extract(FG, 'bool DLSSG_Dx12::SealDx11GuideInputs(')
+        self.assertLess(sealing.index('other!=slot && _dx11GuideBorrowed[other]'),
+                        sealing.index('if (!_dx11GuideBorrowed[slot])'))
+        pair = parser.extract(FG, 'bool DLSSG_Dx12::SetUpscalerGuidePair(')
+        self.assertIn('game==GameRouting::Identity::StarRail', pair)
+        present = parser.extract(FG, 'bool DLSSG_Dx12::Present(')
+        self.assertLess(present.index('SealDx11GuideInputs(true,_gameCommandQueue)'),
+                        present.index('if (IsStarRailUiOwner())'))
+
+    def test_core_receipt_follows_real_signal(self):
+        submit = parser.extract(FG, 'bool DLSSG_Dx12::SubmitUICommandList(')
+        self.assertLess(submit.index('FAILED(_gameCommandQueue->Signal('), submit.index('RecordDx11GuideSubmission(index)'))
+        self.assertLess(submit.index('IFGFeature_Dx12::SubmitUICommandList(index)'), submit.rindex('RecordDx11GuideSubmission(index)'))
+        seal = parser.extract(FG, 'bool DLSSG_Dx12::SealDx11GuideInputs(')
+        for check in ('submission.frame!=_frameCount', 'submission.generation!=depth.generation',
+                      'submission.fence!=_uiFence', 'submission.value!=_uiAllocatorFenceValues[slot]',
+                      'SameOwner(submission.queue,_gameCommandQueue)'):
+            self.assertIn(check, seal)
+        self.assertNotIn('_guideObservations', seal)
 
     def test_no_late_borrowed_guide_reread(self):
         capture = parser.extract(FG, 'void DLSSG_Dx12::CaptureAcceptedGuides(')

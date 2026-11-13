@@ -15,15 +15,6 @@ void LiveFgGapPolicyAndSuppression()
 {
     // These are the production selection and Off/null-tag orchestration called
     // by DLSSG_Dx12. SDK callbacks are fakes; no GPU completion is claimed.
-    for (bool force : {false, true}) for (bool held : {false, true})
-    for (bool counted : {false, true}) for (std::uint64_t distance = 0; distance < 9; ++distance)
-    {
-        const auto action = SelectFgGapAction(force, held, counted, distance);
-        if (held) Check(action == FgGapAction::SuppressHeld);
-        else if (force) Check(action == FgGapAction::Suspend);
-        else if (counted) Check(action == FgGapAction::AlreadyCounted);
-        else Check(action == (distance > 3 ? FgGapAction::Suspend : FgGapAction::CountPresent));
-    }
     for (unsigned fault = 0; fault < 6; ++fault)
     {
         unsigned offCalls = 0, tagCalls = 0;

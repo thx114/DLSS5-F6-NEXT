@@ -6,13 +6,27 @@
 #ifndef GUIDE_PREVIEW_TESTING
 #define GUIDE_PREVIEW_TESTING
 #endif
+#include "../GuideCapture.h"
+// Instrument only the diagnostic clock boundary of the included production
+// sampler. Per-thread counting excludes its asynchronous retirement worker;
+// all demand, admission and recording decisions remain production code.
+namespace GuideClockFixture {
+using namespace GuideDiagnostics;
+inline thread_local uint64_t reads=0,overrideTick=0;
+inline uint64_t Now() noexcept {
+    ++reads;return overrideTick?overrideTick:GuideDiagnostics::Now();
+}
+}
+#define GuideDiagnostics GuideClockFixture
 #include "../GuideCapture.cpp"
+#undef GuideDiagnostics
 #include <dxgi1_6.h>
 #include <cstdio>
 #include <cstring>
 #include <functional>
 #include <stdexcept>
 #include <tuple>
+#include <thread>
 
 namespace HookFixture {
 namespace Util {inline bool CheckForRealObject(const char*,IUnknown*,IUnknown**){return false;}}
@@ -20,6 +34,31 @@ namespace DetailReuse {inline ID3D12CommandList* RealSubmittedCommands(ID3D12Com
 inline uint64_t finishedPictureSubmitCallbacks=0;
 inline void FinishedPictureSubmittedReal(ID3D12CommandQueue*,UINT,ID3D12CommandList* const*){}
 #include "GuideCaptureHooksProduction.inl"
+}
+
+namespace OwnerFixture {
+namespace DlssNr {
+void FinishedPictureResetCommandList(ID3D12CommandList* list){
+    GuideCapture::Reset(static_cast<ID3D12GraphicsCommandList*>(list));
+}
+}
+// Execute the actual provider cleanup and its actual UI owner-fence poll.
+// This adapter supplies WARP owners; it does not implement retirement policy.
+struct DLSSG_Dx12 {
+    static constexpr unsigned BUFFER_COUNT=4;
+    enum class UIAllocatorStatus {Invalid,Busy,Ready};
+    ID3D12Device* _device=nullptr;
+    ID3D12CommandQueue* _gameCommandQueue=nullptr;
+    ID3D12Fence* _uiFence=nullptr;
+    HANDLE _uiFenceEvent=nullptr;
+    ID3D12CommandAllocator* _uiCommandAllocator[BUFFER_COUNT]{};
+    ID3D12GraphicsCommandList* _uiCommandList[BUFFER_COUNT]{};
+    bool _uiCommandListResetted[BUFFER_COUNT]{},_uiCloseFailed[BUFFER_COUNT]{};
+    UINT64 _uiFenceValue=0,_uiAllocatorFenceValues[BUFFER_COUNT]{};
+    UIAllocatorStatus PollUIAllocator(UINT) const;
+    void ResetCompletedGuideRecordings() noexcept;
+};
+#include "GuidePreviewOwnerProduction.inl"
 }
 
 using Microsoft::WRL::ComPtr;
@@ -49,6 +88,78 @@ static GuideDiagnostics::Snapshot Stamp(uint64_t source){
 static void Demand(PreviewMode mode,float gain=3,bool flip=false,bool raw=false,bool frozen=false){
     GuideCapture::PreviewDemand d;d.mode=mode;d.gain=gain;d.flipY=flip;d.raw=raw;d.frozen=frozen;
     GuideCapture::SetPreviewDemand(d);
+}
+static void TestOpenFgGuideDemand(){
+    GuideCapture::Request(false);GuideCapture::RequestHistoryMeasurement(false);
+    struct Case {PreviewMode mode;bool open;};
+    const Case cases[]{
+        {PreviewMode::Off,false},{PreviewMode::NrOriginal,false},
+        {PreviewMode::NrColour,false},{PreviewMode::NrDepth,false},
+        {PreviewMode::NrMotion,false},{PreviewMode::FgColour,false},
+        {PreviewMode::FgDepth,true},{PreviewMode::FgMotion,true},
+        {PreviewMode::History,false}
+    };
+    for(const auto& c:cases)for(bool frozen:{false,true}){
+        Demand(c.mode,3,false,false,frozen);
+        const auto before=GuideClockFixture::reads;
+        Check(GuideCapture::NeedsOpenFgGuideRecording()==c.open,
+              "only selected FG guides retain the source recording, including while frozen");
+        Check(GuideCapture::GetPreviewMode()==c.mode,"atomic routing preserves the actual selected mode");
+        Check(GuideClockFixture::reads==before,"preview-only guide demand needs no diagnostic clock");
+        if(frozen){GuideCapture::SampleToken token;
+            Check(!GuideCapture::TryBeginSample(Stream::Fg,token),"frozen guide demand cannot reserve new preview work");}
+    }
+    Demand(PreviewMode::Off);
+    const auto before=GuideClockFixture::reads;
+    for(unsigned i=0;i<32;++i){
+        for(Stream stream:{Stream::Source,Stream::NrModel,Stream::Fg,Stream::History,Stream::Count,
+                           static_cast<Stream>(UINT_MAX)}){
+            Check(!GuideCapture::OfflineWanted(stream),"disabled and invalid streams have no offline demand");
+            Check(!GuideCapture::OfflineSampleDue(stream),"disabled and invalid streams admit no offline sample");
+        }
+        Check(!GuideCapture::NeedsOpenFgGuideRecording(),"normal operation permits early guide sealing");
+        GuideCapture::SampleToken token;
+        Check(!GuideCapture::TryBeginSample(Stream::Fg,token),"Off refuses sampling before clock access");
+    }
+    Check(GuideClockFixture::reads==before,"normal no-demand helper and sampling paths make zero clock calls");
+
+    // Another lane's live deadline must not add FG clock work or hold guides.
+    GuideCapture::Request(Stream::History,true,true);
+    GuideCapture::RequestHistoryMeasurement();
+    Check(GuideCapture::OfflineWanted(Stream::History)&&GuideCapture::OfflineWanted(Stream::Source),
+          "history and calibration requests remain live on their own streams");
+    const auto unrelated=GuideClockFixture::reads;
+    Check(!GuideCapture::OfflineWanted(Stream::Fg)&&!GuideCapture::OfflineSampleDue(Stream::Fg)&&
+          !GuideCapture::NeedsOpenFgGuideRecording(),"unrelated offline demand permits early FG sealing");
+    Check(GuideClockFixture::reads==unrelated,"unrelated live deadlines make zero FG clock calls");
+    GuideCapture::Request(false);GuideCapture::RequestHistoryMeasurement(false);
+
+    // Colour preview may freeze, but an independent offline request still
+    // needs the original guides. Advancing only this thread's clock exercises
+    // real deadline handling without sleeps or changes to production state.
+    Demand(PreviewMode::FgColour,3,false,false,true);
+    GuideCapture::Request(Stream::Fg,true);
+    const auto active=GuideClockFixture::reads;
+    Check(GuideCapture::OfflineWanted(Stream::Fg)&&GuideCapture::NeedsOpenFgGuideRecording(),
+          "offline FG request retains guides independently of frozen colour preview");
+    Check(GuideClockFixture::reads>active,"active offline demand actually consults the instrumented clock");
+    GuideClockFixture::overrideTick=GuideDiagnostics::Now()+2000;
+    Check(!GuideCapture::OfflineWanted(Stream::Fg)&&!GuideCapture::OfflineSampleDue(Stream::Fg)&&
+          !GuideCapture::NeedsOpenFgGuideRecording(),"expired nonzero FG deadline cannot retain guide recording");
+    GuideCapture::Request(false);GuideClockFixture::overrideTick=0;
+    // A visible menu/worker may hold demand.mutex. Routing must remain an
+    // exact atomic observation, not wait for that lock or pretend it is Off.
+    HANDLE observedEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+    Check(observedEvent!=nullptr,"preview routing completion event");
+    PreviewMode observedMode=PreviewMode::Off;bool observedActive=false;
+    std::unique_lock demandLock(GuideCapture::PreviewDetail::Get().mutex);
+    std::thread routingReader([&]{observedMode=GuideCapture::GetPreviewMode();
+        observedActive=GuideCapture::PreviewActive();SetEvent(observedEvent);});
+    const auto observedBeforeUnlock=WaitForSingleObject(observedEvent,1000);
+    demandLock.unlock();routingReader.join();CloseHandle(observedEvent);
+    Check(observedBeforeUnlock==WAIT_OBJECT_0&&observedMode==PreviewMode::FgColour&&observedActive,
+          "normal rendering mode query completes while the diagnostic demand mutex stays locked");
+    Demand(PreviewMode::Off);
 }
 struct Recording {
     ComPtr<ID3D12CommandAllocator> allocator;
@@ -201,6 +312,51 @@ struct QueueGate {
     void Release(){Hr(fence->Signal(1));released=true;}
     ~QueueGate(){if(!released&&fence)fence->Signal(1);}
 };
+static void TestCompletedOwnerRing(Fixture& f){
+    Demand(PreviewMode::FgColour);GuideCapture::Request(false);
+    OwnerFixture::DLSSG_Dx12 owner;
+    owner._device=f.device.Get();owner._gameCommandQueue=f.producer.Get();
+    ComPtr<ID3D12Fence> completed;
+    Hr(f.device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&completed)));
+    owner._uiFence=completed.Get();owner._uiFenceEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+    Check(owner._uiFenceEvent!=nullptr,"real UI owner event");
+    std::array<Recording,4> ring;
+    for(unsigned i=0;i<ring.size();++i){
+        ring[i]=f.New();owner._uiCommandList[i]=ring[i].list.Get();
+        owner._uiCommandAllocator[i]=ring[i].allocator.Get();owner._uiCommandListResetted[i]=true;
+    }
+    QueueGate gate(f,f.producer.Get());
+    for(unsigned i=0;i<3;++i){
+        f.Record(ring[i],501+i,f.Inputs());
+        owner.ResetCompletedGuideRecordings();
+        Check(!Observe(501+i).reset,"open sampled recording is not discarded by cleanup");
+        f.Execute(ring[i],f.producer.Get());owner._uiCommandListResetted[i]=false;
+        owner._uiAllocatorFenceValues[i]=++owner._uiFenceValue;
+        Hr(f.producer->Signal(completed.Get(),owner._uiAllocatorFenceValues[i]));
+    }
+    GuideCapture::SampleToken full;
+    Check(!GuideCapture::TryBeginSample(Stream::Fg,full),"three sampled slots cannot span a four-source Reset delay");
+    owner.ResetCompletedGuideRecordings();
+    for(unsigned i=0;i<3;++i)
+        Check(!Observe(501+i).reset,"busy actual UI owner fence forbids early Reset");
+    gate.Release();f.Drain(f.producer.Get());
+    // Completion by itself leaves each executable recording and its snapshot
+    // pinned. The actual cleanup must Reset, without waiting for ring wrap.
+    Until([&]{owner.ResetCompletedGuideRecordings();
+        return Observe(501).reset&&Observe(502).reset&&Observe(503).reset;},"actual completed UI owner recordings Reset");
+    for(unsigned i=0;i<3;++i){
+        Check(Observe(501+i).reset,"completed sampled recording actually Reset");
+        Check(!owner._uiCommandListResetted[i]&&!owner._uiCloseFailed[i],"cleanup leaves closed unreserved owner recording");
+        Check(owner._uiAllocatorFenceValues[i]==i+1,"cleanup preserves actual submitted target");
+    }
+    Check(owner._uiFenceValue==3&&owner._uiCommandListResetted[3],"cleanup reserves no unsignalled target and leaves open unsampled list intact");
+    auto latest=Acquire(503);latest={};
+    f.Record(ring[3],504,f.Inputs());f.Execute(ring[3],f.producer.Get());owner._uiCommandListResetted[3]=false;
+    owner._uiAllocatorFenceValues[3]=++owner._uiFenceValue;Hr(f.producer->Signal(completed.Get(),owner._uiFenceValue));
+    f.Drain(f.producer.Get());Until([&]{owner.ResetCompletedGuideRecordings();return Observe(504).reset;},"fourth completed UI owner recording Reset");
+    latest=Acquire(504);latest={};
+    CloseHandle(owner._uiFenceEvent);Demand(PreviewMode::Off);
+}
 static void PixelNear(const std::array<unsigned char,4>& actual,float r,float g,float b,const char* why){
     const float wanted[]{r,g,b,1};for(unsigned i=0;i<4;++i)
         Check(std::abs(float(actual[i])-255.f*(std::clamp)(wanted[i],0.f,1.f))<=1.1f,why);
@@ -235,11 +391,13 @@ static void TestPixelsAndDemand(Fixture& f){
     auto cancelled=f.New();GuideCapture::SampleToken beforeFreeze;
     Until([&]{return GuideCapture::TryBeginSample(Stream::Fg,beforeFreeze);},"reservation before freezing");
     Demand(PreviewMode::FgColour,3,false,false,true);GuideCapture::SampleToken frozen;
+    Check(!GuideCapture::NeedsOpenFgGuideRecording(),"freezing an actual colour snapshot does not retain raw FG guides");
     Check(!GuideCapture::TryRecord(beforeFreeze,cancelled.list.Get(),in,Stamp(999))&&beforeFreeze.slot==UINT_MAX,"freeze cancels an already reserved sample without recording");
     Fixture::Close(cancelled);
     Check(!GuideCapture::TryBeginSample(Stream::Fg,frozen),"frozen demand grants no new samples");
     auto still=Acquire(10);Check(still.serial==colour.serial&&still.tick==colour.tick,"freeze keeps immutable snapshot and true source age");
     Demand(PreviewMode::FgMotion,3,true);NeverAcquire("mode switch never returns previous colour snapshot");
+    Check(GuideCapture::NeedsOpenFgGuideRecording(),"motion preview requires the original open guide recording");
     Check(!GuideCapture::ReadDisplayed(displayed),"mode switch clears previous displayed identity");
     auto motion=f.Complete(11,in);pixels=f.Pixels(motion);
     for(unsigned y=0;y<201;++y)for(unsigned x=0;x<321;++x){
@@ -440,7 +598,7 @@ int main(int argc,char** argv){try{
     Fixture f;if(argc==2&&std::strcmp(argv[1],"--producer-replay")==0){
         TestProducerReplay(f);std::printf("GuidePreview producer replay WARP: %u checks passed; actual repeated Execute, no device removal\n",checks);return 0;
     }
-    TestPixelsAndDemand(f);TestHistoryInspectorPixels(f);TestDisplayedRetirement(f);TestProducerGate(f);TestReaderRetirement(f);TestDelayedReceipts(f);TestBatchedHooks(f);
+    TestOpenFgGuideDemand();TestPixelsAndDemand(f);TestHistoryInspectorPixels(f);TestDisplayedRetirement(f);TestProducerGate(f);TestReaderRetirement(f);TestDelayedReceipts(f);TestBatchedHooks(f);TestCompletedOwnerRing(f);
     TestReaderReplay(f);TestQueueMismatch(f);TestSignalFailure(f);
     std::printf("GuidePreview WARP: %u checks passed; production GPU compute/display, actual queues/fences/Reset; no NVIDIA SDK/game claims\n",checks);return 0;
 }catch(const std::exception& e){GuideCapture::SetPreviewDemand({});std::fprintf(stderr,"GuidePreview WARP failure: %s\n",e.what());return 1;}}

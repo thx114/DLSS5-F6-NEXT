@@ -1,6 +1,4 @@
 #pragma once
-#include <algorithm>
-#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -201,12 +199,6 @@ struct NVNGX_Parameters : public NVSDK_NGX_Parameter
 #endif // ENABLE_ENCAPSULATED_PARAMS
 
     NVNGX_Parameters(API api, bool isPersistent);
-    ~NVNGX_Parameters()
-    {
-        auto& registry = PersistentSrObjects();
-        std::lock_guard lock(registry.mutex);
-        std::erase(registry.objects, static_cast<const NVSDK_NGX_Parameter*>(this));
-    }
 
     void Set(const char* key, unsigned long long value) override;
     void Set(const char* key, float value) override;
@@ -237,57 +229,7 @@ struct NVNGX_Parameters : public NVSDK_NGX_Parameter
 
     std::vector<std::string> enumerate() const;
 
-    // Allocation tags are mutable game-visible values, not C++ type provenance.
-    // Only constructors in this module register objects. Hold the registry lock
-    // through the complete typed snapshot so destruction cannot invalidate it.
-    static bool PersistentSrSnapshotIfOwned(const NVSDK_NGX_Parameter* parameters,
-        std::vector<std::pair<std::string, Parameter>>& snapshot)
-    {
-        auto& registry = PersistentSrObjects();
-        std::lock_guard lock(registry.mutex);
-        const auto it = std::find(registry.objects.begin(), registry.objects.end(), parameters);
-        if (it == registry.objects.end()) return false;
-        const auto* owned = static_cast<const NVNGX_Parameters*>(*it);
-        if (owned->Api != API::DX11) return false;
-        snapshot = owned->PersistentSrSnapshot();
-        return true;
-    }
-
-    // Immutable, complete, typed create recipe, frozen before provider writes.
-    std::vector<std::pair<std::string, Parameter>> PersistentSrSnapshot() const
-    {
-        std::lock_guard lock(m_mutex);
-        std::vector<std::pair<std::string, Parameter>> result(m_values.begin(), m_values.end());
-        std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-        return result;
-    }
-    static std::unique_ptr<NVNGX_Parameters> PersistentSrClone(
-        API api, const std::vector<std::pair<std::string, Parameter>>& snapshot)
-    {
-        auto result = std::make_unique<NVNGX_Parameters>(api, false);
-        result->m_values.clear();
-        for (const auto& item : snapshot) result->m_values.emplace(item.first, item.second);
-        return result;
-    }
-
   private:
-    struct PersistentSrRegistry
-    {
-        std::mutex mutex;
-        std::vector<const NVSDK_NGX_Parameter*> objects;
-    };
-    static PersistentSrRegistry& PersistentSrObjects()
-    {
-        // Constructor/destructor ordering must also work for persistent tables.
-        static auto* registry = new PersistentSrRegistry;
-        return *registry;
-    }
-    void RegisterPersistentSrObject()
-    {
-        auto& registry = PersistentSrObjects();
-        std::lock_guard lock(registry.mutex);
-        registry.objects.push_back(this);
-    }
     ankerl::unordered_dense::map<std::string, Parameter> m_values;
     mutable std::mutex m_mutex;
 

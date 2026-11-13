@@ -32,6 +32,7 @@
     <ClInclude Include="runtime\InputObservation.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="runtime\D3D12DeviceIdentity.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="runtime\GuideDiagnostics.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="runtime\NrPresentationSource.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="runtime\NrPresentationOutput.h"><Filter>Header Files</Filter></ClInclude>

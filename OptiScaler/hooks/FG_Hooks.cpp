@@ -2,8 +2,10 @@
 #include <runtime/F6InputPolicy.h>
 #include <runtime/SourcePresent.h>
 #include <runtime/ModuleLifetime.h>
+#include <runtime/D3D12DeviceIdentity.h>
 #include <framegen/FinalOutputEndpoint.h>
 #include <framegen/FgSourcePacing.h>
+#include <upscalers/CallerCpuTrace.h>
 #include <hooks/Streamline_Hooks.h>
 #include <integration/HoYoShade.h>
 #include <with_dx12/GenshinVisibleChild.h>
@@ -301,8 +303,10 @@ struct FGQueueIo
         if (hr != S_OK) return hr;
         hr = owner.fence->GetDevice(IID_PPV_ARGS(&fenceDevice));
         if (hr != S_OK) return hr;
-        if (!SameComObject(queueDevice.Get(), owner.device.Get()) ||
-            !SameComObject(fenceDevice.Get(), owner.device.Get())) return E_INVALIDARG;
+        // ReShade queues return their device proxy, while CreateFence returns
+        // an unwrapped fence whose GetDevice is the underlying native device.
+        if (!D3D12DeviceIdentity::Same(queueDevice.Get(), owner.device.Get()) ||
+            !D3D12DeviceIdentity::Same(fenceDevice.Get(), owner.device.Get())) return E_INVALIDARG;
         return owner.device->GetDeviceRemovedReason();
     }
     HRESULT Signal(UINT64 value) const { return owner.queue->Signal(owner.fence.Get(), value); }
@@ -319,34 +323,34 @@ FGHookRetirementResult CompleteFGQueue(FGSwapchainOwner* owner, bool terminal)
     ScopedFGCallback callback;
     FGQueueIo io { *owner };
     if (!io.Bound()) return { Result::Refused, E_UNEXPECTED };
-    const auto failed = [&](HRESULT hr) -> FGHookRetirementResult {
+    const auto failed = [&](HRESULT hr, const char* stage) -> FGHookRetirementResult {
         owner->quarantined = true; // Retain the exact pin/queue/device/fence on unknown completion.
-        LOG_ERROR("FG queue retirement quarantined: hr {:X}, target {}; restart required", (UINT)hr, owner->queueTarget);
+        LOG_ERROR("FG queue retirement quarantined: stage {}, hr {:X}, target {}; restart required", stage, (UINT)hr, owner->queueTarget);
         return { Result::Quarantined, fg_queue_idle::Refusal(hr) };
     };
     auto hr = io.DeviceStatus();
-    if (hr != S_OK) return failed(hr);
+    if (hr != S_OK) return failed(hr, "device-before-signal");
     if (!owner->queueTarget)
     {
-        if (owner->value >= UINT64_MAX - 1) return failed(E_UNEXPECTED);
+        if (owner->value >= UINT64_MAX - 1) return failed(E_UNEXPECTED, "counter");
         owner->queueTarget = ++owner->value;
         hr = io.Signal(owner->queueTarget);
-        if (hr != S_OK) return failed(hr); // Unknown Signal is not a new target/retry.
+        if (hr != S_OK) return failed(hr, "signal"); // Unknown Signal is not a new target/retry.
     }
     auto completed = io.Completed();
-    if (completed == UINT64_MAX) return failed(DXGI_ERROR_DEVICE_REMOVED);
+    if (completed == UINT64_MAX) return failed(DXGI_ERROR_DEVICE_REMOVED, "completed-before-wait");
     if (completed < owner->queueTarget)
     {
         if (!terminal) return { Result::Pending, DXGI_ERROR_WAS_STILL_DRAWING };
         hr = io.Arm(owner->queueTarget);
-        if (hr != S_OK) return failed(hr);
-        if (io.Wait() != WAIT_OBJECT_0) return failed(DXGI_ERROR_WAS_STILL_DRAWING);
+        if (hr != S_OK) return failed(hr, "arm");
+        if (io.Wait() != WAIT_OBJECT_0) return failed(DXGI_ERROR_WAS_STILL_DRAWING, "wait");
         completed = io.Completed();
     }
-    if (completed == UINT64_MAX) return failed(DXGI_ERROR_DEVICE_REMOVED);
-    if (completed < owner->queueTarget) return failed(DXGI_ERROR_WAS_STILL_DRAWING);
+    if (completed == UINT64_MAX) return failed(DXGI_ERROR_DEVICE_REMOVED, "completed-after-wait");
+    if (completed < owner->queueTarget) return failed(DXGI_ERROR_WAS_STILL_DRAWING, "incomplete");
     hr = io.DeviceStatus();
-    if (hr != S_OK) return failed(hr);
+    if (hr != S_OK) return failed(hr, "device-after-completion");
     owner->queueTarget = 0; // Clear only after this exact queue target really completes.
     return { Result::Completed, S_OK };
 }
@@ -1975,7 +1979,10 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     bool starRailSourceFailed = starRailSourcePresent == DLSSG_Dx12::StarRailPresent::Failed;
     const bool starRailF5DsScheduling = starRailDlssg && starRailDlssg->UsesStarRailF5DsScheduling();
     const auto fgPacingActive = [&]() {
-        const bool runtimePacing = !starRailSourceFallback || starRailF5DsScheduling;
+        // Retaining the provider during an input gap does not generate frames.
+        // A base Present must not sleep on the frozen SR token or divide its cap
+        // by the retained interpolation request. Fresh input restores pacing.
+        const bool runtimePacing = !starRailSourceFallback;
         return runtimePacing && !starRailSourceFailed && config->FGEnabled.value_or_default() &&
                fg != nullptr && state.currentFG == fg && fg->IsActive() && !fg->IsPaused();
     };
@@ -2038,15 +2045,14 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     if (willPresent && fg != nullptr && !fgFeatureActive)
         state.dlssgDetectedInterpolationCount = 0;
 
-    if (willPresent && fgFeatureActive && state.activeFgOutput == FGOutput::DLSSG &&
-        !genshinSdkTransaction && !nativeZzzDlssg)
-    {
+    const auto beginSourcePresentPacing = [&](UINT64 sourceFrame) {
+        if (sourceFrame > UINT32_MAX) return; // Never pace an aliased SDK ring ordinal.
         if ((!ReflexHooks::gameIsSendingMarkers() || !config->FGDLSSGUseGamesReflexMarkers.value_or_default()))
         {
             if (StreamlineProxy::PCLSetMarker() != nullptr)
             {
                 ((IDXGISwapChain4*) This)->GetCurrentBackBufferIndex();
-                const uint32_t frameId = (uint32_t) fg->FrameCount();
+                const uint32_t frameId = static_cast<uint32_t>(sourceFrame);
                 if (sourcePacingScope.Owns())
                 {
                     sourcePacingLease=StreamlineHooks::BeginDlssgPacing(
@@ -2081,7 +2087,10 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
                 }
             }
         }
-    }
+    };
+    if (willPresent && fgFeatureActive && state.activeFgOutput == FGOutput::DLSSG &&
+        !genshinSdkTransaction && !nativeZzzDlssg && !starRailF5DsScheduling)
+        beginSourcePresentPacing(fg->FrameCount());
 
     const bool fgPresentAdmitted = willPresent && fg != nullptr &&
         (fgFeatureActive || starRailSourceFallback || (genshinDlssg && GenshinBridgeFg::PresentScope::Current()));
@@ -2302,12 +2311,13 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 
     HRESULT result;
     const auto presentStartMs = Util::MillisecondsNow();
-    // Last admission consumes one real Dispatch or advances F5-DS's original
-    // missing-source Present counter. No old guide is tagged or dispatched.
+    // Final admission consumes one real successful Dispatch or proves SDK Off
+    // for the first missing source. No old guide is tagged or dispatched.
+    UINT64 starRailDispatchedFrame = 0;
     if (!starRailSourceFailed && starRailDlssg)
     {
         const bool pacingBeforeAdmission = fgPacingActive();
-        const auto admission = starRailDlssg->PrepareStarRailPresent(true);
+        const auto admission = starRailDlssg->PrepareStarRailPresent(true, &starRailDispatchedFrame);
         const bool newlySuppressed = !starRailSourceFallback &&
             admission == DLSSG_Dx12::StarRailPresent::NativeFallback;
         starRailSourceFailed = admission == DLSSG_Dx12::StarRailPresent::Failed;
@@ -2315,6 +2325,11 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         if (starRailF5DsScheduling ? pacingBeforeAdmission != fgPacingActive() : newlySuppressed)
             ReflexHooks::update(fgPacingActive(), false);
     }
+    // Dispatch has now applied this source's Reflex options, including after
+    // startup/recovery. Use its admitted frame, not FrameCount after callbacks.
+    // The existing lease carries precisely this token through End and Sleep.
+    if (willPresent && starRailF5DsScheduling && fgPacingActive() && starRailDispatchedFrame)
+        beginSourcePresentPacing(starRailDispatchedFrame);
     if(genshinSdkTransaction){
         genshinReflex.beforeActive=fgPacingActive();
         genshinReflex.beforePaused=fg && state.currentFG==fg && fg->IsPaused();
@@ -2357,18 +2372,31 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         tokenResult=sl::Result::eErrorInvalidState;
     }
     GenshinHookCpuTiming::WallSample starRailSdkWall;
+    std::optional<CallerCpuTrace::Scope> starRailSdkCpu;
     const bool collectSdkPresent=collectStarRailPacing || GenshinFgTimingRequested(Flags);
     if (starRailSourceFailed)
         result = DXGI_ERROR_INVALID_CALL; // Unknown input cannot consume stale guides.
     else
         result = dlssg::zzz::RunPresent(nativeZzzAction,DXGI_ERROR_INVALID_CALL,[&]() -> HRESULT {
             return ObserveFgSdkPresent(collectSdkPresent,[&]() -> HRESULT {
-                if (pPresentParameters == nullptr)
-                    return o_FGSCPresent(This, SyncInterval, Flags);
-                return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, effectivePresentParameters);
+                if (starRailTimingRoute)
+                    starRailSdkCpu.emplace(CallerCpuTrace::Op::FgSdkPresent, This, sourcePacingTokenFrame,
+                                          pacingPresentFrame, Flags);
+                const auto apiResult = pPresentParameters == nullptr
+                    ? o_FGSCPresent(This, SyncInterval, Flags)
+                    : o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, effectivePresentParameters);
+                const auto apiLastError = GetLastError();
+                if (starRailSdkCpu) {
+                    starRailSdkCpu->Stop();
+                    starRailSdkCpu->Result(static_cast<uint32_t>(apiResult));
+                }
+                SetLastError(apiLastError);
+                return apiResult;
             },&starRailSdkWall);
         });
     const auto starRailSdkResult=static_cast<uint32_t>(result); // Freeze the actual SDK return before postwork.
+    // Flush bounded CPU counters after the SDK timing adapter has stopped.
+    if (starRailSdkCpu) starRailSdkCpu->Finish();
     if (nativeZzzMarkerSource && (nativeZzzMarkerSource.serial<=3 || nativeZzzMarkerSource.serial%600==0 ||
         nativeZzzSourceFailed || FAILED(result)))
         LOG_INFO("F6 ZZZ source SDK Present: frame={} serial={} generation={} epoch={} sdk_frame={} list={} output={} sc={} admitted={} result={} upstream_api={} game_viewport={} provider_viewport={} upstream_raw={} gpu_complete=UNKNOWN generated=UNKNOWN",
@@ -2661,8 +2689,16 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         if (callReflex)
         {
             GenshinHookCpuTiming::Scope timing(GenshinHookCpuTiming::Stage::FgReflexSleep,collectPacing || collectStarRailPacing);
+            std::optional<CallerCpuTrace::Scope> apiCpu;
+            if (starRailTimingRoute)
+                apiCpu.emplace(CallerCpuTrace::Op::FgReflexSleep, This, sourcePacingTokenFrame,
+                               sourcePacingTokenFrame);
             const auto sleepResult=pacingLease->Sleep();
+            const auto apiLastError = GetLastError();
+            if (apiCpu) apiCpu->Stop();
             reflexWall = timing.Finish();
+            if (apiCpu) apiCpu->Finish(static_cast<uint32_t>(sleepResult), true);
+            SetLastError(apiLastError);
             if (collectStarRailPacing) {
                 starRailReflexWall=reflexWall;
                 starRailReflexCalled=true;

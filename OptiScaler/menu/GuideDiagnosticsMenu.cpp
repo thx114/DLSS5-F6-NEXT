@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -78,6 +79,7 @@ struct ExportJob {
     GuidePairExport::ExportIdentity identity;
     HMODULE module=nullptr;
     bool pair=true,viewKnown=false;
+    std::string pairCaptureStatus;
     GuideDiagnostics::View view;
 };
 nlohmann::ordered_json FactsJson(const FrameTrace::Facts& f) {
@@ -114,6 +116,7 @@ void WriteSnapshot(const ExportJob& job,const std::filesystem::path& path) {
         {"diskDllSHA",job.identity.diskDllSHA},{"loadedMemoryKnown",false},{"loadedMemorySHA",nullptr},
         {"observationOnly",true},{"traceSnapshotKnown",job.viewKnown},
         {"droppedEvents",job.view.droppedEvents},{"revision",job.view.revision}};
+    if(job.pair)report["pairCaptureStatus"]=job.pairCaptureStatus;
     for(const auto& lane:job.view.lanes)report["consumers"].push_back({
         {"observations",lane.observations},{"latest",SnapshotJson(lane.latest)},{"completed",SnapshotJson(lane.completed)}});
     auto events=job.view.events;
@@ -139,11 +142,16 @@ DWORD WINAPI PairWorker(void* context) noexcept {
             if(!images.empty())break;
             Sleep(20); // this explicit offline worker never blocks a source/render callback
         }
+        if(job->pair&&images.size()!=2){
+            std::array<GuideCapture::Image,2> incomplete;
+            if(GuideCapture::ReadPair(job->stream,incomplete,job->pairCaptureStatus))
+                images.assign(std::make_move_iterator(incomplete.begin()),std::make_move_iterator(incomplete.end()));
+        }
         job->identity.diskDllSHA=DiskSha256(job->dll);
         auto tracePath=job->output;tracePath.replace_extension(".trace.json");
         WriteSnapshot(*job,tracePath);
         if(!job->pair)result="Snapshot exported: "+tracePath.string();
-        else if(images.size()!=2)result="Pair unavailable: two adjacent completed source frames were not observed; trace exported";
+        else if(images.size()!=2)result="Pair unavailable: "+job->pairCaptureStatus+"; trace exported";
         else {
             job->identity.diskDllSHA=DiskSha256(job->dll);
             SYSTEMTIME utc{};GetSystemTime(&utc);

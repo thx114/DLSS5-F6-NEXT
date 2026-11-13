@@ -1,32 +1,31 @@
 # F6 当前状态
 
-2026-11-13 用户补充的9项已知问题与7项TODO已写入 [AGENTS.md](../AGENTS.md#当前已知问题与开发计划2026-11-13)；公开介绍及使用教程见 [README](../README.md)。这些事项仍未解决，不以已有代码或离线验证代替实际验收；下方保留既有部署身份。
+会话切换交接（2026-11-13）：用户要求编写交接后更换会话与模型，性能开发停在下述已部署、待手测状态。本次只更新文档；新会话从[交接第0节](F6-HANDOFF.md)的停止点和恢复顺序继续，先读当前 `AGENTS.md`。第0.05节及后续旧自主操作游戏授权已撤销，测试完全由用户手动完成；不因续接重复构建／部署。
 
-更新：2026-11-12。**原神、星铁、绝区零的 `local/F6-ASI` 包及三个隔离 runtime 已原位部署 `A6D12031`，源码基于 `75d7a27` 的未提交工作树。F6 继续负责 SR／NR／FG，`External=false`。此前菜单点击／焦点已获用户初步通过反馈，新版游戏加载、画面与周期卡顿尚待观察；HDR 暂缓。**
+更新：2026-11-13。主线是**关闭输入预览时仍存在的崩铁 FG 卡顿，以及 GPU 排队／等待**。原神用户反馈基本流畅但有排队／延迟。绝区零 FG 深度／运动预览空白已定位源码限制，用户要求先集中处理正常渲染卡顿，该预览改造已保存并撤出候选。
 
-本轮源码已移除旧功能入口和实现，保留通用 ASI 插件加载；新建包工具只引用用户自备插件目录，不复制插件。本次仅更新既有包 DLL，没有复制或运行用户 ASI。Release x64 构建及离线验证通过，2421 项冻结构建输入前后一致、948 个导出不变；冻结身份与验证见 `build/repair-20261112/asi-only-{source,artifact,tests}.json`。
+唯一产品树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`，HEAD `6cf94c0979a2697775992f4ffa8005f57c8817eb` + 累计未提交改动。不得 reset/clean；本轮未提交、未推送。游戏由用户手动测试，AI 不控制桌面或通过 CLI 启停游戏；启动器选择、INI、profiles、ASI 不变，HDR 暂缓。
 
-唯一产品写树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，`codex/f6-rewrite`。本次三游戏 ASI 授权取代此前“仅绝区零、其他游戏不变”；旧 `official/F6`、`local/F6-ZZZ-ASI`、旧 runtimes、共享正式 DLL 四硬链接与共享 `current-deployment.json` 保留。
+## 本轮修复与候选
 
-| 项目 | 当前事实 |
-|---|---|
-| 统一包 | `D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/OptiScaler/local/F6-ASI` |
-| 游戏 runtime | `cache/games/<biz>/OptiRuntime/784CEF0274B47D8E`；biz 分别为 `hk4e_cn`、`hkrpg_bilibili`、`nap_cn`，各有自己的 profile、NR 和 authority/baseline |
-| DLL | SHA256 `A6D12031D8B33AF050A81DF75029EEC7096D0AC4668D47308CC2FB6D545727D6`，33,951,744 B，`0.1.29-final (75d7a27)`；源码为 `75d7a27e9639b7f050eba3a83dea37456c2e9eed` 基础上的未提交工作树，由冻结清单绑定 |
-| 部署 | `DEPLOYED_IN_PLACE`；包与三 runtime 的 4 个 DLL alias 均已独立回读为新字节，原 FileId／完整硬链接集合保留；回退 DLL 独立核验为实际部署前的 `6D377DD4` |
-| 配置 | 三游戏均 `LoadAsiPlugins=true`、`External=false`。原 5 张生成帧／6×请求、SR／NR 参数及各自 NR 选择保留 |
-| NR | 原神 `3E83DFE5910FE9609A51197531FF446B336762C7EF273F1092BBCBD0D6DFE9B9`；星铁和绝区零 `CDFA6C1EC784867182164C7836F324F087B5C9F374D0C9FE46F54999FEABF3ED`（310.9.16-SF）。新核验 plan 固定这三份 NR 身份 |
-| 菜单改动 | Win32 后端通过线程内 bypass 读取真实状态；移除 DX11 overlay 冗余平台轮询；快捷键先于可见性 policy；不再伪造 HasGamepad 或写 WantSetMousePos；保留键盘／手柄导航，去除 Tab 重复导航框 |
-| 已确认缺陷 | 原代码能让自身 Shift 补偿读到假松键、手柄读到 neutral；重复平台轮询还会缩短 DeltaTime。它们均有可执行旧行为负控，但尚未证明是用户“冷开即点不动”的全部根因 |
-| 输入验证 | 仓库真实 ImGui 与抽取的生产 backend／input／DX11 overlay：51,959 项检查通过，8 个可执行负控和 1 个调用点清单负控检出。OS／D3D 采集使用受控 seam，未访问游戏或加载用户 ASI |
-| 当前离线验证 | 通用 ASI 224 项检查／22 个无害夹具场景、部署工具11项测试；Telemetry 53、OptionsPolicy 1132、PresetMenu 18、静态接线96；最终本地化静态1999词条、2313处中文、6个负控通过。Runtime 6034项执行后仅删5条无引用词条，最终字典重跑静态；Release x64 exit0，保留既有warning |
-| 诊断 | 每次打开菜单最多 48 条 `F6 menu input`，记录采集／消费坐标、按钮、Shift、导航、队列及输入 flags；不记录输入文本。新包日志为 `logs/<biz>/OptiScaler.log` |
-| 旧运行证据 | 固定会话 `20261112-214427_ZenlessZoneZero_193648` 已证明旧绝专属 97a2cad 加载、ASI `status=10 InitReturned`；不是新统一包／新候选的加载、显示倍率或性能证明 |
-| 保护边界 | 本次新基线1857项文件部署前后字节、FileId及大小均一致，覆盖当前配置／插件／NR、旧包／runtime、全局state和共享部署回执；三游戏构建选择仍为 `local/F6-ASI`。历史外部配置重写另留记录，没有恢复旧快照 |
-| 未改动 | 未查询、启动、终止或操控游戏；未改游戏文件、HDR、FSR 桥、正式共享部署或全局 state；不重复要求关闭 FG 对照 |
+- 正常 StarRail 路径在 `SetUpscalerGuidePair` 成功后立即提交原 guide recording 并归还共享输入，避免其归还 fence 排在 Present 的颜色复制／finished-picture NR 之后。沿用真实 Execute／Signal → DX11 GPU Wait，不增加 CPU 完成等待或资源槽位；原神已有早归还。正常Present的预览mode路由改为原子读取，避免新增长阻塞依赖。
+- FG 深度／运动和离线采样仍保留原 recording；FG 颜色预览先确认本源最终颜色已 join，再预约采样，避免提前消耗节流机会。无离线请求时需求查询直接返回，不读诊断时钟。
+- Release x64 最终构建 exit 0，90 秒，DLL `AB0B37E017C59F54608A67A8C5AA6BB2E360FAF55088A7727FFDF20A31457F2F`，33,899,520 B，mtime UTC `2026-11-13T11:26:47.5877949Z`。已有编译／链接警告仍在。
+- 独立复核发现的demand mutex依赖已修复为原子GetPreviewMode，持锁跨线程用例通过；复核未发现剩余阻断。已原位覆盖 `local/F6-StarRail-GapPacing` 与 `local/F6-ASI`，三个游戏既有runtime别名随原文件对象同步；原FileId与2／6个硬链接均保留。中间候选B84未部署。回执 `early-guides-deployment.json`、`early-guides-installed-after.json`，汇总 `early-guides-result.json`。待用户重开游戏、关闭预览手动复测，尚无本候选实机验收。
+- WARP handoff 30 场景／1186 检查及旧队列、延迟 guide 读取、缺 DX11 writer Wait 负控通过；GuideCapture／GuidePreview WARP、producer replay 检查通过。43 项 StarRail 准入、10 项预览采样门及GuideFgWiring连接检查通过。未重跑无关全量回归，无本候选实机验收。
 
-**生效步骤：由用户手动重开游戏加载新 DLL。** 本次构建选择没有变化。此前首次切换构建时要求完整重启启动器，是为刷新 GUI 配置缓存，不能据旧步骤推断本次游戏已经加载新版。
+## 手动测试与未解决项
 
-当前构建指针为 `build/current-{artifact,build,tests}.json`；隔离部署回执为 `build/current-asi-deployment.json` 和 `build/current-game-deployment-<biz>.json`，共享 `build/current-deployment.json` 未改。本次新基线、DLL写入及独立复核分别是 `build/repair-20261112/asi-only-deployment-pre.json`、`asi-only-dll-deployment.json`、`asi-only-deployment-verification.json`。回退路径见回执，旧指针备份为同目录 `asi-only-before-deploy-*`。历史 `menu-input-*`、`three-game-asi-*`、`zzz-asi-*` 保留；旧plan不满足当前 `UserPluginsPath` 规则，不用新工具重新prepare或verify现有旧包。
+证据目录 `build/fg-runtime-followup-20261113/`。崩铁 PID188816（26B）用户反馈“有所改善，但仍会卡顿”；持续前台约98秒段的 SR 输入间隔中位44.730 ms、P95 57.869 ms，174份有效唯一Reflex报告的GPU启动前等待中位48.460 ms、P95 56.179 ms。`copyAllocatorCpuWait` 前台样本最高40.555 ms，保护真实仍在读取共享纹理的GPU工作，不能直接删除。
 
-回退可在启动器切回各游戏原构建选择（原神／星铁 `official/F6`，绝区零 `local/F6-ZZZ-ASI`）；若只回退新统一包 DLL，沿已核回退字节用 `Deploy-F6.ps1 -BuildId local/F6-ASI` 原位写入并复核全部 alias。占用只暂存 `.next`，不查询或终止游戏，不把暂存当成功部署。
+原神 PID209436 使用A6构建，用户反馈基本流畅但有排队／延迟；周期前台观测内873份有效唯一Reflex报告的GPU启动前等待中位17.663 ms、P95 51.019 ms；复制槽CPU等待样本最高50.029 ms。首帧Exposure缺失和两次Off+retain `eErrorInvalidState` 均保留，不宣称零错误。两游戏构建和场景不同，不作横向性能结论。
+
+崩铁部分约半秒新Evaluate空档与用户ASI日志的feature_parked/reused区间对应，Present仍继续；这只能确认逻辑feature生命周期空档，不能归因为ASI吞调用。Reflex GPU区间减活跃时间也不能证明CPU导致GPU空闲，尚无同帧跨时钟关联。新候选无实际显示间隔采样或加载内存SHA。
+
+绝区零 PID201984实际使用A6，日志已有真实producer提交、SR成功及depth/MV tags accepted，尚不等于最终有效插帧。原生SR游戏列表与预览要求的独立UI列表不同，存在确定源码拒绝；本局日志未直接记录该拒绝命中。未完成的copy-only预览方案在 `native-preview-deferred.patch`，不在当前DLL中。
+
+## 下一步与保留边界
+
+最终DLL已原位覆盖，下一步请用户手动重开游戏、关闭预览复测战斗卡顿和GPU排队。继续区分SR新输入空档、复制槽退休等待与SDK Present／Reflex等待；早归还只收窄已确认依赖，不宣称消除全部卡顿。
+
+SR对象缓存继续由用户自备 `NgxFeatureCache.asi` 负责，不恢复内置PersistentSR。无depth/motion的菜单FG尚未实现；不借旧帧、不造假guides、不删除真实同步、不扩大池。9项已知问题与7项TODO继续保留。源码保存点、日志及回执见[交接第0节](F6-HANDOFF.md)。

@@ -2,6 +2,8 @@
 
 #include "dx11_with_dx12.h"
 #include "with_dx12.h"
+#include <upscalers/CallerCpuTrace.h>
+#include <framegen/dlssg/DLSSG_Dx12.h>
 
 #define ASSIGN_DESC(dest, src)                                                                                         \
     dest.Width = src.Width;                                                                                            \
@@ -212,23 +214,39 @@ bool Dx11WithDx12::EnsureSyncResourcesLocked()
 
 bool Dx11WithDx12::SyncDx11ToDx12()
 {
+    // Fence lifetime is protected by SyncMutex; do not sample it before acquiring the lock.
+    CallerCpuTrace::Scope mutexCpu(CallerCpuTrace::Op::SrSyncMutex, Dx11DeviceContext, 0,
+                                   UpscalerResourceCache.frameId);
     std::lock_guard<std::mutex> lock(SyncMutex);
+    mutexCpu.Finish();
 
     if (!EnsureSyncResourcesLocked())
         return false;
 
     const auto fenceValue = TextureCopyFenceValue++;
 
+    CallerCpuTrace::Scope signalCpu(CallerCpuTrace::Op::SrSyncSignal, Dx11DeviceContext,
+                                    reinterpret_cast<uint64_t>(Dx11FenceTextureCopy), UpscalerResourceCache.frameId,
+                                    UINT64_MAX, fenceValue);
     auto result = Dx11DeviceContext->Signal(Dx11FenceTextureCopy, fenceValue);
+    signalCpu.Finish(static_cast<uint32_t>(result), true);
     if (result != S_OK)
     {
         LOG_ERROR("Dx11WithDx12 Dx11 signal failed for fence {}: {:X}", fenceValue, (UINT) result);
         return false;
     }
 
+    CallerCpuTrace::Scope flushCpu(CallerCpuTrace::Op::SrSyncFlush, Dx11DeviceContext,
+                                   reinterpret_cast<uint64_t>(Dx11FenceTextureCopy), UpscalerResourceCache.frameId,
+                                   UINT64_MAX, fenceValue);
     Dx11DeviceContext->Flush();
+    flushCpu.Finish();
 
+    CallerCpuTrace::Scope queueWaitCpu(CallerCpuTrace::Op::SrSyncQueueWait, Dx12CommandQueue,
+                                       reinterpret_cast<uint64_t>(Dx12FenceTextureCopy), UpscalerResourceCache.frameId,
+                                       UINT64_MAX, fenceValue);
     result = Dx12CommandQueue->Wait(Dx12FenceTextureCopy, fenceValue);
+    queueWaitCpu.Finish(static_cast<uint32_t>(result), true);
     if (result != S_OK)
     {
         LOG_ERROR("Dx11WithDx12 Dx12 wait failed for fence {}: {:X}", fenceValue, (UINT) result);
@@ -733,7 +751,10 @@ bool Dx11WithDx12::OpenHandle(std::string name, ID3D12Device* dx12Device, ID3D11
         shared->Dx12Handle = NULL;
         shared->OpenedDx12Device = nullptr;
 
+        CallerCpuTrace::Scope openCpu(CallerCpuTrace::Op::SrSharedOpen, shared,
+                                      reinterpret_cast<uint64_t>(shared->Dx11Handle), UpscalerResourceCache.frameId);
         auto result = dx12Device->OpenSharedHandle(shared->Dx11Handle, IID_PPV_ARGS(&shared->Dx12Resource));
+        openCpu.Finish(static_cast<uint32_t>(result), true);
 
         if (result != S_OK || shared->Dx12Resource == nullptr)
         {
@@ -824,9 +845,11 @@ bool GetNgxD3D11Resource(const NVSDK_NGX_Parameter* parameters, const char* para
     return *outResource != nullptr;
 }
 
-bool PrepareCachedResource(const char* name, const NVSDK_NGX_Parameter* parameters, const char* paramName,
+bool PrepareCachedResource(const char* name, CallerCpuTrace::Op prepareOp,
+                           const NVSDK_NGX_Parameter* parameters, const char* paramName,
                            Dx11WithDx12::D3D11_TEXTURE2D_RESOURCE_C* cacheEntry, bool copy, bool depth, bool required,
-                           bool dontUseNTShared, UINT64 frameId, ID3D12Device* dx12Device, bool* missing)
+                           bool dontUseNTShared, UINT64 frameId, ID3D12Device* dx12Device, bool* missing,
+                           UINT64 slot = UINT64_MAX)
 {
     if (missing != nullptr)
         *missing = false;
@@ -851,8 +874,13 @@ bool PrepareCachedResource(const char* name, const NVSDK_NGX_Parameter* paramete
         return !required;
     }
 
-    return Dx11WithDx12::PrepareTextureFrom11To12(name, dx12Device, resource, cacheEntry, copy, depth, dontUseNTShared,
-                                                  frameId);
+    // The entry handle may be replaced during prepare; SrSharedOpen records the actual opened handle.
+    CallerCpuTrace::Scope prepareCpu(prepareOp, cacheEntry, reinterpret_cast<uint64_t>(cacheEntry->Dx11Handle),
+                                     frameId, slot);
+    const bool prepared = Dx11WithDx12::PrepareTextureFrom11To12(name, dx12Device, resource, cacheEntry, copy, depth,
+                                                               dontUseNTShared, frameId);
+    prepareCpu.Finish(prepared, true);
+    return prepared;
 }
 } // namespace
 
@@ -883,6 +911,15 @@ Dx11WithDx12::PrepareResourcesResult Dx11WithDx12::PrepareUpscalerResources(cons
         return result;
     }
 
+    // A game can Evaluate again without Present. Seal the previous source's
+    // actual FG reads before any shared cache entry is replaced or written.
+    // Lifecycle locks serialization only; Inputs would advance StarRail's
+    // admission before the old borrowed recording has been handed back.
+    auto* guideOwner=dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG);
+    if (guideOwner && !guideOwner->OwnsUpscalerDepthContract()) guideOwner=nullptr;
+    auto readerGuard=guideOwner ? guideOwner->GuardExecution(FGExecutionScope::Lifecycle) : FGExecutionGuard{};
+    if (guideOwner && !guideOwner->SealDx11GuideInputs(true,Dx12CommandQueue)) return result;
+
     auto& cache = GetUpscalerResourceCache();
     const auto outputIndex = frameIndex % DX11_WITH_DX12_CACHED_FRAMES;
     cache.frameId = frameId;
@@ -892,24 +929,25 @@ Dx11WithDx12::PrepareResourcesResult Dx11WithDx12::PrepareUpscalerResources(cons
     if (CheckMask(mask, ResourceMask::Color))
     {
         missing = false;
-        ok &= PrepareCachedResource("Color", parameters, NVSDK_NGX_Parameter_Color, &cache.Color, true, false, true,
-                                    dontUseNTShared, frameId, Dx12Device, &missing);
+        ok &= PrepareCachedResource("Color", CallerCpuTrace::Op::SrPrepareColor, parameters, NVSDK_NGX_Parameter_Color,
+                                    &cache.Color, true, false, true, dontUseNTShared, frameId, Dx12Device, &missing);
         result.MissingColor = missing;
     }
 
     if (CheckMask(mask, ResourceMask::Mv))
     {
         missing = false;
-        ok &= PrepareCachedResource("MotionVectors", parameters, NVSDK_NGX_Parameter_MotionVectors, &cache.Mv, true,
-                                    false, true, dontUseNTShared, frameId, Dx12Device, &missing);
+        ok &= PrepareCachedResource("MotionVectors", CallerCpuTrace::Op::SrPrepareMv, parameters,
+                                    NVSDK_NGX_Parameter_MotionVectors, &cache.Mv, true, false, true, dontUseNTShared,
+                                    frameId, Dx12Device, &missing);
         result.MissingMv = missing;
     }
 
     if (CheckMask(mask, ResourceMask::Depth))
     {
         missing = false;
-        ok &= PrepareCachedResource("Depth", parameters, NVSDK_NGX_Parameter_Depth, &cache.Depth, true, true, true,
-                                    dontUseNTShared, frameId, Dx12Device, &missing);
+        ok &= PrepareCachedResource("Depth", CallerCpuTrace::Op::SrPrepareDepth, parameters, NVSDK_NGX_Parameter_Depth,
+                                    &cache.Depth, true, true, true, dontUseNTShared, frameId, Dx12Device, &missing);
         result.MissingDepth = missing;
     }
 
@@ -920,23 +958,26 @@ Dx11WithDx12::PrepareResourcesResult Dx11WithDx12::PrepareUpscalerResources(cons
             cache.ParamOutput[outputIndex] = paramOutput;
 
         missing = false;
-        ok &= PrepareCachedResource("Output", parameters, NVSDK_NGX_Parameter_Output, &cache.Output[outputIndex], false,
-                                    false, true, dontUseNTShared, frameId, Dx12Device, &missing);
+        ok &= PrepareCachedResource("Output", CallerCpuTrace::Op::SrPrepareOutput, parameters,
+                                    NVSDK_NGX_Parameter_Output, &cache.Output[outputIndex], false, false, true,
+                                    dontUseNTShared, frameId, Dx12Device, &missing, outputIndex);
         result.MissingOutput = missing;
     }
 
     if (CheckMask(mask, ResourceMask::Exposure))
     {
         missing = false;
-        ok &= PrepareCachedResource("Exposure", parameters, NVSDK_NGX_Parameter_ExposureTexture, &cache.Exposure, true,
-                                    false, true, dontUseNTShared, frameId, Dx12Device, &missing);
+        ok &= PrepareCachedResource("Exposure", CallerCpuTrace::Op::SrPrepareExposure, parameters,
+                                    NVSDK_NGX_Parameter_ExposureTexture, &cache.Exposure, true, false, true,
+                                    dontUseNTShared, frameId, Dx12Device, &missing);
         result.MissingExposure = missing;
     }
 
     if (CheckMask(mask, ResourceMask::Reactive))
     {
         missing = false;
-        ok &= PrepareCachedResource("ReactiveMask", parameters, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask,
+        ok &= PrepareCachedResource("ReactiveMask", CallerCpuTrace::Op::SrPrepareReactive, parameters,
+                                    NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask,
                                     &cache.Reactive, true, false, reactiveRequired, dontUseNTShared, frameId,
                                     Dx12Device, &missing);
         result.MissingReactive = missing;

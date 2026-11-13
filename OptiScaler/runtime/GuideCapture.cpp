@@ -11,7 +11,7 @@
 #include <mutex>
 
 namespace GuideCapture {
-namespace PreviewDetail {bool Poll();bool PrepareOne();bool Executing(ID3D12CommandQueue*,UINT,ID3D12CommandList* const*,ExecutionReceipt&);bool Submitted(ID3D12CommandQueue*,UINT,ID3D12CommandList* const*,const ExecutionReceipt&);bool Reset(ID3D12GraphicsCommandList*);}
+namespace PreviewDetail {bool Poll();bool PrepareOne();bool Executing(ID3D12CommandQueue*,UINT,ID3D12CommandList* const*,ExecutionReceipt&);bool Submitted(ID3D12CommandQueue*,UINT,ID3D12CommandList* const*,const ExecutionReceipt&);bool Reset(ID3D12GraphicsCommandList*);bool NeedsReset(ID3D12GraphicsCommandList*);}
 namespace {
 using Microsoft::WRL::ComPtr;
 constexpr unsigned Slots=3,MaxWidth=160,MaxHeight=100,SampleBytes=32;
@@ -328,10 +328,13 @@ bool Wanted(Stream stream) noexcept {
 }
 bool OfflineWanted(Stream stream) noexcept {
     const auto index=static_cast<unsigned>(stream);
-    if(index>=static_cast<unsigned>(Stream::Count))return false;auto& s=Storage();auto& lane=s.lanes[index];const auto now=GuideDiagnostics::Now();
-    return (stream==Stream::History&&s.historyMeasurementDeadline.load(std::memory_order_acquire)>now)||
-        (lane.pairDeadline.load(std::memory_order_acquire)>now&&lane.pairCaptured.load(std::memory_order_acquire)<2)||
-        (s.demand.load(std::memory_order_acquire)>now&&(s.streams.load(std::memory_order_acquire)&(1u<<index))!=0);
+    if(index>=static_cast<unsigned>(Stream::Count))return false;auto& s=Storage();auto& lane=s.lanes[index];
+    const auto history=stream==Stream::History?s.historyMeasurementDeadline.load(std::memory_order_acquire):0;
+    const auto pair=lane.pairCaptured.load(std::memory_order_acquire)<2?lane.pairDeadline.load(std::memory_order_acquire):0;
+    const auto demand=(s.streams.load(std::memory_order_acquire)&(1u<<index))!=0?s.demand.load(std::memory_order_acquire):0;
+    if(!history&&!pair&&!demand)return false;
+    const auto now=GuideDiagnostics::Now();
+    return history>now||pair>now||demand>now;
 }
 bool OfflineSampleDue(Stream stream) noexcept {
     if(!OfflineWanted(stream))return false;
@@ -483,6 +486,16 @@ void Reset(ID3D12GraphicsCommandList* list) noexcept {
         }}Wake(s);
     }catch(...){}
 }
+bool NeedsReset(ID3D12GraphicsCommandList* list) noexcept {
+    if(!list)return false;try{auto& s=Storage();
+        if(PreviewDetail::NeedsReset(list))return true;
+        ID3D12CommandList* base=list;if(!ActiveMatches(s,1,&base))return false;
+        std::unique_lock lock(s.lifecycle,std::try_to_lock);if(!lock.owns_lock())return false;
+        for(auto& lane:s.lanes)for(auto& b:lane.batches)
+            if(b&&b->list.Get()==list&&!b->reset&&b->phase!=Phase::Ready&&
+               b->phase!=Phase::Recording&&b->phase!=Phase::Cleaning&&b->phase!=Phase::Quarantined)return true;
+    }catch(...){}return false;
+}
 bool Read(Stream stream,Image& image,std::string& status) noexcept {
     if(static_cast<unsigned>(stream)>=static_cast<unsigned>(Stream::Count))return false;
     try{auto& s=Storage();auto& lane=s.lanes[static_cast<unsigned>(stream)];std::shared_ptr<const Image> latest;
@@ -530,7 +543,7 @@ bool ReadPair(Stream stream,std::array<Image,2>& out,std::string& status) noexce
     try{auto& s=Storage();auto& lane=s.lanes[n];std::array<std::shared_ptr<const Image>,2> images;
         {std::unique_lock lock(s.publication,std::try_to_lock);if(!lock.owns_lock()){status="Offline pair publication busy";return false;}images=lane.pairImages;}
         status=lane.status.load(std::memory_order_acquire);if(!images[0]||!images[1]){
-            if(lane.pairDeadline.load()<=GuideDiagnostics::Now())status="Offline pair stopped/expired; incomplete observations cannot be joined";return false;}
+            if(lane.pairDeadline.load()<=GuideDiagnostics::Now())status="Offline pair stopped/expired: "+status;return false;}
         const auto& a=images[0]->stamp;const auto& b=images[1]->stamp;
         if(!images[0]->valid||!images[1]->valid||a.epoch!=b.epoch||a.feature!=b.feature||a.configuration!=b.configuration||a.owner!=b.owner||
             a.source==UINT64_MAX||b.source!=a.source+1||images[0]->width!=images[1]->width||images[0]->height!=images[1]->height)return false;

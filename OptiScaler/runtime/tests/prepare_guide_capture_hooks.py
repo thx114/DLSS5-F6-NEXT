@@ -3,14 +3,14 @@ from pathlib import Path
 import sys
 root = Path(__file__).resolve().parents[3]
 source = (root / 'OptiScaler/shaders/dlssnr/DlssNr_Late.inl').read_text(encoding='utf-8-sig')
-def body(signature):
-    begin = source.index(signature)
-    cursor = source.index('{', begin) + 1
+def body(signature, text=source):
+    begin = text.index(signature)
+    cursor = text.index('{', begin) + 1
     depth = 1
     while depth:
-        depth += (source[cursor] == '{') - (source[cursor] == '}')
+        depth += (text[cursor] == '{') - (text[cursor] == '}')
         cursor += 1
-    return source[begin:cursor]
+    return text[begin:cursor]
 pre = body('GuideCapture::ExecutionReceipt FinishedPictureSubmitting(')
 post = body('void FinishedPictureSubmitted(')
 nr = body('static void FinishedPictureSubmittedReal(')
@@ -24,4 +24,10 @@ assert 'GuideCapture::Submitted(queue,batch,realLists.data(),receipt)' in ''.joi
 target = Path(sys.argv[1])
 target.parent.mkdir(parents=True, exist_ok=True)
 target.write_text(pre + '\n' + post + '\n', encoding='utf-8')
+owner = (root / 'OptiScaler/framegen/dlssg/DLSSG_Dx12.cpp').read_text(encoding='utf-8-sig')
+base = (root / 'OptiScaler/framegen/IFGFeature_Dx12.cpp').read_text(encoding='utf-8-sig')
+poll = body('IFGFeature_Dx12::UIAllocatorStatus IFGFeature_Dx12::PollUIAllocator(', base)
+poll = poll.replace('IFGFeature_Dx12::', 'DLSSG_Dx12::')
+retire = body('void DLSSG_Dx12::ResetCompletedGuideRecordings(', owner)
+target.with_name('GuidePreviewOwnerProduction.inl').write_text(poll + '\n' + retire + '\n', encoding='utf-8')
 print('Actual canonical sampler hooks extracted; NR watcher gate remains separate')

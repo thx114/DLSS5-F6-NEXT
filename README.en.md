@@ -77,6 +77,8 @@ Replace the placeholder with a real path, then restart the game. The project pro
 
 When using this project's frame generation pipeline, set `[FrameGen] External = false`. ASI plugin loading is a separate setting.
 
+Star Rail can optionally use your own `NgxFeatureCache.asi` to retain SR objects across UI transitions and reduce repeated feature creation. Keep the plugin and its `NgxFeatureCache.ini` together in a Star Rail plugin directory and point `Path` to it. F6 no longer includes the PersistentSR object pool; the external plugin owns SR object reuse, while NR and FG remain separate. The plugin is not distributed with this project. Check UI performance on your device; this cache does not supply menu FG when depth and motion inputs are absent.
+
 ## Configurations for the three games
 
 These configuration snapshots were exported on **2026-11-13** from each game's current runtime directory. They preserve the separate SR, NR, detail retention, FG, and interface settings for reference and adjustment.

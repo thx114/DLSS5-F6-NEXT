@@ -18,6 +18,7 @@ paths = [ROOT / p for p in (
     'OptiScaler/with_dx12/with_dx12.cpp',
     'OptiScaler/with_dx12/dx11_with_dx12.cpp',
     'OptiScaler/framegen/dlssg/DLSSG_Dx12.cpp',
+    'OptiScaler/framegen/IFGFeature_Dx12.cpp',
 )]
 sources = [p.read_text(encoding='utf-8-sig') for p in paths]
 take = parser.extract
@@ -32,6 +33,11 @@ submit = take(sources[4], 'bool DLSSG_Dx12::SubmitUICommandList(')
 submit = parser.replace_once(submit,
     '_gameCommandQueue->Signal(_uiFence,_uiAllocatorFenceValues[index])',
     'TestUiSignal(_gameCommandQueue,_uiFence,_uiAllocatorFenceValues[index])')
+base_submit = take(sources[5], 'bool IFGFeature_Dx12::SubmitUICommandList(')
+base_submit = parser.replace_once(base_submit,
+    '_gameCommandQueue->Signal(_uiFence, _uiAllocatorFenceValues[index])',
+    'TestUiSignal(_gameCommandQueue,_uiFence,_uiAllocatorFenceValues[index])')
+receipt = take(sources[4], 'void DLSSG_Dx12::RecordDx11GuideSubmission(')
 handback = take(sources[3], 'bool Dx11WithDx12::SyncDx12ToDx11(')
 negative_handback = parser.replace_once(handback,
     'Dx11DeviceContext->Wait(Dx11FenceTextureCopy, fenceValue)', 'S_OK /* negative: omitted real DX11 wait */')
@@ -47,6 +53,6 @@ out.write_text(header + '\nnamespace framegen::final_output {\n' +
     take(sources[1], 'CreationScope::CreationScope(') + '\n' +
     take(sources[1], 'CreationScope::~CreationScope(') + '\n}\n' +
     adopt + '\n' + setter + '\n' + baseline_adopt + '\n' + baseline_setter + '\n' +
-    handback + '\n' + negative_handback + '\n' + submit + '\n' +
+    handback + '\n' + negative_handback + '\n' + base_submit + '\n' + receipt + '\n' + submit + '\n' +
     seal + '\n', encoding='utf-8')
 print('PASS extracted actual adoption/creation scope, UI submission, guide seal and shared-fence handback')

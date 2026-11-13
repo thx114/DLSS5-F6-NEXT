@@ -21,7 +21,10 @@ enum class Op : unsigned
     SharedOpenHandle, Dx11Copy, Dx11CopyGetBuffer, Dx11Sync, Dx11Signal, Dx11Flush, CopyQueueWaitSubmit,
     CopyAllocatorWait, InteropCopy, CopyAllocatorReset, CopyListReset, FgGetBuffer, CopyExecute, CopySignal,
     NativeCopy, NativeProducer, NativeAllocatorReset, NativeListReset, NativeGetBuffer, NativeExecute, NativeSignal,
-    PresentQueueWaitSubmit, CopyIdleWait, QueueIdle, QueueIdleWait, NrPresent, Resize, ResizeMutexWait, Count
+    PresentQueueWaitSubmit, CopyIdleWait, QueueIdle, QueueIdleWait, NrPresent, Resize, ResizeMutexWait,
+    FgSdkPresent, FgReflexSleep, SrSyncMutex, SrSyncSignal, SrSyncFlush, SrSyncQueueWait,
+    SrPrepareColor, SrPrepareMv, SrPrepareDepth, SrPrepareOutput, SrPrepareExposure, SrPrepareReactive,
+    SrSharedOpen, FgDlssgOptions, FgReflexOptions, FgUiAllocatorWait, Count
 };
 inline constexpr const char* Names[] = {
     "srEvaluate", "srEntryInterval", "srOutsideUnknown", "srInit", "srCreateObjects", "srPrepareResources",
@@ -32,7 +35,10 @@ inline constexpr const char* Names[] = {
     "sharedOpenHandle", "dx11CopyOrResolve", "dx11CopyGetBuffer", "dx11Sync", "dx11SignalSubmit", "dx11Flush", "copyQueueWaitSubmit",
     "copyAllocatorCpuWait", "interopCopyInclusive", "copyAllocatorReset", "copyListReset", "fgGetBuffer", "copyExecuteSubmit", "copySignalSubmit",
     "nativeCopyInclusive", "nativeProducer", "nativeAllocatorReset", "nativeListReset", "nativeFgGetBuffer", "nativeExecuteSubmit", "nativeSignalSubmit",
-    "presentQueueWaitSubmit", "copyIdleCpuWait", "queueIdleInclusive", "queueIdleCpuWait", "nrPresentInclusive", "resizeInclusive", "resizeMutexCpuWait"
+    "presentQueueWaitSubmit", "copyIdleCpuWait", "queueIdleInclusive", "queueIdleCpuWait", "nrPresentInclusive", "resizeInclusive", "resizeMutexCpuWait",
+    "fgSdkPresent", "fgReflexSleep", "srSyncMutexWait", "srSyncSignalSubmit", "srSyncFlush", "srSyncQueueWaitSubmit",
+    "srPrepareColor", "srPrepareMotion", "srPrepareDepth", "srPrepareOutput", "srPrepareExposure", "srPrepareReactive",
+    "srSharedOpen", "fgDlssgOptions", "fgReflexOptions", "fgUiAllocatorCpuWait"
 };
 static_assert(sizeof(Names) / sizeof(Names[0]) == static_cast<unsigned>(Op::Count));
 inline uint64_t Tick() { LARGE_INTEGER v{}; QueryPerformanceCounter(&v); return v.QuadPart; }
@@ -77,7 +83,7 @@ inline void RollWindow(uint64_t now)
     if (s.window && now - s.window < s.hz * 5) return;
     uint64_t utc, before, after; Anchor(utc, before, after);
     if (!s.window)
-        CALLER_CPU_TRACE_LOG("CallerCPU schema=1 marker=STAR-STALLS-CPU-7 pid={} tid={} hz={} utcFiletime100ns={} anchorQpcBefore={} anchorQpcAfter={} coverageComplete=false cpuOnly=true nested=true boundaryContinuity=thread_local budgetsPer5s=32ge50_8ge20 perOp=4ge50_1ge20 tailCountersMayBeUnflushed=true", s.pid, s.tid, s.hz, utc, before, after);
+        CALLER_CPU_TRACE_LOG("CallerCPU schema=1 marker=STAR-STALLS-CPU-8 pid={} tid={} hz={} utcFiletime100ns={} anchorQpcBefore={} anchorQpcAfter={} coverageComplete=false cpuOnly=true nested=true boundaryContinuity=thread_local budgetsPer5s=32ge50_8ge20 perOp=4ge50_1ge20 tailCountersMayBeUnflushed=true", s.pid, s.tid, s.hz, utc, before, after);
     else
     {
         for (unsigned i = 0; i < s.counts.size(); ++i)

@@ -181,6 +181,12 @@ bool Reset(ID3D12GraphicsCommandList* list){
     Each([&](Slot& slot,Use& u,unsigned,bool producer){if(!u.Active()||u.quarantined||u.reset||u.list.Get()!=base)return;
         u.reset=true;if(!u.pre){u.done=true;if(producer)slot.discarded=true;}});return true;
 }
+bool NeedsReset(ID3D12GraphicsCommandList* list){
+    ID3D12CommandList* base=list;if(!Matches(1,&base))return false;auto& s=Get();
+    std::unique_lock lock(s.mutex,std::try_to_lock);if(!lock.owns_lock())return false;
+    bool needed=false;Each([&](Slot&,Use& u,unsigned,bool){
+        needed|=u.Active()&&!u.reset&&!u.quarantined&&u.list.Get()==base;});return needed;
+}
 } // namespace PreviewDetail
 void SetPreviewDemand(const PreviewDemand& requested) noexcept {
     try {auto& s=PreviewDetail::Get();auto d=requested;
@@ -199,12 +205,21 @@ void SetPreviewDemand(const PreviewDemand& requested) noexcept {
     }catch(...){}
 }
 PreviewDemand GetPreviewDemand() noexcept {try {auto& s=PreviewDetail::Get();std::lock_guard lock(s.mutex);return s.demand;}catch(...){return {};}}
+PreviewMode GetPreviewMode() noexcept {
+    return static_cast<PreviewMode>(PreviewDetail::Get().mode.load(std::memory_order_acquire));
+}
 unsigned HistoryDebugView() noexcept {
     // Advisory demand only. Contention must not masquerade as Off and cause
     // the NR path to retire/reallocate its diagnostic scratch repeatedly.
     return PreviewDetail::Get().historyView.load(std::memory_order_acquire);
 }
-bool PreviewActive() noexcept {return PreviewDetail::Get().mode.load(std::memory_order_acquire)!=0;}
+bool PreviewActive() noexcept {return GetPreviewMode()!=PreviewMode::Off;}
+bool NeedsOpenFgGuideRecording() noexcept {
+    const auto mode=GetPreviewMode();
+    // Conservatively keep a selected guide recording open even if frozen or
+    // the optional preview mutex is busy. Neither is evidence of no demand.
+    return mode==PreviewMode::FgDepth||mode==PreviewMode::FgMotion||OfflineWanted(Stream::Fg);
+}
 bool PreviewWanted(Stream stream) noexcept {
     auto& s=PreviewDetail::Get();if(PreviewDetail::Selected(static_cast<PreviewMode>(s.mode.load(std::memory_order_acquire)))!=stream)return false;
     try{std::unique_lock lock(s.mutex,std::try_to_lock);return lock.owns_lock()&&!s.demand.frozen;}catch(...){return false;}

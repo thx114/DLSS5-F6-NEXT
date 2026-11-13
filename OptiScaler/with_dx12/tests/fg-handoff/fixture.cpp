@@ -95,27 +95,39 @@ bool failUiSignal=false,omitWriterWait=false;
 HRESULT TestUiSignal(ID3D12CommandQueue* q,ID3D12Fence* f,UINT64 v) {return failUiSignal?E_FAIL:q->Signal(f,v);}
 #define LOG_DEBUG(...) ((void)0)
 #define LOG_ERROR(...) ((void)0)
-struct IFGFeature_Dx12 {bool SubmitUICommandList(UINT){return false;}};
-struct DLSSG_Dx12 : IFGFeature_Dx12 {
-    std::recursive_mutex _inputContinuityMutex;
-    bool _starRailUiFailed=false,_managedRetained=false,quarantined=false,active=true;
+struct IFGFeature_Dx12 {
     bool _uiCommandListResetted[BUFFER_COUNT]{true,false},_uiCloseFailed[BUFFER_COUNT]{};
     ID3D12CommandQueue* _gameCommandQueue=nullptr;
     ID3D12Fence* _uiFence=nullptr;
     ID3D12GraphicsCommandList* _uiCommandList[BUFFER_COUNT]{};
     UINT64 _uiFenceValue=0,_uiAllocatorFenceValues[BUFFER_COUNT]{};
+    bool SubmitUICommandList(UINT);
+};
+struct DLSSG_Dx12 : IFGFeature_Dx12 {
+    std::recursive_mutex _inputContinuityMutex;
+    bool _starRailUiFailed=false,_managedRetained=false,quarantined=false,active=true,starRail=false;
     bool _dx11GuideBorrowed[BUFFER_COUNT]{true,false};
     UINT64 _dx11GuideSealedFrame[BUFFER_COUNT]{},_frameCount=1;
+    struct GuideTag {
+        bool accepted=true;UINT64 frame=1,generation=1;int owner=1;
+        struct {ID3D12GraphicsCommandList* cmdList=nullptr;} input;
+    } _guideTags[BUFFER_COUNT][2];
+    struct {UINT64 SourceGeneration() const{return 1;}} _inputContinuity;
+    struct Dx11GuideSubmission {
+        UINT64 frame=0,generation=0,value=0;ID3D12Fence* fence=nullptr;ID3D12CommandQueue* queue=nullptr;
+    } _dx11GuideSubmissions[BUFFER_COUNT];
     unsigned captures=0,observed=0;
     UINT GetIndex(){return 0;}
     bool CanSubmitInputs(){return active && !quarantined;}
-    bool IsStarRailUiOwner(){return false;}
+    bool IsStarRailUiOwner(){return starRail;}
+    int CurrentInputOwner(){return 1;}
     void FailStarRailUiFrame(){active=false;}
     void ObserveGuideSubmission(UINT,ID3D12Fence*,UINT64){++observed;}
     void CaptureAcceptedGuides(UINT){++captures;} // Optional sampler disabled; GPU copy below stands for the SDK snapshot.
     void Deactivate(){active=false;}
     void QuarantineFailedTeardown(){quarantined=true;} // Actual quarantine ownership checked separately in wiring.
     bool SubmitUICommandList(UINT);
+    void RecordDx11GuideSubmission(UINT) noexcept;
     bool SealDx11GuideInputs(bool,ID3D12CommandQueue*);
 };
 #include "FgHandoffProduction.inl"
@@ -175,6 +187,7 @@ struct Warp {
         list->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
         std::swap(barrier.Transition.StateBefore,barrier.Transition.StateAfter);list->ResourceBarrier(1,&barrier);
         fg._gameCommandQueue=client.Get();fg._uiFence=uiDone.Get();fg._uiCommandList[0]=list.Get();
+        for(auto& tag:fg._guideTags[0])tag.input.cmdList=list.Get();
         Dx11WithDx12::Dx11DeviceContext=context4.Get();Dx11WithDx12::Dx11FenceTextureCopy=ready11.Get();
         Dx11WithDx12::Dx12FenceTextureCopy=ready12.Get();Dx11WithDx12::Dx12CommandQueue=client.Get();
         Dx11WithDx12::Dx11Device=Dx11WithDx12::SyncDx11Device=device5.Get();
@@ -224,11 +237,17 @@ void QueueIdentity(bool baseline=false) {
     }
     Check(!framegen::final_output::CreationScope::Active(),"creation scope restores source role");
 }
-void Pixels(bool early,bool delayedRead,bool missingWait=false) {
-    Warp w;++scenarios;omitWriterWait=missingWait;
+void Pixels(bool early,bool delayedRead,bool missingWait=false,bool starRail=false,bool submitted=false) {
+    Warp w;++scenarios;omitWriterWait=missingWait;w.fg.starRail=starRail;
     w.Write(1);Hr(w.context4->Signal(w.ready11.Get(),1));w.context->Flush();Hr(w.client->Wait(w.ready12.Get(),1));
     if(delayedRead || !early)Hr(w.client->Wait(w.gate.Get(),1));
     if(early) {
+        if(submitted){
+            Check(w.fg.SubmitUICommandList(0),"real prior guide Execute/Signal succeeds");
+            const auto& receipt=w.fg._dx11GuideSubmissions[0];
+            Check(receipt.frame==1&&receipt.generation==1&&receipt.value==1&&receipt.fence==w.uiDone.Get()&&receipt.queue==w.client.Get(),
+                "core submission receipt belongs to exact real reader");
+        }
         Check(w.fg.SealDx11GuideInputs(true,w.client.Get()),"actual early guide seal succeeds");
         Check(w.fg._dx11GuideSealedFrame[0]==1 && !w.fg._uiCommandListResetted[0],"sealed recording is submitted once");
     } else Check(w.fg.SubmitUICommandList(0),"legacy delayed guide recording submits");
@@ -275,6 +294,28 @@ void SourceValidationAndQueueChange() {
         Check(Dx11WithDx12::SyncDx12ToDx11(w.client.Get()),"exact reader handback does not adopt mutable global physical queue");
         Wait(w.ready12.Get(),2);
         Check(!Dx11WithDx12::FgGuideWritesBlocked.load(),"valid existing source fence domain stays usable");}
+    for(unsigned fault=0;fault<10;++fault){Warp w;++scenarios;w.fg.starRail=true;
+        Check(w.fg.SubmitUICommandList(0),"prior submitted reader creates real receipt");
+        if(fault==0)w.fg._dx11GuideSubmissions[0]={};
+        if(fault==1)++w.fg._dx11GuideSubmissions[0].frame;
+        if(fault==2)++w.fg._dx11GuideSubmissions[0].generation;
+        if(fault==3)++w.fg._dx11GuideSubmissions[0].value;
+        if(fault==4)w.fg._dx11GuideSubmissions[0].fence=w.gate.Get();
+        if(fault==5)w.fg._dx11GuideSubmissions[0].queue=w.physical.Get();
+        if(fault==6)++w.fg._guideTags[0][0].frame;
+        if(fault==7)++w.fg._guideTags[0][1].generation;
+        if(fault==8)++w.fg._guideTags[0][0].owner;
+        if(fault==9)w.fg._guideTags[0][1].accepted=false;
+        Check(!w.fg.SealDx11GuideInputs(true,w.client.Get()),"unproven/old/mismatched submitted reader cannot authorize next cache write");
+        Check(w.fg._dx11GuideBorrowed[0]&&w.fg.quarantined&&Dx11WithDx12::FgGuideWritesBlocked.load(),
+            "failed reader handback retains borrowed owner and blocks cache writes");
+    }
+    for(bool currentBorrowed:{false,true}){Warp w;++scenarios;
+        w.fg._dx11GuideBorrowed[0]=currentBorrowed;w.fg._dx11GuideBorrowed[1]=true;
+        Check(!w.fg.SealDx11GuideInputs(true,w.client.Get()),"another source slot's borrowed read cannot be hidden by current source");
+        Check(w.fg._dx11GuideBorrowed[1]&&w.fg.quarantined&&Dx11WithDx12::FgGuideWritesBlocked.load(),
+            "foreign borrowed slot remains retained and next writer is blocked");
+    }
 }
 }
 int main(int argc,char** argv) {
@@ -282,6 +323,6 @@ int main(int argc,char** argv) {
     if(std::strcmp(mode,"--negative-queue")==0)QueueIdentity(true);
     else if(std::strcmp(mode,"--negative-guides")==0)Pixels(false,true);
     else if(std::strcmp(mode,"--negative-handback")==0)Pixels(true,true,true);
-    else {QueueIdentity();Pixels(true,true);Pixels(true,false);Failures();SourceValidationAndQueueChange();}
+    else {QueueIdentity();Pixels(true,true);Pixels(true,false);Pixels(true,true,false,true);Pixels(true,false,false,true);Pixels(true,true,false,true,true);Failures();SourceValidationAndQueueChange();}
     std::printf("PASS %u scenarios, %u checks; actual WARP queue/pixel handoff; SDK/game/FPS untested\n",scenarios,checks);
 }

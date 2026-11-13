@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real prepare/verify behavior in disposable directories; no launcher or game."""
+"""Real prepare/select/verify in disposable directories; mocked launcher, no game."""
 import contextlib
 import hashlib
 import importlib.util
@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -73,7 +74,9 @@ class UserPluginDeploymentTests(unittest.TestCase):
         tests = self.evidence / "tests.json"
         DEPLOY.save(tests, {"Status": "PASSED", "ArtifactSHA256": digest(self.artifact)})
         self.hub.mkdir()
+        write(self.hub / "version.ini", b"version=fixture-hub.exe")
         self.games = []
+        self.enable_keys = {}
         self.original_profiles = {}
         with contextlib.closing(sqlite3.connect(self.hub / "HoYoShadeHubDatabase.db")) as db, db:
             db.execute("CREATE TABLE Setting (Key TEXT PRIMARY KEY, Value TEXT)")
@@ -86,14 +89,19 @@ class UserPluginDeploymentTests(unittest.TestCase):
                         f"[Log]\nLogFileName=old-{biz}.log\n[SR]\nSharpness={index}.25\n")
                 profile = write(self.hub / "old" / (biz + ".ini"), text.encode())
                 nr = write(self.hub / "old" / (biz + ".dll"), f"personal NR {biz}".encode())
-                game = {"Biz": biz, "SelectionKey": "build_" + biz,
+                instance = ["GsFixture01", "EdtUqXfCHh", "ZzzFixture01"][index]
+                game = {"Biz": biz,
+                        "SelectionKey": f"launch_option_optiscaler_build_{biz}_{instance}",
                         "PreviousBuildId": "official/F6", "Profile": str(profile),
                         "NrSource": str(nr), "NrSHA256": digest(nr)}
                 if index == 1:
                     game["UserPluginsPath"] = str(self.game_plugins)
                 self.games.append(game)
+                self.enable_keys[biz] = f"launch_option_use_optiscaler_{biz}_{instance}"
                 self.original_profiles[biz] = DEPLOY.Deployment.config(profile.read_bytes())
                 db.execute("INSERT INTO Setting VALUES (?, ?)", (game["SelectionKey"], "official/F6"))
+                db.execute("INSERT INTO Setting VALUES (?, ?)",
+                           (self.enable_keys[biz], str(index == 1)))
         protected = write(self.hub / "state.json", b'{"old":true}')
         self.plan = {"InstallationRoot": str(self.hub), "ProductRoot": str(self.product),
                      "BuildId": "local/Fixture", "DisplayName": "offline fixture",
@@ -128,6 +136,164 @@ class UserPluginDeploymentTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             deployment.verify(require_selected=selected)
         return DEPLOY.load(deployment.evidence_file("deployment.json"))
+
+    @contextlib.contextmanager
+    def hub_cli(self, *, restore=True, drift=False, returncode=0, timeout=False):
+        calls = []
+
+        def run(args, **kwargs):
+            self.assertEqual(args[:2], [str(self.hub / "fixture-hub.exe"), "run"])
+            self.assertEqual(args[2], "--biz")
+            self.assertEqual(args[4], "--file")
+            self.assertEqual(len(args), 6)
+            self.assertEqual(kwargs["cwd"], self.hub)
+            self.assertEqual(kwargs["stderr"], subprocess.STDOUT)
+            self.assertEqual(kwargs["creationflags"],
+                             subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            self.assertFalse(kwargs["stdout"].closed)
+            game = next(g for g in self.games if g["Biz"] == args[3])
+            action_path = Path(args[5])
+            action = DEPLOY.load(action_path)
+            with contextlib.closing(sqlite3.connect(self.hub / "HoYoShadeHubDatabase.db")) as db, db:
+                for step in action["steps"]:
+                    if step["action"] == "set_opt_build":
+                        db.execute("UPDATE Setting SET Value=? WHERE Key=?",
+                                   (step["build"], game["SelectionKey"]))
+                        # Model the Hub side effect that exposed the deployment bug.
+                        db.execute("UPDATE Setting SET Value='True' WHERE Key=?",
+                                   (self.enable_keys[game["Biz"]],))
+                    elif step["action"] == "set_opt":
+                        self.assertIs(type(step["enabled"]), bool)
+                        if restore:
+                            db.execute("UPDATE Setting SET Value=? WHERE Key=?",
+                                       (str(step["enabled"]), self.enable_keys[game["Biz"]]))
+                    else:
+                        self.fail("Unexpected CLI action: " + step["action"])
+                if drift:
+                    db.execute("UPDATE Setting SET Value='changed' WHERE Key='unrelated'")
+            process = mock.Mock(pid=4321)
+            if timeout:
+                process.wait.side_effect = subprocess.TimeoutExpired(args, 50)
+            else:
+                process.wait.return_value = returncode
+            calls.append({"Game": game, "Path": action_path, "Action": action, "Process": process})
+            return process
+
+        with mock.patch.object(DEPLOY.subprocess, "Popen", side_effect=run):
+            try:
+                yield calls
+            finally:
+                for call in calls:
+                    call["Process"].wait.assert_called_once_with(timeout=50)
+                    call["Process"].terminate.assert_not_called()
+                    call["Process"].kill.assert_not_called()
+
+    def test_select_restores_opposite_game_enable_states_in_independent_actions(self):
+        deployment = self.prepare()
+        pre = DEPLOY.load(deployment.evidence_file("pre.json"))
+        with self.hub_cli() as calls, contextlib.redirect_stdout(io.StringIO()):
+            deployment.select()
+        self.assertEqual([call["Game"]["Biz"] for call in calls], [g["Biz"] for g in self.games])
+        self.assertEqual(len({call["Path"] for call in calls}), len(self.games))
+        for call in calls:
+            enabled = pre["Settings"][self.enable_keys[call["Game"]["Biz"]]] == "True"
+            self.assertEqual(call["Action"], {"steps": [
+                {"action": "set_opt_build", "build": deployment.build_id},
+                {"action": "set_opt", "enabled": enabled}]})
+            self.assertEqual(DEPLOY.load(call["Path"]), call["Action"])
+        report = self.verify(selected=True)
+        self.assertEqual(set(report["ChangedLauncherSettings"]), {g["SelectionKey"] for g in self.games})
+        self.assertEqual({key: deployment.settings()[key] for key in self.enable_keys.values()},
+                         {key: pre["Settings"][key] for key in self.enable_keys.values()})
+
+    def test_select_rejects_failed_restoration(self):
+        deployment = self.prepare()
+        with self.hub_cli(restore=False) as calls, contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "Unrelated launcher settings changed"):
+                deployment.select()
+        self.assertEqual(len(calls), len(self.games))
+        with self.assertRaisesRegex(ValueError, "Unrelated launcher settings changed"):
+            self.verify(selected=True)
+
+    def test_select_rejects_unrelated_setting_drift(self):
+        deployment = self.prepare()
+        with self.hub_cli(drift=True), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "Unrelated launcher settings changed.*unrelated"):
+                deployment.select()
+        with self.assertRaisesRegex(ValueError, "Unrelated launcher settings changed.*unrelated"):
+            self.verify(selected=True)
+
+    def test_select_timeout_records_pid_without_terminating_or_continuing(self):
+        deployment = self.prepare()
+        with self.hub_cli(timeout=True) as calls, contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                deployment.select()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(DEPLOY.load(deployment.evidence_file("selection-pending.json")),
+                         {"Biz": self.games[0]["Biz"], "Pid": 4321})
+        self.assertEqual(DEPLOY.load(deployment.evidence_file("deployment.json"))["Status"],
+                         "PREPARED_DISK_VERIFIED")
+        self.assertFalse((self.product / "build/current-asi-deployment.json").exists())
+
+    def test_select_nonzero_exit_stops_without_selected_receipt(self):
+        deployment = self.prepare()
+        with self.hub_cli(returncode=7) as calls, contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "Hub selection failed for hk4e_cn: 7"):
+                deployment.select()
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(deployment.evidence_file("selection-pending.json").exists())
+        self.assertEqual(DEPLOY.load(deployment.evidence_file("deployment.json"))["Status"],
+                         "PREPARED_DISK_VERIFIED")
+        self.assertFalse((self.product / "build/current-asi-deployment.json").exists())
+
+    def test_select_rejects_unmappable_selection_keys_before_any_cli(self):
+        self.prepare()
+        game = self.games[-1]
+        for key in ["build_" + game["Biz"],
+                    "launch_option_optiscaler_build_hkrpg_bilibili_EdtUqXfCHh",
+                    "launch_option_optiscaler_build_" + game["Biz"] + "_"]:
+            with self.subTest(key=key):
+                game["SelectionKey"] = key
+                deployment = self.deployment()
+                with mock.patch.object(DEPLOY.subprocess, "Popen") as cli:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        with self.assertRaisesRegex(ValueError, "Cannot map SelectionKey"):
+                            deployment.select()
+                    cli.assert_not_called()
+                self.assertFalse(any(self.evidence.glob("fixture-select-*.json")))
+
+    def test_select_requires_valid_prepared_enable_value_for_every_game(self):
+        deployment = self.prepare()
+        key = self.enable_keys[self.games[-1]["Biz"]]
+        pre = DEPLOY.load(deployment.evidence_file("pre.json"))
+        for label, value in [("missing", None), ("null", None), ("empty", ""),
+                             ("numeric", "1"), ("invalid", "yes")]:
+            with self.subTest(value=label):
+                with contextlib.closing(sqlite3.connect(self.hub / "HoYoShadeHubDatabase.db")) as db, db:
+                    if label == "missing":
+                        pre["Settings"].pop(key)
+                        db.execute("DELETE FROM Setting WHERE Key=?", (key,))
+                    else:
+                        pre["Settings"][key] = value
+                        db.execute("INSERT OR REPLACE INTO Setting VALUES (?, ?)", (key, value))
+                DEPLOY.save(deployment.evidence_file("pre.json"), pre)
+                with mock.patch.object(DEPLOY.subprocess, "Popen") as cli:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        with self.assertRaisesRegex(ValueError, "Prepared enable setting must be True or False"):
+                            deployment.select()
+                    cli.assert_not_called()
+                self.assertFalse(any(self.evidence.glob("fixture-select-*.json")))
+
+    def test_select_rejects_live_enable_drift_before_cli(self):
+        deployment = self.prepare()
+        with contextlib.closing(sqlite3.connect(self.hub / "HoYoShadeHubDatabase.db")) as db, db:
+            db.execute("UPDATE Setting SET Value='True' WHERE Key=?",
+                       (self.enable_keys[self.games[0]["Biz"]],))
+        with mock.patch.object(DEPLOY.subprocess, "Popen") as cli:
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(ValueError, "Unrelated launcher settings changed"):
+                    deployment.select()
+            cli.assert_not_called()
 
     def test_prepare_references_user_plugins_and_preserves_each_game(self):
         deployment = self.prepare()
@@ -182,6 +348,16 @@ class UserPluginDeploymentTests(unittest.TestCase):
         self.assertTrue(all(not g["RuntimeLoadingVerified"] for g in report["Games"]))
         self.assertTrue((self.product / "build/current-asi-deployment.json").is_file())
         self.assertFalse((self.product / "build/current-deployment.json").exists())
+
+    def test_installed_payload_uses_explicit_product_notices_once(self):
+        write(self.payload / "Licenses" / "third-party.txt", b"installed notice")
+        write(self.product / "Licenses" / "third-party.txt", b"current product notice")
+        self.plan["Licenses"] = ["Licenses/third-party.txt"]
+        deployment = self.prepare()
+        for root in [deployment.package, *(deployment.runtime(g) for g in self.games)]:
+            self.assertEqual((root / "Licenses" / "third-party.txt").read_bytes(),
+                             b"current product notice")
+        self.verify()
 
     def test_missing_legacy_path_fails_before_any_write_or_cli(self):
         self.plan.pop("UserPluginsPath")

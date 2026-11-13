@@ -18,7 +18,6 @@
 #include <ankerl/unordered_dense.h>
 #include <imgui/ImGuiNotify.hpp>
 #include <misc/IdentifyGpu.h>
-#include <upscalers/PersistentSrDx11.h>
 #include <genshin/GenshinSrReceipt.h>
 #include <runtime/GuideDiagnostics.h>
 #include "FSR2_Dx11_Internal.h"
@@ -342,26 +341,50 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_Init_with_ProjectID(
 
 #pragma region NVSDK_NGX_D3D11_Shutdown
 
-static NVSDK_NGX_Result ShutdownDx11Body()
+struct ShutdownDx11Request
 {
+    ID3D11Device* device = nullptr;
+    bool deviceSpecific = false;
+};
+static thread_local ShutdownDx11Request shutdownDx11Request;
+
+static NVSDK_NGX_Result ShutdownDx11Body(ID3D11Device* device = nullptr, bool shutdown1 = false)
+{
+    // External feature caches can suppress ReleaseFeature and forget their
+    // parked handles at Shutdown. Retire our actual owners directly; calling
+    // the exported ReleaseFeature here could be intercepted by the same ASI.
+    for (auto it = Dx11Contexts.begin(); it != Dx11Contexts.end();)
+    {
+        auto* feature = it->second.feature.get();
+        if (feature && !feature->PrepareForShutdown())
+        {
+            LOG_ERROR("DX11 Shutdown: feature {} could not retire; owner and runtime retained", it->first);
+            return NVSDK_NGX_Result_Fail;
+        }
+        if (State::Instance().currentFeature == feature)
+            State::Instance().currentFeature = nullptr;
+        State::Instance().changeBackend.erase(it->first);
+        it = Dx11Contexts.erase(it);
+    }
+
     shutdown = true;
-
-    // for (auto const& [key, val] : Dx11Contexts)
-    //{
-    //     if (val.feature)
-    //         NVSDK_NGX_D3D11_ReleaseFeature(val.feature->Handle());
-    // }
-
-    // Dx11Contexts.clear();
-
     D3D11Device = nullptr;
     State::Instance().currentFeature = nullptr;
 
-    if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsDx11Inited() &&
-        NVNGXProxy::D3D11_Shutdown() != nullptr)
+    if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsDx11Inited())
     {
-        auto result = NVNGXProxy::D3D11_Shutdown()();
-        NVNGXProxy::SetDx11Inited(false);
+        auto stop = NVNGXProxy::D3D11_Shutdown();
+        auto stopDevice = shutdown1 ? NVNGXProxy::D3D11_Shutdown1() : nullptr;
+        if (stopDevice || stop)
+        {
+            const auto result = stopDevice ? stopDevice(device) : stop();
+            if (result != NVSDK_NGX_Result_Success)
+            {
+                shutdown = false;
+                return result;
+            }
+            NVNGXProxy::SetDx11Inited(false);
+        }
     }
 
     // Unhooking and cleaning stuff causing issues during shutdown.
@@ -379,28 +402,23 @@ static NVSDK_NGX_Result ShutdownDx11Body()
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_Shutdown()
 {
     if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
-    PersistentSrDx11::Entry poolEntry(PersistentSrDx11::Instance());
-    if (!poolEntry) return NVSDK_NGX_Result_Fail;
-    PersistentSrDx11::Shutdown();
-    return ShutdownDx11Body();
+    return ShutdownDx11Body(shutdownDx11Request.device, shutdownDx11Request.deviceSpecific);
 }
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_Shutdown1(ID3D11Device* InDevice)
 {
     if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
-    PersistentSrDx11::Entry poolEntry(PersistentSrDx11::Instance());
-    if (!poolEntry) return NVSDK_NGX_Result_Fail;
-    PersistentSrDx11::Shutdown();
-    shutdown = true;
-
-    if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsDx11Inited() &&
-        NVNGXProxy::D3D11_Shutdown1() != nullptr)
+    struct RestoreRequest
     {
-        auto result = NVNGXProxy::D3D11_Shutdown1()(InDevice);
-        NVNGXProxy::SetDx11Inited(false);
-    }
-
-    return ShutdownDx11Body();
+        ShutdownDx11Request previous;
+        ~RestoreRequest() { shutdownDx11Request = previous; }
+    } restore { std::exchange(shutdownDx11Request, ShutdownDx11Request { InDevice, true }) };
+    // Legacy NGX observers (including external feature caches) hook Shutdown
+    // rather than Shutdown1. Traverse that entry so they discard old handles,
+    // while preserving the device-specific vendor call in our common body.
+    // Volatile keeps this as a real call through the detour even under LTCG.
+    auto* volatile shutdownEntry = &NVSDK_NGX_D3D11_Shutdown;
+    return shutdownEntry();
 }
 
 #pragma endregion
@@ -416,16 +434,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_Shutdown1(ID3D11Device* InDevice)
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_GetParameters(NVSDK_NGX_Parameter** OutParameters)
 {
     LOG_FUNC();
-
-    if (OutParameters == nullptr) return NVSDK_NGX_Result_FAIL_InvalidParameter;
-    if (PersistentSrDx11::UseOwnedParameters())
-    {
-        static NVNGX_Parameters owned(API::DX11, true);
-        *OutParameters = &owned;
-        InitNGXParameters(*OutParameters, API::DX11);
-        LOG_INFO("PersistentSR parameters source=owned api=GetParameters allocation=InternPersistent");
-        return NVSDK_NGX_Result_Success;
-    }
 
     if (OutParameters == nullptr)
         return NVSDK_NGX_Result_FAIL_InvalidParameter;
@@ -466,14 +474,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_GetCapabilityParameters(NVSDK_NGX
 {
     LOG_FUNC();
 
-    if (OutParameters == nullptr) return NVSDK_NGX_Result_FAIL_InvalidParameter;
-    if (PersistentSrDx11::UseOwnedParameters())
-    {
-        *OutParameters = GetNGXParameters(API::DX11, false);
-        LOG_INFO("PersistentSR parameters source=owned api=GetCapabilityParameters allocation=InternDynamic");
-        return NVSDK_NGX_Result_Success;
-    }
-
     if (OutParameters == nullptr)
         return NVSDK_NGX_Result_FAIL_InvalidParameter;
 
@@ -511,12 +511,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_AllocateParameters(NVSDK_NGX_Para
     LOG_FUNC();
 
     if (OutParameters == nullptr) return NVSDK_NGX_Result_FAIL_InvalidParameter;
-    if (PersistentSrDx11::UseOwnedParameters())
-    {
-        *OutParameters = new NVNGX_Parameters(API::DX11, false);
-        LOG_INFO("PersistentSR parameters source=owned api=AllocateParameters allocation=InternDynamic");
-        return NVSDK_NGX_Result_Success;
-    }
 
     if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::NVNGXModule() != nullptr &&
         NVNGXProxy::D3D11_AllocateParameters() != nullptr)
@@ -588,18 +582,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
         PublishGenshinSrOutcome(InDevCtx,InParameters,nullptr,GenshinSrReceipt::Outcome::UnsupportedFeature);
         return NVSDK_NGX_Result_Fail;
     }
-    PersistentSrDx11::Entry poolEntry(PersistentSrDx11::Instance());
-    if (!poolEntry) return NVSDK_NGX_Result_Fail;
     if (!InDevCtx || !InParameters || !OutHandle) return NVSDK_NGX_Result_Fail;
-    if (auto pooled = PersistentSrDx11::TryCreate(InDevCtx, InFeatureID, InParameters, OutHandle))
-    {
-        if (*pooled == NVSDK_NGX_Result_Success)
-        {
-            InDevCtx->GetDevice(&D3D11Device);
-            if (D3D11Device) D3D11Device->Release();
-        }
-        return *pooled;
-    }
     FeatureLifecycleTrace lifecycle("DX11 CreateFeature");
     // FeatureId check
     if (InFeatureID != NVSDK_NGX_Feature_SuperSampling && InFeatureID != NVSDK_NGX_Feature_RayReconstruction)
@@ -709,14 +692,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_ReleaseFeature(NVSDK_NGX_Handle* InHandle)
 {
     if (!ModuleLifetime::CleanupAllowed()) return NVSDK_NGX_Result_Fail;
-    PersistentSrDx11::Entry poolEntry(PersistentSrDx11::Instance());
-    if (!poolEntry) return NVSDK_NGX_Result_Fail;
-    if (auto pooled = PersistentSrDx11::TryRelease(InHandle)) return *pooled;
     if (!InHandle)
         return NVSDK_NGX_Result_Success;
 
     auto handleId = InHandle->Id;
-    if (PersistentSrDx11::Instance().OwnsId(handleId)) return NVSDK_NGX_Result_FAIL_FeatureNotFound;
     FeatureLifecycleTrace lifecycle("DX11 ReleaseFeature", handleId);
     if (handleId < DLSS_MOD_ID_OFFSET)
     {
@@ -810,12 +789,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
                                                                NVSDK_NGX_Parameter* InParameters,
                                                                PFN_NVSDK_NGX_ProgressCallback InCallback)
 {
-    PersistentSrDx11::Entry poolEntry(PersistentSrDx11::Instance());
-    if (!poolEntry) return NVSDK_NGX_Result_Fail;
-    auto pooled = PersistentSrDx11::Instance().Lookup(InFeatureHandle);
-    const bool pooledHandle = pooled.status != PersistentSrDx11::Status::Unknown;
-    if (pooledHandle && (!InParameters || !PersistentSrDx11::PrepareEvaluate(pooled, InFeatureHandle, InDevCtx)))
-        return NVSDK_NGX_Result_FAIL_FeatureNotFound;
     if (InFeatureHandle == nullptr)
     {
         PublishGenshinSrOutcome(InDevCtx,InParameters,InFeatureHandle,GenshinSrReceipt::Outcome::NoHandle);
@@ -835,9 +808,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
     }
 
     State& state = State::Instance();
-    auto handleId = pooledHandle ? pooled.slot->backendId : InFeatureHandle->Id;
-    if (!pooledHandle && PersistentSrDx11::Instance().OwnsId(handleId))
-        return NVSDK_NGX_Result_FAIL_FeatureNotFound;
+    auto handleId = InFeatureHandle->Id;
     if (handleId < DLSS_MOD_ID_OFFSET)
     {
         if (GenshinSrReceipt::active)
@@ -872,9 +843,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
         LOG_INFO("callback exist");
 
     IFeature_Dx11* deviceContext = nullptr;
-    auto activeContext = pooledHandle ? &pooled.slot->owner->context : &Dx11Contexts[handleId];
+    auto activeContext = &Dx11Contexts[handleId];
 
-    if (!pooledHandle && state.changeBackend[handleId])
+    if (state.changeBackend[handleId])
     {
         auto successfulPhase = FeatureProvider_Dx11::ChangeFeature(state.newBackend, D3D11Device, InDevCtx, handleId,
                                                                    InParameters, activeContext,
@@ -919,9 +890,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
         return NVSDK_NGX_Result_Success;
     }
 
-    const auto persistentAutoBefore = state.autoExposure;
-    const auto persistentChangedBefore = state.changeBackend[handleId];
-    const auto persistentBackendBefore = state.newBackend;
     const bool genshinBridge = GenshinSrReceipt::active && deviceContext->IsWithDx12();
     if (GenshinSrReceipt::active && (deviceContext->GetUpscalerType()==Upscaler::DLSSD ||
         (genshinBridge && !GenshinSrReceipt::active->BeginObservationTransport(InDevCtx,InParameters,
@@ -931,17 +899,13 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
         evaluateObservation.Result(NVSDK_NGX_Result_Fail);
         return NVSDK_NGX_Result_Fail;
     }
-    auto upscaleResult = pooledHandle ? PersistentSrDx11::Evaluate(pooled, InDevCtx, InParameters)
-                                     : deviceContext->Evaluate(InDevCtx, InParameters);
-    if (pooledHandle) PersistentSrDx11::ObserveEvaluate(*pooled.slot, persistentAutoBefore,
-                                                       persistentChangedBefore, persistentBackendBefore);
+    auto upscaleResult = deviceContext->Evaluate(InDevCtx, InParameters);
     PublishGenshinSrOutcome(InDevCtx,InParameters,deviceContext->Handle(),
         upscaleResult ? GenshinSrReceipt::Outcome::ActualEvaluateSucceeded : GenshinSrReceipt::Outcome::EvaluateFailed,true);
 
     const auto upscaler = deviceContext->GetUpscalerType();
-    // Persistent handles retain their separate admission/rebuild contract.
     const auto fallback = FeatureProvider_Dx11::FallbackUpscaler(upscaler,
-        !pooledHandle && !GenshinSrReceipt::active);
+        !GenshinSrReceipt::active);
     const bool bridgeFallback = fallback == Upscaler::FSR22_on12;
 
     // A failed ordinary bridge evaluation must not publish its cached guides as fresh.

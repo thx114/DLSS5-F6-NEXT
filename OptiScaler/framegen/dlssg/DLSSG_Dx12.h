@@ -225,6 +225,13 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     Microsoft::WRL::ComPtr<ID3D12Resource> _dx11GuideInputs[BUFFER_COUNT][2];
     bool _dx11GuideBorrowed[BUFFER_COUNT] {};
     UINT64 _dx11GuideSealedFrame[BUFFER_COUNT] {};
+    struct Dx11GuideSubmission
+    {
+        UINT64 frame=0,generation=0,value=0;
+        ID3D12Fence* fence=nullptr; // identities owned by the provider, not diagnostic observations
+        ID3D12CommandQueue* queue=nullptr;
+    };
+    Dx11GuideSubmission _dx11GuideSubmissions[BUFFER_COUNT] {};
     UpscalerColourSourcePtr _upscalerColourSources[BUFFER_COUNT];
     bool _upscalerColourSucceeded[BUFFER_COUNT]{};
     std::shared_ptr<const UpscalerFinalColour> _upscalerFinalColours[BUFFER_COUNT];
@@ -244,6 +251,8 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     void PollGuideObservations() noexcept;
     void ObserveGuideSubmission(UINT slot, ID3D12Fence* fence, UINT64 value) noexcept;
     void RequestGuideHooks();
+    void ResetCompletedGuideRecordings() noexcept;
+    void RecordDx11GuideSubmission(UINT slot) noexcept;
     bool _guideHooksRequested=false;
     bool TryOpenGuidePreviewRecording(UINT slot) noexcept;
     void CaptureAcceptedGuides(UINT slot) noexcept;
@@ -311,17 +320,23 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     sl::DLSSGOptions _lastRunningOptions {};
     dlssg::InputOwner _runningInputOwner {};
     bool _haveRunningOptions = false;
-    // Shared by every self-owned input path. F5-DS chooses EveryDispatch;
+    // Shared by every self-owned input path. Reuse only known, unchanged options;
     // frame admission, guide ownership and GPU retirement stay in their adapters.
     dlssg::options::ConfigurationState _dispatchOptions;
     dlssg::options::Acknowledgement<sl::DLSSGOptions> _dlssgOptionsAck;
     dlssg::options::Acknowledgement<sl::ReflexOptions> _reflexOptionsAck;
     dlssg::options::GenerationState _generationState;
+    struct OptionsCounts
+    {
+        UINT64 attempts=0, submitted=0, reused=0, failed=0, forced=0;
+        UINT64 keepalive=0, scopeChanged=0, payloadChanged=0, invalidated=0, uncacheable=0;
+    } _dispatchOptionsCounts[2];
     UINT64 _providerOptionsLifecycle=1, _optionsTelemetryCalls=0;
     bool _providerStateQueryActive=false, _dispatchActive=false;
     dlssg::options::ProviderOwner CurrentProviderOwner() const;
     dlssg::options::Scope CurrentDispatchScope(int index) const;
     void InvalidateDispatchOptions();
+    void InvalidateDlssgOptions();
     void InvalidateProviderCapabilities();
     sl::Result QueryProviderState(sl::DLSSGState& state,
         framegen::DlssgStateQueryReason reason=framegen::DlssgStateQueryReason::Provider);
@@ -423,9 +438,6 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     // SDK callback cannot take the source lock while Present waits on that SDK.
     // Adopt this real observed ID only at the next guarded source entry.
     std::atomic<UINT64> _starRailF5DsMarker { UINT64_MAX };
-    // Missing-source display uses F5-DS's existing Present counters.
-    // They never certify a fresh source, new guides or GPU completion.
-    bool _starRailPresentCounted = false; // Reset by early Prepare; counted at most once on final admission.
     bool PresentStarRailInputGap();
     bool SuppressStarRailGapForPresent();
     // Continuity-owned failure survives Deactivate and route changes until a safe drain.
@@ -496,9 +508,11 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     std::shared_ptr<framegen::DlssgPacingLifetime> PacingLifetime() override final;
     enum class StarRailPresent { Proceed, NativeFallback, Failed };
     // Early call chooses independent current-picture NR. Final admission consumes
-    // one real Dispatch; F5-DS's counter-qualified gap sends Off+retain.
+    // one real Dispatch; the first missing source sends Off+retain.
     // Failed vetoes SDK Present until the existing safe teardown boundary.
-    StarRailPresent PrepareStarRailPresent(bool beforeSdkPresent = false);
+    // Final admission returns that successful Dispatch's exact source frame for
+    // PresentStart/End/Sleep, never a later FrameCount read after callbacks.
+    StarRailPresent PrepareStarRailPresent(bool beforeSdkPresent = false, UINT64* dispatchedFrame = nullptr);
     // Caller holds the existing Present execution guard.
     bool UsesStarRailF5DsScheduling() const { return IsStarRailF5DsOwner(); }
     bool CompletePendingTeardown() override final;

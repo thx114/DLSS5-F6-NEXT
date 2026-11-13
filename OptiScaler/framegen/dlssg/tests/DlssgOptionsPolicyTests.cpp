@@ -7,6 +7,7 @@
 #include <functional>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 
 namespace
 {
@@ -66,12 +67,11 @@ struct Fixture
     sl::Result nextResult = sl::Result::eOk;
     std::function<void()> callback;
 
-    template<typename T> Submission Apply(Acknowledgement<T>& ack, const T& value,
-        bool force = false, SubmissionPolicy policy = SubmissionPolicy::OnChange)
+    template<typename T> Submission Apply(Acknowledgement<T>& ack, const T& value, bool force = false)
     {
         const auto before = context;
         const auto beforeFrame = frame;
-        return state.Apply(ack, before, value, frame, eligible, force, policy,
+        return state.Apply(ack, before, value, frame, eligible, force,
             [&] { return current && before == context && beforeFrame == frame; },
             [&] {
                 ++calls;
@@ -79,10 +79,9 @@ struct Fixture
                 return nextResult;
             });
     }
-    Submission Apply(const sl::DLSSGOptions& value, bool force = false,
-                     SubmissionPolicy policy = SubmissionPolicy::OnChange)
+    Submission Apply(const sl::DLSSGOptions& value, bool force = false)
     {
-        return Apply(fg, value, force, policy);
+        return Apply(fg, value, force);
     }
 };
 
@@ -105,15 +104,59 @@ void SuccessfulAcknowledgementIsReusedAcrossSlots()
     CHECK(f.Apply(On(5)).confirmed);
 }
 
-void F5DsSchedulingRequiresARealCallEveryDispatch()
+void UnownedSdkRequiresARealCallEverySource()
 {
     Fixture f;
+    f.eligible = false;
     for (unsigned repeat = 0; repeat != 3; ++repeat)
     {
-        CHECK(f.Apply(On(3), false, SubmissionPolicy::EveryDispatch).submitted);
-        CHECK(f.Apply(f.reflex, Reflex(), false, SubmissionPolicy::EveryDispatch).submitted);
+        CHECK(f.Apply(On(3)).submitted);
+        CHECK(f.Apply(f.reflex, Reflex()).submitted);
     }
     CHECK(f.calls == 6);
+}
+
+void SixfoldSourcesReuseOptionsButFreshGapRecoveryReallyReenables()
+{
+    Fixture f;
+    GenerationState generation;
+    sl::DLSSGState raw {};
+    raw.numFramesToGenerateMax = 5;
+    generation.Observe(f.context.provider, raw, sl::Result::eOk, true);
+    const auto options = On(5);
+    const auto selection = generation.Select(f.context.provider, 5, false);
+    for (f.frame = 1; f.frame <= 1800; ++f.frame)
+    {
+        const auto outcome = f.Apply(options);
+        generation.Record(f.context, f.frame, selection, options, outcome);
+        CHECK(generation.Accepted(f.context, f.frame));
+        CHECK(!generation.Accepted(f.context, f.frame + 1));
+        CHECK(generation.FixedTotal() == 6);
+        CHECK(f.Apply(f.reflex, Reflex()).confirmed);
+    }
+    CHECK(f.calls == 6); // One pair per 600 real sources, not one per frame/slot.
+    auto off = options;
+    off.mode = sl::DLSSGMode::eOff;
+    off.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff;
+    for (unsigned gap = 0; gap != 59; ++gap)
+    {
+        const auto before = f.calls;
+        const auto stopped = f.state.Release(off, [&] { return f.current; }, [&] {
+            ++f.calls;
+            return sl::Result::eOk;
+        });
+        CHECK(stopped.submitted && stopped.confirmed);
+        ++f.frame;
+        const auto resumed = f.Apply(options, true);
+        CHECK(resumed.submitted && resumed.confirmed);
+        generation.Record(f.context, f.frame, selection, options, resumed);
+        CHECK(generation.Accepted(f.context, f.frame) && generation.FixedTotal() == 6);
+        CHECK(f.Apply(f.reflex, Reflex(), true).submitted);
+        ++f.frame;
+        CHECK(!f.Apply(options).submitted);
+        CHECK(!f.Apply(f.reflex, Reflex()).submitted);
+        CHECK(f.calls == before + 3); // Off, fresh On and fresh Reflex only.
+    }
 }
 
 void KeepaliveUsesSourceAgeAndRetriesWarnings()
@@ -132,6 +175,122 @@ void KeepaliveUsesSourceAgeAndRetriesWarnings()
     CHECK(f.Apply(On()).submitted);
     CHECK(!f.Apply(On()).submitted);
     CHECK(f.Apply(On(), true).submitted); // Explicit resume cannot inherit an On hit.
+}
+
+void RetainedFgGapsPreserveReflexScopeAndKeepalive()
+{
+    Fixture f;
+    CHECK(f.Apply(On(5)).confirmed);
+    CHECK(f.Apply(f.reflex, Reflex()).confirmed);
+    const auto reflexEpoch = f.reflex.epoch;
+    const auto reflexFrame = f.reflex.sourceFrame;
+    // Match the root adapter: successful SDK Off+retain leaves Reflex running,
+    // then revokes only FG. Generic Release/real Off still revokes both.
+    for (unsigned gap = 0; gap != 37; ++gap)
+    {
+        const auto before = f.calls;
+        ++f.calls; // Successful direct SDK FG Off+retain, no Reflex call.
+        const auto serial = f.state.Serial();
+        f.state.InvalidateDlssg();
+        f.fg.valid = false; // Root also clears its concrete FG ACK, never Reflex.
+        CHECK(f.state.Serial() > serial);
+        ++f.frame;
+        const auto resumed = f.Apply(On(5));
+        CHECK(resumed.submitted && resumed.confirmed && resumed.reason == Reason::Invalidated);
+        const auto retained = f.Apply(f.reflex, Reflex());
+        CHECK(!retained.submitted && retained.confirmed && retained.reason == Reason::AckHit);
+        CHECK(f.reflex.epoch == reflexEpoch && f.reflex.sourceFrame == reflexFrame);
+        CHECK(f.calls == before + 2); // Only Off and fresh FG On.
+    }
+    f.frame = 600;
+    CHECK(f.Apply(f.reflex, Reflex()).reason == Reason::AckHit);
+    f.state.InvalidateDlssg();
+    f.frame = 601; // Gaps must not reset the original Reflex keepalive clock.
+    const auto refresh = f.Apply(f.reflex, Reflex());
+    CHECK(refresh.submitted && refresh.confirmed && refresh.reason == Reason::Keepalive);
+    CHECK(f.Apply(On(5)).submitted);
+    CHECK(f.Apply(f.reflex, Reflex()).reason == Reason::AckHit);
+    f.frame = 1200;
+    CHECK(f.Apply(f.reflex, Reflex()).reason == Reason::AckHit);
+    f.frame = 1201;
+    CHECK(f.Apply(f.reflex, Reflex()).reason == Reason::Keepalive);
+
+    // Real teardown may also request retained resources. It explicitly closes
+    // both ACK lifetimes before SDK Off, unlike the successful FG-only gap.
+    f.state.Invalidate();
+    auto off = On(5);
+    off.mode = sl::DLSSGMode::eOff;
+    off.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff;
+    CHECK(f.state.Release(off, [] { return true; }, [] { return sl::Result::eOk; }).confirmed);
+    CHECK(f.Apply(On(5)).submitted);
+    CHECK(f.Apply(f.reflex, Reflex()).submitted);
+}
+
+void PartialInvalidationCannotCertifyInflightTransactions()
+{
+    for (bool submitReflex : {false, true})
+    {
+        Fixture f;
+        CHECK(f.Apply(On()).confirmed);
+        CHECK(f.Apply(f.reflex, Reflex()).confirmed);
+        f.callback = [&] { f.state.InvalidateDlssg(); };
+        const auto outer = submitReflex ? f.Apply(f.reflex, Reflex(), true) : f.Apply(On(), true);
+        CHECK(outer.submitted && !outer.confirmed && outer.sdkResult == sl::Result::eOk);
+        CHECK(outer.Result() == sl::Result::eErrorInvalidState && !f.state.InFlight());
+        f.callback = {};
+        CHECK(f.Apply(On()).submitted);
+        CHECK(f.Apply(f.reflex, Reflex()).submitted);
+    }
+}
+
+void FailuresAfterPartialInvalidationRevokeBothAcknowledgements()
+{
+    for (bool submitReflex : {false, true})
+    {
+        for (auto result : {sl::Result::eWarnOutOfVRAM, sl::Result::eErrorInvalidState})
+        {
+            Fixture f;
+            CHECK(f.Apply(On()).confirmed);
+            CHECK(f.Apply(f.reflex, Reflex()).confirmed);
+            f.state.InvalidateDlssg();
+            f.nextResult = result;
+            const auto failed = submitReflex ? f.Apply(f.reflex, Reflex(), true) : f.Apply(On());
+            CHECK(failed.submitted && !failed.confirmed && failed.sdkResult == result);
+            f.nextResult = sl::Result::eOk;
+            CHECK(f.Apply(On()).submitted);
+            CHECK(f.Apply(f.reflex, Reflex()).submitted);
+        }
+    }
+}
+
+void SubmissionReasonsDescribeCallsAndHits()
+{
+    static_assert(std::string_view(ReasonName(Reason::AckHit)) == "AckHit");
+    static_assert(std::string_view(ReasonName(Reason::Keepalive)) == "Keepalive");
+    Fixture f;
+    CHECK(f.Apply(On()).reason == Reason::Unacknowledged);
+    CHECK(f.Apply(On()).reason == Reason::AckHit);
+    CHECK(f.Apply(On(), true).reason == Reason::Forced);
+    f.state.InvalidateDlssg();
+    CHECK(f.Apply(On()).reason == Reason::Invalidated);
+    ++f.context.provider.lifecycle;
+    CHECK(f.Apply(On()).reason == Reason::ScopeChanged);
+    CHECK(f.Apply(On(5)).reason == Reason::PayloadChanged);
+    f.frame = 601;
+    CHECK(f.Apply(On(5)).reason == Reason::Keepalive);
+    f.frame = 600;
+    CHECK(f.Apply(On(5)).reason == Reason::SourceRewind);
+    f.eligible = false;
+    CHECK(f.Apply(On(5)).reason == Reason::NotCacheable);
+    f.current = false;
+    const auto refused = f.Apply(On(5));
+    CHECK(!refused.submitted && !refused.confirmed && refused.reason == Reason::NotCurrent);
+    f.current = true;
+    f.callback = [&] {
+        const auto nested = f.Apply(f.reflex, Reflex());
+        CHECK(!nested.submitted && !nested.confirmed && nested.reason == Reason::Reentrant);
+    };
+    CHECK(!f.Apply(On()).confirmed);
 }
 
 void OffFailureAndLifecycleRevokeBothAcknowledgements()
@@ -328,7 +487,7 @@ void EveryOwnerAndConfigurationBoundaryMisses()
         [](Scope& s) { ++s.input.flipOffset; }, [](Scope& s) { ++s.reflexPlugin; },
         [](Scope& s) { ++s.reflexSetOptions; }, [](Scope& s) { ++s.inputPath; },
         [](Scope& s) { ++s.outputPath; }, [](Scope& s) { ++s.interop; },
-        [](Scope& s) { ++s.scheduling; }, [](Scope& s) { ++s.providerCap; },
+        [](Scope& s) { ++s.providerCap; },
         [](Scope& s) { ++s.consumers; }, [](Scope& s) { ++s.forceReflex; },
         [](Scope& s) { ++s.guideFlags; }, [](Scope& s) { ++s.colorSpace; },
         [](Scope& s) { ++s.transfer; }, [](Scope& s) { ++s.primaries; },
@@ -342,11 +501,16 @@ void EveryOwnerAndConfigurationBoundaryMisses()
     {
         Fixture f;
         CHECK(f.Apply(On()).confirmed);
+        CHECK(f.Apply(f.reflex, Reflex()).confirmed);
+        f.state.InvalidateDlssg(); // Retaining Reflex never bypasses its complete scope validation.
         mutate(f.context);
         CHECK(f.Apply(On()).submitted);
+        CHECK(f.Apply(f.reflex, Reflex()).reason == Reason::ScopeChanged);
         CHECK(!f.Apply(On()).submitted);
+        CHECK(!f.Apply(f.reflex, Reflex()).submitted);
         f.context = Context();
         CHECK(f.Apply(On()).submitted); // Leaving then returning cannot use the earlier acknowledgement.
+        CHECK(f.Apply(f.reflex, Reflex()).submitted);
     }
     Fixture separateOwner;
     CHECK(separateOwner.Apply(On()).submitted);
@@ -418,10 +582,15 @@ void UnknownSchemasCallbacksAndUnownedRoutesNeverCache()
         Fixture f;
         auto unknown = On();
         mutate(unknown);
+        CHECK(f.Apply(On()).confirmed);
+        CHECK(f.Apply(f.reflex, Reflex()).confirmed);
+        f.state.InvalidateDlssg();
         const auto first = f.Apply(unknown);
         CHECK(first.submitted && !first.confirmed && first.sdkResult == sl::Result::eOk);
         CHECK(first.Result() == sl::Result::eErrorInvalidState);
         CHECK(f.Apply(unknown).submitted);
+        CHECK(f.Apply(On()).submitted);
+        CHECK(f.Apply(f.reflex, Reflex()).submitted);
     }
     Fixture chained;
     auto options = On();
@@ -436,20 +605,31 @@ void UnknownSchemasCallbacksAndUnownedRoutesNeverCache()
     unknownReflex.next = &extension;
     CHECK(!unowned.Apply(unowned.reflex, unknownReflex).confirmed);
     CHECK(unowned.Apply(unowned.reflex, unknownReflex).submitted);
+    Fixture sibling;
+    CHECK(sibling.Apply(On()).confirmed);
+    CHECK(sibling.Apply(sibling.reflex, Reflex()).confirmed);
+    sibling.state.InvalidateDlssg();
+    CHECK(!sibling.Apply(sibling.reflex, unknownReflex).confirmed);
+    CHECK(sibling.Apply(On()).submitted);
+    CHECK(sibling.Apply(sibling.reflex, Reflex()).submitted);
 }
 
 void RecursiveAndChangedOwnerResultsFailClosed()
 {
     Fixture f;
+    CHECK(f.Apply(On()).confirmed);
+    CHECK(f.Apply(f.reflex, Reflex()).confirmed);
+    f.state.InvalidateDlssg();
     f.callback = [&] {
         const auto nested = f.Apply(f.reflex, Reflex());
         CHECK(!nested.submitted && !nested.confirmed);
     };
     const auto outer = f.Apply(On());
     CHECK(outer.submitted && outer.sdkResult == sl::Result::eOk && !outer.confirmed);
-    CHECK(outer.Result() == sl::Result::eErrorInvalidState && f.calls == 1);
+    CHECK(outer.Result() == sl::Result::eErrorInvalidState && f.calls == 3);
     f.callback = {};
     CHECK(f.Apply(On()).submitted);
+    CHECK(f.Apply(f.reflex, Reflex()).submitted);
 
     Fixture moved;
     moved.callback = [&] { ++moved.context.provider.lifecycle; };
@@ -467,16 +647,21 @@ void RecursiveAndChangedOwnerResultsFailClosed()
 
 void ThrowingSubmissionsRevokeSiblingsAndRecover()
 {
-    Fixture f;
-    CHECK(f.Apply(f.reflex, Reflex()).confirmed);
-    f.callback = [] { throw std::runtime_error("synthetic SDK failure"); };
-    bool threw = false;
-    try { static_cast<void>(f.Apply(On())); }
-    catch (const std::runtime_error&) { threw = true; }
-    CHECK(threw && !f.state.InFlight());
-    f.callback = {};
-    CHECK(f.Apply(f.reflex, Reflex()).submitted);
-    CHECK(f.Apply(On()).submitted);
+    for (bool submitReflex : {false, true})
+    {
+        Fixture f;
+        CHECK(f.Apply(On()).confirmed);
+        CHECK(f.Apply(f.reflex, Reflex()).confirmed);
+        f.state.InvalidateDlssg();
+        f.callback = [] { throw std::runtime_error("synthetic SDK failure"); };
+        bool threw = false;
+        try { static_cast<void>(submitReflex ? f.Apply(f.reflex, Reflex(), true) : f.Apply(On())); }
+        catch (const std::runtime_error&) { threw = true; }
+        CHECK(threw && !f.state.InFlight());
+        f.callback = {};
+        CHECK(f.Apply(f.reflex, Reflex()).submitted);
+        CHECK(f.Apply(On()).submitted);
+    }
 }
 
 void SourceRewindsCannotAgeOrReuseAnAcknowledgement()
@@ -621,8 +806,13 @@ void ProviderReflexUsesQualifiedSdkDefaults()
 int main()
 {
     SuccessfulAcknowledgementIsReusedAcrossSlots();
-    F5DsSchedulingRequiresARealCallEveryDispatch();
+    UnownedSdkRequiresARealCallEverySource();
+    SixfoldSourcesReuseOptionsButFreshGapRecoveryReallyReenables();
     KeepaliveUsesSourceAgeAndRetriesWarnings();
+    RetainedFgGapsPreserveReflexScopeAndKeepalive();
+    PartialInvalidationCannotCertifyInflightTransactions();
+    FailuresAfterPartialInvalidationRevokeBothAcknowledgements();
+    SubmissionReasonsDescribeCallsAndHits();
     OffFailureAndLifecycleRevokeBothAcknowledgements();
     ReleaseSharesDispatchTransactionAndNeverCaches();
     ReleaseCallbacksCannotNestSdkCallsOrCertifyOldOwners();

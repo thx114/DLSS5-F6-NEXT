@@ -2807,7 +2807,9 @@ bool Dx11wDx12SC::_WaitForInteropCopyOnPresentQueue()
         if(!_WaitForCopyQueueIdle())return RecordPrivateCopyFailure(this, "PreviousCopyQueueRetirementRefused");
         _lastInteropCopyFenceValue=copiedValue; // preserve THIS copy's receipt after draining the previous queue
     }
-    if(queue)_interopPresentQueue=queue; // arm ownership BEFORE a possibly partially accepted Wait
+    // Adopt even a null owner after successful retirement; otherwise the old
+    // queue remains pinned and every subsequent null-queue Present drains it.
+    _interopPresentQueue = queue; // arm ownership BEFORE a possibly partially accepted Wait
     if (queue == nullptr || queue == _dx12CommandQueue)
     {
         if (auto* scope = GenshinBridgeFg::PresentScope::Current(); scope && queue)

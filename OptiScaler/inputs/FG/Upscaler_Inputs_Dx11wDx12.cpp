@@ -6,6 +6,7 @@
 #include <runtime/F6InputPolicy.h>
 #include <framegen/dlssg/FgDepthContract.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
+#include <runtime/GuideCapture.h>
 #include <upscalers/IFeature_Dx11wDx12.h>
 #include <Util.h>
 
@@ -203,7 +204,17 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
             (D3D12_RESOURCE_STATES)cfg.DepthResourceBarrier.value_or(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
             (D3D12_RESOURCE_STATES)cfg.MVResourceBarrier.value_or(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
             evaluatedOutput);
-        if (dlssg::depth_contract::Game()==GameRouting::Identity::Genshin)
+        const auto game=dlssg::depth_contract::Game();
+        // Return the raw shared guides immediately after their real snapshot
+        // submission, before Present appends final-colour/NR/FG work to this
+        // queue. The existing Signal -> DX11 GPU Wait still orders every next
+        // cache writer; no CPU completion wait or extra input slot is needed.
+        // Guide/offline diagnostics keep the open recording until final colour
+        // is available. Colour-only preview can open its own try-only recording.
+        const bool starRailDiagnosticRead=game==GameRouting::Identity::StarRail &&
+            GuideCapture::NeedsOpenFgGuideRecording();
+        if (game==GameRouting::Identity::Genshin ||
+            (game==GameRouting::Identity::StarRail && !starRailDiagnosticRead))
             own->SealDx11GuideInputs(tagged,_dx12CommandQueue);
         return;
     }

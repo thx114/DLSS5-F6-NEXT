@@ -308,6 +308,14 @@ if ($LASTEXITCODE -ne 0) { throw "Display event parser checks failed with exit $
 & $Python -B (Join-Path $root 'OptiScaler/hooks/tests/test_fg_reflex_ownership.py')
 if ($LASTEXITCODE -ne 0) { throw "FG Reflex source/output ownership checks failed with exit $LASTEXITCODE" }
 
+& $Python -B (Join-Path $root 'OptiScaler/hooks/tests/test_starrail_gap_suppression.py')
+if ($LASTEXITCODE -ne 0) { throw 'StarRail production gap suppression checks failed' }
+$suppressionNegativeLog = Join-Path $output 'StarRailGapSuppression/negative-no-cleanup.log'
+& $Python -B (Join-Path $root 'OptiScaler/hooks/tests/test_starrail_gap_suppression.py') --negative-no-cleanup *> $suppressionNegativeLog
+if ($LASTEXITCODE -ne 17 -or !(Select-String -LiteralPath $suppressionNegativeLog -SimpleMatch 'failure/exception revokes both configuration ACKs' -Quiet)) {
+    throw "StarRail suppression cleanup negative escaped or failed for an unrelated reason; inspect $suppressionNegativeLog"
+}
+
 & $Python -B (Join-Path $root 'OptiScaler/with_dx12/tests/test_interop_copy_retirement.py') --cpu
 if ($LASTEXITCODE -ne 0) { throw "Interop copy reader retirement checks failed with exit $LASTEXITCODE" }
 

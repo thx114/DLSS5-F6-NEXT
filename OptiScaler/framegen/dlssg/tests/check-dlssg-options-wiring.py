@@ -44,7 +44,8 @@ check("dlssg::options::ProviderReflexOptions(" in dispatch and
       "reflexConst.useMarkersToOptimize = ReflexHooks::gameIsSendingMarkers()" not in dispatch,
       "observing markers must not opt the provider into unqualified Reflex marker tuning")
 check("StarRail" not in apply and "Genshin" not in apply and "Zzz" not in apply, "cache eligibility is game-specific")
-check("EveryDispatch" in scope and "IsStarRailF5DsOwner" in scope, "F5-DS per-dispatch policy lost")
+check("EveryDispatch" not in source + header + policy and "scope.scheduling" not in scope,
+      "an owned source bypasses the common unchanged-options acknowledgement")
 check("_dispatchActive || _providerStateQueryActive || _dispatchOptions.InFlight()" in dispatch, "recursive SDK entry is allowed")
 check("_generationState.Select(CurrentProviderOwner()" in dispatch, "selection is not bound to current raw capability")
 check("_framesToInterpolate = appliedInterpolationCount" not in dispatch, "request published as accepted count")
@@ -146,7 +147,6 @@ suppress = body(source, "bool DLSSG_Dx12::SuppressStarRailGapForPresent(")
 suspend = body(source, "bool DLSSG_Dx12::SuspendForInputGap(")
 prepare = body(source, "DLSSG_Dx12::StarRailPresent DLSSG_Dx12::PrepareStarRailPresent(")
 retain = body(source, "bool DLSSG_Dx12::CanRetainForInputGap(")
-action = body(residency, "constexpr FgGapAction SelectFgGapAction(")
 transaction = body(residency, "bool SuppressFgGap(")
 check("StarRailForceFGResident.ObservedValue()" in forced and "IsStarRailF5DsOwner()" in forced,
       "forced FG residency lacks atomic configuration or exact producer admission")
@@ -156,15 +156,10 @@ check("!state.fgChanged" in retain and "!state.isShuttingDown" in retain,
       "residency swallows a real rebuild or shutdown")
 check("IsStarRailF5DsOwner()" in gap and "CurrentInputOwner() == _runningInputOwner" in gap,
       "gap action is detached from its real running owner")
-check("SelectFgGapAction(ForceStarRailFgResident(), _inputContinuity.Held()" in gap,
-      "live final admission does not consume residency policy")
-check("case FgGapAction::Suspend: return SuspendForInputGap()" in gap and
-      "case FgGapAction::SuppressHeld: return SuppressStarRailGapForPresent()" in gap,
-      "gap actions bypass the real retained-session path")
-check("case FgGapAction::CountPresent:" in gap and "++_fgFramePresentId" in gap and
-      "_starRailPresentCounted = true" in gap, "default Present counter was removed")
-check(action.index("if (forced)") < action.index("if (counted)") and
-      "presentsSinceDispatch > 3" in action, "forced immediate suppression or legacy threshold lost")
+check("_inputContinuity.Held() ? SuppressStarRailGapForPresent() : SuspendForInputGap()" in gap,
+      "first absent source bypasses immediate Off+retain")
+check("ForceStarRailFgResident()" not in gap and "_fgFramePresentId" not in gap,
+      "SDK-On grace survived without fresh inputs and matching Reflex markers")
 check("beforeSdkPresent && !PresentStarRailInputGap()" in prepare and
       "return StarRailPresent::NativeFallback" in prepare and "return StarRailPresent::Failed" in prepare,
       "final SDK boundary no longer distinguishes safe original fallback from unsafe failure")
@@ -185,6 +180,19 @@ for invariant in ("_inputContinuity.OwnerMatches(owner)", "owner == CurrentInput
 check("options.mode = sl::DLSSGMode::eOff" in suppress and
       "options.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff" in suppress,
       "gap releases SDK allocations or leaves generation running")
+fg_only_invalidation = body(source, "void DLSSG_Dx12::InvalidateDlssgOptions(")
+check("InvalidateDlssgOptions();" in suppress and "_dispatchOptions.InvalidateDlssg();" in fg_only_invalidation and
+      "_reflexOptionsAck" not in fg_only_invalidation,
+      "FG-only retained gap discards the still-running Reflex acknowledgement")
+check("if (!completed) provider.InvalidateDispatchOptions();" in suppress and
+      suppress.index("finish.completed=true;") > suppress.index("StarRailResidency::SuppressFgGap("),
+      "partial or throwing gap failure preserves an untrusted sibling acknowledgement")
+reflex_options = body(dispatch, "const auto setReflexOptions = [&]()")
+check("resumingInputGap && !starRailFrame" in reflex_options and "restartStarRailRuntime" not in reflex_options,
+      "FG-only resume unconditionally resubmits unchanged Reflex options")
+check("CallerCpuTrace::Op::FgReflexOptions" in apply and "submit_attempts={}" in apply and
+      "ack_hits={}" in apply and "counters=dispatch_only" in apply,
+      "configuration diagnostics conflate cache hits, SDK calls or all release traffic")
 check("frame > UINT32_MAX" in suppress and "getToken(token, &id)" in suppress and
       "static_cast<uint32_t>(*token) != id || !current()" in suppress,
       "null-tag token can wrap, alias a different frame or outlive its source")
@@ -211,8 +219,13 @@ check("_inputContinuity.Fresh(" in dispatch and "GuideTagsCurrent(fIndex,willDis
 
 # These native contracts remain outside residency/options changes. Compare
 # actual bodies against HEAD to preserve the queue/fence and source gates.
+allocator_wait = body(source, "bool DLSSG_Dx12::WaitForStarRailF5DsUIAllocator(")
+allocator_trace = "\n    CallerCpuTrace::Scope allocatorCpu(CallerCpuTrace::Op::FgUiAllocatorWait, this,\n" \
+    "        _providerOptionsLifecycle, _frameCount, index, fenceValue, _uiFence->GetCompletedValue(), false, true);\n"
+check(allocator_trace in allocator_wait and allocator_wait.replace(allocator_trace, "") ==
+      body(baseline, "bool DLSSG_Dx12::WaitForStarRailF5DsUIAllocator("),
+      "UI wait diagnostics changed the real completion/timeout conditions")
 unchanged = [
-    "bool DLSSG_Dx12::WaitForStarRailF5DsUIAllocator(",
     "bool DLSSG_Dx12::WaitForTeardownTarget(",
     "int DLSSG_Dx12::SelectStarRailF5DsFrame(",
     "bool DLSSG_Dx12::GenshinSourceCurrent(",

@@ -29,7 +29,7 @@ class PreviewAdmissionTests(unittest.TestCase):
         self.assertIn("DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709", CAPTURE)
 
     def test_colour_does_not_require_or_read_borrowed_guides(self):
-        self.assertIn("const bool colourOnly=preview && demand.mode==GuideCapture::PreviewMode::FgColour;", CAPTURE)
+        self.assertIn("const bool colourOnly=preview && mode==GuideCapture::PreviewMode::FgColour;", CAPTURE)
         block = CAPTURE[CAPTURE.index("if (!colourOnly || (offline && ownedGuides))"):
                         CAPTURE.index("RequestGuideHooks();")]
         self.assertIn("if (!ownedGuides)", block)
@@ -38,13 +38,23 @@ class PreviewAdmissionTests(unittest.TestCase):
             self.assertEqual(CAPTURE.count(assignment), 1)
         self.assertIn("if (offline && ownedGuides) GuideCapture::RecordOffline", CAPTURE)
 
+    def test_early_colour_does_not_consume_preview_sample_interval(self):
+        self.assertLess(CAPTURE.index("const bool colourReady="), CAPTURE.index("GuideCapture::TryBeginSample("))
+        self.assertIn("const bool preview=(!wantsColour || colourReady) &&", CAPTURE)
+
+    def test_normal_present_does_not_lock_preview_demand(self):
+        present = body("bool DLSSG_Dx12::Present(")
+        self.assertNotIn("GetPreviewDemand(", present + CAPTURE)
+        self.assertIn("GuideCapture::GetPreviewMode()==GuideCapture::PreviewMode::FgColour", present)
+        self.assertIn("const auto mode=GuideCapture::GetPreviewMode();", CAPTURE)
+
     def test_real_current_tag_identity_is_required(self):
         for check in ("!depth.accepted", "!motion.accepted", "depth.frame!=_frameCount",
                       "motion.frame!=_frameCount", "depth.generation!=_inputContinuity.SourceGeneration()",
                       "motion.generation!=depth.generation", "!(depth.owner==owner)",
                       "!(motion.owner==owner)", "snapshot.epoch!=_inputContinuity.SourceGeneration()",
-                      "depth.nativeSerial!=_nativeGuideUses[slot].source.serial",
-                      "motion.nativeSerial!=_nativeGuideUses[slot].source.serial"):
+                      "depth.nativeSerial!=NativeGuideFrameSource(slot).serial",
+                      "motion.nativeSerial!=NativeGuideFrameSource(slot).serial"):
             self.assertIn(check, CAPTURE)
 
     def test_current_final_colour_and_ready_sdk_tag_are_required(self):

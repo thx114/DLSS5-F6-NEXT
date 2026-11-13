@@ -34,3 +34,6 @@ __pycache__/
 
 # Preserve vendored dependencies, including their intentional binaries/bin dirs.
 !/external/**
+
+# Stale locked test temp dirs
+OptiScaler/hooks/tests/.gap-pacing-*/

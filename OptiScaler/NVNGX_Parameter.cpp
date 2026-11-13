@@ -82,7 +82,6 @@ NVNGX_Parameters::NVNGX_Parameters(API api, bool isPersistent) : Api(api)
     // New tracking flag
     Set(NGX_AllocTypes::AllocKey.data(),
         isPersistent ? NGX_AllocTypes::InternPersistent : NGX_AllocTypes::InternDynamic);
-    RegisterPersistentSrObject();
 }
 
 void NVNGX_Parameters::Set(const char* key, unsigned long long value)

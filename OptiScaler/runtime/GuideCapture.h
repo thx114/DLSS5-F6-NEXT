@@ -80,10 +80,16 @@ struct PreviewSnapshot {
 };
 void SetPreviewDemand(const PreviewDemand&) noexcept;
 PreviewDemand GetPreviewDemand() noexcept;
+// Advisory routing only; actual sampling revalidates the demand revision.
+// No mutex or clock, including when previews are disabled or frozen.
+PreviewMode GetPreviewMode() noexcept;
 unsigned HistoryDebugView() noexcept;
 bool PreviewActive() noexcept;
 bool PreviewWanted(Stream) noexcept;
 bool OfflineWanted(Stream) noexcept;
+// Advisory only: guides/offline capture needs the original source list open;
+// colour preview is independent. No lock or clock before an offline request.
+bool NeedsOpenFgGuideRecording() noexcept;
 // Advisory demand/rate check before any resource queries or stamp construction.
 // RecordOffline rechecks under its lifecycle lock; this grants no reservation.
 bool OfflineSampleDue(Stream) noexcept;
@@ -143,6 +149,10 @@ void Submitted(ID3D12CommandQueue*,UINT,ID3D12CommandList* const*,const Executio
 // With the required Executing contract, no prehook proves an unsubmitted
 // recording was discarded. Its GPU storage state is rolled back by the worker.
 void Reset(ID3D12GraphicsCommandList*) noexcept;
+// Advisory only: a sampled generation still needs its actual successful Reset.
+// The recording owner must independently prove its own queue/fence completion
+// and that no open recording will be discarded before performing that Reset.
+bool NeedsReset(ID3D12GraphicsCommandList*) noexcept;
 // Nonblocking polling: preparation, fence polling, Map and pixel processing run
 // on one bounded worker. Read copies an immutable completed image for the UI;
 // its mutex is independent of lifecycle bookkeeping. No callback waits on GPU.

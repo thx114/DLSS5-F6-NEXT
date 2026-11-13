@@ -1,5 +1,4 @@
 #pragma once
-#include <atomic>
 #include <mutex>
 #include <hooks/ngx/NativeDx12Hooks.h>
 
@@ -422,7 +421,6 @@ class NVNGXProxy
     inline static bool _cudaInited = false;
     inline static bool _dx11Inited = false;
     inline static bool _dx12Inited = false;
-    inline static std::atomic<uint64_t> _dx12ProviderGeneration { 1 };
     inline static bool _vulkanInited = false;
 
     inline static void LogCallback(const char* message, NVSDK_NGX_Logging_Level loggingLevel,
@@ -787,7 +785,6 @@ class NVNGXProxy
         // do not initialize a backend using default State appID/path/version.
         if (!NgxInput::AllowProviderInit())
             return false;
-        _dx12ProviderGeneration.fetch_add(1, std::memory_order_relaxed);
 
         InitNVNGX();
 
@@ -821,10 +818,8 @@ class NVNGXProxy
         return _dx12Inited;
     }
 
-    static uint64_t Dx12ProviderGeneration() { return _dx12ProviderGeneration.load(std::memory_order_relaxed); }
     static void SetDx12Inited(bool value)
     {
-        if (_dx12Inited != value) _dx12ProviderGeneration.fetch_add(1, std::memory_order_relaxed);
         _dx12Inited = value;
     }
 
@@ -895,10 +890,6 @@ class NVNGXProxy
         if (!_dx12Inited)
             return nullptr;
 
-        // Conservative invalidation before handing out a real teardown entry.
-        // The address remains the unwrapped original provider function. Fetching
-        // merely to validate capability can also invalidate an existing pool.
-        if (_module.D3D12_Shutdown) _dx12ProviderGeneration.fetch_add(1, std::memory_order_relaxed);
         return _module.D3D12_Shutdown;
     }
 
@@ -907,7 +898,6 @@ class NVNGXProxy
         if (!_dx12Inited)
             return nullptr;
 
-        if (_module.D3D12_Shutdown1) _dx12ProviderGeneration.fetch_add(1, std::memory_order_relaxed);
         return _module.D3D12_Shutdown1;
     }
 

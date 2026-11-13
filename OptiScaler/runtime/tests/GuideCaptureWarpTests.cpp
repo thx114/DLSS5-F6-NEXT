@@ -301,6 +301,53 @@ int main(){try{
     Check(!GuideCapture::OfflineWanted(Stream::History)&&GuideCapture::OfflineWanted(Stream::Fg),
           "closing detail measurement leaves unrelated demand intact");
     GuideCapture::Request(false);
+    // Frozen GPU colour preview must neither consume an offline pair request
+    // nor prevent its real guide recordings from completing after demand ends.
+    GuideCapture::PreviewDemand frozenColour;frozenColour.mode=GuideCapture::PreviewMode::FgColour;frozenColour.frozen=true;
+    GuideCapture::SetPreviewDemand(frozenColour);
+    Check(!GuideCapture::NeedsOpenFgGuideRecording(),"frozen colour alone allows early FG guide sealing");
+    const auto pairRequestDeadline=GetTickCount64()+10000;
+    while(!GuideCapture::RequestPair(Stream::Fg)){
+        Check(GetTickCount64()<pairRequestDeadline,"offline FG pair request timeout");Sleep(2);
+    }
+    Check(!GuideCapture::PreviewWanted(Stream::Fg)&&GuideCapture::OfflineWanted(Stream::Fg)&&
+          GuideCapture::NeedsOpenFgGuideRecording(),"offline pair retains open guides despite frozen GPU preview");
+    auto pairA=f.New(),pairB=f.New();auto first=Stamp(100,13),second=Stamp(101,13);second.epoch=first.epoch;
+    Record(Stream::Fg,pairA,only,first);
+    Check(GuideCapture::OfflineWanted(Stream::Fg)&&GuideCapture::OfflineSampleDue(Stream::Fg)&&
+          GuideCapture::NeedsOpenFgGuideRecording(),"first pair reservation leaves demand for the adjacent source");
+    Record(Stream::Fg,pairB,only,second);
+    Check(!GuideCapture::OfflineWanted(Stream::Fg)&&!GuideCapture::OfflineSampleDue(Stream::Fg)&&
+          !GuideCapture::NeedsOpenFgGuideRecording(),"two reservations end guide demand before GPU completion");
+    std::array<GuideCapture::Image,2> completedPair;std::string pairStatus;
+    Check(!GuideCapture::ReadPair(Stream::Fg,completedPair,pairStatus),"two recorded pair members are not completed images");
+    {
+        QueueGate gate(f);f.Execute(pairA);f.Execute(pairB);f.Reset(pairA);f.Reset(pairB);
+        Sleep(20);
+        Check(!GuideCapture::ReadPair(Stream::Fg,completedPair,pairStatus),"demand end and both Resets cannot bypass the blocked actual queue");
+        gate.Release();
+    }
+    f.Drain();image=WaitImage(Stream::Fg,101,13);
+    const auto pairCompletedDeadline=GetTickCount64()+10000;
+    while(!GuideCapture::ReadPair(Stream::Fg,completedPair,pairStatus)){
+        Check(GetTickCount64()<pairCompletedDeadline,"pair publication waits for actual queue fences and Resets despite ended demand");Sleep(2);
+    }
+    Check(completedPair[0].stamp.source==100&&completedPair[1].stamp.source==101&&
+          completedPair[0].stamp.epoch==completedPair[1].stamp.epoch,
+          "offline pair retains adjacent source identity and one epoch");
+    for(const auto& member:completedPair){
+        Check(!member.colourPresent&&member.depthPresent&&member.motionPresent&&member.width==63&&member.height==41,
+              "frozen colour does not invent a colour input for the actual guide-only pair");
+        Check(member.motion[0].x==.125f&&member.motion[0].y==-.25f&&std::abs(member.depth[0]-1.f/42)<1e-6f,
+              "offline pair contains the actual aligned depth and signed motion pixels");
+    }
+    do{
+        pairs=GuideCapture::DrainPairs(Stream::Fg);if(!pairs.empty())break;
+        Check(GetTickCount64()<pairCompletedDeadline,"completed pair delivery timeout");Sleep(2);
+    }while(true);
+    Check(pairs.size()==2&&pairs[0].stamp.source==100&&pairs[1].stamp.source==101&&
+          GuideCapture::DrainPairs(Stream::Fg).empty(),"offline pair delivered once in source order");
+    GuideCapture::SetPreviewDemand({});Fixture::Close(pairA);Fixture::Close(pairB);
     for(auto* recording:{&r,&guides,&hr,&delayed,&reverse,&noReplacement,&a,&b,&c,&abandoned,&missing})if(!recording->closed)Fixture::Close(*recording);
     std::printf("GuideCapture WARP: %u checks passed\n",checks);return 0;
 }catch(const std::exception& e){GuideCapture::Request(false);std::fprintf(stderr,"GuideCapture WARP failure: %s\n",e.what());return 1;}}

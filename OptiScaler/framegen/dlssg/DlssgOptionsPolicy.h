@@ -107,15 +107,13 @@ struct Scope
     InputOwner input {};
     uint64_t sourceGeneration = 0;
     uintptr_t reflexPlugin = 0, reflexSetOptions = 0;
-    uint32_t inputPath = 0, outputPath = 0, interop = 0, scheduling = 0;
+    uint32_t inputPath = 0, outputPath = 0, interop = 0;
     uint32_t consumers = 0, providerCap = 0, forceReflex = 0, guideFlags = 0;
     uint32_t colorSpace = 0, transfer = 0, primaries = 0, range = 0, colorModel = 0;
     bool colorSpaceValid = false, enabled = false, markers = false, boost = false;
     bool sharedSdk = false, external = false, secondDevice = false;
     bool operator==(const Scope&) const = default;
 };
-
-enum class SubmissionPolicy { OnChange, EveryDispatch };
 
 template<typename T> struct Acknowledgement
 {
@@ -125,10 +123,38 @@ template<typename T> struct Acknowledgement
     bool valid = false;
 };
 
+enum class Reason
+{
+    AckHit, Forced, NotCacheable, Unacknowledged, Invalidated, ScopeChanged,
+    PayloadChanged, Keepalive, SourceRewind, Reentrant, NotCurrent
+};
+
+constexpr const char* ReasonName(Reason reason)
+{
+    switch (reason)
+    {
+    case Reason::AckHit: return "AckHit";
+    case Reason::Forced: return "Forced";
+    case Reason::NotCacheable: return "NotCacheable";
+    case Reason::Unacknowledged: return "Unacknowledged";
+    case Reason::Invalidated: return "Invalidated";
+    case Reason::ScopeChanged: return "ScopeChanged";
+    case Reason::PayloadChanged: return "PayloadChanged";
+    case Reason::Keepalive: return "Keepalive";
+    case Reason::SourceRewind: return "SourceRewind";
+    case Reason::Reentrant: return "Reentrant";
+    case Reason::NotCurrent: return "NotCurrent";
+    }
+    return "Unknown";
+}
+
 struct Submission
 {
     sl::Result sdkResult = sl::Result::eErrorInvalidState;
     bool submitted = false, confirmed = false;
+    // Why Apply hit or attempted submission, independently of its SDK result.
+    // Observation only; never resource/synchronization authority.
+    Reason reason = Reason::Unacknowledged;
     sl::Result Result() const
     {
         return sdkResult == sl::Result::eOk && !confirmed ? sl::Result::eErrorInvalidState : sdkResult;
@@ -139,7 +165,11 @@ class ConfigurationState
 {
     uint64_t serial = 1;
     uint64_t epoch = 1;
+    uint64_t dlssgEpoch = 1;
     bool inFlight = false;
+
+    uint64_t Epoch(const sl::DLSSGOptions&) const { return dlssgEpoch; }
+    uint64_t Epoch(const sl::ReflexOptions&) const { return epoch; }
 
   public:
     uint64_t Serial() const { return serial; }
@@ -148,6 +178,17 @@ class ConfigurationState
     {
         if (serial != UINT64_MAX) ++serial;
         if (epoch != UINT64_MAX) ++epoch;
+        if (dlssgEpoch != UINT64_MAX) ++dlssgEpoch;
+    }
+
+    // Only a successful FG-only retained gap may preserve the Reflex ACK.
+    // Keep its original scope and source age. The shared serial still cancels
+    // ANY in-flight transaction; a superseded return then invalidates both.
+    // Real Off/lifecycle changes and all failures continue to use Invalidate.
+    void InvalidateDlssg()
+    {
+        if (serial != UINT64_MAX) ++serial;
+        if (dlssgEpoch != UINT64_MAX) ++dlssgEpoch;
     }
 
     // Release is independent of source admission: it must still run after FG
@@ -163,7 +204,7 @@ class ConfigurationState
         // must not poison its successful Off acknowledgement.
         if (inFlight) return {};
         Acknowledgement<T> unused; // Off is never cached by Apply.
-        return Apply(unused, Scope{}, value, 0, false, true, SubmissionPolicy::OnChange,
+        return Apply(unused, Scope{}, value, 0, false, true,
             std::forward<Current>(current), std::forward<Submit>(submit));
     }
 
@@ -180,23 +221,32 @@ class ConfigurationState
 
     template<typename T, typename Current, typename Submit>
     Submission Apply(Acknowledgement<T>& ack, const Scope& scope, const T& value,
-        uint64_t sourceFrame, bool cacheEligible, bool force, SubmissionPolicy policy,
+        uint64_t sourceFrame, bool cacheEligible, bool force,
         Current&& current, Submit&& submit)
     {
         if (inFlight)
         {
             ack.valid = false;
             Invalidate();
-            return {}; // Never call a non-thread-safe SDK recursively.
+            // Never call a non-thread-safe SDK recursively.
+            return { sl::Result::eErrorInvalidState, false, false, Reason::Reentrant };
         }
-        if (!current()) { ack.valid = false; Invalidate(); return {}; }
+        if (!current())
+        {
+            ack.valid = false;
+            Invalidate();
+            return { sl::Result::eErrorInvalidState, false, false, Reason::NotCurrent };
+        }
         const bool known = Known(value);
-        const bool cacheable = known && Running(value) && cacheEligible && serial != UINT64_MAX && epoch != UINT64_MAX;
+        const auto ackEpoch = Epoch(value);
+        const bool cacheable = known && Running(value) && cacheEligible && serial != UINT64_MAX && ackEpoch != UINT64_MAX;
         constexpr uint64_t keepaliveSourceFrames = 600;
-        if (cacheable && !force && policy == SubmissionPolicy::OnChange && ack.valid &&
-            ack.epoch == epoch && ack.scope == scope && Same(ack.value, value) && sourceFrame >= ack.sourceFrame &&
-            sourceFrame - ack.sourceFrame < keepaliveSourceFrames)
-            return { sl::Result::eOk, false, true };
+        const auto reason = !cacheable ? Reason::NotCacheable : force ? Reason::Forced :
+            ack.epoch && ack.epoch != ackEpoch ? Reason::Invalidated : !ack.valid ? Reason::Unacknowledged :
+            ack.scope != scope ? Reason::ScopeChanged : !Same(ack.value, value) ? Reason::PayloadChanged :
+            sourceFrame < ack.sourceFrame ? Reason::SourceRewind :
+            sourceFrame - ack.sourceFrame >= keepaliveSourceFrames ? Reason::Keepalive : Reason::AckHit;
+        if (reason == Reason::AckHit) return { sl::Result::eOk, false, true, reason };
 
         ack.valid = false;
         if (!known || !Running(value)) Invalidate();
@@ -217,17 +267,17 @@ class ConfigurationState
         if (result != sl::Result::eOk || !stable || !known)
         {
             Invalidate(); // A recursive success cannot certify an outer failure.
-            return { result, true, false };
+            return { result, true, false, reason };
         }
         if (cacheable)
         {
             ack.value = value;
             ack.scope = scope;
             ack.sourceFrame = sourceFrame;
-            ack.epoch = epoch;
+            ack.epoch = ackEpoch;
             ack.valid = true;
         }
-        return { result, true, true };
+        return { result, true, true, reason };
     }
 };
 

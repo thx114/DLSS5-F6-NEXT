@@ -1,8 +1,8 @@
 """Check common interop retirement; --cpu compiles extracted production blocks.
 
-The fixture executes the real admission, wait, Reset and Execute/Signal blocks
-with observable CPU stand-ins. It does not run D3D, the SDK, or a game.
-Default mode never invokes a compiler. Lead owns all --cpu/build execution.
+The fixture executes the real admission, wait, Reset, Execute/Signal and present
+queue ownership code with observable CPU stand-ins and real WRL ComPtr ownership.
+It does not run D3D, the SDK, or a game. Default mode never invokes a compiler.
 """
 import argparse
 import re
@@ -53,6 +53,7 @@ wait = function(source, wait_signature)
 consume = function(source, consume_signature)
 queue_drain = function(source, "bool WaitForQueueIdle(")
 copy_drain = function(source, "bool Dx11wDx12SC::_WaitForCopyQueueIdle()")
+present_wait = function(source, "bool Dx11wDx12SC::_WaitForInteropCopyOnPresentQueue()")
 recover = function(source, "bool Dx11wDx12SC::_TryRecoverNativeChild()")
 native_drain = function(source, "bool Dx11wDx12SC::_TryDrainNativeChild()")
 revoke = function(source, "void Dx11wDx12SC::_RevokeNativeChild(")
@@ -137,12 +138,21 @@ check("_copyAllocators.assign(copyAllocatorCount, nullptr)" in source and
 print(f"PASS {checks} common interop retirement wiring checks; CPU/D3D/SDK/game not executed", flush=True)
 
 if args.cpu:
+    # Reintroduce the original bug only in a generated negative control. Both
+    # variants execute the full extracted function and actual production drain.
+    assignment = "_interopPresentQueue = queue; // arm ownership BEFORE"
+    check(present_wait.count(assignment) == 1, "negative control targets one owner adoption")
+    legacy_present_wait = present_wait.replace(
+        "Dx11wDx12SC::_WaitForInteropCopyOnPresentQueue()",
+        "Dx11wDx12SC::_WaitForInteropCopyOnPresentQueueLegacy()", 1,
+    ).replace(assignment, "if (queue) _interopPresentQueue = queue; // arm ownership BEFORE", 1)
     with tempfile.TemporaryDirectory(prefix="f6-interop-retirement-") as temporary:
         output = Path(temporary)
         for name, content in {
             "InteropSlotAdmissionProduction.h": admission,
             "InteropCopyWaitProduction.inl": wait + "\n" + consume,
             "InteropQueueDrainProduction.inl": queue_drain + "\n" + copy_drain,
+            "InteropPresentQueueProduction.inl": present_wait + "\n" + legacy_present_wait,
             "InteropWriterAdmissionProduction.inl": writer_admission,
             "InteropCopyResetProduction.inl": reset,
             "InteropCopySubmissionProduction.inl": submission,
@@ -158,5 +168,11 @@ if args.cpu:
             f'/Fe:"{exe}" /Fo:"{output}/" "{fixture}"\nexit /b %errorlevel%\n',
             encoding="utf-8", newline="\r\n",
         )
-        subprocess.run(["cmd.exe", "/d", "/c", str(batch)], cwd=output, check=True)
-        subprocess.run([str(exe)], cwd=output, check=True)
+        subprocess.run(["cmd.exe", "/d", "/c", str(batch)], cwd=HERE, check=True)
+        subprocess.run([str(exe)], cwd=HERE, check=True)
+        negative = subprocess.run([str(exe), "--negative-null-owner"], cwd=HERE,
+                                  capture_output=True, text=True)
+        check(negative.returncode == 1 and
+              "FAIL: successful retirement adopts the exact new owner, including null" in negative.stderr,
+              f"legacy conditional adoption must fail the owner transition regression: {negative}")
+        print("PASS legacy queue-to-null negative control rejected by executed ownership regression", flush=True)

@@ -43,6 +43,10 @@ class IFeature_Dx11 : public virtual IFeature
     virtual bool Init(ID3D11Device* InDevice, ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters);
     virtual bool Evaluate(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters);
 
+    // The native DX11 path keeps its normal destruction contract. Interop
+    // providers must first prove their submitted DX12 work can be retired.
+    virtual bool PrepareForShutdown() { return true; }
+
     API Api() const override { return API::DX11; }
     std::optional<double> ReadUpscalerTime(void* deviceContextVoid) override;
     void ReadDetailedGpuTimes(void* deviceContextVoid, std::vector<DetailedGpuTime>& detailedGpuTimes) override;
