@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "HoYoShadePolicy.h"
 #include "HoYoShadeStatus.h"
 #include "HoYoShadeSchedule.h"
@@ -12,7 +12,6 @@
 #include <native/NativeSubmissionReceipt.h>
 #include <native/FrameContract.h>
 
-namespace GenshinTransport { class ProducerFrame; class Lease; class Scope; }
 
 namespace DrawUiMask {class Frame;}
 
@@ -157,26 +156,6 @@ struct ProducerReady
 enum class NaturalSourceContract : unsigned {
     TypedBackbuffer, BeforeSrExactDevice, BeforeSrOwnedRuntimeWithSelectionDonor, BeforeSrNativeProducer
 };
-// BeforeSrExactDevice remains the legacy non-Genshin route. The Genshin
-// contract below has three independent authorities: authenticated producer,
-// exact owned D3D12 execution domain, and selection-only natural donor.
-// Same-call source binding only, not a transfer/SDR metadata override.
-// The existing owned transaction retains these full content owners before
-// recording. scope is borrowed only during the authenticated invocation.
-struct BeforeSrNativeColor
-{
-    std::shared_ptr<GenshinTransport::ProducerFrame> producer;
-    std::shared_ptr<GenshinTransport::Lease> transport;
-    const GenshinTransport::Scope* scope = nullptr;
-    bool providerHdrKnown = false, providerHdr = false;
-};
-// Final-picture authority is independent of the BeforeSR four-resource
-// invocation. Public observations cannot mint or refresh this capability.
-struct BeforeNrNativeColor
-{
-    std::shared_ptr<const GenshinPresentNr::NativeColorCapability> picture;
-    native::NativePictureColorObservation observation;
-};
 struct ColorEndpoint
 {
     std::shared_ptr<DrawUiMask::Frame> uiMask;
@@ -193,8 +172,6 @@ struct ColorEndpoint
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
     bool stateKnown = false, sdr = false;
     ColorMode colorMode = ColorMode::TransferQualified;
-    BeforeSrNativeColor nativeColor;
-    BeforeNrNativeColor beforeNrNativeColor;
     // Scheduling device entry and exact source buffer, NOT an SDK native
     // device alias. A synchronous typed proof resolves the resource owner.
     uint64_t naturalDevice = 0, naturalBackbuffer = 0;
@@ -256,10 +233,9 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept;
 // Observe an executable selection on the source's owning thread. This does
 // NOT suppress natural effects. Only an admitted physical output may suppress
 // its exact natural runtime, after owned techniques and submission succeed.
-PhysicalSource PreparePhysicalSource(IDXGISwapChain* source, bool copiedBeforeNatural = false) noexcept;
+PhysicalSource PreparePhysicalSource(IDXGISwapChain* source) noexcept;
 // Exact scoped snapshot release; stale/destroyed/reused runtime cannot release
 // another ticket. No natural effects state or natural frame is modified.
-void ReleasePhysicalSource(const PhysicalSource&) noexcept;
 // Nonblocking collection before DXGI resize; no backbuffer reference may remain.
 void RetirePhysicalOutput(uint64_t stream) noexcept;
 // Exact DX12 original backbuffer after optional Present NR, before Opt overlay.

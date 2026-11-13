@@ -5,8 +5,6 @@
 #include <memory>
 #include <cstdint>
 
-namespace GenshinTransport { class Lease; }
-namespace GenshinGuides { struct Owner; }
 namespace HoYoShade::Depth
 {
 struct Access;
@@ -144,7 +142,5 @@ void Clear(reshade::api::effect_runtime*); // propagates SDK errors; never rende
 // Owned-stage adapters. A missing real reader leaves the optional input empty.
 Input FromNative(const native::FrameInput&, ID3D12CommandQueue*, const native::SyncPoint& producerReady,
                  uint64_t stream, uint64_t generation) noexcept;
-Input FromBeforeSr(const std::shared_ptr<GenshinTransport::Lease>&, const GenshinGuides::Owner&,
-    ID3D12CommandQueue*, ID3D12Fence*, uint64_t readyValue, uint64_t stream, uint64_t generation,
-    uint64_t frame, uint32_t width, uint32_t height, bool directionKnown, bool reversed) noexcept;
+
 }

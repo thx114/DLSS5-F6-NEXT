@@ -23,7 +23,7 @@ for old, new in [('allocator->Reset()', 'ResetAllocator(allocator)'),
                  ('cmd->Close()', 'CloseList(cmd)')]:
     close = parser.replace_once(close, old, new)
 start = release.index('    // GPU completion alone leaves these executable recordings pinned by NR.')
-end = release.index('    // Final Genshin teardown must release the provider while its borrowed', start)
+end = release.index('    if (releaseProvider)', start)
 baseline = release[:start] + release[end:]
 baseline = parser.replace_once(baseline, 'IFeature_Dx11wDx12::ReleaseSharedResources(',
                               'IFeature_Dx11wDx12::BaselineRelease(')

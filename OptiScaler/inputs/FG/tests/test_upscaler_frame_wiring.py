@@ -49,18 +49,13 @@ class FrameInputWiringTests(unittest.TestCase):
                 self.assertRegex(caller, r"OptiKeys::FSR_NearPlane,\s*OptiKeys::FSR_FarPlane,\s*"
                                         r"OptiKeys::FSR_CameraFovVertical,\s*OptiKeys::FSR_ViewSpaceToMetersFactor")
 
-    def test_disabled_fsr_bridge_cannot_claim_real_genshin_dlss_inputs(self):
+    def test_public_input_policies_remain_enabled(self):
         policy = read(PRODUCT / "runtime/F6InputPolicy.h")
-        self.assertRegex(policy, r"constexpr\s+bool\s+FsrBridgeEnabled\s*=\s*false")
-        self.assertRegex(policy, r"constexpr\s+bool\s+DirectDlssInputs\s*=\s*true")
+        for flag in ("DirectDlssInputs", "PublicFsrInputs"):
+            self.assertRegex(policy, r"constexpr\s+bool\s+" + flag + r"\s*=\s*true")
         for caller in (self.native, self.interop):
-            self.assertLess(caller.index("GameRouting::Identity::Genshin"),
-                            caller.index("fg_inputs::ReadFrameParameters"))
-            before_common = caller[:caller.index("fg_inputs::ReadFrameParameters")]
-            self.assertRegex(before_common, r"if\s*\(F6InputPolicy::FsrBridgeEnabled\s*&&\s*"
-                                           r"dlssg::depth_contract::Game\(\)==GameRouting::Identity::Genshin")
-            self.assertIn("activeFgInput==FGInput::Upscaler", before_common)
-            self.assertIn("activeFgOutput==FGOutput::DLSSG) return", before_common)
+            self.assertNotIn("GenshinSrReceipt", caller)
+            self.assertNotIn("GenshinTransport", caller)
 
     def test_native_source_join_and_guard_still_precede_publication(self):
         caller = self.native
@@ -100,28 +95,36 @@ class FrameInputWiringTests(unittest.TestCase):
         self.assertIn("ReadResource<ID3D11Resource>(*InParameters, NVSDK_NGX_Parameter_Depth)", caller)
         self.assertIn("ReadResource<ID3D12Resource>(*InParameters, NVSDK_NGX_Parameter_Depth)", self.native)
 
-    def test_fsr3_discovery_entry_points_refuse_before_scanning(self):
+    def test_public_fsr_discovery_remains_available(self):
         fsr = read(FG_INPUTS / "FSR3_Dx12_FG.cpp")
-        self.assertIn("#include <runtime/F6InputPolicy.h>", fsr)
         for entry in ("HookFSR3FGExeInputs", "HookFSR3FGInputs"):
-            body = function_body(fsr, "void FSR3FG::" + entry + "()")
-            self.assertTrue(body.lstrip("{\n \t").startswith(
-                "if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;"))
-        # FSR remains a selectable output backend fed by real NGX resources.
+            implementation = function_body(fsr, "void FSR3FG::" + entry + "()")
+            self.assertNotIn("FsrBridgeEnabled", implementation)
+            self.assertIn("Detour", implementation)
         output = function_body(fsr, "void FSR3FG::SetUpscalerInputs(")
-        self.assertNotIn("F6InputPolicy::FsrBridgeEnabled", output)
-        self.assertIn("NVSDK_NGX_Parameter_Depth", output)
-        self.assertIn("NVSDK_NGX_Parameter_MotionVectors", output)
+        for key in ("NVSDK_NGX_Parameter_Depth", "NVSDK_NGX_Parameter_MotionVectors"):
+            self.assertIn(key, output)
+        loader = read(PRODUCT / "dllmain.cpp")
+        for entry in ("HookFSR2VkExeInputs()", "HookFSR2Dx11ExeInputs()", "HookFSR2ExeInputs()"):
+            self.assertIn(entry, loader)
+        proxy = read(PRODUCT / "proxies/FfxApi_Proxy.h")
+        self.assertIn("F6InputPolicy::PublicFsrInputs", proxy)
+        self.assertIn("main_vk.CreateContext != nullptr", proxy)
+        self.assertIn("VULKAN_Dispatch()", read(PRODUCT / "inputs/FfxApi_Vk.cpp"))
+        self.assertIn("void HookFSR2VkExeInputs()", read(PRODUCT / "inputs/FSR2_Vk.cpp"))
 
     def test_failed_selected_dx11_sr_cannot_publish_fg_guides(self):
         entry = function_body(read(PRODUCT / "inputs/NVNGX_DLSS_Dx11.cpp"),
                               "NVSDK_NGX_D3D11_EvaluateFeature(")
-        gate = entry.index("if (upscaleResult && GenshinSrReceipt::AllowsDownstreamGuides()")
+        gate = entry.index("if (upscaleResult")
         self.assertLess(gate, entry.index("UpscalerInputsDx11wDx12::UpscaleStart"))
         self.assertLess(entry.index("deviceContext->Evaluate(InDevCtx, InParameters)"), gate)
 
     def test_all_upscaler_guide_routes_defer_before_publication_during_warmup(self):
         provider = read(PRODUCT / "framegen/dlssg/DLSSG_Dx12.cpp")
+        provider += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+            next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+                 if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
         pair = function_body(provider, "bool DLSSG_Dx12::SetUpscalerGuidePair(")
         # PID79484 repeatedly activated at N, then tore down at N+1 while
         # target=N+10: SetResource's scheduled pause is not a failed SDK tag.
@@ -137,6 +140,9 @@ class FrameInputWiringTests(unittest.TestCase):
 
     def test_actual_partial_guide_publication_keeps_failure_retirement(self):
         provider = read(PRODUCT / "framegen/dlssg/DLSSG_Dx12.cpp")
+        provider += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+            next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+                 if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
         pair = function_body(provider, "bool DLSSG_Dx12::SetUpscalerGuidePair(")
         refusal = pair.index('RefuseDepthContract("guide-pair-partial-publication")')
         self.assertLess(pair.index("_managedRetained=true"), refusal)
@@ -159,40 +165,26 @@ class FrameInputWiringTests(unittest.TestCase):
             self.assertIn("_EvaluateFeature()(In", evaluate)
             self.assertNotIn("Genshin", source)
         interop = read(PRODUCT / "upscalers/IFeature_Dx11wDx12.cpp")
-        for entry in ("::Init(", "::Evaluate("):
-            body = function_body(interop, entry)
-            first = body[:body.index("CallerCpuTrace::Scope")]
-            self.assertIn("if constexpr (!F6InputPolicy::FsrBridgeEnabled)", first)
-            self.assertIn("GenshinSrReceipt::active || GenshinTransport::Scope::Current()", first)
+        for retired in ("GenshinSrReceipt", "GenshinTransport"):
+            self.assertNotIn(retired, interop)
         self.assertIn("DlssNr::EvaluateBeforeUpscale", interop)
         self.assertIn("DlssNr::EvaluateAfterUpscale", interop)
         self.assertIn("Dx12CommandQueue->Signal(Dx12Fence, fenceValue)", interop)
         self.assertIn("FramePipeline::ObserveFence(completedAfter, allocatorFenceValue)", interop)
 
-    def test_ffx_api_fg_inputs_preserve_native_passthrough(self):
+    def test_ffx_api_fg_inputs_use_public_policy(self):
         ffx = read(FG_INPUTS / "FfxApi_Dx12_FG.cpp")
-        self.assertIn("#include <runtime/F6InputPolicy.h>", ffx)
         for operation in ("CreateContext", "DestroyContext", "Configure", "Query", "Dispatch"):
-            body = function_body(ffx, "ffxReturnCode_t ffx" + operation + "_Dx12FG(")
-            self.assertTrue(body.lstrip("{\n \t").startswith(
-                "if constexpr (!F6InputPolicy::FsrBridgeEnabled) return PASSTHRU_RETURN_CODE;"))
-        callback = function_body(ffx, "void ffxPresentCallback()")
-        self.assertTrue(callback.lstrip("{\n \t").startswith(
-            "if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;"))
+            implementation = function_body(ffx, "ffxReturnCode_t ffx" + operation + "_Dx12FG(")
+            self.assertTrue(implementation.lstrip("{\n \t").startswith(
+                "if constexpr (!F6InputPolicy::PublicFsrInputs) return PASSTHRU_RETURN_CODE;"))
+        self.assertNotIn("FsrBridgeEnabled", ffx)
 
-    def test_fsr_debug_ui_cannot_arm_capture_or_disable_generic_nr_options(self):
+    def test_current_menu_retains_nr_and_guide_controls(self):
         menu = read(PRODUCT / "dlssnr/DlssNr_Menu.cpp")
-        classification = function_body(menu, "static bool GenshinBridgeMenuProcess()")
-        self.assertLess(classification.index("if constexpr (!F6InputPolicy::FsrBridgeEnabled) return false"),
-                        classification.index("Util::ExePath()"))
-        for entry in ("RenderGenshinManualCapture", "RenderGenshinFgGuidePreview"):
-            body = function_body(menu, "static void " + entry + "()")
-            self.assertTrue(body.lstrip("{\n \t").startswith(
-                "if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;"))
-        self.assertRegex(menu, r"if constexpr \(F6InputPolicy::FsrBridgeEnabled\)\s+"
-                               r"GenshinDepthProvider::DrawPreview\(\)")
-        for control in ("config->DlssNrRunBeforeSr = beforeSr", "config->DlssNrFinishedPicture = false",
-                        "config->DlssNrDebugView ="):
+        for retired in ("RenderGenshinManualCapture", "RenderGenshinFgGuidePreview", "GenshinDepthProvider"):
+            self.assertNotIn(retired, menu)
+        for control in ("config->DlssNrRunBeforeSr = beforeSr", "config->DlssNrFinishedPicture = false", "config->DlssNrDebugView ="):
             self.assertIn(control, menu)
         self.assertIn("GuideDiagnosticsMenu::RenderPreviewStrip(config)", menu)
         unified = read(PRODUCT / "menu/GuideDiagnosticsMenu.cpp")

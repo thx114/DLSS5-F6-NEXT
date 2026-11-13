@@ -343,11 +343,11 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="runtime\InputObservation.h" />
     <ClInclude Include="runtime\FsrHookHudMetrics.h" />
     <ClInclude Include="runtime\StarRailResidencyPolicy.h" />
-    <ClInclude Include="runtime\OutputRevealHandoff.h" />
+
     <ClInclude Include="runtime\ProducerProgress.h" />
     <ClInclude Include="runtime\NrResident.h" />
     <ClInclude Include="runtime\ObservedSetting.h" />
-    <ClInclude Include="genshin\GenshinInputObservation.h" />
+
     <ClInclude Include="runtime\MappedResourceJournal.h" />
     <ClInclude Include="shaders\dlssnr\DlssNr_FrameInfo.h" />
     <ClInclude Include="runtime\GpuWorkDomain.h" />
@@ -1109,59 +1109,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
   </ImportGroup>
   <ItemGroup>
     <ClInclude Include="dlssnr\DlssNr_NgxResourceParameter.h" />
-    <ClCompile Include="genshin\CaptureOnlyAdmission.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\CaptureOnlyAdmission.h" />
-    <ClInclude Include="genshin\CaptureOnlyBridge.h" />
-    <ClCompile Include="genshin\CaptureOnlyConsumer.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\CaptureOnlyConsumer.h" />
-    <ClCompile Include="genshin\GenshinEngineProducer.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\GenshinEngineProducer.h" />
-    <ClCompile Include="genshin\GenshinHookCpuTiming.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClCompile Include="genshin\GenshinFamilySkip.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\GenshinFamilySkip.h" />
-    <ClCompile Include="genshin\GenshinLegacyCapture.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\GenshinLegacyCapture.h" />
-    <ClInclude Include="genshin\GenshinDrawAdmission.h" />
-    <ClInclude Include="genshin\GenshinFsrPassObservation.h" />
-    <ClInclude Include="genshin\GenshinFsrSubstageProgress.h" />
-      <ClInclude Include="genshin\GenshinFgOutcome.h" />
-    <ClInclude Include="menu\GenshinFsrSubstageUi.h" />
-    <ClCompile Include="genshin\GenshinInputObserver.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\GenshinInputObserver.h" />
-    <ClCompile Include="genshin\GenshinCpuWriterProbe.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\GenshinCpuWriterProbe.h" />
-    <ClCompile Include="genshin\GenshinDepthProvider.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\GenshinDepthProvider.h" />
-    <ClInclude Include="genshin\GenshinRuntimeCapture.h" />
-    <ClInclude Include="genshin\GenshinManualCapture.h" />
-    <ClInclude Include="genshin\GenshinLegacyControls.h" />
-    <ClCompile Include="genshin\GenshinPresentLifecycle.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\GenshinPresentLifecycle.h" />
-    <ClCompile Include="genshin\GenshinResourceProvenance.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\GenshinResourceProvenance.h" />
-    <ClInclude Include="genshin\GenshinSrReceipt.h" />
-    <ClCompile Include="genshin\GenshinTypedGuides.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\GenshinTypedGuides.h" />
-    <ClInclude Include="genshin\GenshinNrProfile.h" />
-    <ClInclude Include="genshin\GenshinFsrProfiles.h" />
-    <ClInclude Include="genshin\GenshinFsrComposite.h" />
-    <ClInclude Include="genshin\GenshinPresentNr.h" />
-    <ClInclude Include="genshin\GenshinVisibleDrawProbe.h" />
-    <ClInclude Include="genshin\GenshinVisibleOutput.h" />
-    <ClCompile Include="genshin\GenshinDx12Transport.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\GenshinDx12Transport.h" />
-    <ClInclude Include="genshin\GenshinOutputContract.h" />
-    <ClInclude Include="genshin\legacy\Fsr2FamilyTakeover.h" />
-    <ClCompile Include="genshin\legacy\Il2CppCallSiteHook.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="genshin\legacy\Il2CppCallSiteHook.h" />
-    <ClInclude Include="genshin\legacy\MotionFlipPolicy.h" />
-    <ClInclude Include="genshin\legacy\ResourceIdentification.h" />
-    <ClInclude Include="genshin\legacy\TranslationFrameTimePolicy.h" />
-    <ClInclude Include="inputs\FSR2_Dx11_Internal.h" />
-    <ClCompile Include="inputs\GenshinFsrContract.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="inputs\GenshinFsrContract.h" />
-    <ClCompile Include="inputs\GenshinFsrDx11.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
-    <ClInclude Include="inputs\GenshinFsrDx11.h" />
+
+    <ClCompile Include="runtime\HookCpuTiming.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="integration\HoYoShade.cpp" />
@@ -1186,13 +1136,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="integration\hoyoshade\sdk\reshade\reshade_api_format.hpp" />
     <ClInclude Include="integration\hoyoshade\sdk\reshade\reshade_overlay.hpp" />
     <None Include="integration\hoyoshade\sdk\LICENSE.md" />
-    <ClInclude Include="genshin\GenshinFsrUiObservation.h" />
-    <ClInclude Include="genshin\GenshinHookHintPresentation.h" />
-    <ClInclude Include="genshin\GenshinLoadingProgress.h" />
-    <ClInclude Include="menu\GenshinFsrHintPolicy.h" />
-    <ClInclude Include="menu\GenshinFsrHintController.h" />
-    <ClInclude Include="menu\CriticalErrorQueue.h" />
-    <ClInclude Include="menu\CriticalErrorWindow.h" />
+
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="mods\gimi\GimiConfig.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
@@ -1466,5 +1410,25 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="mods\gimi\GimiFormatText.h" />
     <ClInclude Include="mods\gimi\GimiRuntime.h" />
     <ClInclude Include="mods\gimi\GimiShaderSource.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="hooks\HookOwnership.h" />
+    <ClInclude Include="hooks\HookTransaction.h" />
+    <ClInclude Include="motion\DepthShaderCapabilities.h" />
+    <ClInclude Include="runtime\ComIdentity.h" />
+    <ClInclude Include="runtime\GameIdentity.h" />
+    <ClInclude Include="runtime\HookCpuTiming.h" />
+    <ClInclude Include="dlssnr\DlssNrStageTiming.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="framegen\dlssg\DLSSG_Dx12_Inputs.cpp" />
+    <ClCompile Include="framegen\dlssg\DLSSG_Dx12_Lifetime.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="framegen\dlssg\DLSSG_Dx12_Internal.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="shaders\dlssnr\NrGpuExecutionLifetime.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="shaders\dlssnr\NrGpuExecutionLifetime.h" />
   </ItemGroup>
 </Project>

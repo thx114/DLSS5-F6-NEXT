@@ -21,6 +21,8 @@ paths = [ROOT / p for p in (
     'OptiScaler/framegen/IFGFeature_Dx12.cpp',
 )]
 sources = [p.read_text(encoding='utf-8-sig') for p in paths]
+sources[4] += "\n" + "\n".join(p.read_text(encoding='utf-8-sig')
+    for p in sorted(paths[4].parent.glob('DLSSG_Dx12_*.cpp')))
 take = parser.extract
 adopt = take(sources[2], 'void WithDx12::AdoptSwapchainQueue(')
 setter = take(sources[2], 'void WithDx12::SetD3D12Objects(')

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "HoYoShadePolicy.h"
 
 namespace HoYoShade
@@ -25,10 +25,6 @@ enum class OutputKind : unsigned { Original, GeneratedUnavailable, UnknownPhysic
 struct PhysicalSource
 {
     uint64_t runtime = 0, lifetime = 0, epoch = 0, serial = 0;
-    // True only for a private color copied BEFORE this DX11 source's natural
-    // effects. Parent effects stay enabled; this ticket never suppresses parent.
-    bool copiedBeforeNatural = false;
-    uint64_t copyOwner = 0, copyGeneration = 0, copySerial = 0;
     explicit operator bool() const noexcept { return runtime && lifetime && epoch && serial; }
 };
 struct OutputToken

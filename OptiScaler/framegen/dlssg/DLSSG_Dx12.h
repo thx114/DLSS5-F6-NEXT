@@ -9,7 +9,6 @@
 #include "NativeGuideListInterest.h"
 #include <dlssnr/FinishedPictureOutcome.h>
 #include <framegen/FinalOutputEndpoint.h>
-#include <inputs/FG/GenshinFgTicket.h>
 #include <mutex>
 #include <atomic>
 #include <memory>
@@ -22,12 +21,10 @@
 #include <proxies/Streamline_Proxy.h>
 
 class IFeature;
-namespace GenshinBridgeFg { class Recording; }
 namespace DrawUiMask { class Frame; }
 
 class DLSSG_Dx12 : public virtual IFGFeature_Dx12
 {
-    struct GenshinFenceOwner;
     std::shared_ptr<framegen::final_output::Provider> _finalOutputProvider;
   public:
     // Minted only alongside accepted guides. The snapshot is copied once from
@@ -69,121 +66,10 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
       public:
         ~UpscalerFinalColour() = default;
     };
-    // R727: only authenticated Capture may mint this immutable guide contract.
-    // FG donor rows include the SDK-specific Y reflection. XY values are
-    // current->previous picture pixels, normalized by the sealed constants.
-    // This is not NR's Picture DeviceZ/validity mapping or reader completion.
-    class GenshinNormalizedGuides final
-    {
-        friend class GenshinBridgeFg::Recording;
-        friend class DLSSG_Dx12;
-        explicit GenshinNormalizedGuides(const DLSSG_Dx12& provider);
-        GenshinNormalizedGuides(const GenshinNormalizedGuides&) = delete;
-        GenshinNormalizedGuides& operator=(const GenshinNormalizedGuides&) = delete;
-        UINT64 owner=0,swapchain=0,guideEpoch=0,guideCutSerial=0;
-        GenshinBridgeFg::Key key{};
-        uint64_t privateOutput=0;
-        std::shared_ptr<const GenshinTransport::PreparedDepthPacket> preparedPacket;
-        Microsoft::WRL::ComPtr<ID3D12Device> device;
-        Microsoft::WRL::ComPtr<ID3D12CommandQueue> producerQueue;
-        Microsoft::WRL::ComPtr<ID3D12Resource> depth,motion;
-        sl::Constants constants{};
-      public:
-        ~GenshinNormalizedGuides() = default;
-    };
-    // A frame owns its exact fence epoch/value, never the cache's latest value.
-    // Publication precedes any queue submission; only its own successful Signal
-    // arms completion. Failed submissions retain the real timeline owner.
-    class GenshinFenceReceipt final
-    {
-        friend class DLSSG_Dx12;
-        const std::shared_ptr<GenshinFenceOwner> timeline;
-        const UINT64 value;
-        std::atomic<bool> signalled{false};
-        GenshinFenceReceipt(const std::shared_ptr<GenshinFenceOwner>& owner, UINT64 v)
-            : timeline(owner), value(v) {}
-      public:
-        UINT64 Value() const noexcept {return value;}
-        UINT64 Epoch() const noexcept;
-        bool Completed() const noexcept;
-    };
-    class GenshinInputRetirement final
-    {
-        friend class DLSSG_Dx12;
-        UINT64 owner=0,epoch=0,frame=0,presentEpoch=0,vendorValue=0;
-        // Vendor zero is unresolved. Independent ordered host completion has
-        // its own proof below; this fallback deadline is checked even
-        // on ordinary Present/skip boundaries with no fresh authenticated input.
-        UINT64 pendingDeadline=0;
-        dlssg::InputOwner inputOwner{};
-        DWORD thread=0;
-        Microsoft::WRL::ComPtr<ID3D12Device> device;
-        Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
-        Microsoft::WRL::ComPtr<IDXGISwapChain> swapchain;
-        Microsoft::WRL::ComPtr<ID3D12Fence> vendorFence;
-        std::shared_ptr<GenshinFenceReceipt> hostCompletion;
-        Microsoft::WRL::ComPtr<ID3D12Resource> color,uiHudless;
-        std::shared_ptr<DrawUiMask::Frame> uiMask;
-        // Retain the exact immutable guide allocations through vendor retirement,
-        // including partial tag acceptance and uncertain/failed Present paths.
-        std::shared_ptr<const GenshinNormalizedGuides> guides;
-        std::shared_ptr<const GenshinBridgeFg::SdkInputSource> source;
-        // Separate from the immutable vendor receipt. Only the real post-Present
-        // Signal(value) on the accepted blocking presenting queue may establish this.
-        bool presentingQueueRetirement=false;
-        bool acceptedBlocking=false,presentReturned=false,signalled=false;
-        bool uiMaskTagged=false; // successful exact SDK HUDless tag, not input-map retention
-        std::atomic<bool> retired{false};
-      public:
-        bool Retired() const noexcept {return retired.load(std::memory_order_acquire);}
-        const auto& Source() const noexcept {return source;} // identity, never completion
-    };
   private:
-    // Exact frame-scoped camera observations for the Genshin adapter only.
-    sl::Constants _genshinConstants[BUFFER_COUNT] {};
-    UINT64 _genshinConstantsFrame[BUFFER_COUNT] {};
-    std::shared_ptr<GenshinInputRetirement> _genshinInputs[BUFFER_COUNT];
-    // Independent wait and post-Present timelines. All reservations and Signals
-    // are serialized by continuity; caches never own a swapchain reference.
-    std::shared_ptr<GenshinFenceOwner> _genshinWaitFence, _genshinHostFence;
-    UINT64 _genshinFenceSerial=0;
-    std::shared_ptr<GenshinFenceReceipt> ReserveGenshinFence(std::shared_ptr<GenshinFenceOwner>& owner);
-    HRESULT SignalGenshinFence(const std::shared_ptr<GenshinFenceReceipt>& receipt);
-    inline static std::atomic<UINT64> _genshinOwnerSerial{0};
-    const UINT64 _genshinOwnerGeneration=++_genshinOwnerSerial;
-    // Captured only at successful real factory creation, independently of
-    // mutable SetCommandQueue. No extra swapchain reference across Resize.
-    Microsoft::WRL::ComPtr<ID3D12CommandQueue> _genshinCreatedPresentQueue;
-    uintptr_t _genshinCreatedSwapchain=0;
-    void RememberGenshinPresentQueue(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue);
-    UINT64 _genshinPresentEpoch=0;
-    std::atomic<bool> _genshinResumePending{false};
-    // Explicit menu resume events only; frames/teardown never advance this clock.
-    std::atomic<UINT64> _genshinResumeRequests{0};
-    UINT64 _genshinBudgetRefusalPresent=0, _genshinBudgetRefusalFrame=0;
-    UINT64 _genshinBudgetRefusalResumeRequest=0;
-    bool _genshinTagging=false;
-    // Telemetry only. Scalars from the last existing same-Present observation;
-    // never a completion receipt and never authority for a later frame.
-    struct GenshinStateObservation
-    {
-        bool valid=false;
-        UINT64 frame=0,epoch=0;
-        int result=-1,status=-1;
-        uint32_t presented=0,cap=0;
-    } _genshinStateObservation;
-    bool _genshinConstantsFailureSeen=false;
-    int _genshinConstantsTraceReset=-1;
-    unsigned _genshinConstantsTraceCalls=0,_genshinConstantsTraceTransitions=0;
-    UINT64 _genshinConstantsTraceTick=0;
-    const char* _genshinRetirementTraceStage=nullptr;
-    unsigned _genshinRetirementTraceCalls=0,_genshinRetirementTraceTransitions=0;
-    UINT64 _genshinRetirementTraceTick=0;
-    bool IsGenshinBridgeOwner() const;
-    bool GenshinGuidesCurrent(const std::shared_ptr<const GenshinNormalizedGuides>& guides) const;
-    void CollectGenshinInputs(bool providerFreed=false);
-    void CheckGenshinPendingInputs();
-
+    inline static std::atomic<UINT64> _providerOwnerSerial{0};
+    const UINT64 _providerOwnerGeneration=++_providerOwnerSerial;
+    void RememberPresentQueue(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue);
     uint32_t _width = 0;
     uint32_t _height = 0;
     std::optional<bool> _haveHudless = std::nullopt;
@@ -383,12 +269,9 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
         Microsoft::WRL::ComPtr<ID3D12Fence> fence;
         IDXGISwapChain* swapchain = nullptr; // Identity; caller/F5 pin owns it, never a new self-pin.
-        bool asynchronous = false; // Only the authenticated, leased Genshin producer qualifies.
         UINT64 value = 0;
         std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> resources;
         // Terminal quarantine only. No provider pointer or callback survives.
-        std::shared_ptr<GenshinInputRetirement> inputs[BUFFER_COUNT];
-        std::shared_ptr<GenshinFenceOwner> waitFence, hostFence;
     };
     // Allocate before submission so terminal quarantine can detach the complete
     // owner graph without allocating or retaining a destroyed provider object.
@@ -496,10 +379,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     void EvaluateState(ID3D12Device* device, FG_Constants& fgConstants) override final;
     // Queue explicit user re-enable for the normal FG state boundary. Only
     // its warm-up delay is removed; teardown and fresh-input gates remain.
-    void RequestGenshinResume();
     // CPU refusal classification, never a resource-retirement or budget receipt.
-    bool GenshinBudgetRefusedAt(UINT64 presentEpoch, UINT64& resumeRequest);
-    UINT64 GenshinResumeRequests() const noexcept { return _genshinResumeRequests.load(std::memory_order_acquire); }
 
     bool Present() override final;
     ID3D12GraphicsCommandList* GetSCCommandList(int index = -1) override final;
@@ -522,26 +402,6 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     bool PrepareForSwapchainChange(bool terminal = false) override final;
 
     // Called only after same-present ticket/depth/MV/final-color authentication.
-    UINT64 BeginGenshinPresent(ID3D12Device* device, IDXGISwapChain* swapchain,
-        ID3D12CommandQueue* queue, UINT64 presentEpoch, FG_Constants& constants);
-    std::shared_ptr<const GenshinInputRetirement> SetGenshinConstants(
-        const std::shared_ptr<const GenshinNormalizedGuides>& guides, const GenshinBridgeFg::Key& key,
-        UINT64 frame, bool reset);
-    bool GenshinSourceCurrent(const std::shared_ptr<const GenshinInputRetirement>& receipt,
-        const GenshinBridgeFg::Key& key, UINT64 frame);
-    // Publishes a sealed receipt before the first Wait, including partial failure.
-    bool WaitGenshinInputs(ID3D12Device* device, IDXGISwapChain* swapchain, ID3D12CommandQueue* queue,
-        ID3D12Fence* produced, UINT64 producedValue, ID3D12Fence* copied, UINT64 copiedValue,
-        std::shared_ptr<const GenshinFenceReceipt>& receipt);
-    void EndGenshinPresent(const std::shared_ptr<const GenshinInputRetirement>& receipt, bool presented);
-    void SuspendGenshinPresent();
-    // Wrapper must call BEFORE either color CopyResource/transition path.
-    Microsoft::WRL::ComPtr<ID3D12CommandQueue> GenshinColorWriteQueue(
-        IDXGISwapChain* swapchain, ID3D12Device* device);
-    bool PrepareGenshinColorWrite(ID3D12Resource* color, ID3D12CommandQueue* writeQueue = nullptr);
-    bool SetGenshinResource(const std::shared_ptr<const GenshinInputRetirement>& receipt, Dx12Resource* input);
-    bool SetGenshinUiMask(const std::shared_ptr<const GenshinInputRetirement>& receipt,
-        const std::shared_ptr<DrawUiMask::Frame>& mask);
     // Ordinary selected-SR guides. Genshin cannot enter this API; its sealed
     // FinishedPicture/Present transaction remains the only guide authority.
     bool OwnsUpscalerDepthContract() const;

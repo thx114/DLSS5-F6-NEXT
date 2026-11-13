@@ -54,28 +54,19 @@ consume = function(source, consume_signature)
 queue_drain = function(source, "bool WaitForQueueIdle(")
 copy_drain = function(source, "bool Dx11wDx12SC::_WaitForCopyQueueIdle()")
 present_wait = function(source, "bool Dx11wDx12SC::_WaitForInteropCopyOnPresentQueue()")
-recover = function(source, "bool Dx11wDx12SC::_TryRecoverNativeChild()")
-native_drain = function(source, "bool Dx11wDx12SC::_TryDrainNativeChild()")
-revoke = function(source, "void Dx11wDx12SC::_RevokeNativeChild(")
-check(recover.index("_childRecoveryEntered = true") < recover.index("_TryDrainNativeChild()") <
-      recover.index("_childRevoked = false"), "only the revoked child polls before re-opening admission")
-check(native_drain.index("PrepareForSwapchainChange()") < native_drain.index("_WaitForCopyQueueIdle()") <
-      native_drain.index("_ReleaseInteropBackBuffers()"), "provider and both real queues gate release")
-check("_recoveryCopyDrain = {};" in revoke and "_recoveryPresentDrain = {};" in revoke,
-      "a new revocation invalidates the entire drain")
 admission = block(header, "    class CopySlotAdmission final", "    // Interop slot admission end")
 writer_admission = block(writer, "    // Interop shared writer admission begin",
                          "    // Interop shared writer admission end")
 reset = block(copy, "    if (!_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues, admission))",
               "    CallerCpuTrace::Scope listResetCpu")
 submission = block(copy, "    colorQueue->ExecuteCommandLists(1, lists);",
-                   "    if (auto* scope = GenshinBridgeFg::PresentScope::Current(); scope && copySlot < _genshinFgImports.size())")
+                   "    if (Config::Instance()->DlssNrEnabled.value_or_default()")
 uncertain = block(submission, "        // Interop uncertain submission begin",
                   "        // Interop uncertain submission end")
 
 check(writer.index("admission.Clear();") < writer.index(writer_admission),
       "a new writer cannot borrow a previous transaction's proof")
-check(writer.index(writer_admission) < writer.index("_RequestSharedBackBuffer(index, false)") <
+check(writer.index(writer_admission) < writer.index("_real->GetBuffer(index,") <
       writer.index("_msaaResolve.ResolveIn(") < writer.index("_dx11Context->CopyResource("),
       "exact reader retirement precedes replacement, Resolve and CopyResource")
 check("_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues)" in writer_admission and
@@ -90,10 +81,6 @@ check("WaitForSingleObject" not in consume and "GetCompletedValue" not in consum
       "changed admission fails without polling or a second/late completion wait")
 check(wait.count("WaitForSingleObject(") == 1 and "WaitForSingleObject(_copyFenceEvent, 5000)" in wait,
       "the existing bounded wait is moved, not multiplied or lengthened")
-check(wait.index("_nativeParentRoute && GenshinBridgeFg::PresentScope::Current()") <
-      wait.index("WaitForSingleObject("), "native optional Busy remains nonblocking")
-check('_visibleReceipt.reason = "CopySlotBusy"' in wait,
-      "early native Busy retains the caller's nonterminal classification")
 check("if (completedValue == UINT64_MAX)" in wait and "actual != UINT64_MAX && actual >= fenceValue" in wait,
       "device removal or a spurious event cannot admit common resource reuse")
 check("CopySlotAdmission(const CopySlotAdmission&) = delete" in admission and
@@ -101,7 +88,6 @@ check("CopySlotAdmission(const CopySlotAdmission&) = delete" in admission and
       "the proof is noncopyable and consumed on success or mismatch")
 for entry in (
     "HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT",
-    "HRESULT Dx11wDx12SC::_PresentNativeVisible(",
 ):
     present = function(source, entry)
     check("CopySlotAdmission copyAdmission;" in present and
@@ -135,6 +121,9 @@ for entry in (
 check("_copyAllocators.assign(copyAllocatorCount, nullptr)" in source and
       "std::max<UINT>(_bufferCount != 0 ? _bufferCount : 3, 3)" in source,
       "existing ring capacity is unchanged")
+producer = function(source, "bool Dx11wDx12SC::_WaitDx11ThenDx12()")
+check(producer.index("_dx11Context4->Signal(") < producer.index("_dx11Context4->Flush()") <
+      producer.index("_dx12CommandQueue->Wait("), "actual writer Signal/Flush precedes reader queue Wait")
 print(f"PASS {checks} common interop retirement wiring checks; CPU/D3D/SDK/game not executed", flush=True)
 
 if args.cpu:
@@ -146,10 +135,20 @@ if args.cpu:
         "Dx11wDx12SC::_WaitForInteropCopyOnPresentQueue()",
         "Dx11wDx12SC::_WaitForInteropCopyOnPresentQueueLegacy()", 1,
     ).replace(assignment, "if (queue) _interopPresentQueue = queue; // arm ownership BEFORE", 1)
+    producer = producer.replace("Dx11wDx12SC::_WaitDx11ThenDx12()", "ProducerFixture::Handoff()")
+    producer_legacy = producer.replace("ProducerFixture::Handoff()", "ProducerFixture::HandoffLegacy()")
+    check(producer_legacy.count("result = _dx12CommandQueue->Wait(_dx12SharedFence, waitValue);") == 1,
+          "writer-wait negative targets one actual queue wait")
+    producer_legacy = producer_legacy.replace("result = _dx12CommandQueue->Wait(_dx12SharedFence, waitValue);", "result = S_OK;")
+    check(writer_admission.count("!_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues)") == 1,
+          "reader-retirement negative targets the actual pre-write wait")
+    writer_legacy = writer_admission.replace("!_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues)", "false")
+    writer_admission = "if (negativeReaderRetirement) {\n" + writer_legacy + "\n} else {\n" + writer_admission + "\n}"
     with tempfile.TemporaryDirectory(prefix="f6-interop-retirement-") as temporary:
         output = Path(temporary)
         for name, content in {
             "InteropSlotAdmissionProduction.h": admission,
+            "InteropProducerHandoffProduction.inl": producer + "\n" + producer_legacy,
             "InteropCopyWaitProduction.inl": wait + "\n" + consume,
             "InteropQueueDrainProduction.inl": queue_drain + "\n" + copy_drain,
             "InteropPresentQueueProduction.inl": present_wait + "\n" + legacy_present_wait,
@@ -176,3 +175,10 @@ if args.cpu:
               "FAIL: successful retirement adopts the exact new owner, including null" in negative.stderr,
               f"legacy conditional adoption must fail the owner transition regression: {negative}")
         print("PASS legacy queue-to-null negative control rejected by executed ownership regression", flush=True)
+
+        for mode, diagnostic in (("--negative-writer-wait", "writer Signal and Flush precede the exact reader queue Wait"),
+                                 ("--negative-reader-retirement", "one existing wait admits one write")):
+            result = subprocess.run([str(exe), mode], cwd=HERE, capture_output=True, text=True)
+            check(result.returncode == 1 and "FAIL: " + diagnostic in result.stderr,
+                  f"specific missing synchronization must be detected: {mode}: {result}")
+        print("PASS missing writer Wait and missing reader retirement controls rejected by production CPU checks")

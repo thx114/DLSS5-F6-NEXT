@@ -618,7 +618,7 @@ static FfxDevice ffxGetDevice_Vk(VkDevice device)
 
 void HookFSR2VkExeInputs()
 {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
+
     LOG_INFO("Trying to hook FSR2 Vk methods");
 
     DetourTransactionBegin();

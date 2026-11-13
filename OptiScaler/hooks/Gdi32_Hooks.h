@@ -2,7 +2,7 @@
 #include "SysUtils.h"
 #include "Config.h"
 #include "detours/detours.h"
-#include <genshin/GenshinSystemHookTransaction.h>
+#include <hooks/HookTransaction.h>
 
 #include "Hook_Utils.h"
 #include <misc/IdentifyGpu.h>
@@ -100,13 +100,13 @@ static void hookGdi32()
     if (o_D3DKMTQueryAdapterInfo != nullptr)
     {
         const auto requested = reinterpret_cast<uintptr_t>(o_D3DKMTQueryAdapterInfo);
-        GenshinSystemHooks::Transaction systemTransaction;
+        HookTransactions::Transaction systemTransaction;
 
         systemTransaction.Attach(&(PVOID&) o_D3DKMTQueryAdapterInfo, hkD3DKMTQueryAdapterInfo);
 
         auto detourResult = systemTransaction.Commit();
         LOG_INFO("GDI32 hook ownership: pid={} enrolled={} requested={:X} trampoline={:X} result={}",
-                 GetCurrentProcessId(), GenshinSystemHooks::Enabled(), requested,
+                 GetCurrentProcessId(), HookTransactions::Enabled(), requested,
                  reinterpret_cast<uintptr_t>(o_D3DKMTQueryAdapterInfo), detourResult);
         if (detourResult != NO_ERROR)
         {
@@ -120,7 +120,7 @@ static void unhookGdi32()
 {
     if (o_D3DKMTQueryAdapterInfo != nullptr)
     {
-        GenshinSystemHooks::Transaction systemTransaction;
+        HookTransactions::Transaction systemTransaction;
 
         systemTransaction.Detach(&(PVOID&) o_D3DKMTQueryAdapterInfo, hkD3DKMTQueryAdapterInfo);
 

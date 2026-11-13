@@ -8,7 +8,6 @@
 #include <string>
 #include <vector>
 #include <wrl/client.h>
-#include <genshin/GenshinPresentNr.h>
 #include <runtime/GuideSourceMetadata.h>
 
 #include <shaders/dlssnr/DlssNr_Common.h>
@@ -151,7 +150,6 @@ void FinishedPictureDx11BridgeOutputHandoff(ID3D12CommandQueue* queue, ID3D12Gra
 // orderedProducerQueue is covered by the wrapper's successful DX11->copy->present wait chain.
 FinishedPictureOutcome ApplyToFinishedPictureDx11Bridge(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue,
                                      ID3D12CommandQueue* orderedProducerQueue,
-                                     const GenshinPresentNr::ReturnedPicture* nativeReturned = nullptr,
                                      GuideSourceMetadata::Ptr selectedSource = {});
 
 // Finished Picture while the game's own frame generation runs: the edit is applied to the
@@ -176,7 +174,7 @@ bool ApplyNativeInput(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* cmd,
                       ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* historyDistrust,
                       bool depthReversed, bool reset,
                       DXGI_COLOR_SPACE_TYPE colorSpace, D3D12_RESOURCE_STATES pictureState, unsigned long long epoch,
-                      bool opticalFgNr = false, const GenshinPresentNr::Scope* genshinSender = nullptr);
+                      bool opticalFgNr = false);
 // The colour space of a swap chain's picture, from what the game set (SDR when it set nothing), for a native-input frame.
 DXGI_COLOR_SPACE_TYPE NativeInputColourSpace(IDXGISwapChain* swapchain, DXGI_FORMAT format);
 void FinishedPictureColorSpace(IDXGISwapChain* swapchain, DXGI_COLOR_SPACE_TYPE colorSpace);

@@ -37,6 +37,13 @@ enum class Completion : unsigned { Abandoned, OriginalReturned, ReplacementRetur
 enum class Slot : unsigned { UiMask, Uid, Count };
 struct ShaderIdentity { uint64_t hash=0,bytes=0; };
 inline constexpr GUID ShaderIdentityKey={0xf566d101,0x4c11,0x46b3,{0xb9,0x18,0x56,0x60,0x11,0x00,0x00,0x01}};
+inline uint64_t ShaderByteHash(const void* data, size_t size) noexcept {
+    if (!data || !size) return 0;
+    uint64_t hash=14695981039346656037ull;
+    const auto* bytes=static_cast<const unsigned char*>(data);
+    for(size_t i=0;i<size;++i){hash^=bytes[i];hash*=1099511628211ull;}
+    return hash;
+}
 inline void RememberShader(ID3D11DeviceChild* shader,uint64_t hash,size_t bytes) noexcept {
     if(shader && hash && bytes){const ShaderIdentity identity{hash,bytes};
         shader->SetPrivateData(ShaderIdentityKey,sizeof(identity),&identity);}

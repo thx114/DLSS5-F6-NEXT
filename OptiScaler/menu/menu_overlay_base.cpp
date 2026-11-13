@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "menu_overlay_base.h"
 #include "menu_common.h"
 
@@ -30,7 +30,6 @@ void MenuOverlayBase::Init(HWND InHandle, bool isUWP)
     MenuCommon::Init(InHandle, isUWP);
 }
 
-bool MenuOverlayBase::RetargetGenshinWindow(HWND hwnd) { return MenuCommon::RetargetGenshinWindow(hwnd); }
 
 bool MenuOverlayBase::RenderMenu()
 {

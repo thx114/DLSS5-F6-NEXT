@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <wrapped/SwapchainHookBoundary.h>
 
 #include "SysUtils.h"
@@ -9,9 +9,7 @@
 #include "d3d12.h"
 
 #include <native/MsaaPictureDx11.h>
-#include "GenshinVisibleChild.h"
 #include "Dx11InteropSwapchainPolicy.h"
-#include "InteropQueueDrainReceipt.h"
 #include <framegen/FrameLatencyOwnership.h>
 #include <optional>
 
@@ -19,7 +17,6 @@
 #include <vector>
 #include <memory>
 #include <mutex>
-namespace GenshinBridgeFg { class ColorImport; }
 
 using Microsoft::WRL::ComPtr;
 
@@ -27,7 +24,6 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
 {
   public:
     Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Device* pDevice, HWND hWnd, UINT flags,
-                  std::unique_ptr<GenshinVisibleChild> visibleChild = {}, bool nativeParentRoute = false,
                   bool sourceFrameLatencyOwner = false, std::optional<UINT> applicationFlags = std::nullopt);
     virtual ~Dx11wDx12SC();
 
@@ -95,40 +91,6 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
         explicit NativeCall(Dx11wDx12SC& value):owner(value){owner.AddRef();}
         ~NativeCall(){owner.Release();}
     };
-    HRESULT _PresentNativeVisible(UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* parameters);
-    bool _ValidateNativeVisible(bool recovering = false);
-    HRESULT _PresentNativeParent(UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
-    void _RevokeNativeChild(bool recoverableDisplayChange = false);
-    bool _TryRecoverNativeChild();
-    bool _TryDrainNativeChild();
-    ULONG _ReleaseNativeParent();
-    static void _RetireNativeChildOnOwner(void*);
-    void _TryRetireNativeChildOnOwner();
-    struct NativeVisibleReceipt
-    {
-        uint64_t serial = 0, frame = 0, epoch = 0;
-        uintptr_t parent = 0, child = 0, actualParent = 0, actualChild = 0;
-        uintptr_t device11 = 0, device12 = 0, backbuffer = 0, snapshot = 0, fence = 0;
-        uintptr_t copyQueue = 0, presentQueue = 0, colorFence = 0;
-        uint64_t colorValue = 0;
-        // R629 scalar receipts only; never an ownership or pixel-validity gate.
-        uint64_t srGeneration = 0, srSourceFrame = 0, srPictureSerial = 0;
-        uintptr_t srSelectedRtv = 0, sourceBackbuffer = 0;
-        bool ownerSnapshotKnown = false, srReaderKnown = false;
-        bool colorCopied = false;
-        UINT index = 0, width = 0, height = 0, dpi = 0;
-        HRESULT nativeResult = E_PENDING, childResult = E_PENDING;
-        const char* reason = "NativeOnlyOrUnsupported";
-        bool snapshotStaged = false, nativeUnchanged = false, nativeCalled = false, childCalled = false, shown = false;
-    } _visibleReceipt;
-    // R723: serialized by _nativeParentMutex; retain every state/result transition
-    // and summarize identical receipts at most once per second (or final release).
-    NativeVisibleReceipt _visibleLogLast{};
-    ULONGLONG _visibleLogTick = 0;
-    uint64_t _visibleLogRepeats = 0, _visibleLogFirstRepeat = 0;
-    bool _visibleLogStarted = false;
-    void _LogNativeVisibleReceipt(bool flush = false);
-    const bool _nativeParentRoute;
     // R807: the admitted StarRail source wrapper keeps its native11 latency owner
     // for its lifetime, including FG Off/resize. Qualification arrives from the
     // successful FG factory while its provider lifetime lock is held.
@@ -139,34 +101,8 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     // A removed source device cannot be healed by successful child/FG Presents.
     // Keep pending GPU owners; a new source wrapper starts with a fresh result.
     std::atomic<HRESULT> _sourceDeviceFailure{S_OK};
-    std::recursive_mutex _nativeParentMutex;
-    bool _parentDetached = false, _childRevoked = false, _childRetirementEntered = false;
-    std::atomic<bool> _nativeDisplayUnobserved{false};
-    void _SuspendUnobservedNativeDisplay() noexcept;
-    // One recovery probe per Present after owner snapshot publication.
-    // A terminal/copy/provider failure cannot be promoted by a later display call.
-    bool _childRecoveryAllowed = false, _childRecoveryAttempted = false, _childRecoveryEntered = false;
-    // A proven SDK budget refusal waits for a NEW explicit FG resume request.
-    // It grants no automatic retry, display-update recovery or GPU authority.
-    bool _childBudgetSuspended = false;
-    uint64_t _childBudgetResumeRequest = 0;
-    uint64_t _childDisplaySerial = 0;
-    bool _nativeColorSpaceKnown = false, _childSdrReady = false;
-    DXGI_COLOR_SPACE_TYPE _nativeColorSpace = DXGI_COLOR_SPACE_CUSTOM;
-    bool _nativeHdrMetadataAbsent = true, _nativeMatrixIdentity = true;
-    // Fresh factory chain only; an attempted transform setter revokes defaults.
-    bool _nativeDefaultRotation = true, _nativeDefaultSourceSize = true;
-    IFGFeature_Dx12* _visibleProvider = nullptr; // observed owner; dereferenced only while current
-    std::unique_ptr<GenshinVisibleChild> _visibleChild;
-    HWND _visibleProviderHwnd = nullptr;
-    ComPtr<ID3D11Texture2D> _nativeOriginal; // actual adapter-returned private snapshot; never native B
-    uint64_t _visibleSerial = 0;
-    bool _visiblePresentEntered = false;
-    bool _visibleFgBlocked = false; // no uncertain copy/provider ring reuse before real lifecycle drain
-    std::uint64_t _genshinPresentIdentity = 0;
     bool _InitInteropObjects();
-    bool _CanReuseReturnedSnapshot() const;
-    bool _RequestSharedBackBuffer(UINT index, bool reuseReturnedSnapshot = true);
+    bool _RequestSharedBackBuffer(UINT index);
     // Interop slot admission begin
     // One call-local proof that the previous reader of this exact shared slot
     // retired. It never grants source/provider authority or survives a copy.
@@ -275,9 +211,6 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     ID3D12Fence* _presentRetirementFence = nullptr;
     HANDLE _presentRetirementEvent = nullptr;
     UINT64 _presentRetirementValue = 0;
-    // Only the revoked native child may carry these across Present calls.
-    InteropQueueDrainReceipt _recoveryCopyDrain, _recoveryPresentDrain;
-    bool _copyDrainEntered = false;
 
     ID3D11Fence* _dx11Fence = nullptr;
     HANDLE _dx11FenceEvent = nullptr;
@@ -286,11 +219,7 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     UINT64 _sharedFenceValue = 1;
 
     std::vector<ID3D11Texture2D*> _sharedDx11BackBufferCopies;
-    // True only for an actual OpenSharedHandle of this frame's immutable NR snapshot.
-    std::vector<bool> _sharedBackBufferIsReturnedSnapshot;
     std::vector<ID3D12Resource*> _openedDx11BackBuffers;
-    // The actual OpenSharedHandle operation owns this immutable association.
-    std::vector<std::shared_ptr<const GenshinBridgeFg::ColorImport>> _genshinFgImports;
     std::vector<HANDLE> _sharedBackBufferHandles;
     std::vector<D3D12_RESOURCE_STATES> _openedDx11BackBufferStates;
 

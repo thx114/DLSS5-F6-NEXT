@@ -47,8 +47,7 @@ def check_sources(dictionary):
     # Inventory files whose Chinese literals flow through MenuText. Inline
     # bilingual helpers are validated separately instead of adding dead entries.
     paths = [MENU / name for name in (
-        "menu_common.cpp", "GuideDiagnosticsMenu.cpp", "CriticalErrorWindow.h",
-        "GenshinFsrSubstageUi.h", "NextgenNrLayers.h", "HoYoShadeControls.h",
+        "menu_common.cpp", "GuideDiagnosticsMenu.cpp", "NextgenNrLayers.h", "HoYoShadeControls.h",
         "NextgenLookControls.h", "NextgenF5Panels.h", "NextgenUi.cpp", "MenuPages.h")]
     paths += [ROOT / "OptiScaler/dlssnr/DlssNr_Menu.cpp", ROOT / "OptiScaler/uid/DrawUidPanel.h"]
     failures = []

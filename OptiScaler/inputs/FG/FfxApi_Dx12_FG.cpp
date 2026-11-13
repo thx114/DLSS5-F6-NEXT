@@ -235,7 +235,7 @@ static void ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Reso
 ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDescHeader* desc,
                                         const ffxAllocationCallbacks* memCb)
 {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return PASSTHRU_RETURN_CODE;
+    if constexpr (!F6InputPolicy::PublicFsrInputs) return PASSTHRU_RETURN_CODE;
 #ifdef PASSTHRU
     return PASSTHRU_RETURN_CODE;
 #endif
@@ -424,7 +424,7 @@ ffxReturnCode_t ffxCreateContext_Dx12FG(ffxContext* context, ffxCreateContextDes
 
 ffxReturnCode_t ffxDestroyContext_Dx12FG(ffxContext* context, const ffxAllocationCallbacks* memCb)
 {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return PASSTHRU_RETURN_CODE;
+    if constexpr (!F6InputPolicy::PublicFsrInputs) return PASSTHRU_RETURN_CODE;
 #ifdef PASSTHRU
     return PASSTHRU_RETURN_CODE;
 #endif
@@ -463,7 +463,7 @@ ffxReturnCode_t ffxDestroyContext_Dx12FG(ffxContext* context, const ffxAllocatio
 
 ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader* desc)
 {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return PASSTHRU_RETURN_CODE;
+    if constexpr (!F6InputPolicy::PublicFsrInputs) return PASSTHRU_RETURN_CODE;
 
 #ifdef PASSTHRU
     if (desc->type == FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION)
@@ -862,7 +862,7 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
 
 ffxReturnCode_t ffxQuery_Dx12FG(ffxContext* context, ffxQueryDescHeader* desc)
 {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return PASSTHRU_RETURN_CODE;
+    if constexpr (!F6InputPolicy::PublicFsrInputs) return PASSTHRU_RETURN_CODE;
 #ifdef PASSTHRU
     return PASSTHRU_RETURN_CODE;
 #endif
@@ -971,7 +971,7 @@ ffxReturnCode_t ffxQuery_Dx12FG(ffxContext* context, ffxQueryDescHeader* desc)
 
 ffxReturnCode_t ffxDispatch_Dx12FG(ffxContext* context, ffxDispatchDescHeader* desc)
 {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return PASSTHRU_RETURN_CODE;
+    if constexpr (!F6InputPolicy::PublicFsrInputs) return PASSTHRU_RETURN_CODE;
 #ifdef PASSTHRU
     return PASSTHRU_RETURN_CODE;
 #endif
@@ -1252,7 +1252,7 @@ ffxReturnCode_t ffxDispatch_Dx12FG(ffxContext* context, ffxDispatchDescHeader* d
 
 void ffxPresentCallback()
 {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
+
     _lastFrameId = _currentFrameId;
 
 #ifdef PASSTHRU

@@ -3,7 +3,7 @@
 python -B OptiScaler/hooks/tests/test_fg_sdk_present_timing.py --cpu
 
 The CPU fixture uses the exact adapter extracted from FG_Hooks.cpp and the real
-GenshinHookCpuTiming implementation. Only temporary test files are generated;
+HookCpuTiming implementation. Only temporary test files are generated;
 no project, common runner, DLL, graphics API, configuration, or game is used.
 """
 import argparse
@@ -48,7 +48,7 @@ check(adapter.count("std::forward<Present>(present)()") == 1, "observation invok
 check("collect && !fgSdkPresentTimingActive" in adapter and "thread_local bool fgSdkPresentTimingActive=false" in adapter,
       "same-thread synchronous reentry is suppressed independently of SDK workers")
 check(adapter.count("Stage::FgSdkPresent") == 1, "one sampler owns the native interval")
-check("timing.Returned(static_cast<uint32_t>(result),GenshinHookCpuTiming::ResultKind::Hresult)" in adapter,
+check("timing.Returned(static_cast<uint32_t>(result),HookCpuTiming::ResultKind::Hresult)" in adapter,
       "original HRESULT is observed without changing its bits")
 check(adapter.index("timing.Finish()") < adapter.index("if(observed)"), "published endpoints stop before caller postwork")
 check("~Restore(){if(owns)fgSdkPresentTimingActive=false;}" in adapter, "unwind restores thread-local observation ownership")
@@ -62,7 +62,7 @@ for forbidden in ("GetState(", "LOG_", "Sleep(", "Wait(", "new ", "mutex", "Pres
 
 route = section(source, "bool GenshinFgTimingRequested(", "// Only these hook lifecycle")
 check(route.index("DXGI_PRESENT_TEST") < route.index("Util::ExePath()"), "TEST and disabled sampling short-circuit before executable lookup")
-check("!GenshinHookCpuTiming::Enabled()" in route, "existing default-off control remains required")
+check("!HookCpuTiming::Enabled()" in route, "existing default-off control remains required")
 check("static const bool genshin=" in route and "GetLastError()" in route and "SetLastError(error)" in route,
       "executable detection is cached and preserves LastError")
 for forbidden in ("PresentScope::Current", "currentFG", "IsActive(", "IsOwnedChild(", "IsPhysicalOutput(", "GetDesc(", "GetDevice("):
@@ -82,7 +82,7 @@ check(shutdown.count("ObserveFgSdkPresent(GenshinFgTimingRequested(Flags)") == 2
       "existing shutdown forwards retain exact once-only native observation")
 check("collectSdkPresent=collectStarRailPacing || GenshinFgTimingRequested(Flags)" in main,
       "Genshin native observation is independent of StarRail pacing and source TLS")
-sdk = section(main, "GenshinHookCpuTiming::WallSample starRailSdkWall;", "const auto starRailSdkResult=")
+sdk = section(main, "HookCpuTiming::WallSample starRailSdkWall;", "const auto starRailSdkResult=")
 check(sdk.index("if (starRailSourceFailed)") < sdk.index("dlssg::zzz::RunPresent(") < sdk.index("ObserveFgSdkPresent(collectSdkPresent"),
       "SDK scope exists only inside the real admitted RunPresent callback")
 check(sdk.count("o_FGSCPresent(") == 1 and sdk.count("o_FGSCPresent1(") == 1,
@@ -90,22 +90,14 @@ check(sdk.count("o_FGSCPresent(") == 1 and sdk.count("o_FGSCPresent1(") == 1,
 check("effectivePresentParameters" in sdk and "},&starRailSdkWall)" in sdk,
       "existing effective parameters and exact StarRail attribution sample are preserved")
 check("sdkPresentTiming" not in source, "the old enclosing scope cannot double-count native calls or include result logging")
-check(main.index("PresentPermit::BeforePresent(") < main.index("GenshinHookCpuTiming::WallSample starRailSdkWall;") <
-      main.index("PresentPermit::AfterPresent("), "input authorization/SDK return brackets stay in their original order")
+check(main.index("physicalInput.emplace(") < main.index("HookCpuTiming::WallSample starRailSdkWall;") <
+      main.index("physicalInput.reset();") < main.index("presentExecution.FinishWork();"),
+      "real SDK input transaction brackets Present and closes before releasing execution")
 
-# Verify that wrapping did not add calls to the vendor, pacing or authority APIs.
-patterns = (
-    r"\b(?:o_FGSCPresent1?|sc->Present1?)\s*\([^;\n]*?\)",
-    r"\bGenshinVisibleChild::PresentPermit::[A-Za-z_][A-Za-z_0-9]*\(",
-    r"\bGenshinBridgeFg::[A-Za-z_:]+\(",
-)
-for pattern in patterns:
-    check(Counter(re.findall(pattern, source)) == Counter(re.findall(pattern, baseline)),
-          f"original API/authority/pacing call inventory unchanged: {pattern}")
 # Source pacing intentionally moved to the retained-token decision. Its
 # concurrency suite verifies ownership and unlock order; here retain the
 # invariant that the timing observer adds no limiter or SDK invocation.
-check(source.count("FrameLimit::sleep(") == baseline.count("FrameLimit::sleep("),
+check(source.count("FrameLimit::sleep(") == 3,
       "moving immutable limiter arguments does not add another limiter")
 check(source.count("StreamlineProxy::ReflexSleep()(*localToken)") == 1 and
       source.count("pacingLease->Sleep()") == 1,
@@ -128,7 +120,7 @@ if args.cpu:
             f'cl /nologo /std:c++20 /EHsc /W4 /WX /Od '
             f'/I"{ROOT / "OptiScaler"}" '
             f'/Fe:"{exe}" /Fo:"{output}/" "{cpp}" '
-            f'"{ROOT / "OptiScaler/genshin/GenshinHookCpuTiming.cpp"}"'
+            f'"{ROOT / "OptiScaler/runtime/HookCpuTiming.cpp"}"'
         )
         batch = output / "compile.cmd"
         batch.write_text(

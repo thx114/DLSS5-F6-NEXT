@@ -1,4 +1,5 @@
 ﻿#include "pch.h"
+#include <runtime/ComIdentity.h>
 #include <integration/HoYoShade.h>
 #include <integration/HoYoShadeNaturalAssociation.h>
 #include <integration/HoYoShadeColorContract.h>
@@ -10,8 +11,6 @@
 #include <ui_mask/DrawUiMask.h>
 #include "NrConsumerFilter.h"
 #include "NativeWorkDevice.h"
-#include <genshin/GenshinPresentNr.h>
-#include <inputs/FG/GenshinBridge_Present_Dx12.h>
 #include "OpticalFgNrPolicy.h"
 #include "VirtualUpscalerDriver.h"
 #include <resource_tracking/ResTrack_Dx12.h>
@@ -33,24 +32,14 @@ constexpr float kPreviewMaxSpeed = 24.0f; // pixels per frame that show as full 
 // maintenance gate and RunFrame's actual virtual-consumer choice identical.
 bool VirtualUpscalerRequested()
 {
-    return !GenshinPresentNr::Scope::Current() &&
+    return
         Config::Instance()->DlssNrNativeMotion.value_or_default() &&
         Config::Instance()->DlssNrNativeUpscaler.value_or_default();
 }
 
 NrInputObservation::SourceDepth ObserveAcquiredDepth(const FrameInput& input) noexcept
 {
-    using Reason = NrInputObservation::SourceDepth;
-    if (input.depthCount > 0) return Reason::Supplied;
-    const auto* presented = GenshinPresentNr::Scope::Current();
-    if (!presented) return Reason::SourceHasNoDepth;
-    const auto& receipt = presented->ticket.depth;
-    if (!receipt.source) return Reason::MissingPresentReceipt;
-    // Do not poll Known()/Ready() again for a diagnostic or try to open an FG
-    // native guide as NR depth. Acquire/BindInput already made the real decision.
-    if (!receipt.lease)
-        return receipt.nativeGuide ? Reason::NativeGuideWithoutMappedLease : Reason::MissingMappedLease;
-    return Reason::MappedDepthNotAcquiredOrBound;
+    return input.depthCount > 0 ? NrInputObservation::SourceDepth::Supplied : NrInputObservation::SourceDepth::SourceHasNoDepth;
 }
 } // namespace
 
@@ -99,7 +88,7 @@ bool NativeDriver::Enabled()
     if (!VirtualUpscalerRequested())
         ReleaseVirtualUpscaler();
 
-    if (!GenshinPresentNr::Scope::Current() && !Config::Instance()->DlssNrNativeMotion.value_or_default() &&
+    if ( !Config::Instance()->DlssNrNativeMotion.value_or_default() &&
         !HoYoShade::Selected(HoYoShade::Stage::BeforeNr) && !HoYoShade::Selected(HoYoShade::Stage::FinalOutput))
     {
         _status = Status::Off;
@@ -123,25 +112,9 @@ void NativeDriver::LogDiagnostics()
              _diagNative, _cuts, _virtualUpscaler != nullptr && _virtualUpscaler->Active() ? "active" : "not active");
 }
 
-NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPreview, const GenshinBridgeFg::SenderInput* fgSender)
+NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPreview)
 {
     RunResult out;
-    if(fgSender) {
-        auto* presented=GenshinPresentNr::Scope::Current();auto* wrapper=GenshinBridgeFg::PresentScope::Current();
-        if(!fgSender->Known() || !presented || !wrapper || fgSender->pictureKind!=presented->FgKind() ||
-           fgSender->pictureKind!=GenshinBridgeFg::CurrentPictureKind() ||
-           GenshinBridgeFg::MakeKey(fgSender->ticket)!=GenshinBridgeFg::MakeKey(presented->ticket) ||
-           fgSender->provider!=reinterpret_cast<uintptr_t>(State::Instance().currentFG) ||
-           fgSender->providerSwapchain!=GenshinPresentNr::Identity(State::Instance().currentFGSwapchain)) {
-            // An optional sender can become stale after ticket acquisition. Its
-            // failure cannot revoke an independently current ordinary NR ticket.
-            // The actual callback still needs the private native-parent capability.
-            if(!presented || !GenshinPresentNr::MatchesNativeParentTicket(presented->ticket))return out;
-            fgSender=nullptr;
-        }
-    }
-    std::unique_ptr<GenshinBridgeFg::Recording> fgRecording;
-
     // Observe mode transitions even when Acquire is not ready; a waiting
     // native route must not retain an old Act request across menu changes.
     const bool useVirtualUpscaler = VirtualUpscalerRequested();
@@ -182,8 +155,6 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
         auto timingScope = timing.Measure(NativeProducerCpuTiming::Stage::Acquire);
         acquired = source.Acquire(input);
     }
-    if(auto* r=GenshinPresentNrTrace::Current())r->acquireStatus=static_cast<uint32_t>(acquired);
-
     ++_diagPresents;
     _diagReady += acquired == AcquireStatus::Ready ? 1 : 0;
     _diagWaiting += acquired == AcquireStatus::WaitingForUpscaler ? 1 : 0;
@@ -231,7 +202,6 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
     // Like natural association, final-B ownership is synchronous until an
     // admitted transaction explicitly retains it. Do not pin a swapchain B in
     // NativeProducer's unrelated multi-frame HeldFrame ring.
-    auto beforeNrNativeColor = std::move(input.beforeNrNativeColor);
     HoYoShade::NaturalAssociation::Source::Scope naturalSource(std::move(input.naturalSource));
     HoYoShade::BindNaturalSource(naturalSource.Get());
 
@@ -259,7 +229,7 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
 
         const double initStart = Util::MillisecondsNow();
 
-        if (!fresh->Init(work, !input.colorOnly || fgSender != nullptr))
+        if (!fresh->Init(work, !input.colorOnly))
         {
             _failure = fresh->Error();
             _status = Status::Failed;
@@ -303,21 +273,19 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
 
     NativeProducer::Options options;
     options.sourceDepth = ObserveAcquiredDepth(input);
-    options.apply = GenshinPresentNr::Scope::Current() || useVirtualUpscaler || Config::Instance()->DlssNrNativeInput.value_or_default();
+    options.apply = useVirtualUpscaler || Config::Instance()->DlssNrNativeInput.value_or_default();
     const bool beforeNr = (!useVirtualUpscaler || virtualNativeNr) &&
         (input.api == Api::D3D12 || input.finalOriginal || virtualNativeNr) &&
         HoYoShade::Selected(HoYoShade::Stage::BeforeNr) &&
         (!Config::Instance()->DlssNrEnabled.value_or_default() || Config::Instance()->DlssNrFinishedPicture.value_or_default());
     const bool beforeSr = useVirtualUpscaler && !virtualNativeNr && input.api == Api::D3D12 &&
-        !GenshinPresentNr::Scope::Current() && input.colorTransferKnown && input.colorSpace == ColorSpace::Srgb &&
+         input.colorTransferKnown && input.colorSpace == ColorSpace::Srgb &&
         HoYoShade::ColorContract::Resolve(input.pictureFormat) &&
         HoYoShade::NativeBeforeSrAvailable(naturalSource.Get());
     const bool finalOriginal = !useVirtualUpscaler && input.api == Api::D3D11 && input.finalOriginal &&
         HoYoShade::Selected(HoYoShade::Stage::FinalOutput);
-    // Authentic FG-original guide production still needs its existing flow
-    // and capture callback with NR off; a color filter cannot replace it.
-    options.colorOnly = input.colorOnly && !fgSender && !beforeSr;
-    const auto filter = [&source, queue, &naturalSource, &beforeNrNativeColor](HoYoShade::Stage stage, const FrameInput& color, SyncPoint ready) {
+    options.colorOnly = input.colorOnly &&  !beforeSr;
+    const auto filter = [&source, queue, &naturalSource](HoYoShade::Stage stage, const FrameInput& color, SyncPoint ready) {
         HoYoShade::ColorEndpoint endpoint;
         endpoint.stage = stage; endpoint.color = color.picture; endpoint.queue = queue;
         endpoint.uiMask = color.uiMask;
@@ -331,60 +299,14 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
         endpoint.naturalSource = naturalSource.Get();
         if (stage == HoYoShade::Stage::BeforeSr)
             endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrNativeProducer;
-        endpoint.beforeNrNativeColor.observation = color.nativePictureColor;
-        const auto* presentColorScope = GenshinPresentNr::Scope::Current();
-        const auto& colorConfig = *Config::Instance();
-        if (stage == HoYoShade::Stage::BeforeNr && color.api == Api::D3D11 && color.finalOriginal &&
-            beforeNrNativeColor && presentColorScope && colorConfig.DlssNrEnabled.value_or_default() &&
-            colorConfig.DlssNrFinishedPicture.value_or_default() && !colorConfig.DlssNrRunBeforeSr.value_or_default() &&
-            !colorConfig.DlssNrDeferredDlss.value_or_default() &&
-            colorConfig.GenshinControlsCurrent(beforeNrNativeColor->ConfigEpoch()) &&
-            presentColorScope->MatchesNativeColor(beforeNrNativeColor, endpoint.color, endpoint.queue,
-                endpoint.stream, endpoint.generation, endpoint.frame, endpoint.naturalDevice,
-                endpoint.naturalBackbuffer, endpoint.width, endpoint.height, color.nativePictureColor))
-        {
-            endpoint.colorMode = HoYoShade::ColorMode::GenshinNativeTypedBeforeNr;
-            endpoint.beforeNrNativeColor.picture = beforeNrNativeColor;
-            endpoint.sdr = false; // Native values/UNKNOWN transfer, never an SDR assertion.
-        }
         const char* finalDepthReason = "not-requested";
         if (stage == HoYoShade::Stage::BeforeNr)
             endpoint.depth = HoYoShade::Depth::FromNative(color, queue, ready,
                 endpoint.stream, endpoint.generation);
         else if (stage == HoYoShade::Stage::FinalOutput)
         {
-            // Only this acquired copyback picture can supply final depth. The
-            // live ticket must still own the exact source/picture/epoch and
-            // reader admitted by BindInput; no earlier-stage depth is reused.
-            const auto* presented = GenshinPresentNr::Scope::Current();
-            if (color.api != Api::D3D11 || !color.finalOriginal)
-                finalDepthReason = "not-d3d11-copyback";
-            else if (color.depthCount != 1 || !color.depth[0])
-                finalDepthReason = "acquired-without-single-depth";
-            else if (!presented)
-                finalDepthReason = "no-present-depth-owner";
-            else
-            {
-                const auto& ticket = presented->ticket;
-                const bool samePicture = ticket.DepthMatches() &&
-                    color.width == ticket.pictureWidth && color.height == ticket.pictureHeight &&
-                    color.depthGeneration == ticket.source.generation &&
-                    color.depthSourceFrame == ticket.source.sourceFrame &&
-                    color.depthPictureSerial == ticket.pictureSerial &&
-                    color.depthEpoch == ticket.source.historyEpoch &&
-                    color.depthLease == GenshinTransport::NativeDepthLease(ticket.depth);
-                if (!samePicture)
-                    finalDepthReason = "present-depth-owner-or-picture-mismatch";
-                else
-                {
-                    // FromNative rechecks the content-owning reader, current
-                    // producer submission, queue/fences and resource/state.
-                    endpoint.depth = HoYoShade::Depth::FromNative(color, queue, ready,
-                        endpoint.stream, endpoint.generation);
-                    finalDepthReason = endpoint.depth.resource ? "owned-depth-binding-not-confirmed" :
-                        "native-depth-reader-or-resource-refused";
-                }
-            }
+            endpoint.depth = HoYoShade::Depth::FromNative(color, queue, ready, endpoint.stream, endpoint.generation);
+            finalDepthReason = endpoint.depth.resource ? "owned-native-depth" : "native-depth-unavailable";
         }
         const auto result = HoYoShade::RenderStage(endpoint);
         if (stage == HoYoShade::Stage::FinalOutput && !result.depthAvailable)
@@ -417,117 +339,40 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
     options.submitProducerBeforeConsumer = beforeNr;
     options.flowPreview = flowPreview;
     options.previewMaxSpeed = kPreviewMaxSpeed;
-    options.explicitConsumerReset = GenshinPresentNr::Scope::Current() && GenshinPresentNr::Scope::Current()->reset;
+    options.explicitConsumerReset = false;
     options.sceneCutPolicy = !useVirtualUpscaler; // Off also suppresses optional NR resets on unsupported origins
     options.sceneCutMode = supportedSceneRoute
         ? DlssNrSceneCut::ModeFrom(Config::Instance()->DlssNrSceneCut.value_or_default())
         : DlssNrSceneCut::Mode::Off;
 
-    const auto captureGameMotion = [&](ID3D12GraphicsCommandList* cmd,const NativeFrame& frame) {
-        if(!fgSender)return;
-        auto motion=input.gameMotion;
-        const bool imported=motion && motion==fgSender->ticket.gameMotion &&
-            motion->ImportReady(device,queue);
-        const auto reason=motion?motion->Status():fgSender->ticket.gameMotionStatus;
-        static unsigned motionReports=0;static uint64_t seen=0;
-        const unsigned reasonIndex=static_cast<unsigned>(reason);
-        if(motionReports<32 && (motionReports<4 || !(seen&(1ull<<reasonIndex)))) {
-            ++motionReports;seen|=1ull<<reasonIndex;
-            const std::array<uint32_t,16> empty{};
-            const auto& status=motion?motion->Certificate():empty;
-            LOG_INFO("R827 game motion certificate: pid={} generation={} source_frame={} picture={} imported={} reason={} counts={},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{} sentinel=65504 source=actual_PreparedMotion no_optical_fallback=true",
-                GetCurrentProcessId(),fgSender->ticket.source.generation,fgSender->ticket.source.sourceFrame,
-                fgSender->ticket.pictureSerial,imported,GenshinGameMotion::Text(reason),
-                status[0],status[1],status[2],status[3],status[4],status[5],status[6],status[7],
-                status[8],status[9],status[10],status[11],status[12],status[13],status[14],status[15]);
-        }
-        if(!imported || !motion->BeginRead(cmd,queue))return;
-        // End barriers are mandatory even if optional recording allocation fails.
-        struct EndRead {GenshinGameMotion::Lease& lease;ID3D12GraphicsCommandList* list;
-            ~EndRead(){lease.EndRead(list);}} end{*motion,cmd};
-        NativeFrame fgFrame=frame;fgFrame.motion=motion->Motion();fgFrame.depth=motion->Depth();
-        fgFrame.depthReversed=fgSender->ticket.depth.convention==GenshinGuides::DepthConvention::DeviceZReversed;
-        try {fgRecording=GenshinBridgeFg::Recording::Capture(cmd,queue,frame,fgFrame,*fgSender);}
-        catch(const std::bad_alloc&) {fgRecording.reset();}
-    };
-    const auto apply = [this, &source, queue, useVirtualUpscaler, fgSender, &fgRecording, &captureGameMotion, uiMask=input.uiMask, importedDepth=input.depthResource](ID3D12GraphicsCommandList* cmd, const NativeFrame& frame)
+    const auto apply = [this, &source, queue, useVirtualUpscaler, uiMask=input.uiMask, importedDepth=input.depthResource](ID3D12GraphicsCommandList* cmd, const NativeFrame& frame)
     {
         if (useVirtualUpscaler)
             return _virtualUpscaler->Run(cmd, frame);
 
-        if(fgSender && GenshinPresentNr::Original(fgSender->pictureKind)) {
-            auto* presented=GenshinPresentNr::Scope::Current();
-            if(fgSender->pictureKind!=GenshinBridgeFg::CurrentPictureKind() || !presented ||
-               !presented->ObserveOriginal(cmd,queue,frame))return false;
-            if(fgSender->camera) {
-                captureGameMotion(cmd,frame);
-            }
-            // NativeProducer still submits the actual guides and signals its
-            // real fence. processed/nativeRan remain false; no NR call or copy.
-            return false;
-        }
-        if(auto* presented=GenshinPresentNr::Scope::Current()) {
-            if(!presented->MatchesConsumer(cmd,queue,frame))return false;
-            presented->consumerReached=true;
-            if(auto* r=GenshinPresentNrTrace::Current()){r->consumer=true;r->consumerSeq=GenshinPresentNrTrace::Sequence();
-                r->queue=reinterpret_cast<uintptr_t>(queue);r->list=reinterpret_cast<uintptr_t>(cmd);r->nativeReset=frame.reset;}
-            GenshinSubstage::Event(GenshinSubstage::Stage::NrGuides,GenshinSubstage::State::Succeeded,
-                GenshinSubstage::Resource::Nr,GenshinSubstage::Domain::Nr);
-        }
         const DXGI_COLOR_SPACE_TYPE type = frame.space == ColorSpace::ScRgb ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709
                                            : frame.space == ColorSpace::Pq  ? DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
                                                                             : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-        const auto* presented=GenshinPresentNr::Scope::Current();
-        const uint64_t epoch = presented?presented->ticket.presentEpoch:
-            PresentEpoch(source.GetApi(), State::Instance().frameCount,
+        const uint64_t epoch = PresentEpoch(source.GetApi(), State::Instance().frameCount,
                          State::Instance().vulkanPresentCount.load(std::memory_order_relaxed));
         // Mint ordinary NR authority at the real producer callback even when
         // optional FG accompanies it. Sender/depth/camera failure never grants
         // FG authority and cannot veto this independently authenticated NR call.
-        GenshinPresentNr::NativeParentConsumer nativeParentConsumer(
-            presented,cmd,queue,frame,epoch);
         DlssNr::NativeSceneCutResetScope resetReceipt(frame.sceneCutReset);
         NrInputObservation::Dispatch observed;
         observed.depth = frame.depthObservation;
         observed.queue = queue; observed.list = cmd; observed.color = frame.color;
         observed.guideDepth = frame.depth; observed.motion = frame.motion;
         observed.distrust = frame.historyDistrust; observed.epoch = epoch;
-        if (presented)
-        {
-            observed.generation = presented->ticket.source.generation;
-            observed.sourceFrame = presented->ticket.source.sourceFrame;
-            observed.pictureSerial = presented->ticket.pictureSerial;
-            const auto& mapped=presented->ticket.depth;const auto& source=mapped.provenance;
-            observed.source.selected=source.selected;observed.source.original=source.original;observed.source.prepared=source.prepared;
-            observed.source.lifetime=source.lifetime;observed.source.originalLifetime=source.originalLifetime;observed.source.loss=source.loss;
-            observed.source.version=source.version;observed.source.clear=source.clear;observed.source.total=source.total;
-            observed.source.covered=source.covered;observed.source.unresolved=source.unresolved;
-            observed.source.mapping=mapped.mappingOwner?mapped.mappingOwner->serial:0;
-            observed.source.mapped=mapped.mappingOwner?reinterpret_cast<uintptr_t>(mapped.mappingOwner->depth.texture.Get()):0;
-            observed.source.imported=reinterpret_cast<uintptr_t>(importedDepth);
-        }
         NrInputObservation::Scope observationScope(observed);
         const bool protectUi=DrawUiMask::Begin(uiMask,DrawUiMask::Consumer::Nr,cmd,frame.color,frame.pictureState);
         const bool ran = DlssNr::ApplyNativeInput(queue, cmd, frame.color, frame.depth, frame.motion,
-                                        frame.historyDistrust, frame.depthReversed, frame.continuityReset || (presented && presented->reset), type, frame.pictureState,
-                                        epoch, false, fgSender ? GenshinPresentNr::Scope::Current() : nullptr);
+                                        frame.historyDistrust, frame.depthReversed, frame.continuityReset, type, frame.pictureState,
+                                        epoch, false);
         if(protectUi)DrawUiMask::End(uiMask,DrawUiMask::Consumer::Nr,cmd,frame.color,frame.pictureState);
         // Capture on this exact producer list AFTER actual NR consumed its guides,
         // before NativeProducer closes/submits it. Missing observed camera refuses
         // only FG publication; it never installs a fabricated camera.
-        if(ran && fgSender && fgSender->camera) {
-            captureGameMotion(cmd,frame);
-            static unsigned captureReports=0;if(captureReports<16){++captureReports;
-                const auto dd=frame.depth?frame.depth->GetDesc():D3D12_RESOURCE_DESC{};
-                const auto md=frame.motion?frame.motion->GetDesc():D3D12_RESOURCE_DESC{};
-                const auto* scope=GenshinPresentNr::Scope::Current();
-                LOG_INFO("R827 FG capture: pid={} generation={} captured={} offer={} scope_depth={} scope_consumer={} guide_epoch={} cut={} depth={} depth_format={} depth_size={}x{} motion_format={} motion_size={}x{} reversed={} ticket_reversed={} no_authority=true",
-                    GetCurrentProcessId(),fgSender->ticket.source.generation,bool(fgRecording),fgSender->Known(),scope && scope->ticket.DepthMatches(),
-                    scope && scope->MatchesConsumer(cmd,queue,frame),frame.guideEpoch,frame.guideCutSerial,frame.depth!=nullptr,
-                    static_cast<unsigned>(dd.Format),dd.Width,dd.Height,static_cast<unsigned>(md.Format),md.Width,md.Height,frame.depthReversed,
-                    fgSender->ticket.depth.convention==GenshinGuides::DepthConvention::DeviceZReversed);
-            }
-        }
         if (frame.sceneCutResetAccepted) *frame.sceneCutResetAccepted = resetReceipt.Accepted();
         return ran;
     };
@@ -535,9 +380,6 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
     // Model creation returns before Dispatch's ordinary late hook setup. Its
     // recording must already be observed when NativeProducer submits it, or the
     // creation-completion gate can never become ready in a fresh SR-only game.
-    if (GenshinPresentNr::Scope::Current()) ResTrack_Dx12::HookLateNrQueue(device);
-    // Only a selected API12 color route can own this transient writer.
-    // Menu/cleanup/another chain holding g_runMutex is NOT a color failure.
     HoYoShade::ColorWriteScope colorWriter((beforeNr || beforeSr) && input.api == Api::D3D12,
         device, queue, input.picture);
     if ((beforeNr || beforeSr) && input.api == Api::D3D12 && !colorWriter.Acquired()) {
@@ -560,10 +402,6 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
             g.input.picture,g.queue,g.fence,g.target,g.completed,g.frequency,
             g.milliseconds[0],g.milliseconds[1],g.milliseconds[2]);
     }
-    // Only NativeProducer's successful actual queue signal retires these reads.
-    // Failed Close/submit/Signal leaves the bounded lease permanently escrowed.
-    if(input.gameMotion)input.gameMotion->BindCompletion(result.submitted?output.done.fence:nullptr,
-        result.submitted?output.done.value:0);
     if (useVirtualUpscaler)
     {
         DlssNr::SceneCutInfo info;
@@ -577,23 +415,16 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
     else if (supportedSceneRoute)
         PublishSceneCuts(result.submitted && (result.detectorRan || result.trustRan),
                          result.stoppedAt ? result.stoppedAt : result.detectorFailed ? "native detector dispatch" : nullptr);
-    if(auto* r=GenshinPresentNrTrace::Current()) {
-        r->submitted=result.submitted;r->composed=result.nativeRan;r->completionFence=reinterpret_cast<uintptr_t>(output.done.fence);
-        r->completionValue=output.done.value;
-        r->inputWait=result.submitted && input.ready.fence && input.ready.value;
-        r->producerStop=result.stoppedAt?result.stoppedAt:"none";
-    }
-    if (!useVirtualUpscaler && options.apply && (!fgSender || !GenshinPresentNr::Original(fgSender->pictureKind)))
+    if (!useVirtualUpscaler && options.apply && true)
     {
         static thread_local NrInputObservation::Reporter producerReporter;
         const bool builtDepth = result.depthObservation.guide == NrInputObservation::GuideDepth::Supplied;
         if (producerReporter.Sample(result.depthObservation, builtDepth, result.nativeRan))
         {
-            const auto* presented = GenshinPresentNr::Scope::Current();
             LOG_INFO("R849 NR producer input: pid={} frame={} generation={} picture={} source_depth={} "
                      "guide_depth={} acquired_count={} paired={} flow={} trust={} composed={} submitted={} stop={}",
-                     GetCurrentProcessId(), input.frame, presented ? presented->ticket.source.generation : 0,
-                     presented ? presented->ticket.pictureSerial : 0,
+                     GetCurrentProcessId(), input.frame, 0,
+                     0,
                      NrInputObservation::Text(result.depthObservation.source),
                      NrInputObservation::Text(result.depthObservation.guide), result.depthObservation.acquiredCount,
                      result.depthObservation.paired, result.flowValid, result.trustRan, result.nativeRan,
@@ -605,46 +436,6 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
     colorWriter.FinishAfterReturn(output.uncertain);
     // Return synchronously authenticates the producer fence and orders the real
     // native-B copy. Failed Return/CopyOrdered cannot publish even if Run submitted.
-    const bool fgReturned=fgRecording && fgRecording->Returned();
-    if(fgReturned)out.fgPublished=fgRecording->Publish();
-    if(fgSender){
-        static unsigned returnReports=0;if(returnReports<16){++returnReports;
-            const auto* scope=GenshinPresentNr::Scope::Current();
-            LOG_INFO("R827 FG recording return: pid={} generation={} recording={} returned={} published={} model={} scope_consumer={} scope_model={} scope_copy={} completion={} no_authority=true",
-                GetCurrentProcessId(),fgSender->ticket.source.generation,bool(fgRecording),fgReturned,out.fgPublished,result.nativeRan,
-                scope && scope->consumerReached,scope && scope->consumerRan,scope && scope->screenCopyOrdered,scope && scope->completionFence && scope->completionValue);
-        }
-    }
-    if(fgSender && out.fgPublished)GenshinBridgeFg::PresentScope::NativeReturned(*fgSender,queue);
-    if(fgSender && out.fgPublished){
-        static unsigned snapshotReports=0;if(snapshotReports<32){++snapshotReports;
-            const auto* inner=GenshinPresentNr::Scope::Current();
-            const auto* outer=GenshinBridgeFg::PresentScope::Current();
-            LOG_INFO("R827 FG snapshot: pid={} generation={} stage={} staged_snapshot={} outer_stage={} outer_snapshot={} sender_provider={} interface_provider={} concrete_provider={} no_authority=true",
-                GetCurrentProcessId(),fgSender->ticket.source.generation,inner?inner->SnapshotStage():"no-scope",
-                inner && inner->ReturnedSnapshot(),outer?outer->NativeReturnStage():"no-scope",outer && outer->ReturnedSnapshot(),fgSender->provider,reinterpret_cast<uintptr_t>(State::Instance().currentFG),
-                reinterpret_cast<uintptr_t>(dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG)));
-        }
-    }
-    if (auto* presented=GenshinPresentNr::Scope::Current()) {
-        static uint64_t attempts=0,entries=0,composed=0;
-        const auto count=++attempts;entries+=presented->consumerReached?1:0;composed+=result.nativeRan?1:0;
-        if(count<=3 || count%300==0 || (presented->consumerReached && entries<=3) || (result.nativeRan && composed<=3))
-            LOG_INFO("Genshin presented NR execution: pid={} generation={} presentEpoch={} flowValid={} trustRan={} "
-                "consumerReached={} modelComposed={} submitted={} screenCopyOrdered={} modelReset={} flowReset={} "
-                "picture={} backbuffer={} completionFence={} completionValue={} sourceFrame={} pictureSerial={} adapterFrame={} "
-                "ownerEpoch={} historyEpoch={} srPrivateOutput={:X} srSelectedRtv={:X} srSelectedSubresource={} srCopySerial={} "
-                "reader_scope=current_backbuffer_to_native_picture sr_to_backbuffer_pixels=UNKNOWN final_visible=UNKNOWN",
-                GetCurrentProcessId(),presented->ticket.source.generation,presented->ticket.presentEpoch,
-                result.flowValid,result.trustRan,presented->consumerReached,result.nativeRan,result.submitted,
-                presented->screenCopyOrdered,presented->reset,presented->flowReset,reinterpret_cast<uintptr_t>(input.picture),
-                GenshinPresentNr::Identity(presented->ticket.backbuffer.Get()),
-                reinterpret_cast<uintptr_t>(output.done.fence),output.done.value,
-                presented->ticket.source.sourceFrame,presented->ticket.pictureSerial,input.frame,
-                presented->ticket.source.ownerEpoch,presented->ticket.source.historyEpoch,
-                presented->ticket.source.privateOutput,presented->ticket.source.selectedOutput,
-                presented->ticket.source.selectedSubresource,presented->ticket.source.copyOrderedSerial);
-    }
     if (OpticalFgNrEnabled() && !result.submitted)
         Config::Instance()->FGEnabled.set_volatile_value(false); // failed recording must never be consumed by FG
 

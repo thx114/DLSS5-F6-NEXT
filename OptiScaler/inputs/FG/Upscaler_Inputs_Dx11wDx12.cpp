@@ -3,7 +3,6 @@
 #include "Upscaler_Inputs_Dx11wDx12.h"
 
 #include "UpscalerFrameParameters.h"
-#include <runtime/F6InputPolicy.h>
 #include <framegen/dlssg/FgDepthContract.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
 #include <runtime/GuideCapture.h>
@@ -79,10 +78,6 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
 
     if (InParameters == nullptr || feature == nullptr)
         return;
-    if (F6InputPolicy::FsrBridgeEnabled && dlssg::depth_contract::Game()==GameRouting::Identity::Genshin &&
-        State::Instance().activeFgInput==FGInput::Upscaler &&
-        State::Instance().activeFgOutput==FGOutput::DLSSG) return; // Sealed bridge remains independent.
-
     auto& cfg = *Config::Instance();
     const auto frame = fg_inputs::ReadFrameParameters(
         *InParameters, *feature, cfg, State::Instance().lastFGFrameTime,

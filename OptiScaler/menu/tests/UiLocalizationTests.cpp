@@ -1,6 +1,5 @@
 // Display-only tests of the production dictionary, formatter and stable labels.
 #include <menu/UiLocalization.h>
-#include <menu/CriticalErrorWindow.h>
 #include <imgui/ImGuiNotify.hpp>
 #include <cstdlib>
 #include <iostream>

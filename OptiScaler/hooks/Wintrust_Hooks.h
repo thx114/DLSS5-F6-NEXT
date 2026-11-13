@@ -3,7 +3,7 @@
 #include "Config.h"
 
 #include "detours/detours.h"
-#include <genshin/GenshinSystemHookTransaction.h>
+#include <hooks/HookTransaction.h>
 #include <WinTrust.h>
 #include <Softpub.h>
 
@@ -59,7 +59,7 @@ static void hookWintrust()
 
     if (o_WinVerifyTrust != nullptr)
     {
-        GenshinSystemHooks::Transaction systemTransaction;
+        HookTransactions::Transaction systemTransaction;
 
         systemTransaction.Attach(&(PVOID&) o_WinVerifyTrust, hkWinVerifyTrust);
 
@@ -76,7 +76,7 @@ static void unhookWintrust()
 {
     if (o_WinVerifyTrust != nullptr)
     {
-        GenshinSystemHooks::Transaction systemTransaction;
+        HookTransactions::Transaction systemTransaction;
 
         systemTransaction.Detach(&(PVOID&) o_WinVerifyTrust, hkWinVerifyTrust);
 

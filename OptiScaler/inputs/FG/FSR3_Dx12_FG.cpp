@@ -856,7 +856,7 @@ static Fsr3::FfxErrorCode hkffxSetFrameGenerationConfigToSwapchainDX12(Fsr3::Ffx
 
 void FSR3FG::HookFSR3FGExeInputs()
 {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
+
     if (o_ffxReplaceSwapchainForFrameinterpolationDX12 != nullptr)
         return;
 
@@ -969,7 +969,7 @@ void FSR3FG::HookFSR3FGExeInputs()
 
 void FSR3FG::HookFSR3FGInputs()
 {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
+
     if (o_ffxReplaceSwapchainForFrameinterpolationDX12 != nullptr)
         return;
 

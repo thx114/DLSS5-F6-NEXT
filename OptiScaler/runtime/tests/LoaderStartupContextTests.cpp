@@ -1,5 +1,4 @@
 #include <runtime/LoaderStartupContext.h>
-#include <genshin/GenshinNativeStartup.h>
 #include <atomic>
 #include <cstdio>
 #include <thread>
@@ -48,8 +47,6 @@ int main()
     check(tls == static_cast<int>(Status::LoaderCallout) || tls == static_cast<int>(Status::ProbeUnavailable),
           "actual executable TLS callback must refuse startup waiting");
     check(CurrentContext() == Status::Ready, "ordinary main thread may wait after loader startup");
-    check(GenshinNativeStartup::ProbeLoaderCallout() == GenshinNativeStartup::Status::Ready,
-          "native startup wrapper preserves the shared context result");
     Status worker = Status::ProbeUnavailable;
     std::thread([&] { worker = CurrentContext(); }).join();
     check(worker == Status::Ready, "ordinary worker may wait outside its thread attach callback");

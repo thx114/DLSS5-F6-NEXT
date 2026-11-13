@@ -29,7 +29,7 @@ assert "_providerOutput = framegen::final_output::CaptureProviderOutputBinding(_
 assert "_starRailProviderOutput = IsStarRailProcess() && _providerOutput;" in wrapper
 assert wrapper.count("_finalOutput.get(), _providerOutput, _starRailProviderOutput,") == 2
 assert "const bool sourcePresent = willPresent && !providerOutput;" in wrapper
-assert "const bool deferNativeEpoch = providerOutput ||" in wrapper
+assert "const bool deferNativeEpoch = providerOutput;" in wrapper
 assert "if (!providerOutput && State::Instance().currentCommandQueue == nullptr" in wrapper
 assert "if (!providerOutput && State::Instance().swapchainInteropApi != SwapchainInteropApi::VkwDx12)" in wrapper
 assert "SourcePresent::Scope sourceOwner(sourcePresent);" in wrapper
@@ -42,7 +42,7 @@ assert source.index("if (proxySourceOwner.Owns())") < source.index("const auto p
 assert "if (!providerOutput) XellHooks::update();" in wrapper
 assert wrapper.count("if (!_providerOutput && !State::Instance().reflexLimitsFps") == 2
 assert source.index("auto presentExecution =") < source.index("const bool dispatched=fg->Present();") < source.index(cap)
-assert source.index(cap) < source.index("GenshinHookCpuTiming::WallSample starRailSdkWall;")
+assert source.index(cap) < source.index("HookCpuTiming::WallSample starRailSdkWall;")
 assert "auto pacingExecution = fg->GuardExecution(FGExecutionScope::Lifecycle);" in (
     ROOT / "OptiScaler/hooks/Reflex_Hooks.cpp").read_text(encoding="utf-8-sig")
 print("PASS FG Reflex creation binding and source/SDK ordering checks", flush=True)

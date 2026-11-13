@@ -1453,9 +1453,6 @@ static HRESULT hkD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Minimum
 {
     // Private WithDx12 first-pair factory call only. Do not publish/capture or
     // initialize consumers of its seed; normal game creation stays unchanged.
-    if (WithDx12::InternalPairCreationActive())
-        return o_D3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
-
     LOG_DEBUG("Adapter: {:X}, Level: {:X}, Caller: {}", (size_t) pAdapter, (UINT) MinimumFeatureLevel,
               Util::WhoIsTheCaller(_ReturnAddress()));
 
@@ -1619,9 +1616,6 @@ VALIDATE_HOOK(hkCreateDevice, PFN_CreateDevice)
 static HRESULT hkCreateDevice(ID3D12DeviceFactory* pFactory, IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel,
                               REFIID riid, void** ppDevice)
 {
-    if (WithDx12::InternalPairCreationActive())
-        return o_CreateDevice(pFactory, pAdapter, MinimumFeatureLevel, riid, ppDevice);
-
     LOG_DEBUG("Adapter: {:X}, Level: {:X}, Caller: {}", (size_t) pAdapter, (UINT) MinimumFeatureLevel,
               Util::WhoIsTheCaller(_ReturnAddress()));
 
@@ -2774,15 +2768,7 @@ void D3D12Hooks::RestoreRoot(ID3D12GraphicsCommandList* cmdList)
     }
 }
 
-bool WithDx12::InitializeInternalPairDevice(ID3D12Device* device)
-{
-    if (device == nullptr) return false;
-    // Called only for the authenticated final candidate, before publication.
-    // HookDevice performs the ordinary command-list/Streamline setup and the
-    // Intel capability path that factory hooks normally perform.
-    D3D12Hooks::HookDevice(device);
-    return SUCCEEDED(device->GetDeviceRemovedReason());
-}
+
 
 void D3D12Hooks::HookDevice(ID3D12Device* device)
 {

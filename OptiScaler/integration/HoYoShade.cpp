@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 // Keep the /Yu checkpoint outside conditionals; standalone hosts supply a minimal pch.h.
 #ifdef HOYOSHADE_STAGE_TEST
 #include <Windows.h>
@@ -32,13 +32,10 @@
 #include <wrl/client.h>
 #include <d3d11.h>
 #ifndef HOYOSHADE_STAGE_TEST
-#include <genshin/GenshinProducerTransport.h>
-#include <genshin/GenshinPresentNr.h>
 #include <Config.h>
 #include <upscalers/GameRoutePolicy.h>
 #include <Util.h>
 #endif
-#include "HoYoShadeOwnedStage.h"
 #pragma comment(lib, "bcrypt.lib")
 
 namespace HoYoShade
@@ -325,7 +322,7 @@ struct BeforeSrDonorCandidate
     bool admitted = false, live = false, armable = true;
     uint64_t settings = 0, applied = 0, desired = 0;
     bool statusIncomplete = false, cacheExhausted = false, mutationExhausted = false;
-    uint64_t runtime = 0, lifetime = 0, copiedSerial = 0, sourceSettings = 0, settingsBarrier = 0;
+    uint64_t runtime = 0, lifetime = 0, sourceSettings = 0, settingsBarrier = 0;
     Identity identity;
     NaturalFrame frame;
     DWORD ownerThread = 0, currentThread = 0;
@@ -443,7 +440,7 @@ struct State
         NaturalFrame frame;
         std::array<DomainCache,8> domains{}; // POD only, no BB/view/SDK ownership
         bool domainBuffersPending=false;
-        uint64_t lifetime = 0, sourceSerial = 0, copiedSerial = 0, sourceSettings = 0;
+        uint64_t lifetime = 0, sourceSerial = 0, sourceSettings = 0;
         // Callback-local D3D11 COM identity, stored only as an immutable scalar.
         NaturalAssociation::CanonicalDeviceObservation nativeCanonical;
         DWORD canonicalThread = 0;
@@ -697,7 +694,6 @@ struct BeforeSrDonorCall
 // runtime's epoch, thread, CanArm window or outstanding source ticket.
 bool SettingsEpochReady(const State::Natural& natural, uint64_t settings) noexcept
 {
-    if (natural.copiedSerial && natural.sourceSettings != settings) return false;
     return !natural.settingsBarrierEpoch ||
         (!natural.frame.invalid && natural.frame.epoch != UINT64_MAX &&
          natural.frame.epoch > natural.settingsBarrierEpoch);
@@ -736,7 +732,7 @@ bool ReadBeforeSrSelectionDonor(const State::Natural& natural, uint64_t settings
         diagnostic->live = natural.live; diagnostic->runtime = Key(natural.runtime);
         diagnostic->identity = natural.id; diagnostic->lifetime = natural.lifetime;
         diagnostic->frame = natural.frame; diagnostic->ownerThread = natural.thread;
-        diagnostic->copiedSerial = natural.copiedSerial; diagnostic->sourceSettings = natural.sourceSettings;
+        diagnostic->sourceSettings = natural.sourceSettings;
         diagnostic->settingsBarrier = natural.settingsBarrierEpoch;
         const auto& selection = natural.selection;
         diagnostic->selectionValid = selection.valid; diagnostic->selectionRefresh = selection.refresh;
@@ -786,7 +782,6 @@ bool ReadBeforeSrSelectionDonor(const State::Natural& natural, uint64_t settings
     if (diagnostic) { diagnostic->currentThread = currentThread; diagnostic->reads |= DonorThreadRead; }
     if (natural.thread != currentThread) return reject(BeforeSrDonorReject::ThreadMismatch);
     if (natural.frame.invalid) return reject(BeforeSrDonorReject::FrameInvalid);
-    if (natural.copiedSerial) return reject(BeforeSrDonorReject::CopiedSerial);
     if (armable) {
         const bool canArm = natural.frame.CanArm();
         if (diagnostic) { diagnostic->canArm = canArm; diagnostic->reads |= DonorCanArmRead; }
@@ -877,8 +872,7 @@ void AdvanceSettingsAtOwnerBoundary()
         if (!natural.live || !natural.runtime) continue;
         const bool oldUse = natural.settingsUse.settings &&
             (natural.settingsUse.settings == applied || natural.settingsBarrierEpoch);
-        const bool oldCopy = natural.copiedSerial && natural.sourceSettings != desired;
-        if (!oldUse && !oldCopy) continue;
+        if (!oldUse) continue;
         // Snapshot the CURRENT real epoch at the CPU owner boundary. Merely
         // comparing to the recording epoch could admit Final after a parent
         // Present advanced that epoch while finishing the same old picture.
@@ -1107,238 +1101,22 @@ struct NativeColorFacts
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> gpuQueue;
     D3D12_RESOURCE_DESC gpuDesc{};
     bool gpuCaptured = false;
-    std::array<Microsoft::WRL::ComPtr<ID3D12Device>, 4> presentDevices;
-    std::shared_ptr<const GenshinPresentNr::NativeColorCapability> presentPicture;
-    native::NativeSubmission presentSubmission;
-    Microsoft::WRL::ComPtr<ID3D12Fence> presentFence;
-    uint64_t presentValue = 0, presentGeneration = 0, presentBatch = 0;
-    bool presentCaptured = false;
-#ifndef HOYOSHADE_STAGE_TEST
-    GenshinGuides::Owner owner{};
-    std::shared_ptr<GenshinTransport::ProducerFrame> producer;
-    std::shared_ptr<GenshinTransport::Lease> transport;
-    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
-    Microsoft::WRL::ComPtr<ID3D11Resource> sourceResource;
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> source;
-    Microsoft::WRL::ComPtr<ID3D11Device> contextDevice, sourceDevice;
-    Microsoft::WRL::ComPtr<ID3D12Resource> color;
-    D3D11_TEXTURE2D_DESC input{};
-    D3D12_RESOURCE_DESC imported{};
-    D3D11_DEVICE_CONTEXT_TYPE contextType{};
-    bool captured = false;
-#endif
+
 };
 
 // API20 external-RTV processing does not require scene-linear/SDR facts.
 // This exception authenticates the actual Genshin RGBA8 producer; all other
 // endpoints retain their transfer-qualified path. No inference from UNORM,
 // typeless storage, COMMON or a global output swapchain color-space value.
-NativeColorAdmission InspectNativeBeforeSr(const ColorEndpoint& endpoint, NativeColorFacts& immutable) noexcept
-{
-    if (endpoint.colorMode != ColorMode::GenshinNativeTypedBeforeSr)
-        return NativeColorAdmission::NotRequested;
-    if (endpoint.stage != Stage::BeforeSr || endpoint.output != OutputKind::Original ||
-        endpoint.naturalContract != NaturalSourceContract::BeforeSrOwnedRuntimeWithSelectionDonor ||
-        !endpoint.stream || !endpoint.color || !endpoint.queue || endpoint.naturalSource || endpoint.naturalBackbuffer ||
-        endpoint.colorX || endpoint.colorY)
-        return NativeColorAdmission::EndpointMismatch;
-#ifndef HOYOSHADE_STAGE_TEST
-    try {
-        static const auto game = [] {
-            const auto name = Util::ExePath().filename().wstring();
-            return GameRouting::IdentifyExecutable(name.c_str());
-        }();
-        if (game != GameRouting::Identity::Genshin) return NativeColorAdmission::WrongGame;
-        const auto& binding = endpoint.nativeColor;
-        const auto producer = GenshinTransport::ProducerInvocation::Current();
-        const auto* scope = GenshinTransport::Scope::Current();
-        if (!binding.producer || !binding.transport || !producer || !producer->Live() || !producer->Guides())
-            return NativeColorAdmission::ProducerUnavailable;
-        // A stale borrowed scope must never be dereferenced.
-        if (!scope || scope != binding.scope || producer != binding.producer ||
-            scope->lease != binding.transport || !scope->parameters)
-            return NativeColorAdmission::InvocationMismatch;
-        const auto& owner = scope->owner;
-        const auto& facts = producer->Guides()->Get();
-        if (!GenshinGuides::SameOwner(owner, producer->Owner()) || !GenshinGuides::SameOwner(owner, facts.owner) ||
-            !owner.device || !owner.context || !owner.deviceEpoch || !owner.producerEpoch || !owner.configEpoch ||
-            !owner.instance || !owner.historyEpoch || !owner.generation || owner.thread != GetCurrentThreadId() ||
-            owner.device != endpoint.naturalDevice || owner.generation != endpoint.generation ||
-            owner.sourceFrame != endpoint.frame)
-            return NativeColorAdmission::OwnerMismatch;
-        if (!producer->Guides()->CurrentResources(owner, scope->resources) ||
-            facts.renderWidth.value != endpoint.width || facts.renderHeight.value != endpoint.height)
-            return NativeColorAdmission::ReceiptMismatch;
-        const auto observed = binding.transport->Snapshot();
-        if (observed.revoked || observed.stage != GenshinTransport::Stage::InputsOrdered ||
-            !GenshinGuides::SameOwner(owner, observed.owner) || observed.queue != Key(endpoint.queue) ||
-            observed.parameters != Key(scope->parameters) || endpoint.ready.queue != endpoint.queue ||
-            observed.imported[0] != Key(endpoint.color) || binding.transport->Resource(owner, 0) != endpoint.color)
-            return NativeColorAdmission::TransportMismatch;
-        for (size_t i = 0; i < scope->resources.size(); ++i)
-            if (observed.source[i] != Key(scope->resources[i])) return NativeColorAdmission::TransportMismatch;
-        auto* context = reinterpret_cast<ID3D11DeviceContext*>(owner.context);
-        if (immutable.captured) {
-            // Never reuse facts for replacement objects, even within this call.
-            // The live four-resource and transport checks above are not cached.
-            if (!GenshinGuides::SameOwner(immutable.owner, owner))
-                return NativeColorAdmission::OwnerMismatch;
-            if (immutable.producer != producer || immutable.transport != binding.transport ||
-                immutable.context.Get() != context || immutable.sourceResource.Get() != scope->resources[0] ||
-                immutable.color.Get() != endpoint.color)
-                return NativeColorAdmission::ReceiptMismatch;
-        } else {
-            immutable.owner = owner;
-            immutable.producer = producer; immutable.transport = binding.transport;
-            immutable.context = context; immutable.sourceResource = scope->resources[0];
-            immutable.color = endpoint.color;
-            context->GetDevice(&immutable.contextDevice);
-            if (!immutable.sourceResource ||
-                FAILED(immutable.sourceResource.As(&immutable.source)) || !immutable.source)
-                return NativeColorAdmission::ReceiptMismatch;
-            immutable.source->GetDevice(&immutable.sourceDevice);
-            immutable.contextType = context->GetType();
-            immutable.source->GetDesc(&immutable.input);
-            immutable.imported = endpoint.color->GetDesc();
-            immutable.gpuDesc = immutable.imported;
-            immutable.captured = true;
-        }
-        if (immutable.contextType != D3D11_DEVICE_CONTEXT_IMMEDIATE ||
-            Key(immutable.contextDevice.Get()) != owner.device ||
-            immutable.contextDevice.Get() != immutable.sourceDevice.Get())
-            return NativeColorAdmission::OwnerMismatch;
-        const auto& input = immutable.input;
-        const auto& color = immutable.imported;
-        // Typed copy compatibility is not a declaration of game transfer.
-        if (input.Format != DXGI_FORMAT_R8G8B8A8_UNORM || color.Format != input.Format ||
-            facts.textures[0].format.value != input.Format || input.Width != endpoint.width ||
-            input.Height != endpoint.height || input.MipLevels != 1 || input.ArraySize != 1 ||
-            input.SampleDesc.Count != 1 || input.SampleDesc.Quality)
-            return NativeColorAdmission::FormatMismatch;
-        // Known HDR is unsupported. Unknown/false requested HDR never becomes SDR.
-        if (binding.providerHdrKnown && binding.providerHdr) return NativeColorAdmission::HdrUnsupported;
-        return NativeColorAdmission::ExactNativeTyped;
-    } catch (...) { return NativeColorAdmission::ProducerUnavailable; }
-#else
-    // A standalone host has no authenticated game producer and cannot mint it.
-    (void)immutable;
-    return NativeColorAdmission::ProducerUnavailable;
-#endif
-}
+
 // BeforeNR authorizes the final Present picture copied by the real native
 // adapter, not the BeforeSR selected colour/guide/output receipt. Public scalar
 // fields and a retained COM texture alone cannot grant or renew this contract.
-NativeColorAdmission InspectNativeBeforeNr(const ColorEndpoint& endpoint, NativeColorFacts& immutable) noexcept
+
+bool AdmitColor(const ColorEndpoint& endpoint, StageResult& result, NativeColorFacts&) noexcept
 {
-    if (endpoint.colorMode != ColorMode::GenshinNativeTypedBeforeNr)
-        return NativeColorAdmission::NotRequested;
-    if (endpoint.stage != Stage::BeforeNr || endpoint.output != OutputKind::Original ||
-        endpoint.naturalContract != NaturalSourceContract::TypedBackbuffer || endpoint.sdr ||
-        !endpoint.naturalSource || !endpoint.naturalDevice || !endpoint.naturalBackbuffer ||
-        !endpoint.stream || !endpoint.generation || !endpoint.color || !endpoint.queue)
-        return NativeColorAdmission::PresentEndpointMismatch;
-#ifndef HOYOSHADE_STAGE_TEST
-    try {
-        static const auto game = [] {
-            const auto name = Util::ExePath().filename().wstring();
-            return GameRouting::IdentifyExecutable(name.c_str());
-        }();
-        if (game != GameRouting::Identity::Genshin) return NativeColorAdmission::WrongGame;
-        const auto& binding = endpoint.beforeNrNativeColor;
-        const auto* scope = GenshinPresentNr::Scope::Current();
-        if (!scope || !binding.picture) return NativeColorAdmission::PresentScopeUnavailable;
-        const auto& config = *Config::Instance();
-        if (!config.DlssNrEnabled.value_or_default() || !config.DlssNrFinishedPicture.value_or_default() ||
-            config.DlssNrRunBeforeSr.value_or_default() || config.DlssNrDeferredDlss.value_or_default())
-            return NativeColorAdmission::PresentEndpointMismatch;
-        if (!config.GenshinControlsCurrent(binding.picture->ConfigEpoch())) return NativeColorAdmission::OwnerMismatch;
-        if (!scope->MatchesNativeColor(binding.picture, endpoint.color, endpoint.queue, endpoint.stream,
-            endpoint.generation, endpoint.frame, endpoint.naturalDevice, endpoint.naturalBackbuffer,
-            endpoint.width, endpoint.height, binding.observation)) return NativeColorAdmission::PresentPictureMismatch;
-        const auto& observed = binding.picture->Observation();
-        const auto& source = binding.picture->SourceDesc();
-        const auto& picture = binding.picture->PictureDesc();
-        if (observed.origin != native::NativePictureColorOrigin::SwapchainHelperDefaultOrPrivateUnknown ||
-            observed.sourceFormat != source.Format || observed.sharedFormat != picture.Format)
-            return NativeColorAdmission::CopyProvenanceMismatch;
-        // Exact adapter CopyResource pairs, not a general format-family cast:
-        // typed RGBA8 UNORM(28) or UNORM_SRGB(29) -> shared typed UNORM(28).
-        // D3D11 permits this same-type-group copy without sRGB decode/encode.
-        // Source/ticket/observation retain the actual format; only copy legality
-        // is widened. Transfer stays UNKNOWN. No typeless/BGRA/10-bit/float/resolve.
-        const bool nativeCopyFormats = picture.Format == DXGI_FORMAT_R8G8B8A8_UNORM &&
-            (source.Format == DXGI_FORMAT_R8G8B8A8_UNORM || source.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
-        if (!nativeCopyFormats ||
-            source.MipLevels != 1 || source.ArraySize != 1 || source.SampleDesc.Count != 1 || source.SampleDesc.Quality ||
-            source.Width != endpoint.width || source.Height != endpoint.height ||
-            picture.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || picture.MipLevels != 1 ||
-            picture.DepthOrArraySize != 1 || picture.SampleDesc.Count != 1 || picture.SampleDesc.Quality ||
-            picture.Width != endpoint.width || picture.Height != endpoint.height || !endpoint.width || !endpoint.height)
-            return NativeColorAdmission::FormatMismatch;
-        if (observed.knownHdr || observed.rawColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 ||
-            observed.rawColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
-            return NativeColorAdmission::HdrUnsupported;
-        // G22 is only the narrow raw-value allowlist for native processing.
-        // The helper may have returned its default: transfer/provenance UNKNOWN.
-        if (observed.rawColorSpace != DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
-            return NativeColorAdmission::RawColorSpaceUnsupported;
-        const auto& ready = endpoint.ready;
-        if (!ready.submission || ready.queue != endpoint.queue || !ready.fence || !ready.value ||
-            ready.value == UINT64_MAX || !ready.generation || ready.generation == UINT64_MAX ||
-            !ready.batch || ready.batch == UINT64_MAX) return NativeColorAdmission::SubmissionMismatch;
-        const bool firstBoundary = !immutable.presentCaptured;
-        if (!firstBoundary) {
-            if (immutable.presentPicture != binding.picture || immutable.presentSubmission != ready.submission ||
-                immutable.presentFence.Get() != ready.fence || immutable.presentValue != ready.value ||
-                immutable.presentGeneration != ready.generation || immutable.presentBatch != ready.batch)
-                return NativeColorAdmission::SubmissionMismatch;
-        } else {
-            // Run the original StageDeviceAccess/ValidateStage gate HERE for
-            // this mode, not a second time later in RenderStage. This checks
-            // the private receipt (including allocator anchor), real device
-            // health and UINT64_MAX. Only immutable interfaces are retained.
-            StageDeviceAccess access{endpoint};
-            DeviceValidation::Snapshot evidence;
-            if (!DeviceValidation::ValidateStage(access, evidence)) {
-                ReportDeviceFailure(endpoint, Site::Stage, evidence, access.Live());
-                return NativeColorAdmission::SubmissionMismatch;
-            }
-            immutable.presentDevices = std::move(access.devices);
-            immutable.presentPicture = binding.picture; immutable.presentSubmission = ready.submission;
-            immutable.presentFence = ready.fence; immutable.presentValue = ready.value;
-            immutable.presentGeneration = ready.generation; immutable.presentBatch = ready.batch;
-            immutable.gpuDesc = picture; immutable.presentCaptured = true;
-        }
-        const auto& devices = immutable.presentDevices;
-        if (devices[0].Get() != binding.picture->PictureOwner() || devices[0] != devices[1] || devices[0] != devices[2] ||
-            (!firstBoundary && !ready.submission->Matches(endpoint.color, endpoint.queue, ready.queue, ready.fence, ready.value,
-                devices[0].Get(), devices[3].Get(), endpoint.frame, ready.generation, ready.batch)))
-            return NativeColorAdmission::SubmissionMismatch;
-        return source.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
-            ? NativeColorAdmission::ExactNativePresentSrgbCopy : NativeColorAdmission::ExactNativePresentPicture;
-    } catch (...) { return NativeColorAdmission::PresentScopeUnavailable; }
-#else
-    (void)immutable;
-    return NativeColorAdmission::PresentScopeUnavailable;
-#endif
-}
-bool AdmitColor(const ColorEndpoint& endpoint, StageResult& result, NativeColorFacts& immutable) noexcept
-{
-    if (endpoint.colorMode == ColorMode::TransferQualified) {
-        result.nativeColor = NativeColorAdmission::NotRequested;
-        return endpoint.sdr;
-    }
-    if (endpoint.colorMode == ColorMode::GenshinNativeTypedBeforeSr) {
-        result.nativeColor = InspectNativeBeforeSr(endpoint, immutable);
-        return result.nativeColor == NativeColorAdmission::ExactNativeTyped;
-    }
-    if (endpoint.colorMode == ColorMode::GenshinNativeTypedBeforeNr) {
-        result.nativeColor = InspectNativeBeforeNr(endpoint, immutable);
-        return result.nativeColor == NativeColorAdmission::ExactNativePresentPicture ||
-            result.nativeColor == NativeColorAdmission::ExactNativePresentSrgbCopy;
-    }
-    result.nativeColor = NativeColorAdmission::EndpointMismatch;
-    return false;
+    result.nativeColor = NativeColorAdmission::NotRequested;
+    return endpoint.sdr;
 }
 
 bool ToResourceUsage(D3D12_RESOURCE_STATES state, reshade::api::resource_usage &usage) noexcept
@@ -1386,7 +1164,7 @@ bool EnsureNativeBinding(uint64_t owner, ID3D12Device *device, ID3D12CommandQueu
     }
     Microsoft::WRL::ComPtr<ID3D12Device> queueDevice;
     HRESULT hr = S_OK;
-    if ((donor || endpoint.colorMode == ColorMode::GenshinNativeTypedBeforeNr) && immutable.gpuCaptured && immutable.gpuQueue.Get() == queue && immutable.gpuColorDevice.Get() == device)
+    if ((donor ) && immutable.gpuCaptured && immutable.gpuQueue.Get() == queue && immutable.gpuColorDevice.Get() == device)
         queueDevice = immutable.gpuQueueDevice;
     else hr = queue->GetDevice(IID_PPV_ARGS(&queueDevice));
     if (!evidence.Device(Role::ConsumerQueue, hr, Key(queueDevice.Get())) ||
@@ -1632,7 +1410,7 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
     if (!ToResourceUsage(knownState, oldUsage)) return Reason::StateUnknown;
     if (!color || !request.nativeDevice || !request.nativeQueue) return Reason::DeviceMismatch;
 
-    const bool reuseGpuFacts = (selectionDonor || endpoint.colorMode == ColorMode::GenshinNativeTypedBeforeNr) && immutable.gpuCaptured && immutable.gpuColor.Get() == color &&
+    const bool reuseGpuFacts = (selectionDonor ) && immutable.gpuCaptured && immutable.gpuColor.Get() == color &&
         immutable.gpuQueue.Get() == endpoint.queue;
     const auto nativeDesc = reuseGpuFacts ? immutable.gpuDesc : color->GetDesc();
     const auto colorFormats = ColorContract::Resolve(nativeDesc.Format);
@@ -1857,22 +1635,10 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
             Microsoft::WRL::ComPtr<ID3D12Fence> fence;
             Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
             native::NativeSubmission submission; // exact creator/owner/color until owned completion
-            std::shared_ptr<GenshinTransport::ProducerFrame> beforeSrProducer;
-            std::shared_ptr<GenshinTransport::Lease> beforeSrTransport;
-            std::shared_ptr<const GenshinPresentNr::NativeColorCapability> beforeNrPicture;
         };
         auto producerOwner = std::make_shared<ProducerOwner>();
         producerOwner->fence = endpoint.ready.fence; producerOwner->queue = endpoint.ready.queue;
         producerOwner->submission = endpoint.ready.submission;
-        if (endpoint.colorMode == ColorMode::GenshinNativeTypedBeforeSr) {
-            // Retain full contents/transport owners, not only imported color COM.
-            producerOwner->beforeSrProducer = endpoint.nativeColor.producer;
-            producerOwner->beforeSrTransport = endpoint.nativeColor.transport;
-        }
-        if (endpoint.colorMode == ColorMode::GenshinNativeTypedBeforeNr)
-            producerOwner->beforeNrPicture = endpoint.beforeNrNativeColor.picture;
-        // Same completion/quarantine as color/queue/receipt, never a borrowed
-        // TLS Scope as a delayed GPU owner and no separate retirement system.
         if (!transaction->lease.KeepAlive(producerOwner)) return Reason::Capacity;
 
         // Partial views remain caller-owned until adoption. After adoption,
@@ -2350,7 +2116,7 @@ void OnSwapchainInit(reshade::api::swapchain* swapchain, bool) noexcept
             InvalidateDirect(direct->chain.load(std::memory_order_acquire));
         }
         if (!guard.entered || ownedOperation) return;
-        OwnedStage::TopologyChanged();
+
         const auto device = Key(swapchain->get_device());
         std::lock_guard lock(Get().mutex);
         Get().registry.InvalidateDevice(device);
@@ -2450,90 +2216,14 @@ void ReportEnabledSelectionKeys(const State::Natural& natural, const SelectionOb
 }
 // R196: only on an existing selection report or an actual owner Capture. No
 // heartbeat, SDK getter, INI read, extra lock or admission decision is added.
-void ReportSelectionEvidence(reshade::api::effect_runtime* runtime, uint64_t lifetime,
-    uint64_t settings, DWORD initThread, const Selection::Source& source, bool ownerCapture) noexcept
-{
-    try {
-        const auto& owner = OwnedStage::Get();
-        struct Evidence {
-            uintptr_t runtime = 0, core = 0, sourceRuntime = 0, ownerRuntime = 0;
-            uint64_t lifetime = 0, sourceLifetime = 0, ownerLifetime = 0, settings = 0;
-            DWORD initThread = 0, callbackThread = 0;
-            Selection::CaptureFacts capture;
-            bool valid = false, files = false, config = false, frozen = false, keysKnown = false;
-            bool operator==(const Evidence&) const = default;
-        } value;
-        value.runtime = Key(runtime); value.core = Key(Get().coreModule);
-        value.lifetime = lifetime; value.settings = settings;
-        value.sourceRuntime = Key(source.naturalRuntime); value.sourceLifetime = source.naturalGeneration;
-        value.ownerRuntime = owner.natural; value.ownerLifetime = owner.lifetime;
-        value.initThread = initThread; value.callbackThread = GetCurrentThreadId();
-        value.capture = source.capture; value.valid = source.valid;
-        value.files = !!source.files; value.config = !source.config.empty(); value.frozen = !!owner.snapshot;
-        value.keysKnown = source.capture.techniqueEnumComplete && source.capture.statesComplete &&
-            source.naturalRuntime == runtime && source.naturalGeneration == lifetime &&
-            source.techniques.size() == source.capture.techniques && source.techniques.size() <= Selection::MaxItems;
-        const bool pathKnown = source.capture.presetKnown && !source.preset.empty();
-        const std::string_view path = pathKnown ? std::string_view(source.preset) : "UNKNOWN";
-        struct Stream {
-            Evidence last;
-            std::string path;
-            uint64_t time = 0;
-            unsigned emitted = 0;
-        };
-        static std::array<Stream, 2> streams;
-        auto& stream = streams[ownerCapture ? 1 : 0];
-        if (stream.emitted >= 16 || (stream.emitted && value == stream.last && path == stream.path)) return;
-        const auto now = GetTickCount64();
-        // An owner Capture is a one-shot attempt: do not lose its terminal
-        // failure merely because the previous attempt was less than 1s ago.
-        // Its process-lifetime 16-transition ceiling is still unconditional.
-        if (!ownerCapture && stream.emitted && now - stream.time < 1000) return;
-        const char* coreChanged = !stream.emitted ? "UNKNOWN" :
-            value.core != stream.last.core ? "true" : "false";
-        const char* runtimeChanged = !stream.emitted ? "UNKNOWN" :
-            (value.runtime != stream.last.runtime || value.lifetime != stream.last.lifetime) ? "true" : "false";
-        const char* ownerMatch = !owner.natural ? "unclaimed" :
-            owner.natural != value.runtime ? "runtime-mismatch" :
-            owner.lifetime != lifetime ? "lifetime-mismatch" : "matched";
-        const char* keysState = !value.keysKnown ? "unknown" :
-            !source.capture.enabled ? "known-empty-enabled" : "known-nonempty-enabled";
-        const char* topology = !source.capture.techniqueEnumComplete ? "not-complete" :
-            !source.capture.techniques ? "complete-empty" : "complete-nonempty";
-        // Commit only diagnostic storage; exceptions cannot affect owner state.
-        stream.path.assign(path); stream.last = value; stream.time = now; ++stream.emitted;
-        LOG_INFO("HoYoShade selection source-evidence R196 origin={} observation={} report_limit=16 report_min_ms={} heartbeat=false runtime=0x{:x} lifetime={} source_runtime=0x{:x} source_lifetime={} core_module=0x{:x} core_module_changed={} runtime_lifetime_changed={} init_tid={} callback_tid={} init_thread_match={} owner_runtime=0x{:x} owner_lifetime={} owner_match={} config_settings={} capture_missing_reason={} private_snapshot_reason={} private_snapshot_runtime=0x{:x} private_snapshot_lifetime={} private_snapshot_reason_scope=last-attempt private_snapshot_files={} private_snapshot_config={} capture_snapshot_ready={} frozen_owner_snapshot_present={} capture_valid={} keys_state={} topology_state={} enabled_seen={} preset_path_read={} source_preset={} preset_known={} preset_path_source=existing_get_current_preset_path applied_preset=UNKNOWN enabled_source=existing_live_technique_states admission_unchanged=true pixels=UNKNOWN",
-            ownerCapture ? "persistent-owner-capture" : "natural-callback-cache", stream.emitted, ownerCapture ? 0 : 1000,
-            value.runtime, lifetime, value.sourceRuntime, value.sourceLifetime, value.core, coreChanged, runtimeChanged,
-            initThread, value.callbackThread, !initThread ? "UNKNOWN" : initThread == value.callbackThread ? "true" : "false",
-            owner.natural, owner.lifetime, ownerMatch, settings,
-            Selection::Name(source.capture.reason), Selection::Name(source.capture.snapshotReason),
-            source.capture.snapshotRuntime, source.capture.snapshotLifetime,
-            value.files, value.config, source.capture.snapshotReady, value.frozen, value.valid, keysState, topology,
-            source.capture.enabled, Selection::Name(source.capture.presetRead), path, pathKnown);
-        // Only the owner's already captured metadata; eight bounded keys per
-        // emitted transition, no API enumeration or per-draw lookup.
-        if (ownerCapture && value.keysKnown) {
-            size_t reported = 0;
-            for (size_t i = 0; i < source.techniques.size() && reported < 8; ++i) {
-                const auto& item = source.techniques[i];
-                if (!item.enabled) continue;
-                const auto name = std::string_view(item.name).substr(0, 128);
-                const auto effect = std::string_view(item.effect).substr(0, 192);
-                LOG_INFO("HoYoShade selection enabled key origin=persistent-owner-capture observation={} natural_runtime=0x{:x} natural_lifetime={} key_index={} enabled_key={}@{} key_text_truncated={} preset_inference=false pixels=UNKNOWN",
-                    stream.emitted, value.runtime, lifetime, reported++, name, effect,
-                    name.size() != item.name.size() || effect.size() != item.effect.size());
-            }
-        }
-    } catch (...) {} // No effect on capture, suppression, owner acknowledgement or rendering.
-}
+
 void ReportOwnedSelectionCapture(reshade::api::effect_runtime* runtime, uint64_t lifetime,
     uint64_t settings, const Selection::Source& source) noexcept
 {
     DWORD initThread = 0;
     for (const auto& natural : Get().natural)
         if (natural.runtime == runtime && natural.lifetime == lifetime) { initThread = natural.thread; break; }
-    ReportSelectionEvidence(runtime, lifetime, settings, initThread, source, true);
+
 }
 void ReportSelection(State::Natural& natural, uint64_t generation) noexcept
 {
@@ -2558,8 +2248,7 @@ void ReportSelection(State::Natural& natural, uint64_t generation) noexcept
                 applied.graph.uniforms, applied.graph.enumComplete, applied.graph.complete, applied.mappingComplete, applied.cached,
                 value.snapshots, value.graphBuilds);
             ReportEnabledSelectionKeys(natural, value, report.count);
-            ReportSelectionEvidence(natural.runtime, natural.lifetime,
-                Get().appliedSettings.load(std::memory_order_acquire), natural.thread, natural.selection, false);
+
         }
     } catch (...) {} // Diagnostics never change execution/suppression.
 }
@@ -2622,10 +2311,6 @@ void ObserveRuntime(reshade::api::effect_runtime* runtime, RuntimeEvent event)
     if (!id.runtime) {
         // Losing natural GPU identity revokes publication. Restoration of its
         // remembered mode still uses this live owner callback/lifetime only.
-        if (event == RuntimeEvent::Present && OwnedStage::OwnsNatural(runtime)) {
-            const auto lifetime = OwnedStage::Get().lifetime;
-            OwnedStage::OwnerPresent(runtime, lifetime, Get().api, 0, false, false);
-        }
         return;
     }
     State::Natural* capturedNatural = nullptr;
@@ -2638,12 +2323,11 @@ void ObserveRuntime(reshade::api::effect_runtime* runtime, RuntimeEvent event)
             for (auto& entry : Get().natural) if (!entry.runtime) { natural = &entry; break; }
         if (!natural) {
             Get().naturalStatusIncomplete = true;
-            OwnedStage::TopologyChanged();
+
         }
         if (natural) {
             if (event == RuntimeEvent::Init || !natural->runtime) {
-                OwnedStage::TopologyChanged();
-                if (OwnedStage::OwnsNatural(runtime)) OwnedStage::Changed(runtime, true);
+
                 *natural = {}; natural->runtime = runtime; natural->id = id; natural->live = true;
                 natural->thread = GetCurrentThreadId();
                 if (Get().nextNaturalLifetime == UINT64_MAX) {
@@ -2656,30 +2340,8 @@ void ObserveRuntime(reshade::api::effect_runtime* runtime, RuntimeEvent event)
                     natural->backbuffers[i] = runtime->get_back_buffer(i).handle;
             }
             if (!natural->live) return; // destroy tombstone; only init can revive pointer reuse
-            // Configuration ownership is independent of the producer picture.
-            // This is the LIVE natural owner callback, not its cached init TID.
-            if (event == RuntimeEvent::Present) {
-                const bool sameDomain = natural->id == id;
-                const bool requested = sameDomain && OwnedStageRequested();
-                unsigned donors = 0;
-                for (const auto& donor : Get().natural) donors += donor.live && donor.id.api == 0xb000;
-                if (id.api == 0xb000 || OwnedStage::OwnsNatural(runtime)) {
-                    const auto before = OwnedStage::Get().phase;
-                    OwnedStage::OwnerPresent(runtime, natural->lifetime, Get().api,
-                        OwnedStageSettings(), requested, donors == 1 && !Get().naturalStatusIncomplete,
-                        ReportOwnedSelectionCapture);
-                    const auto& persistent = OwnedStage::Get();
-                    if (persistent.natural && (persistent.natural != Key(runtime) || persistent.lifetime != natural->lifetime))
-                        ReportSelectionEvidence(runtime, natural->lifetime, OwnedStageSettings(),
-                            natural->thread, natural->selection, false); // cached facts, no new Capture/getter
-                    if (persistent.phase != before)
-                        LOG_INFO("HoYoShade persistent owner transition from={} to={} runtime=0x{:x} lifetime={} config_revision={} private_generation={} restoration_debt={} completion_unknown={} persistent_mode=true config_same_frame=not-required pixels=UNKNOWN",
-                            OwnedStage::Text(before), OwnedStage::Text(persistent.phase), Key(runtime), natural->lifetime,
-                            persistent.revision, persistent.binding.generation, persistent.owesRestore, persistent.uncertain);
-                }
-            }
             if (!(natural->id == id)) {
-                OwnedStage::Changed(runtime);
+
                 natural->frame.Invalidate(); Selection::InvalidateNatural(natural->selection, true); return;
             } // changed SDK domain needs a new init
 #ifndef HOYOSHADE_STAGE_TEST
@@ -2777,11 +2439,10 @@ void ObserveRuntime(reshade::api::effect_runtime* runtime, RuntimeEvent event)
                 }
             }
             if (event == RuntimeEvent::Begin) natural->frame.rendered = true;
-            if (event == RuntimeEvent::Reload) { natural->frame.Invalidate(); natural->copiedSerial = 0; natural->domains={}; }
+            if (event == RuntimeEvent::Reload) { natural->frame.Invalidate(); natural->domains={}; }
             // Read only during live callbacks; owned API mutations cannot feed
             // back into this natural selection. GUI edits are captured next frame.
-            if (!OwnedStage::OwnsNatural(runtime) && !natural->copiedSerial &&
-                (event == RuntimeEvent::Init || event == RuntimeEvent::Present || event == RuntimeEvent::Reload))
+            if (event == RuntimeEvent::Init || event == RuntimeEvent::Present || event == RuntimeEvent::Reload)
                 {
                 const auto snapshots = natural->selection.snapshots;
                 const auto selectionRevision = Get().observationSelectionRevision;
@@ -2832,46 +2493,14 @@ void ObserveRuntime(reshade::api::effect_runtime* runtime, RuntimeEvent event)
 // Bounded, SDK-free callback evidence for the persistent selection only.
 // Requests are BEFORE notifications, never an acknowledgement or author ID.
 // No uniform payload, getters, allocations, waits or per-draw reporting here.
-void ReportSelectionCallback(reshade::api::effect_runtime* runtime, const char* event,
-                             reshade::api::effect_technique technique = {}, bool requested = false) noexcept
-{
-    try {
-        const auto& s = OwnedStage::Get();
-        if (!s.natural || !runtime) return;
-        const bool natural = Key(runtime) == s.natural;
-        const bool owned = runtime == s.owned;
-        if (!natural && !owned && !ownedOperation) return;
-        static uintptr_t owner = 0;
-        static uint64_t lifetime = 0, generation = 0;
-        static unsigned events = 0, requests = 0;
-        if (owner != s.natural || lifetime != s.lifetime || generation != s.generation) {
-            owner = s.natural; lifetime = s.lifetime; generation = s.generation; events = requests = 0;
-        }
-        auto& count = technique.handle ? requests : events;
-        if (count >= 12) return; // no graph walk after the bounded quota
-        const Selection::Technique* selected = nullptr;
-        if (technique.handle) {
-            const auto* graph = natural ? s.capturing.get() : &s.selection;
-            if (!graph) return;
-            for (const auto& item : graph->techniques)
-                if ((natural ? item.natural : item.owned) == technique && item.enabled) { selected = &item; break; }
-            if (!selected) return; // only techniques in the previously observed selected set
-        }
-        ++count;
-        LOG_INFO("HoYoShade R548 selection callback event={} runtime=0x{:x} domain={} natural=0x{:x} lifetime={} private_generation={} reload={} phase={} observation={} per_kind_limit=12 technique=0x{:x} effect={} name={} requested={} changing_natural_mode={} writing_private_values={} restoration_debt={} owned_operation={} evidence=notification-not-readback pixels=UNKNOWN",
-            event, Key(runtime), natural ? "natural" : owned ? "private" : "owned-operation-unbound",
-            s.natural, s.lifetime, s.generation, s.reload, OwnedStage::Text(s.phase), count, technique.handle,
-            selected ? selected->effect.c_str() : "none", selected ? selected->name.c_str() : "none", requested,
-            s.changingState, s.writingValues, s.owesRestore, ownedOperation);
-    } catch (...) {} // observation cannot bypass the original invalidation/callback
-}
+
 void SelectionEvent(reshade::api::effect_runtime* runtime, Selection::CacheEvent event) noexcept
 {
     ObservationSelectionRequested(); // Existing executionMutex, before lifecycle/preset/order mutation.
     if (event != Selection::CacheEvent::Order) {
         const char* name = event == Selection::CacheEvent::Init ? "init" :
             event == Selection::CacheEvent::Reload ? "reload" : event == Selection::CacheEvent::Preset ? "preset-request" : "destroy";
-        ReportSelectionCallback(runtime, name);
+
     }
     if (event == Selection::CacheEvent::Init || event == Selection::CacheEvent::Reload ||
         event == Selection::CacheEvent::Destroy) {
@@ -2886,8 +2515,8 @@ void SelectionEvent(reshade::api::effect_runtime* runtime, Selection::CacheEvent
             if (related) { if (c.epoch != UINT64_MAX) ++c.epoch; InvalidateDirect(key); }
         }
     }
-    if (!ownedOperation && event == Selection::CacheEvent::Destroy) OwnedStage::TopologyChanged();
-    OwnedStage::Changed(runtime, event == Selection::CacheEvent::Destroy, event == Selection::CacheEvent::Reload);
+    if (!ownedOperation && event == Selection::CacheEvent::Destroy)
+
     Selection::Observe(runtime, event);
     for (auto& entry : Get().natural) Selection::Invalidate(entry.selection, runtime, event);
 }
@@ -2956,7 +2585,7 @@ void Effects(reshade::api::effect_runtime* runtime, reshade::api::command_list* 
 }
 void OnBegin(reshade::api::effect_runtime* runtime, reshade::api::command_list* list, reshade::api::resource_view linear, reshade::api::resource_view srgb) noexcept
 {
-    try { std::lock_guard lock(Get().executionMutex); RevokeEnabledObservationDemand(); OwnedStage::Begin(runtime); }
+    try { std::lock_guard lock(Get().executionMutex); RevokeEnabledObservationDemand();  }
     catch (...) { return; }
     Effects(runtime, list, RuntimeEvent::Begin, linear, srgb);
 }
@@ -2964,7 +2593,7 @@ void OnFinish(reshade::api::effect_runtime* runtime, reshade::api::command_list*
 { Effects(runtime, list, RuntimeEvent::Finish, linear, srgb); }
 void OnTechnique(reshade::api::effect_runtime* runtime, reshade::api::effect_technique technique, reshade::api::command_list* list, reshade::api::resource_view linear, reshade::api::resource_view srgb) noexcept
 {
-    try { std::lock_guard lock(Get().executionMutex); RevokeEnabledObservationDemand(); OwnedStage::Technique(runtime, list); }
+    try { std::lock_guard lock(Get().executionMutex); RevokeEnabledObservationDemand();  }
     catch (...) { return; }
     Effects(runtime, list, RuntimeEvent::Technique, linear, srgb, technique);
 }
@@ -2973,9 +2602,9 @@ bool OnOwnedStageEffects(reshade::api::effect_runtime* runtime, bool enabled) no
     try {
         std::lock_guard lock(Get().executionMutex);
         ObservationSelectionRequested(); // BEFORE request, not acknowledgement of the new state.
-        ReportSelectionCallback(runtime, enabled ? "effects-enable-request" : "effects-disable-request");
+
         Selection::RenderScope::SelectionRequested(runtime);
-        return OwnedStage::EffectsRequested(runtime, enabled);
+        return false;
     }
     catch (...) { return false; }
 }
@@ -2984,9 +2613,9 @@ bool OnOwnedStageTechnique(reshade::api::effect_runtime* runtime, reshade::api::
     try {
         std::lock_guard lock(Get().executionMutex);
         ObservationSelectionRequested(); // Old zero-selection Capture cannot be claimed again.
-        ReportSelectionCallback(runtime, "selected-technique-request", technique, enabled);
+
         Selection::RenderScope::SelectionRequested(runtime);
-        OwnedStage::SelectionRequested(runtime);
+
     }
     catch (...) {}
     return false;
@@ -2997,7 +2626,7 @@ bool OnOwnedStageUniform(reshade::api::effect_runtime* runtime, reshade::api::ef
         std::lock_guard lock(Get().executionMutex);
         RevokeEnabledObservationDemand();
         Selection::RenderScope::UniformRequested(runtime, variable);
-        OwnedStage::UniformRequested(runtime, variable);
+
     }
     catch (...) {}
     return false;
@@ -3160,7 +2789,7 @@ RenderOwnerScope::RenderOwnerScope() noexcept
         if (state.renderOwners == (std::numeric_limits<size_t>::max)()) return;
         if (!state.renderOwners && !inCallback && !ownedOperation && !stageActive)
             AdvanceSettingsAtOwnerBoundary();
-        OwnedStage::SettingsChanged(OwnedStageSettings());
+
         RevokeObservationDemand();
         ++state.renderOwners;
         entered = true;
@@ -3227,7 +2856,7 @@ ObservationDemand ReadObservationDemand() noexcept
                 if (!natural.live) continue;
                 live = true;
                 if (!natural.runtime || !natural.lifetime || !natural.captureObserved ||
-                    !natural.frame.CanArm() || natural.copiedSerial ||
+                    !natural.frame.CanArm() ||
                     !natural.idleSelectionMutation || natural.idleSelectionMutation != events.mutation ||
                     natural.idleSelectionRevision != state.observationSelectionRevision) return {};
             }
@@ -3254,12 +2883,6 @@ ObservationDemand ReadObservationDemand() noexcept
             if (t.token || t.lease || t.rtvOwner || t.completion.fence || t.inFlight ||
                 t.reserved || t.recorded || t.signalPending || t.submitted ||
                 t.signalFailed || t.orphaned) return {};
-        // The persistent owned path has separate retained roots. Natural
-        // selection/cache metadata alone does not subscribe an owned consumer.
-        const auto& owned = OwnedStage::Get();
-        if (owned.active || owned.owesRestore || owned.uncertain || owned.rendering ||
-            owned.binding.owner || owned.device || owned.queue || owned.factory || owned.targets ||
-            owned.latest.fence || owned.renderingDepth || owned.renderingList) return {};
         return result.Current() ? result : ObservationDemand{};
     } catch (...) { return {}; }
 }
@@ -3394,7 +3017,7 @@ bool NativeBeforeSrAvailable(const NaturalAssociation::Source* source) noexcept
     try {
         std::lock_guard lifetime(Get().executionMutex);
         if (!Selected(Stage::BeforeSr) || !Get().accepted.load(std::memory_order_acquire) ||
-            Get().naturalStatusIncomplete || OwnedStage::RestorationPending()) return false;
+            Get().naturalStatusIncomplete ) return false;
         const auto& value = source->Observation();
         if (value.api != 0xc000 || source->Endpoint(value.stream, value.generation, value.frame,
             value.sourceDevice, value.buffer) != NaturalAssociation::Predicate::Captured ||
@@ -3403,7 +3026,7 @@ bool NativeBeforeSrAvailable(const NaturalAssociation::Source* source) noexcept
             if (!natural.live || !natural.runtime || natural.thread != GetCurrentThreadId() ||
                 source->Bound(Key(natural.runtime), natural.lifetime, natural.frame.epoch) !=
                     NaturalAssociation::Predicate::Captured) continue;
-            return natural.frame.CanArm() && !natural.frame.invalid && !natural.copiedSerial &&
+            return natural.frame.CanArm() && !natural.frame.invalid &&
                 natural.selection.valid && !natural.selection.config.empty() &&
                 Selection::HasEnabledTechniques(natural.selection);
         }
@@ -3681,13 +3304,13 @@ void ReportBeforeSrDonorDiagnostics(const BeforeSrDonorDiagnostics& diagnostic,
         const auto observed = [&candidate](unsigned bit, bool value) noexcept {
             return (candidate.reads & bit) ? (value ? "true" : "false") : "UNKNOWN";
         };
-        LOG_INFO("HoYoShade BeforeSR donor firstfalse observation={} diagnostic_boundary={} diagnostic_slot={} firstfalse={} candidate_predicates_passed={} cached_live={} cached_runtime=0x{:x} cached_id_runtime=0x{:x} cached_api=0x{:x} cached_sdk_device=0x{:x} cached_sdk_queue=0x{:x} cached_native_device=0x{:x} cached_native_queue=0x{:x} cached_lifetime={} cached_epoch={} cached_owner_thread={} current_thread_known={} current_thread={} cached_armed={} cached_rendered={} cached_invalid={} can_arm={} armable={} cached_copied_serial={} tuple_authority=none",
+        LOG_INFO("HoYoShade BeforeSR donor firstfalse observation={} diagnostic_boundary={} diagnostic_slot={} firstfalse={} candidate_predicates_passed={} cached_live={} cached_runtime=0x{:x} cached_id_runtime=0x{:x} cached_api=0x{:x} cached_sdk_device=0x{:x} cached_sdk_queue=0x{:x} cached_native_device=0x{:x} cached_native_queue=0x{:x} cached_lifetime={} cached_epoch={} cached_owner_thread={} current_thread_known={} current_thread={} cached_armed={} cached_rendered={} cached_invalid={} can_arm={} armable={} tuple_authority=none",
             observation, boundary, candidate.slot, BeforeSrDonorRejectText(candidate.firstFalse), candidate.admitted, candidate.live,
             candidate.runtime, candidate.identity.runtime, candidate.identity.api, candidate.identity.sdkDevice,
             candidate.identity.sdkQueue, candidate.identity.nativeDevice, candidate.identity.nativeQueue,
             candidate.lifetime, candidate.frame.epoch, candidate.ownerThread, (candidate.reads & DonorThreadRead) != 0,
             candidate.currentThread, candidate.frame.armed, candidate.frame.rendered, candidate.frame.invalid,
-            observed(DonorCanArmRead, candidate.canArm), candidate.armable, candidate.copiedSerial);
+            observed(DonorCanArmRead, candidate.canArm), candidate.armable);
         LOG_INFO("HoYoShade BeforeSR donor settings observation={} diagnostic_boundary={} diagnostic_slot={} settings={} applied_settings_known={} applied_settings={} desired_settings_known={} desired_settings={} natural_status_incomplete={} event_cache_exhausted={} event_mutation_exhausted={} cached_source_settings={} cached_settings_barrier_epoch={} settings_epoch_ready={} read_mask=0x{:x} later_callable_predicates=not-evaluated-after-firstfalse tuple_authority=none",
             observation, boundary, candidate.slot, candidate.settings, (candidate.reads & DonorAppliedRead) != 0,
             candidate.applied, (candidate.reads & DonorDesiredRead) != 0, candidate.desired,
@@ -3736,7 +3359,6 @@ struct StageReportScope
                 endpoint.colorMode, result.nativeColor};
             value.donorCount = donorCount; value.donorRevision = donor.revision; value.donorSnapshots = donor.snapshots;
             value.depthBindingAtRender = result.depthAvailable;
-            if (OwnedStage::Handles(endpoint)) value.persistentOwnedPhase = static_cast<unsigned>(OwnedStage::Get().phase) + 1;
             value.donorDiagnosticBoundary = donorDiagnostics.boundary;
             // Compare only candidate identity/reason transitions. Epoch/thread
             // tuples themselves do not turn a stable heartbeat into frame churn.
@@ -3745,97 +3367,11 @@ struct StageReportScope
                 value.donorCandidateChanges[i] = {candidate.runtime, candidate.lifetime, candidate.firstFalse,
                     candidate.live, candidate.selectionValid};
             }
-            value.presentColor = endpoint.beforeNrNativeColor.observation;
             const auto report = Get().stageReports[stage - 1][output].Next(value, GetTickCount64());
-            if (OwnedStage::Handles(endpoint)) {
-                if (report.emit) {
-                    const auto& persistent = OwnedStage::Get();
-                    const auto fields = OwnedRuntime::Fields(persistent.detail);
-                    LOG_INFO("HoYoShade persistent owned stage={} phase={} result={} source_stream={} source_generation={} source_frame={} config_runtime=0x{:x} config_lifetime={} config_revision={} private_generation={} restoration_debt={} completion_unknown={} owned_status={} owned_operation={} owned_code_kind={} owned_code=0x{:08x} submission={} techniques={} depth_binding_at_render={} natural_sdk=owner-callback-only list=owned-immediate config_same_frame=not-required pixels=UNKNOWN",
-                        Text(endpoint.stage), OwnedStage::Text(persistent.phase), Text(result.reason),
-                        endpoint.stream, endpoint.generation, endpoint.frame, persistent.natural, persistent.lifetime,
-                        persistent.revision, persistent.binding.generation, persistent.owesRestore, persistent.uncertain,
-                        fields.status, fields.operation, fields.codeKind, fields.code,
-                        static_cast<unsigned>(result.attempt.state), result.techniques, result.depthAvailable);
-                }
-                return; // old natural-frame/QI association is not configuration snapshot authority
-            }
-#ifndef HOYOSHADE_STAGE_TEST
+            #ifndef HOYOSHADE_STAGE_TEST
                 // One bounded diagnostic line per target stage attempt, at most eight total. A cached B
                 // pointer narrows the diagnostic candidate, never proves a frame.
-                if (Get().canonicalStageReports < 8 && endpoint.stage == Stage::BeforeNr &&
-                    endpoint.output == OutputKind::Original &&
-                    endpoint.colorMode == ColorMode::GenshinNativeTypedBeforeNr &&
-                    endpoint.naturalContract == NaturalSourceContract::TypedBackbuffer && endpoint.naturalSource &&
-                    endpoint.beforeNrNativeColor.picture) {
-                    const auto& proof = *endpoint.naturalSource;
-                    const auto& sourceEvidence = proof.Observation();
-                    if (sourceEvidence.api == 0xb000 && sourceEvidence.predicate == NaturalAssociation::Predicate::Captured) {
-                        // Capture already ran for this stage. The first line
-                        // therefore has no source QI; arming samples a later
-                        // Capture on this same stream/thread, never this B by age.
-                        NaturalAssociation::ArmCanonicalSourceObservation(sourceEvidence.stream, sourceEvidence.thread);
-                        State::Natural* candidate = nullptr;
-                        unsigned candidates = 0;
-                        for (auto& entry : Get().natural) {
-                            if (!entry.live || entry.id.api != 0xb000) continue;
-                            bool hasBuffer = false;
-                            for (auto buffer : entry.backbuffers) hasBuffer |= buffer && buffer == sourceEvidence.buffer;
-                            if (hasBuffer) { ++candidates; if (candidates == 1) candidate = &entry; }
-                        }
-                        if (candidates != 1) candidate = nullptr;
-                        const auto& sourceCanonical = proof.CanonicalDevice();
-                        const auto naturalCanonical = candidate ? candidate->nativeCanonical :
-                            NaturalAssociation::CanonicalDeviceObservation{};
-                        // The cached B match and independent QI samples do not bind the natural
-                        // callback lifetime to this source capture or prove a common picture.
-                        // Keep canonical_relation UNKNOWN even if ticketCurrent is independently true.
-                        // Adapter generation/frame and ticket producer
-                        // generation/sourceFrame are different clocks. Only a
-                        // successful native admission has already matched both
-                        // through the private capability/Scope; raw B reuse is
-                        // never sufficient to expose ticket serials.
-                        const auto* scope = GenshinPresentNr::Scope::Current();
-                        const bool colorProven = result.nativeColor == NativeColorAdmission::ExactNativePresentPicture ||
-                            result.nativeColor == NativeColorAdmission::ExactNativePresentSrgbCopy;
-                        const bool ticketCurrent = colorProven &&
-                            sourceEvidence.stream == endpoint.stream &&
-                            sourceEvidence.generation == endpoint.generation &&
-                            sourceEvidence.frame == endpoint.frame &&
-                            scope && scope->MatchesNativeColor(endpoint.beforeNrNativeColor.picture,
-                                endpoint.color, endpoint.queue, endpoint.stream, endpoint.generation, endpoint.frame,
-                                endpoint.naturalDevice, endpoint.naturalBackbuffer, endpoint.width, endpoint.height,
-                                endpoint.beforeNrNativeColor.observation) && scope->ticket.Known() &&
-                            scope->ticket.source.sourceFrame != 0 &&
-                            scope->ticket.source.thread == GetCurrentThreadId() &&
-                            scope->ticket.source.thread == sourceEvidence.thread &&
-                            scope->ticket.swapchain == sourceEvidence.chain &&
-                            reinterpret_cast<uintptr_t>(scope->ticket.backbuffer.Get()) == sourceEvidence.buffer;
-                        const bool firstSourceQiExpectedAbsent = Get().canonicalStageReports == 0 &&
-                            !sourceCanonical.attempted;
-                        const auto ticketField = [ticketCurrent](uint64_t value) {
-                            return ticketCurrent ? std::to_string(value) : std::string("UNKNOWN");
-                        };
-                        ++Get().canonicalStageReports;
-                        LOG_INFO("HoYoShade BeforeNR canonical device diagnostic sample={} candidate_count={} natural_runtime=0x{:x} natural_lifetime={} natural_raw=0x{:x} natural_canonical=0x{:x} natural_qi_attempted={} natural_qi_hr=0x{:08x} natural_callback_thread={} natural_epoch={} source_raw=0x{:x} source_canonical=0x{:x} source_qi_attempted={} source_qi_hr=0x{:08x} source_qi_first_sample_expected_absent={} source_capture_thread={} source_stream={} source_adapter_generation={} source_adapter_frame={} config_epoch={} ticket_current={} ticket_producer_generation={} ticket_producer_source_frame={} device_epoch={} present_epoch={} picture_serial={} canonical_relation=UNKNOWN simultaneous_device_liveness=UNKNOWN same_frame=UNKNOWN raw_backbuffer_match=observation-only admission=unchanged pixels=UNKNOWN",
-                            Get().canonicalStageReports, candidates, candidate ? Key(candidate->runtime) : 0,
-                            candidate ? candidate->lifetime : 0, candidate ? candidate->id.nativeDevice : 0,
-                            naturalCanonical.identity, naturalCanonical.attempted, static_cast<uint32_t>(naturalCanonical.hr),
-                            candidate ? candidate->canonicalThread : 0, candidate ? candidate->frame.epoch : 0,
-                            sourceEvidence.owner, sourceCanonical.identity, sourceCanonical.attempted,
-                            static_cast<uint32_t>(sourceCanonical.hr), firstSourceQiExpectedAbsent, sourceEvidence.thread,
-                            sourceEvidence.stream, sourceEvidence.generation, sourceEvidence.frame,
-                            endpoint.beforeNrNativeColor.picture->ConfigEpoch(), ticketCurrent,
-                            ticketField(ticketCurrent ? scope->ticket.source.generation : 0),
-                            ticketField(ticketCurrent ? scope->ticket.source.sourceFrame : 0),
-                            ticketField(ticketCurrent ? scope->ticket.source.deviceEpoch : 0),
-                            ticketField(ticketCurrent ? scope->ticket.presentEpoch : 0),
-                            ticketField(ticketCurrent ? scope->ticket.pictureSerial : 0));
-                        if (Get().canonicalStageReports == 8)
-                            NaturalAssociation::DisarmCanonicalSourceObservation();
-                    }
-                }
-#endif
+                #endif
             if (report.emit) {
                 LOG_INFO("HoYoShade stage decision stage={} output_kind={} output_label={} result={} observation={} source_stream={} source_generation={} source_frame={} output_sequence={} natural_runtime=0x{:x} natural_lifetime={} submission={} natural_suppressed={} techniques={} extent={}x{} sdr={} state_known={} state={} producer_value={} depth_binding_at_render={} depth_reader_completion=UNKNOWN depth_gpu_completion=UNKNOWN pixels=UNKNOWN",
                     Text(endpoint.stage), output, OutputText(endpoint.output), Text(result.reason), report.count,
@@ -3844,15 +3380,6 @@ struct StageReportScope
                     result.attempt.naturalSuppressed, result.techniques, endpoint.width, endpoint.height,
                     endpoint.sdr, endpoint.stateKnown, static_cast<unsigned>(endpoint.state), endpoint.ready.value,
                      result.depthAvailable ? "reflected" : "not-observed");
-                const auto& pictureColor = endpoint.beforeNrNativeColor.observation;
-                LOG_INFO("HoYoShade color contract stage={} mode={} native_admission={} source_generation={} source_frame={} sdr={} native_transfer={} source_format={} shared_format={} raw_dxgi_space={} raw_provenance={} private_lookup_hr=UNKNOWN known_hdr_rejection={} adapter_color_conversion=none preset_srgb_states=preserved pixels=UNKNOWN",
-                    Text(endpoint.stage), Text(endpoint.colorMode), Text(result.nativeColor), endpoint.generation,
-                    endpoint.frame, endpoint.sdr, endpoint.colorMode == ColorMode::TransferQualified ? "not-requested" : "UNKNOWN",
-                    static_cast<unsigned>(pictureColor.sourceFormat), static_cast<unsigned>(pictureColor.sharedFormat),
-                    static_cast<unsigned>(pictureColor.rawColorSpace),
-                    pictureColor.origin == native::NativePictureColorOrigin::SwapchainHelperDefaultOrPrivateUnknown ?
-                        "exact-swapchain-helper-default-or-private-UNKNOWN" : "unobserved",
-                    pictureColor.knownHdr);
                 if (endpoint.naturalContract == NaturalSourceContract::BeforeSrOwnedRuntimeWithSelectionDonor) {
                     LOG_INFO("HoYoShade BeforeSR contracts observation={} source_api=0xb000 source_device=0x{:x} color_resource=0x{:x} consumer_queue=0x{:x} donor_count={} donor_predicate={} donor_runtime=0x{:x} donor_lifetime={} donor_epoch={} donor_selection_revision={} donor_config_generation={} donor_settings={} natural_api=0x{:x} natural_native_device=0x{:x} natural_sdk_device=0x{:x} owned_api=0xc000 owned_binding_device=0x{:x} owned_binding_queue=0x{:x} owned_binding_generation={} source_contract=exact-genshin-producer-four-resources gpu_contract=owned-exact-color-device-direct-queue donor_contract=selection-and-bounded-suppression-only typed_backbuffer=false native_transfer=UNKNOWN pixels=UNKNOWN",
                         report.count, endpoint.naturalDevice, Key(endpoint.color), Key(endpoint.queue), donorCount,
@@ -3863,13 +3390,13 @@ struct StageReportScope
                     return; // Not a typed-backbuffer diagnostic or association.
                 }
                 const auto& counts = Get().naturalCallbacks;
-                LOG_INFO("HoYoShade natural association stage={} output_kind={} observation={} stage_attempts={} present_attempts={} match={} exit={} live={} tombstones={} device_matches={} backbuffer_matches={} exact_matches={} ticket_runtime_matches={} ticket_lifetime_matches={} status_incomplete={} expected_device=0x{:x} expected_backbuffer=0x{:x} consumer_queue=0x{:x} source_stream={} source_runtime=0x{:x} source_lifetime={} source_serial={} copied_before_natural={} init={} present={} destroy={} begin={} finish={} technique={} reload={} retry=next-existing-stage-call report_min_ms=1000 report_heartbeat_ms=30000 runtime_existence=UNKNOWN pixels=UNKNOWN",
+                LOG_INFO("HoYoShade natural association stage={} output_kind={} observation={} stage_attempts={} present_attempts={} match={} exit={} live={} tombstones={} device_matches={} backbuffer_matches={} exact_matches={} ticket_runtime_matches={} ticket_lifetime_matches={} status_incomplete={} expected_device=0x{:x} expected_backbuffer=0x{:x} consumer_queue=0x{:x} source_stream={} source_runtime=0x{:x} source_lifetime={} source_serial={} init={} present={} destroy={} begin={} finish={} technique={} reload={} retry=next-existing-stage-call report_min_ms=1000 report_heartbeat_ms=30000 runtime_existence=UNKNOWN pixels=UNKNOWN",
                     Text(endpoint.stage), output, report.count, Get().stageAttempts, Get().presentAttempts,
                     AssociationDiagnostics::Text(association.match), associationExit, association.live, association.tombstones,
                     association.devices, association.backbuffers, association.exact, association.ticketRuntime, association.ticketLifetime,
                     Get().naturalStatusIncomplete, endpoint.naturalDevice, endpoint.naturalBackbuffer, Key(endpoint.queue), endpoint.stream,
                     endpoint.physicalSource.runtime, endpoint.physicalSource.lifetime, endpoint.physicalSource.serial,
-                    endpoint.physicalSource.copiedBeforeNatural, counts.Count(RuntimeEvent::Init), counts.Count(RuntimeEvent::Present),
+                    counts.Count(RuntimeEvent::Init), counts.Count(RuntimeEvent::Present),
                     counts.Count(RuntimeEvent::Destroy), counts.Count(RuntimeEvent::Begin), counts.Count(RuntimeEvent::Finish),
                     counts.Count(RuntimeEvent::Technique), counts.Count(RuntimeEvent::Reload));
                 const auto source = endpoint.naturalSource ? endpoint.naturalSource->Observation() : NaturalAssociation::Evidence{};
@@ -4201,8 +3728,7 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
     Get().latestEpochWait = {};
     AssociationDiagnostics::Increment(Get().stageAttempts);
     StageReportScope observation{endpoint, result};
-    OwnedStage::Admission persistentAdmission{endpoint, result};
-    OwnedStage::SettingsChanged(OwnedStageSettings());
+
     try {
         result.reason = Get().core.load(std::memory_order_acquire);
         if (!Get().accepted.load(std::memory_order_acquire)) return result;
@@ -4253,8 +3779,7 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
         if (selectionDonorMode && result.nativeColor != NativeColorAdmission::ExactNativeTyped) {
             result.reason = Reason::ColorSpaceUnknown; return result;
         }
-        const bool nativePresentColor = endpoint.colorMode == ColorMode::GenshinNativeTypedBeforeNr;
-        const auto desc = (selectionDonorMode || nativePresentColor) ? immutable.gpuDesc : endpoint.color->GetDesc();
+        const auto desc = (selectionDonorMode ) ? immutable.gpuDesc : endpoint.color->GetDesc();
         // Only the existing legacy SR input contract admits a bounded active
         // rectangle. Native Genshin/picture/output contracts remain exact.
         const bool srRegion = endpoint.stage == Stage::BeforeSr &&
@@ -4281,42 +3806,12 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
         // AdmitColor above. Other modes retain the original location/order.
         // Later recording boundaries recheck the live private receipt; no
         // admission decision is reused across those boundaries.
-        if (nativePresentColor) deviceAccess.devices = immutable.presentDevices;
         DeviceValidation::Snapshot deviceEvidence;
-        if (!nativePresentColor && !DeviceValidation::ValidateStage(deviceAccess, deviceEvidence)) {
+        if ( !DeviceValidation::ValidateStage(deviceAccess, deviceEvidence)) {
             ReportDeviceFailure(endpoint, Site::Stage, deviceEvidence, deviceAccess.Live());
             result.reason = Reason::DeviceMismatch; return result;
         }
         const auto& device = deviceAccess.devices[0];
-        if (nativePresentColor) {
-            immutable.gpuColor = endpoint.color; immutable.gpuQueue = endpoint.queue;
-            immutable.gpuColorDevice = device; immutable.gpuQueueDevice = deviceAccess.devices[1];
-            immutable.gpuDesc = desc; immutable.gpuCaptured = true;
-        }
-        // R148: only the already-authenticated Genshin native producer seams
-        // use persistent owned effects. Other games/output contracts stay below.
-        if (OwnedStage::Handles(endpoint)) {
-            persistentAdmission.delegated = true;
-            OwnedOperation ownedCall;
-            auto admission = result.nativeColor;
-            auto staged = OwnedStage::Render(endpoint, device.Get(), Get().coreModule, Get().api,
-                OwnedStageSettings, [&](const ColorEndpoint& pinned) {
-                    const bool admitted = AdmitColor(pinned, result, immutable);
-                    admission = result.nativeColor; // retain the LAST actual predicate, including revocation
-                    return admitted;
-                });
-            staged.nativeColor = admission;
-            const auto& persistent = OwnedStage::Get();
-            observation.naturalRuntime = persistent.natural;
-            observation.naturalLifetime = persistent.lifetime;
-            observation.ownedDevice = Key(device.Get());
-            observation.ownedQueue = Key(endpoint.queue);
-            observation.ownedGeneration = persistent.binding.generation;
-            result = std::move(staged); // StageReportScope observes the actual returned transaction
-            return result;
-        }
-        // A previous persistent mode must first restore on its natural owner.
-        if (OwnedStage::RestorationPending()) { result.reason = Reason::SelectionPending; return result; }
         State::Natural* natural = nullptr;
         State::Natural* suppress = nullptr;
         NaturalAssociation::SelectionDonor donor;
@@ -4398,20 +3893,8 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
         observation.naturalRuntime = Key(natural->runtime);
         observation.naturalLifetime = natural->lifetime;
         observation.associationExit = 0;
-        const bool copiedSource = physical && endpoint.physicalSource.copiedBeforeNatural;
-        if (physical && !copiedSource && natural->frame.epoch != endpoint.physicalSource.epoch) {
+        if (physical && natural->frame.epoch != endpoint.physicalSource.epoch) {
             result.reason = Reason::NaturalFrameConsumed; return result;
-        }
-        if (copiedSource) {
-            const auto& source = endpoint.physicalSource;
-            // The private copy precedes exactly ONE real parent core Present.
-            // Reload/destruction/gap/reentry revoke the frozen source snapshot.
-            if (natural->id.api != 0xb000 || natural->thread != GetCurrentThreadId() ||
-                natural->copiedSerial != source.serial || source.epoch == UINT64_MAX ||
-                natural->frame.epoch != source.epoch + 1 || natural->frame.invalid ||
-                !source.copyOwner || !source.copyGeneration || !source.copySerial) {
-                result.reason = Reason::NaturalFrameConsumed; return result;
-            }
         }
         if (!natural->selection.valid || natural->selection.config.empty()) {
             result.reason = Reason::SelectionUnavailable; return result;
@@ -4431,12 +3914,10 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
                 if (suppress) { observation.associationExit = 2; result.reason = Reason::NaturalUnavailable; return result; }
                 suppress = &entry;
             }
-            // Independent pictures: the DX11 parent was naturally filtered
-            // AFTER its private child copy. Only the output natural runtime
-            // can duplicate effects on THIS physical DX12 color.
-            if ((!copiedSource && suppress != natural) || (copiedSource && suppress == natural) ||
+            // The source and this physical color must name the same runtime.
+            if (suppress != natural ||
                 (suppress && (suppress->id.api != 0xc000 || suppress->id.nativeQueue != Key(endpoint.queue)))) {
-                observation.associationExit = ((!copiedSource && suppress != natural) || (copiedSource && suppress == natural)) ? 3 : 4;
+                observation.associationExit = suppress != natural ? 3 : 4;
                 result.reason = Reason::NaturalUnavailable; return result;
             }
         } else suppress = natural;
@@ -4513,7 +3994,7 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
     return result;
 }
 
-PhysicalSource PreparePhysicalSource(IDXGISwapChain* source, bool copiedBeforeNatural) noexcept
+PhysicalSource PreparePhysicalSource(IDXGISwapChain* source) noexcept
 {
     if (!Selected(Stage::FinalOutput) || !source || inCallback || ownedOperation || stageActive) return {};
     std::lock_guard lifetime(Get().executionMutex);
@@ -4569,42 +4050,19 @@ PhysicalSource PreparePhysicalSource(IDXGISwapChain* source, bool copiedBeforeNa
             natural->selection.config.empty() || !natural->frame.CanArm() || natural->sourceSerial == UINT64_MAX ||
             !natural->selection.enabled || !std::any_of(natural->selection.techniques.begin(),
                 natural->selection.techniques.end(), [](const auto& t) { return t.enabled; })) return {};
-        if (copiedBeforeNatural) {
-            if (natural->id.api != 0xb000 || natural->copiedSerial) return {};
-            // Refresh current GUI selection under this existing non-callback
-            // contract. Reuse only a still-matching immutable exported snapshot.
-            // A new effect scope revokes this ticket until the next real owner
-            // callback exports it; mutex/TID agreement is not export authority.
-            RevokeEnabledObservationDemand();
-            const auto selectionRevision = Get().observationSelectionRevision;
-            Selection::Capture(natural->runtime, Get().api, natural->selection, false,
-                natural->lifetime, Selection::CaptureAccess::ExistingSnapshot);
-            CacheCompleteSelection(*natural, selectionRevision);
-            if (!natural->selection.valid || !natural->selection.enabled ||
-                !std::any_of(natural->selection.techniques.begin(), natural->selection.techniques.end(),
-                    [](const auto& t) { return t.enabled; })) return {};
-        }
+
         if(scope.Get()->Endpoint(admitted.stream,admitted.generation,admitted.frame,admitted.sourceDevice,admitted.buffer)!=
                 NaturalAssociation::Predicate::Captured ||
             scope.Get()->Bound(Key(natural->runtime),natural->lifetime,natural->frame.epoch)!=NaturalAssociation::Predicate::Captured ||
             !natural->live || !natural->frame.CanArm())return {};
         PhysicalSource ticket{Key(natural->runtime), natural->lifetime, natural->frame.epoch, ++natural->sourceSerial};
-        ticket.copiedBeforeNatural = copiedBeforeNatural;
         natural->sourceSettings = Get().appliedSettings.load(std::memory_order_acquire);
-        if (copiedBeforeNatural) natural->copiedSerial = ticket.serial;
         RememberSettingsUse(*natural, admitted.stream, admitted.generation);
         return ticket;
     } catch (...) { return {}; }
 }
 
-void ReleasePhysicalSource(const PhysicalSource& source) noexcept
-{
-    if (!source.copiedBeforeNatural) return;
-    std::lock_guard lifetime(Get().executionMutex);
-    for (auto& entry : Get().natural)
-        if (entry.live && Key(entry.runtime) == source.runtime && entry.lifetime == source.lifetime &&
-            entry.copiedSerial == source.serial) entry.copiedSerial = 0;
-}
+
 
 void RetirePhysicalOutput(uint64_t stream) noexcept
 {

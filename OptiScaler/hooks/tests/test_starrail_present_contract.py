@@ -14,6 +14,9 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--legacy-gap-grace", action="store_true")
 args = parser.parse_args()
 provider = (ROOT / "OptiScaler/framegen/dlssg/DLSSG_Dx12.cpp").read_text(encoding="utf-8-sig")
+provider += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+    next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+         if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
 hooks = (ROOT / "OptiScaler/hooks/FG_Hooks.cpp").read_text(encoding="utf-8-sig")
 
 

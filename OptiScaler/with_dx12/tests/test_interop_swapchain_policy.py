@@ -40,8 +40,8 @@ check("args.flags = desc.Flags" in adapter and "activeFgOutput == FGOutput::XeFG
 
 present = body("HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(")
 failure = present.index("_fgResizeStatus.Failure()")
-check(failure < present.index("GenshinBridgeFg::PresentScope") < present.index("_InitInteropObjects()"),
-      "failed resize blocks producer scope and all interop allocations/copies")
+check(failure < present.index("_InitInteropObjects()") < present.index("_CopyDx11BackBufferToShared("),
+      "failed resize blocks all interop allocations/copies")
 check("FAILED(failure))\n        return failure;" in present,
       "Present preserves the actual provider failure rather than returning hidden-chain success")
 check(present.index("DXGI_PRESENT_TEST") < failure,

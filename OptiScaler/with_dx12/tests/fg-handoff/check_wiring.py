@@ -13,6 +13,9 @@ def read(path):
     return (ROOT / path).read_text(encoding='utf-8-sig')
 
 FG = read('OptiScaler/framegen/dlssg/DLSSG_Dx12.cpp')
+FG += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+    next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+         if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
 DX11 = read('OptiScaler/with_dx12/dx11_with_dx12.cpp')
 WITH = read('OptiScaler/with_dx12/with_dx12.cpp')
 
@@ -28,7 +31,8 @@ class HandoffWiring(unittest.TestCase):
         adopt = parser.extract(WITH, 'void WithDx12::AdoptSwapchainQueue(')
         setter = parser.extract(WITH, 'void WithDx12::SetD3D12Objects(')
         self.assertLess(adopt.index('CreationScope::Active()'), adopt.index('currentCommandQueue ='))
-        self.assertLess(setter.index('CreationScope::Active()'), setter.index('GenshinConsumerPair()'))
+        for mutation in ('_d3d12Device =', '_d3d12CommandQueue =', 'UpdateStateObjects()'):
+            self.assertLess(setter.index('CreationScope::Active()'), setter.index(mutation))
 
     def test_sdk_factories_have_creation_scope(self):
         for call in ('factory->CreateSwapChain(cmdQueue', 'factory2->CreateSwapChainForHwnd(cmdQueue'):

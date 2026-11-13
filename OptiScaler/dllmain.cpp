@@ -1,9 +1,8 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include <runtime/F6InputPolicy.h>
 #include <runtime/ModuleLifetime.h>
 #include <runtime/AsiPluginStartup.h>
 #include "integration/HoYoShade.h"
-#include <genshin/GenshinNativeQueryProvenance.h>
 #include "dllmain.h"
 
 #include "Util.h"
@@ -26,7 +25,7 @@
 #include <proxies/FfxApi_Proxy.h>
 
 #include "inputs/FSR2_Dx11.h"
-#include "inputs/GenshinFsrContract.h"
+#include <runtime/GameIdentity.h>
 #include "inputs/FSR2_Dx12.h"
 #include "inputs/FSR2_Vk.h"
 #include "inputs/FSR3_Dx12.h"
@@ -244,7 +243,6 @@ static void CheckWorkingMode()
 {
     // Finish this real startup installer batch before starting optional signed
     // image setup. No waiting/signature I/O occurs under this startup scope.
-    GenshinNativeQuery::StartupInstallScope nativeQueryStartup;
     if (!_passThruMode)
         LOG_FUNC();
 
@@ -741,11 +739,6 @@ static void CheckWorkingMode()
             D3D11Hooks::Hook(d3d11Module);
         }
     };
-    const bool earlyGenshinFactories=F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) &&
-        Config::Instance()->AcquireGenshinControls().Active();
-    if(earlyGenshinFactories)installD3D11Factories();
-
-    // DXGI
     if (DxgiProxy::Module() == nullptr)
     {
         LOG_DEBUG("Check for dxgi");
@@ -826,10 +819,7 @@ static void CheckWorkingMode()
     }
 
     // Other games retain their original DXGI/D3D12/D3D11 install order.
-    if(!earlyGenshinFactories)installD3D11Factories();
-
-    // Vulkan
-    if (State::Instance().isRunningOnLinux || State::Instance().gameQuirks & GameQuirk::LoadVulkanManually)
+    installD3D11Factories();if (State::Instance().isRunningOnLinux || State::Instance().gameQuirks & GameQuirk::LoadVulkanManually)
     {
         vulkanModule = NtdllProxy::LoadLibraryExW_Ldr(L"vulkan-1.dll", NULL, 0);
         LOG_DEBUG("Loading vulkan-1.dll for Linux, result: {:X}", (size_t) vulkanModule);
@@ -1667,334 +1657,21 @@ void CheckMemoryForProxies()
 // D3D11 factory. This existing worker starts after DLL_PROCESS_ATTACH returns;
 // no signature I/O, waiting or GPU enumeration is added under loader lock.
 // R764: bounded post-refusal observation. No result is consumed by admission.
-static void ObserveGenshinOwnedPatchFailure()
-{
-    namespace d = GenshinNativeQuery::detail;
-    struct Row {
-        unsigned index=0;const char* kind="none";const char* symbol="none";
-        uintptr_t entry=0,slot=0,expected=0,actual=0;unsigned mismatch=UINT_MAX;
-        uintptr_t firstTarget=0,finalTarget=0,ownRelay=0;unsigned followed=0;DWORD finalType=0;
-        std::array<char,128> finalOwner{};
-        std::array<char,128> owner{};bool read=false;
-    };
-    std::array<Row,16> rows{};unsigned count=0,total=0,patches=0,initialized=0;
-    uint64_t generation=0;bool captured=false;
-    {
-        d::Guard guard;
-        if (guard.held) {
-            captured=true;generation=d::store.generation.load();initialized=d::store.initialized.load();
-            const auto& ledger=d::Ledger();patches=ledger.patchCount;
-            if (patches<=ledger.patches.size()) for (unsigned i=0;i<patches;++i) {
-                const auto& p=ledger.patches[i];Row row{};row.index=i;
-                row.entry=reinterpret_cast<uintptr_t>(p.entry);row.symbol=p.exportName?p.exportName:"none";
-                const auto pointer=[&](const char* kind,const void* slot,const void* wanted) {
-                    uintptr_t actual=0;const bool read=d::Memory(slot,&actual,sizeof(actual));
-                    if (read && actual==reinterpret_cast<uintptr_t>(wanted)) return false;
-                    row.kind=kind;row.slot=reinterpret_cast<uintptr_t>(slot);row.expected=reinterpret_cast<uintptr_t>(wanted);row.actual=actual;row.read=read;return true;
-                };
-                const auto bytes=[&](const char* kind,const void* at,const unsigned char* wanted,size_t n) {
-                    std::array<unsigned char,96> actual{};
-                    const bool read=n<=actual.size() && d::Memory(at,actual.data(),n);
-                    if (read && !std::memcmp(actual.data(),wanted,n)) return false;
-                    row.kind=kind;row.slot=reinterpret_cast<uintptr_t>(at);row.read=read;
-                    if (read) for (unsigned j=0;j<n;++j) if (actual[j]!=wanted[j]) {
-                        row.mismatch=j;row.expected=wanted[j];row.actual=actual[j];break;
-                    }
-                    return true;
-                };
-                bool failed=pointer("original-slot",p.original,p.trampoline);
-                if (!failed && p.executed) failed=pointer("executed-slot",p.executed,p.trampoline);
-                if (!failed && p.mirror) failed=pointer("mirror-slot",p.mirror,p.trampoline);
-                if (!failed && p.hopCount>p.hops.size()) {failed=true;row.kind="invalid-hop-count";}
-                for (unsigned j=0;!failed && j<p.hopCount;++j) {
-                    const auto& hop=p.hops[j];failed=bytes("hop-code",hop.entry,hop.code.data(),hop.size);
-                    if (!failed && hop.iat) failed=pointer("hop-slot",hop.iat,hop.target);
-                }
-                if (!failed) failed=bytes("entry-edit",p.entry,p.edit.data(),p.size);
-                if (!failed) failed=bytes("trampoline-code",p.trampoline,p.code.data(),p.code.size());
-                if (!failed) failed=bytes("own-hook-code",p.hook,p.ownEntry.data(),p.ownEntry.size());
-                if (failed) {
-                    ++total;
-                    row.ownRelay=reinterpret_cast<uintptr_t>(p.trampoline)+88;
-                    // Two bounded noncalling reads of E9/FF25 branch encodings.
-                    uintptr_t cursor=row.entry;
-                    for (unsigned step=0;step<2;++step) {
-                        std::array<unsigned char,6> code{};uintptr_t next=0;
-                        if (!d::Memory(reinterpret_cast<const void*>(cursor),code.data(),code.size())) break;
-                        if (code[0]==0xe9) next=cursor+5+static_cast<intptr_t>(d::Read<int32_t>(code.data()+1));
-                        else if (code[0]==0xff && code[1]==0x25) {
-                            const auto cell=cursor+6+static_cast<intptr_t>(d::Read<int32_t>(code.data()+2));
-                            if (!d::Memory(reinterpret_cast<const void*>(cell),&next,sizeof(next))) break;
-                        } else break;
-                        if (!next || next==cursor) break;
-                        if (!step) row.firstTarget=next;
-                        cursor=next;row.finalTarget=next;++row.followed;
-                    }
-                    MEMORY_BASIC_INFORMATION targetMemory{};
-                    if (row.finalTarget && VirtualQuery(reinterpret_cast<const void*>(row.finalTarget),&targetMemory,sizeof(targetMemory))==sizeof(targetMemory)) {
-                        row.finalType=targetMemory.Type;
-                        if (targetMemory.Type==MEM_IMAGE) d::ImportModuleName(static_cast<HMODULE>(targetMemory.AllocationBase),row.finalOwner);
-                    }
-                    MEMORY_BASIC_INFORMATION memory{};
-                    if (VirtualQuery(p.entry,&memory,sizeof(memory))==sizeof(memory) && memory.Type==MEM_IMAGE)
-                        d::ImportModuleName(static_cast<HMODULE>(memory.AllocationBase),row.owner);
-                    if (count<rows.size()) rows[count++]=row;
-                }
-            }
-        }
-    }
-    LOG_WARN("Genshin owned patch observation: pid={} captured={} generation={} initialized={} patches={} failures={} recorded={} post_refusal_only=true",
-             GetCurrentProcessId(),captured,generation,initialized,patches,total,count);
-    for (unsigned i=0;i<count;++i) {const auto& row=rows[i];
-        LOG_WARN("Genshin owned patch mismatch: pid={} index={} kind={} symbol={} owner={} entry={:X} slot={:X} expected={:X} actual={:X} mismatch_offset={} readable={} observation_only=true",
-                 GetCurrentProcessId(),row.index,row.kind,row.symbol,row.owner.data(),row.entry,row.slot,row.expected,row.actual,row.mismatch,row.read);
-        LOG_WARN("Genshin owned patch target: pid={} index={} own_relay={:X} first_target={:X} final_target={:X} followed={} final_type={:X} final_owner={} observation_only=true no_callable_authority=true",
-                 GetCurrentProcessId(),row.index,row.ownRelay,row.firstTarget,row.finalTarget,row.followed,row.finalType,row.finalOwner.data());
-    }
-}
+
 
 // R773: bounded read-only post-refusal data; never consumed by authentication.
-static void ObserveGenshinInstallerBytes()
-{
-    namespace d=GenshinNativeQuery::detail;
-    namespace f=d::file_binding;
-    const auto app=GetModuleHandleW(L"apphelp.dll");
-    auto image=std::make_unique<d::Image>();
-    const bool opened=app && image->Open(app);
-    LOG_WARN("Genshin installer observation: pid={} opened={} profile={} observation_only=true no_callable_authority=true",
-             GetCurrentProcessId(),opened,opened && d::shim_binding::ProfileImage(*image,d::shim_observation::apphelpProfile));
-    if(!opened)return;
-    const auto base=reinterpret_cast<uintptr_t>(app);
-    for(unsigned rowIndex=0;rowIndex<f::Installers().size();++rowIndex){const auto& spec=f::Installers()[rowIndex];
-        std::array<unsigned char,64> live{};
-        const size_t size=spec.end-spec.wrapper;
-        const bool read=size<=live.size() && image->Range(spec.wrapper,size) && d::Memory(reinterpret_cast<const void*>(base+spec.wrapper),live.data(),size);
-        unsigned mismatch=UINT_MAX;unsigned expected=0,actual=0;
-        if(read)for(unsigned i=0;i<size;++i)if(live[i]!=image->clean[spec.wrapper+i]){mismatch=i;expected=image->clean[spec.wrapper+i];actual=live[i];break;}
-        unsigned ownCount=0;bool ownIntact=true;std::array<unsigned,16> ownIndices{};unsigned recorded=0;
-        {
-            d::Guard guard;
-            if(guard.held){const auto& ledger=d::Ledger();
-                if(ledger.patchCount<=ledger.patches.size())for(unsigned i=0;i<ledger.patchCount;++i){const auto& patch=ledger.patches[i];
-                    const auto begin=reinterpret_cast<uintptr_t>(patch.entry);
-                    if(begin<base+spec.end && begin+patch.size>base+spec.wrapper){
-                        ++ownCount;ownIntact=ownIntact && d::PatchIntact(patch);if(recorded<ownIndices.size())ownIndices[recorded++]=i;
-                    }
-                }
-            }else ownIntact=false;
-        }
-        uintptr_t cursor=base+spec.wrapper,first=0,last=0;unsigned hops=0;DWORD targetType=0;std::array<char,128> targetOwner{};
-        for(unsigned step=0;step<2;++step){std::array<unsigned char,16> code{};uintptr_t next=0;
-            if(!d::Memory(reinterpret_cast<const void*>(cursor),code.data(),code.size()))break;
-            if(code[0]==0xe9)next=cursor+5+static_cast<intptr_t>(d::Read<int32_t>(code.data()+1));
-            else if(code[0]==0xff && code[1]==0x25){const auto cell=cursor+6+static_cast<intptr_t>(d::Read<int32_t>(code.data()+2));
-                if(!d::Memory(reinterpret_cast<const void*>(cell),&next,sizeof(next)))break;}
-            else if(code[0]==0x48 && code[1]==0xb8 && code[10]==0xff && code[11]==0xe0)next=d::Read<uintptr_t>(code.data()+2);
-            else break;
-            if(!next || next==cursor)break;if(!step)first=next;last=cursor=next;++hops;
-        }
-        MEMORY_BASIC_INFORMATION memory{};
-        if(last && VirtualQuery(reinterpret_cast<const void*>(last),&memory,sizeof(memory))==sizeof(memory)){
-            targetType=memory.Type;if(memory.Type==MEM_IMAGE)d::ImportModuleName(static_cast<HMODULE>(memory.AllocationBase),targetOwner);
-        }
-        LOG_WARN("Genshin installer wrapper: pid={} symbol={} rva={:X} bytes={} readable={} mismatch_offset={} expected={:X} actual={:X} live_prefix={:X} own_overlap={} own_intact={} first_target={:X} final_target={:X} followed={} final_type={:X} final_owner={} observation_only=true",
-                 GetCurrentProcessId(),spec.symbol,spec.wrapper,size,read,mismatch,expected,actual,read?d::Read<uint64_t>(live.data()):0,
-                 ownCount,ownIntact,first,last,hops,targetType,targetOwner.data());
-        for(unsigned i=0;i<recorded;++i)LOG_WARN("Genshin installer own overlap: pid={} symbol={} patch_index={} observation_only=true",GetCurrentProcessId(),spec.symbol,ownIndices[i]);
-        uintptr_t table=0;std::array<uintptr_t,6> row{};
-        const bool rowRead=d::Memory(reinterpret_cast<const void*>(base+0x79420),&table,sizeof(table)) && table && table<=UINTPTR_MAX-spec.row &&
-            d::Memory(reinterpret_cast<const void*>(table+spec.row),row.data(),sizeof(row));
-        std::array<char,128> originalOwner{};MEMORY_BASIC_INFORMATION originalMemory{};
-        if(rowRead && row[3] && VirtualQuery(reinterpret_cast<const void*>(row[3]),&originalMemory,sizeof(originalMemory))==sizeof(originalMemory) && originalMemory.Type==MEM_IMAGE)
-            d::ImportModuleName(static_cast<HMODULE>(originalMemory.AllocationBase),originalOwner);
-        LOG_WARN("Genshin installer row: pid={} symbol={} readable={} table={:X} dll={:X} name={:X} wrapper={:X} original={:X} original_owner={} observation_only=true no_callable_authority=true",
-                 GetCurrentProcessId(),spec.symbol,rowRead,table,row[0],row[1],row[2],row[3],originalOwner.data());
-    }
-}
+
 
 // R041: consume the immutable ORIGINAL failure after asynchronous publication.
 // Later Open/code comparisons cannot recover the original predicate or trust result.
-static void ObserveGenshinFailedImage() noexcept
-{
-    const auto* first=GenshinNativeQuery::FirstRevocation();
-    if(!first)return;
-    static std::atomic_flag logged=ATOMIC_FLAG_INIT;
-    if(logged.test_and_set())return;
-    try {
-        // Hold the logger for this synchronous call even if its registry entry changes.
-        const auto logger=spdlog::default_logger();if(!logger)return;
-        const auto module=first->module;
-        std::array<wchar_t,32768> wide{};std::array<char,32768> path{};
-        const auto length=module?GetModuleFileNameW(module,wide.data(),static_cast<DWORD>(wide.size())):0;
-        if(length && length<wide.size())WideCharToMultiByte(CP_UTF8,0,wide.data(),length,path.data(),static_cast<int>(path.size()-1),nullptr,nullptr);
-        const auto& o=first->image;const auto& trust=first->trust;
-        logger->warn("ObserveGenshinFailedImage Genshin failed image observation: pid={} thread={} module={:X} path={} reason={} original_open_captured={} predicate={} offset={:X} actual={:X} expected={:X} win32={} "
-                 "embedded_attempted={} embedded_status={:X} embedded_win32={} embedded_microsoft={} catalog_attempts={} catalog_attempted={} catalog_status={:X} catalog_win32={} catalog_microsoft={} catalog_stage={} catalog_stage_win32={} "
-                 "repeated_open=false post_refusal_only=true original_predicate_unknown={} no_callable_authority=true",
-                 GetCurrentProcessId(),first->thread,reinterpret_cast<uintptr_t>(module),path.data(),first->reason,first->hasImage,
-                 first->hasImage?o.predicate:"not-an-image-open-refusal",o.offset,o.actual,o.expected,o.win32,
-                 trust.embedded.attempted,static_cast<unsigned>(trust.embedded.status),trust.embedded.win32,trust.embedded.microsoft,
-                 trust.catalogAttempts,trust.catalog.attempted,static_cast<unsigned>(trust.catalog.status),trust.catalog.win32,trust.catalog.microsoft,
-                 trust.catalogStage,trust.catalogWin32,!first->hasImage);
-        logger->warn("ObserveGenshinFailedImage Genshin native first_revocation: pid={} thread={} file={} line={} function={} observation_only=true",
-                 GetCurrentProcessId(),first->thread,first->file,first->line,first->function);
-        const auto& c=first->origin;
-        logger->warn("ObserveGenshinFailedImage Genshin native collection origin: pid={} thread={} patch={} role={} export={} export_truncated={} own_setup={} "
-                     "producer_file={} producer_line={} producer_function={} collection_file={} collection_line={} collection_function={} "
-                     "request_file={} request_line={} request_function={} depth={} parent={:X} module={:X} hop={} "
-                     "address={} requested={} normalized_entry={} hook={} trampoline={} original_slot={} executed_slot={} mirror_slot={} declared_module={:X} "
-                     "origin_captured_at_refusal=true no_callable_authority=true",
-                     GetCurrentProcessId(),first->thread,c.patch,c.role,c.exportName.data(),c.exportNameTruncated,c.ownSetup,
-                     c.enrollment.file_name(),c.enrollment.line(),c.enrollment.function_name(),
-                     c.collection.file_name(),c.collection.line(),c.collection.function_name(),
-                     c.request.file_name(),c.request.line(),c.request.function_name(),c.depth,
-                     reinterpret_cast<uintptr_t>(c.parent),reinterpret_cast<uintptr_t>(c.current),c.hopIndex,
-                     c.address,c.requested,c.entry,c.hook,c.trampoline,c.original,c.executed,c.mirror,
-                     reinterpret_cast<uintptr_t>(c.declaredModule));
-    }catch(...){/* Optional diagnostics never alter the original refusal. */}
-}
+
 
 // R728: one immutable observation of the first failed Setup import.
 // Shared by the synchronous tail and the existing asynchronous refusal observer.
 // No address in this receipt is an alternate binding or admission path.
-static void ObserveGenshinImportFailure() noexcept
-{
-    static std::atomic_flag importFailureLogged = ATOMIC_FLAG_INIT;
-    const auto* failure = GenshinNativeQuery::FirstImportFailure();
-    // Do not consume the once flag before the immutable receipt is published.
-    if (!failure || importFailureLogged.test_and_set(std::memory_order_relaxed))
-        return;
-    try
-    {
-        LOG_WARN("Genshin native import first_failure: pid={} thread={} stage={} prior_reason={} "
-                 "dll={} symbol={} ordinal={} importer={:X} importer_name={} nominal={:X} slot={:X} "
-                 "expected_known={} expected={:X} expected_owner={:X} expected_owner_name={} expected_rva={:X} kind={} "
-                 "actual_known={} actual={:X} actual_owner_known={} actual_owner={:X} actual_owner_name={} actual_rva={:X} "
-                 "queried_actual_owner={:X} resolver_hop={} resolver_module={:X} resolver_dll={} resolver_symbol={} resolver_ordinal={} "
-                 "export_index={} forward={} resolver_actual_known={} resolver_actual={:X} resolver_owner_known={} "
-                 "resolver_owner={:X} resolver_owner_name={} resolver_rva={:X} text_truncated={} "
-                 "observed_owner_source=VirtualQuery-MEM_IMAGE observation_only=true",
-                 failure->pid, failure->thread, failure->stage, failure->priorReason,
-                 failure->dll.data(), failure->symbol.data(), failure->ordinal,
-                 reinterpret_cast<size_t>(failure->importer), failure->importerName.data(),
-                 reinterpret_cast<size_t>(failure->nominal), reinterpret_cast<size_t>(failure->slot),
-                 failure->expectedKnown, failure->expected, reinterpret_cast<size_t>(failure->expectedOwner),
-                 failure->expectedOwnerName.data(), failure->expectedRva, static_cast<unsigned>(failure->expectedKind),
-                 failure->actualKnown, failure->actual.value, failure->actual.ownerKnown, failure->actual.owner,
-                 failure->actual.ownerName.data(), failure->actual.rva, reinterpret_cast<size_t>(failure->queriedActualOwner),
-                 failure->hop, reinterpret_cast<size_t>(failure->resolverModule), failure->resolverDll.data(),
-                 failure->resolverSymbol.data(), failure->resolverOrdinal, failure->exportIndex, failure->forward.data(),
-                 failure->resolverActualKnown, failure->resolverActual.value, failure->resolverActual.ownerKnown,
-                 failure->resolverActual.owner, failure->resolverActual.ownerName.data(), failure->resolverActual.rva,
-                 failure->textTruncated);
 
-        // R740: separate immutable observations; preserve the R728 stage token.
-        const auto& c = failure->corroboration;
-        LOG_WARN("Genshin native import corroboration_snapshot: pid={} thread={} stage={} "
-                 "eat_slot={} eat_address={:X} eat_read={} clean_eat_rva={:X} live_eat_rva={:X} "
-                 "iat_sample={} iat_slot={} iat_read={} iat_now={:X} observation_only=true",
-                 failure->pid, failure->thread, failure->stage, c.eatSlot, c.eatSlotAddress,
-                 c.eatSlotRead, c.cleanEatRva, c.liveEatRva, c.iatSample, c.iatSlot, c.iatSlotRead, c.iatNow);
-        const auto& s = failure->shim;
-        LOG_WARN("Genshin native shim snapshot: pid={} thread={} profile={} status={} "
-                 "wrapper_disk_read={} wrapper_disk_match={} wrapper_read={} wrapper_match={} wrapper_code64={} "
-                 "locators_read={} locators_match={} thunks_read={} thunks_match={} "
-                 "xfg_uses_declared_cf={} whole_image_identity=UNKNOWN observation_only=true",
-                 failure->pid, failure->thread, s.profile, s.status, s.wrapperDiskRead, s.wrapperDiskMatch,
-                 s.wrapperRead, s.wrapperMatch, s.wrapperBytes.data(), s.locatorsRead, s.locatorsMatch,
-                 s.thunksRead, s.thunksMatch, s.xfgUsesDeclaredCf);
-        const auto module = [&](const char* role, const auto& m) {
-            LOG_WARN("Genshin native shim module: pid={} role={} base={:X} status={} file_size={} "
-                     "timestamp={:X} image_size={:X} fixed_version_ms={:X} fixed_version_ls={:X} "
-                     "disk_read={} disk_match={} live_read={} live_match={} error={} "
-                     "identity_scope=selected_headers_version_code observation_only=true",
-                     failure->pid, role, m.base, m.status, m.fileSize, m.timestamp, m.imageSize,
-                     m.versionMS, m.versionLS, m.diskRead, m.diskMatch, m.liveRead, m.liveMatch, m.error);
-        };
-        module("apphelp", s.apphelp); module("ntdll", s.ntdll);
-        const auto slot = [&](const char* role, const auto& v) {
-            LOG_WARN("Genshin native shim slot: pid={} role={} address={:X} value={:X} read={} status={} "
-                     "error={} observation_only=true", failure->pid, role, v.address, v.value, v.read, v.status, v.error);
-        };
-        slot("table_root", s.tableRoot); slot("xfg_dispatch", s.xfgSlot); slot("declared_cf_dispatch", s.cfSlot);
-        LOG_WARN("Genshin native shim row: pid={} address={:X} region_read={} allocation={:X} type={:X} "
-                 "state={:X} protect={:X} read={} selectors_match={} error={} "
-                 "q0={:X} q1={:X} q2={:X} original={:X} q4={:X} q5={:X} observation_only=true",
-                 failure->pid, s.rowAddress, s.tableRegionRead, s.tableAllocation, s.tableType, s.tableState,
-                 s.tableProtect, s.rowRead, s.rowSelectorsMatch, s.rowError,
-                 s.row[0], s.row[1], s.row[2], s.row[3], s.row[4], s.row[5]);
-        const auto code = [&](const char* role, const auto& v) {
-            LOG_WARN("Genshin native shim code: pid={} role={} target={:X} owner_known={} owner={:X} owner_name={} "
-                     "rva={:X} type={:X} protect={:X} read={} disk_read={} comparison_bytes={} comparison_source={} "
-                     "selected_code_match={} status={} "
-                     "code64={} error={} observation_only=true",
-                     failure->pid, role, v.address.value, v.address.ownerKnown, v.address.owner, v.address.ownerName.data(),
-                     v.address.rva, v.address.memoryType, v.protect, v.read, v.diskRead, v.comparisonBytes,
-                     v.comparisonSource, v.comparisonMatch, v.status, v.bytes.data(), v.error);
-        };
-        code("table_original", s.original); code("xfg_dispatch", s.xfg); code("declared_cf_dispatch", s.cf);
-    }
-    catch (...) { /* Optional diagnostics never alter the original refusal. */ }
-}
 
-static void PrepareGenshinNativeQuery()
-{
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
-    auto* cfg = Config::Instance();
-    if (!GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) ||
-        !cfg->AcquireGenshinControls().Active() || !cfg->OverlayMenu.value_or_default())
-        return;
 
-    // Keep optional authentication on this worker. Existing startup/library
-    // paths retain sole responsibility for factory hooking: do not introduce a
-    // parallel Hook call against their non-atomic installer slots. Own::Batch
-    // authenticates later own edits after Setup as well as edits already made.
-    // No previously exposed device/context can acquire a certificate later.
-    const auto observeNativeFailure=+[]()noexcept {
-        ObserveGenshinFailedImage();
-        ObserveGenshinImportFailure();
-        const auto* first=GenshinNativeQuery::FirstRevocation();
-        if(!first || !first->setupPatchFailure.captured)return;
-        static std::atomic_flag reported=ATOMIC_FLAG_INIT;
-        if(reported.test_and_set(std::memory_order_relaxed))return;
-        const auto& o=first->setupPatchFailure;const auto& origin=first->origin;
-        try {
-            LOG_WARN("R041 setup preimage first refusal: pid={} thread={} predicate={} attempt={} index={} owner={} rva={:X} size={} mismatch_offset={} saved_byte={:X} clean_byte={:X} install_captured={} install_byte={:X} restore_matches_install={} install_generation={} snapshot_generation={} failure_generation={} publication_generation={} saved_prefix_le={:X} clean_prefix_le={:X} entry={:X} requested={:X} producer_file={} producer_line={} observation_only=true no_callable_authority=true",
-                GetCurrentProcessId(),first->thread,o.predicate,o.attempt,o.index,o.owner,o.rva,o.size,o.mismatchOffset,
-                o.savedByte,o.cleanByte,o.installPreimageCaptured,o.installByte,o.restoreMatchesInstall,o.installGeneration,
-                o.snapshotGeneration,o.failureGeneration,o.publicationGeneration,o.savedPrefix,o.cleanPrefix,
-                reinterpret_cast<uintptr_t>(origin.entry),reinterpret_cast<uintptr_t>(origin.requested),
-                origin.enrollment.file_name(),origin.enrollment.line());
-        }catch(...){}
-    };
-    GenshinNativeQuery::SetFirstRevocationObserver(observeNativeFailure);
-    GenshinNativeQuery::StartupInstallScope nativeQueryStartup;
-    const auto runtime = NtdllProxy::LoadLibraryExW_Ldr(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    if (!runtime)
-    {
-        LOG_WARN("Genshin early native setup: system d3d11 load failed; optional depth/FG remains gated");
-        return;
-    }
-    // Retain the loader reference for process lifetime, matching existing
-    // graphics runtime ownership. This does not create a device or run a game.
-    GenshinNativeQuery::SetupObservation setupObservation;
-    const bool ready = GenshinNativeQuery::Setup(runtime,&setupObservation);
-    LOG_INFO("R041 worker native preparation: pid={} ready={} predicate={} attempts={} generation_conflicts={} snapshot_generation={} return_generation={} state_sample={} setup_running_sample={} busy_sample={} deferred_sample={} install_scopes_sample={} observation_only=true no_birth_authority=true",
-        GetCurrentProcessId(),ready,setupObservation.predicate,setupObservation.attempts,setupObservation.generationConflicts,
-        setupObservation.snapshotGeneration,setupObservation.returnGeneration,setupObservation.state,setupObservation.running,
-        setupObservation.busy,setupObservation.deferred,setupObservation.installScopes);
-    // Covers a refusal already published before this synchronous Setup entry.
-    observeNativeFailure();
-    LOG_INFO("Genshin early native setup: pid={} ready={} reason={} runtime={:X}",
-             GetCurrentProcessId(), ready, GenshinNativeQuery::Failure(), reinterpret_cast<size_t>(runtime));
-    if (!ready)
-    {
-        ObserveGenshinOwnedPatchFailure();
-        ObserveGenshinInstallerBytes();
-    }
-    if (!ready)
-        ObserveGenshinImportFailure();
-}
 
 DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
 {
@@ -2006,7 +1683,6 @@ DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
     // This existing post-attach worker is outside the loader callout. Prepare
     // provenance before optional core startup can consume a creation factory.
     // Readiness is still required by NativeCall; moving order grants no birth.
-    PrepareGenshinNativeQuery();
     HoYoShade::Initialize(dllModule, hoYoEnabled, hoYoStage);
     LogHoYoShadeStartupConfig(hoYoEnabled, hoYoStage);
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
@@ -2166,13 +1842,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID /*lpRese
         Kernel32Proxy::Init();
 
         State::Instance().activeFgInput = Config::Instance()->FGInput.value_or_default();
-        if constexpr (!F6InputPolicy::FsrBridgeEnabled)
-        {
-            auto& input = State::Instance().activeFgInput;
-            if (input == FGInput::FSRFG || input == FGInput::FSRFG30)
-                input = FGInput::Upscaler; // Effective route only; keep the saved profile intact.
-            LOG_INFO("F6 input route: direct DLSS upscaler; FSR bridges/discovery disabled");
-        }
         State::Instance().activeFgOutput = Config::Instance()->FGOutput.value_or_default();
         State::Instance().activeFgNvngx = Config::Instance()->FGNvngxReplacement.value_or_default();
 
@@ -2400,7 +2069,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID /*lpRese
             }
         }
 
-        if (F6InputPolicy::FsrBridgeEnabled && Config::Instance()->EnableFsr2Inputs.value_or_default())
+        if (F6InputPolicy::PublicFsrInputs && Config::Instance()->EnableFsr2Inputs.value_or_default())
         {
             spdlog::info("");
 
@@ -2422,7 +2091,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID /*lpRese
             }
         }
 
-        if (F6InputPolicy::FsrBridgeEnabled && Config::Instance()->EnableFsr3Inputs.value_or_default())
+        if (F6InputPolicy::PublicFsrInputs && Config::Instance()->EnableFsr3Inputs.value_or_default())
         {
             handle = GetDllNameWModule(&fsr3NamesW);
             if (handle != nullptr)
@@ -2436,7 +2105,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID /*lpRese
         }
         // HookFfxExeInputs();
 
-        if (F6InputPolicy::FsrBridgeEnabled && State::Instance().activeFgInput == FGInput::FSRFG30)
+        if (F6InputPolicy::PublicFsrInputs && State::Instance().activeFgInput == FGInput::FSRFG30)
         {
             FSR3FG::HookFSR3FGInputs();
             FSR3FG::HookFSR3FGExeInputs();

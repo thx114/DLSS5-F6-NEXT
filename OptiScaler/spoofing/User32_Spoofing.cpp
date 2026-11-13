@@ -1,5 +1,5 @@
 #include <pch.h>
-#include <genshin/GenshinSystemHookTransaction.h>
+#include <hooks/HookTransaction.h>
 #include "User32_Spoofing.h"
 
 #include <Config.h>
@@ -122,7 +122,7 @@ void User32Spoofing::Hook()
     o_EnumDisplayDevicesW =
         reinterpret_cast<PFN_EnumDisplayDevicesW>(DetourFindFunction("User32.dll", "EnumDisplayDevicesW"));
 
-    GenshinSystemHooks::Transaction systemTransaction;
+    HookTransactions::Transaction systemTransaction;
 
     if (o_EnumDisplayDevicesA)
         systemTransaction.Attach(&(PVOID&) o_EnumDisplayDevicesA, hkEnumDisplayDevicesA);
@@ -141,7 +141,7 @@ void User32Spoofing::Hook()
 
 void User32Spoofing::Unhook()
 {
-    GenshinSystemHooks::Transaction systemTransaction;
+    HookTransactions::Transaction systemTransaction;
 
     if (o_EnumDisplayDevicesA)
         systemTransaction.Detach(&(PVOID&) o_EnumDisplayDevicesA, hkEnumDisplayDevicesA);

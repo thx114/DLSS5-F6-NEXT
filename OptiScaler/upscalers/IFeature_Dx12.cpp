@@ -10,123 +10,8 @@
 #include <resource_tracking/GenericDepth_Dx12.h>
 #include <integration/HoYoShade.h>
 #include <native/VirtualUpscalerDriver.h>
-#include <genshin/GenshinSrReceipt.h>
-#include <runtime/F6InputPolicy.h>
-#include <genshin/GenshinCpuStageTiming.h>
 
-namespace GenshinSrRecordingCpu
-{
-namespace
-{
-struct Counter
-{
-    uint64_t calls = 0, ticks = 0, minTicks = 0, maxTicks = 0;
-    uint64_t failures = 0, timeouts = 0, aborted = 0;
-};
-struct Window
-{
-    const void* feature = nullptr;
-    uint64_t epoch = 0, qpcFailures = 0;
-    int64_t start = 0, frequency = 0;
-    std::array<Counter, static_cast<unsigned>(Stage::Count)> stages {};
-};
-// No shared mutable counters, locks, heap containers or GPU queries. Feature
-// switches discard a partial window; epoch prevents nested scopes mixing owners.
-thread_local Window window;
-int64_t Tick() noexcept
-{
-    const auto savedError = GetLastError();
-    LARGE_INTEGER now {};
-    const bool ok = QueryPerformanceCounter(&now) != FALSE;
-    SetLastError(savedError);
-    return ok ? now.QuadPart : 0;
-}
-}
-Scope::Scope(const void* feature, Stage stage, bool enabled) noexcept : feature_(feature), stage_(stage)
-{
-    if (!F6InputPolicy::FsrBridgeEnabled || !GENSHIN_CPU_STAGE_TIMING_ENABLED || !enabled || !feature ||
-        static_cast<unsigned>(stage) >= static_cast<unsigned>(Stage::Count))
-        return;
-    const auto savedError = GetLastError();
-    if (!window.frequency)
-    {
-        LARGE_INTEGER frequency {};
-        if (QueryPerformanceFrequency(&frequency))
-            window.frequency = frequency.QuadPart;
-    }
-    SetLastError(savedError);
-    if (window.frequency <= 0)
-        return;
-    start_ = Tick();
-    if (!start_) { ++window.qpcFailures; return; }
-    if (window.feature != feature)
-    {
-        window.feature = feature;
-        ++window.epoch;
-        window.stages = {};
-        window.qpcFailures = 0;
-        window.start = start_;
-    }
-    epoch_ = window.epoch;
-    active_ = true;
-}
-void Scope::Complete(HRESULT result, bool aborted) noexcept
-{
-    if (!active_)
-        return;
-    active_ = false;
-    if (window.feature != feature_ || window.epoch != epoch_)
-        return;
-    const auto finish = Tick();
-    if (!finish || finish < start_) { ++window.qpcFailures; return; }
-    auto& counter = window.stages[static_cast<unsigned>(stage_)];
-    const auto ticks = static_cast<uint64_t>(finish - start_);
-    if (!counter.calls || ticks < counter.minTicks) counter.minTicks = ticks;
-    ++counter.calls;
-    counter.ticks += ticks;
-    counter.maxTicks = std::max(counter.maxTicks, ticks);
-    counter.failures += FAILED(result);
-    counter.timeouts += result == HRESULT_FROM_WIN32(WAIT_TIMEOUT);
-    counter.aborted += aborted;
-}
-void Report(const void* feature) noexcept
-{
-    if (!GENSHIN_CPU_STAGE_TIMING_ENABLED || !feature || window.feature != feature || !window.start || window.frequency <= 0)
-        return;
-    const auto finish = Tick();
-    if (!finish || finish < window.start) { ++window.qpcFailures; return; }
-    if (finish - window.start < window.frequency)
-        return;
-    const auto snapshot = window;
-    window.start = finish;
-    window.stages = {};
-    window.qpcFailures = 0;
-    static constexpr const char* names[] = { "recording_wait_global", "provider_record", "ngx_evaluate",
-        "transport_execute_signal", "feature_signal", "execute_signal_inclusive" };
-    const double msPerTick = 1000.0 / static_cast<double>(snapshot.frequency);
-    const auto savedError = GetLastError();
-    try
-    {
-        // Called after the measured scopes, at most once per elapsed second. Stages
-        // are inclusive and can straddle windows; never sum them as frame time.
-        for (unsigned i = 0; i < static_cast<unsigned>(Stage::Count); ++i)
-        {
-            const auto& c = snapshot.stages[i];
-            LOG_INFO("R067 SR CPU: pid={} thread={} feature={} window_start_qpc={} window_end_qpc={} "
-                     "window_ms={:.3f} stage={} n={} cpu_ms_total={:.3f} cpu_ms_min={:.3f} "
-                     "cpu_ms_avg={:.3f} cpu_ms_max={:.3f} failures={} timeouts={} aborted={} "
-                     "qpc_failures={} host_elapsed=true gpu_time=false fps=false wait_policy=global",
-                GetCurrentProcessId(), GetCurrentThreadId(), reinterpret_cast<uint64_t>(snapshot.feature),
-                snapshot.start, finish, (finish - snapshot.start) * msPerTick, names[i], c.calls,
-                c.ticks * msPerTick, c.minTicks * msPerTick,
-                c.calls ? c.ticks * msPerTick / c.calls : 0.0, c.maxTicks * msPerTick,
-                c.failures, c.timeouts, c.aborted, snapshot.qpcFailures);
-        }
-    }
-    catch (...) {} // Diagnostics must not change provider/retirement behavior.
-    SetLastError(savedError);
-}
-}
+
 
 void IFeature_Dx12::ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
                                     D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState) const
@@ -452,16 +337,6 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
         ~RestoreOutput() { params->Set(NVSDK_NGX_Parameter_Output, output); }
     } restoreOutput { InParameters, paramOutput };
 
-    struct OutputGridPipeline {
-        GenshinSrReceipt::Scope* scope=nullptr;bool complete=false;
-        ~OutputGridPipeline(){if(scope)scope->EndOutputPipeline(complete);}
-    } outputGridPipeline;
-    if(auto* scope=F6InputPolicy::FsrBridgeEnabled ? GenshinSrReceipt::active : nullptr){
-        // RCAS preserves pixel coordinates and extent. Scaling/magnification
-        // have no admitted output-grid contract in this implementation.
-        if(scope->BeginOutputPipeline(InCommandList,InParameters,currentTarget,paramOutput,
-            !useOutputScaling && !outputGridMagnifier))outputGridPipeline.scope=scope;
-    }
     UpscalerTime->Start(InCommandList, context.recordingSlot);
 
     auto evalResult = EvaluateInternal(InCommandList, InParameters);
@@ -517,7 +392,6 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
 
     InParameters->Set(NVSDK_NGX_Parameter_Output, paramOutput);
 
-    outputGridPipeline.complete=evalResult && outputGridPasses;
     return evalResult;
 }
 

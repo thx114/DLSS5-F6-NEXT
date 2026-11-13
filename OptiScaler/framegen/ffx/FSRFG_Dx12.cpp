@@ -1,6 +1,5 @@
 #include "pch.h"
 #include <framegen/GuideOrientation.h>
-#include <genshin/GenshinFgCallerObservation.h>
 
 #include "FSRFG_Dx12.h"
 #include <State.h>
@@ -1558,8 +1557,7 @@ bool FSRFG_Dx12::SetResource(Dx12Resource* inputResource)
 
     SetResourceReady(type, fIndex);
 
-    GenshinCaller::FgCallerObservation::Accepted(*this,*inputResource,*fResource,
-        _gameCommandQueue,_frameCount,fIndex);
+
 
     LOG_TRACE("_frameResources[{}][{}]: {:X}", fIndex, magic_enum::enum_name(type), (size_t) fResource->GetResource());
     return true;

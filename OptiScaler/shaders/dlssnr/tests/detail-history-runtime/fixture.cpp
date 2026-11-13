@@ -2,7 +2,9 @@
 // Lead compiles this standalone TU; see README.md. No generated/copied policy.
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
+#ifndef DLSSNR_LIFETIME_TEST_SEAM
 #define DLSSNR_LIFETIME_TEST_SEAM
+#endif
 #include <windows.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -25,6 +27,7 @@
 #include <shaders/dlssnr/DlssNr_DetailReuseConstants.h>
 #pragma warning(pop)
 #include <shaders/dlssnr/DlssNr_OrderedLifetime.h>
+#include <shaders/dlssnr/NrGpuExecutionLifetime.h>
 #include <shaders/dlssnr/DlssNr_WatchedLists.h>
 #include <shaders/dlssnr/DlssNr_HistoryDebug.h>
 #include "../../precompile/dlssnr_detail_reuse_Shader.h"
@@ -72,12 +75,7 @@ inline bool CheckForRealObject(const char*, IUnknown*, IUnknown**) { return fals
 }
 
 DlssNrGpuLifetime::TestFaults faults;
-DlssNrGpuLifetime::Registry g_nrGpuWork {&faults};
-struct NrRetired {
-    ID3D12Resource* resource = nullptr;
-    DlssNrGpuLifetime::Uses uses;
-};
-std::vector<NrRetired> g_nrRetired;
+NrGpuExecutionLifetime g_nrGpuWork {&faults};
 static unsigned releasedResources = 0;
 static DlssNrGpuLifetime::Use NrRecording(ID3D12Device* device, ID3D12CommandList* list)
 {
@@ -85,20 +83,12 @@ static DlssNrGpuLifetime::Use NrRecording(ID3D12Device* device, ID3D12CommandLis
     if (use) DlssNrWatchedLists::Add(list);
     return use;
 }
-// Host adapter has the same snapshot/ownership transfer contract as ParkNrResource.
-// Retirement eligibility itself is the actual production CollectRetired below.
-static void ParkNrResource(ID3D12Resource*& resource)
-{
-    if (!resource) return;
-    g_nrRetired.push_back({resource, g_nrGpuWork.Snapshot()});
-    resource = nullptr;
-}
+static void ParkNrResource(ID3D12Resource*& resource) { g_nrGpuWork.ParkResource(resource); }
 static void TickRetired()
 {
-    DlssNrGpuLifetime::CollectRetired(g_nrRetired, [](const NrRetired& retired) {
-        ++releasedResources;
-        retired.resource->Release();
-    });
+    const auto before=g_nrGpuWork.RetiredCount();
+    g_nrGpuWork.CollectCompleted(nullptr,nullptr);
+    releasedResources+=static_cast<unsigned>(before-g_nrGpuWork.RetiredCount());
 }
 static ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned width, unsigned height)
 {
@@ -392,7 +382,7 @@ struct World {
         Drain(); Reset(recording); DetailHistory::Collect();
         Check(DetailHistory::SafeToRelease(), "completed and reset generation can release");
         DetailHistory::Release(); TickRetired();
-        Check(g_nrRetired.empty(), "production collector releases closed completed allocations");
+        Check(g_nrGpuWork.Empty(), "production collector releases closed completed allocations");
     }
 };
 struct Gate {
@@ -464,7 +454,7 @@ static void Fresh()
     gate.Open(); world.Drain(); DetailHistory::Collect();
     Check(use->Complete() && use->owners.empty(), "real fence completion plus Reset retires token owners");
     DetailHistory::Release(); TickRetired();
-    Check(releasedResources == 5 && g_nrRetired.empty(), "all five module allocations retire through production collector");
+    Check(releasedResources == 5 && g_nrGpuWork.Empty(), "all five module allocations retire through production collector");
 }
 static void Adjacent()
 {
@@ -489,7 +479,7 @@ static void Adjacent()
     // the module. Both actual production recording tokens already retain input.
     auto* parkedInput = world.input.Detach();
     ParkNrResource(parkedInput); TickRetired();
-    Check(g_nrRetired.size() == 1 && releasedResources == 0,
+    Check(g_nrGpuWork.RetiredCount() == 1 && releasedResources == 0,
         "actual production collector cannot retire a parked shared input before owning GPU completion");
     gate.Open(); world.Drain(); DetailHistory::Collect();
     Check(prior->GpuComplete() && !prior->Complete() && !prior->owners.empty(), "completed fence alone cannot close replayable recording");
@@ -497,12 +487,12 @@ static void Adjacent()
     DetailHistory::Collect();
     Check(DetailHistory::snapshot.publishedCount == publications, "completed collect does not republish or roll back generation");
     TickRetired();
-    Check(g_nrRetired.size() == 1 && releasedResources == 0,
+    Check(g_nrGpuWork.RetiredCount() == 1 && releasedResources == 0,
         "completed queue fences cannot retire a parked input while executable generations remain open");
     world.Reset(first); TickRetired();
-    Check(g_nrRetired.size() == 1, "Reset of one generation cannot retire another generation's shared input");
+    Check(g_nrGpuWork.RetiredCount() == 1, "Reset of one generation cannot retire another generation's shared input");
     world.Reset(second); DetailHistory::Collect(); TickRetired();
-    Check(g_nrRetired.empty() && releasedResources == 1,
+    Check(g_nrGpuWork.Empty() && releasedResources == 1,
         "parked input retires only after both actual GPU completions and both successful Resets");
     Check(DetailHistory::SafeToRelease(), "both exact generations closed after queue completion");
     DetailHistory::Release(); TickRetired();

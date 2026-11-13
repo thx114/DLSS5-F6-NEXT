@@ -5,7 +5,6 @@
 #include <resource_tracking/ResTrack_dx12.h>
 #include "shaders/depth_scale/DS_Dx12.h"
 #include "UpscalerFrameParameters.h"
-#include <runtime/F6InputPolicy.h>
 #include <framegen/dlssg/FgDepthContract.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
 
@@ -33,9 +32,6 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
                                       IFeature_Dx12* feature)
 {
     if (!InCmdList || !InParameters || !feature) return {};
-    if (F6InputPolicy::FsrBridgeEnabled && dlssg::depth_contract::Game()==GameRouting::Identity::Genshin &&
-        State::Instance().activeFgInput==FGInput::Upscaler &&
-        State::Instance().activeFgOutput==FGOutput::DLSSG) return {}; // Sealed Present adapter only.
     if (native::OpticalFgNrEnabled() && feature->GetUpscalerType() != Upscaler::Optical) return {};
 
     Hudfix_Dx12::SetSkipStatus(true);

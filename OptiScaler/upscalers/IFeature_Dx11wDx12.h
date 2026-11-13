@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "IFeature_Dx11.h"
 #include "Dx11BridgeInitState.h"
 #include <runtime/GpuWorkDomain.h>
@@ -9,7 +9,6 @@ struct Dx11BridgeInitRetention;
 #include "IFeature_Dx12.h"
 
 #include <with_dx12/dx11_with_dx12.h>
-#include <genshin/GenshinDx12Transport.h>
 
 #include <d3d12.h>
 #include <d3d11_4.h>
@@ -37,8 +36,8 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
     Dx11BridgeInitRetention* initRetention = nullptr;
     void RetainFailedInitialization();
     // Preallocated before bridge submission, including external NGX sources.
-    std::unique_ptr<Dx11BridgeInitRetention> genshinRuntimeRetention;
-    void RetainGenshinRuntime() noexcept;
+    std::unique_ptr<Dx11BridgeInitRetention> runtimeRetention;
+    void RetainRuntime() noexcept;
 
     // D3D11
     ID3D11Device5* Dx11Device = nullptr;
@@ -52,30 +51,10 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
     ID3D12Fence* Dx12Fence = nullptr;
     HANDLE Dx12FenceEvent = nullptr;
     UINT64 Dx12FenceValue = 0;
-    UINT64 genshinLastSubmittedFence = 0; // Set only after a successful queue Signal.
-    bool genshinLastSubmissionIsolated = false; // Same successful Signal; transitions drain legacy query/pass aliases.
-    bool genshinSubmissionUnfenced = false;
-    HRESULT CheckRecordingAvailable(UINT commandFrame, bool isolatedPassResources);
-    bool genshinCommandPathFailed = false; // Refuse unsafe allocator reuse after a private transport failure.
+    bool submissionUnfenced = false;
     UINT64 Dx12CommandAllocatorFenceValue[DX11WDX12_COMMAND_BUFFER_COUNT] = {};
-    // Last recording of each real slot, not an admission/retirement receipt.
-    // Weak leases add no GPU ownership and never prevent surface retirement.
-    struct GenshinRecordingObservation {
-        GenshinTransport::Owner owner{};
-        std::weak_ptr<GenshinTransport::Lease> lease;
-        uint64_t frame=0;
-        const char* phase="unused";
-        bool valid=false,providerReturned=false,providerOk=false;
-        bool executed=false,executeReturned=false,submitted=false,copyback=false,isolated=false;
-        HRESULT resetHr=S_FALSE,closeHr=S_FALSE,submitHr=S_FALSE,signalHr=S_FALSE;
-    };
-    std::array<GenshinRecordingObservation,DX11WDX12_COMMAND_BUFFER_COUNT> genshinRecordings{};
-    bool genshinCommandFailureReported=false,genshinDeviceFailureReported=false;
     std::atomic<bool> interopFenceFaultReported{false},interopDeviceFaultReported{false};
     void ReportInteropFenceFault(const char* phase,UINT slot,UINT64 target,UINT64 completed,DWORD waitResult) noexcept;
-    void LogGenshinFailure(const char* phase,HRESULT reason,UINT commandFrame,
-                           UINT64 waitTarget=0,bool waitTargetKnown=false) noexcept;
-
     Dx11WithDx12::D3D11_TEXTURE2D_RESOURCE_C dx11Color = {};
     Dx11WithDx12::D3D11_TEXTURE2D_RESOURCE_C dx11Mv = {};
     Dx11WithDx12::D3D11_TEXTURE2D_RESOURCE_C dx11Depth = {};
@@ -85,11 +64,7 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
 
     ID3D11Resource* paramOutput[DX11_WITH_DX12_CACHED_FRAMES] = {};
 
-    // Per-feature Genshin domain; never replaces IFeature's shared static device.
-    FramePipeline::GpuWorkDomain genshinWorkDomain;
-    ID3D12Device* BridgeWorkDevice() const noexcept {
-        return genshinWorkDomain.Creator()?genshinWorkDomain.Creator():_dx11on12Device;
-    }
+    ID3D12Device* BridgeWorkDevice() const noexcept { return _dx11on12Device; }
     bool CreateD3D12Objects();
     bool ProcessDx11Textures(const NVSDK_NGX_Parameter* InParameters);
     bool CopyBackOutput();

@@ -12,7 +12,7 @@ uint64_t BeginGenshinPresentSource()
     // original capture/private queue signals and recording Reset boundaries.
     for (auto& slot : Late::slots)
         if (slot.genshinAttempt && slot.pending && slot.submitted) slot.pending = false;
-    if (!g_nrRetired.empty()) Late::RetireCompletedPrivateRecordings();
+    if (!g_nrGpuWork.Empty()) Late::RetireCompletedPrivateRecordings();
     return attempt;
 }
 
@@ -135,7 +135,7 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
     auto* cmd = slot.commands.Get();
     FinishedPictureResetCommandList(DetailReuse::RealTemporalCommands(cmd));
     slot.backBufferIdentity = reinterpret_cast<uintptr_t>(color.Get());
-    if (DetailHistory::PendingRecordings() || !g_nrRetired.empty())
+    if (DetailHistory::PendingRecordings() || !g_nrGpuWork.Empty())
         Late::RetireCompletedPrivateRecordings(&slot);
 
     const auto failRecording = [&] {

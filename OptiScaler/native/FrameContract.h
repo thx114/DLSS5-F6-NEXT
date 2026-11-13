@@ -14,9 +14,6 @@
 #include <memory>
 
 namespace HoYoShade::NaturalAssociation {class Source;}
-namespace GenshinGameMotion {class Lease;}
-namespace GenshinGuides {class PreparedDepthSource;}
-namespace GenshinPresentNr {class NativeColorCapability;}
 namespace native {class NativeSubmissionReceipt;}
 namespace DrawUiMask {class Frame;}
 
@@ -146,9 +143,7 @@ struct FrameInput
     BridgeDepthLeasePtr depthLease;
     // Immutable original producer semantics, held through the existing native
     // input/reader fence. Picture authority still requires executed mapping.
-    std::shared_ptr<const GenshinGuides::PreparedDepthSource> preparedDepthSource;
     // Optional authentic Genshin motion, consumed only by its FG recording.
-    std::shared_ptr<GenshinGameMotion::Lease> gameMotion;
 
     // Color scheduling is independent of NR guide admission. The private
     // D3D12 texture still returns to this exact natural game backbuffer.
@@ -161,7 +156,6 @@ struct FrameInput
     // The adapter alone mints this after actual Present match/copy/upload and
     // successful BindInput. Driver moves it out before HeldFrame retention;
     // only an admitted owned transaction retains the final-picture contents.
-    std::shared_ptr<const GenshinPresentNr::NativeColorCapability> beforeNrNativeColor;
 
     bool cutHint = false; // the adapter knows this frame is not a continuation (a resize, a loading screen)
     SyncPoint ready;      // the producer waits on this before reading `picture` and `depth`

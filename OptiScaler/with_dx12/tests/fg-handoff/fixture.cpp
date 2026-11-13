@@ -43,14 +43,11 @@ thread_local std::shared_ptr<Provider> creating;
 std::shared_ptr<Provider> BeginActivity(const std::shared_ptr<Provider>& p){return p;}
 void EndActivity(const std::shared_ptr<Provider>&){}
 }
-bool GenshinConsumerPair(){return false;} // Actual direct-DLSS route has the internal bridge disabled.
-bool PublicPairMatches(ID3D12Device*,ID3D12CommandQueue*,D3D12_COMMAND_LIST_TYPE){return true;}
 class WithDx12 {
 public:
     inline static ID3D12Device* _d3d12Device=nullptr;
     inline static ID3D12CommandQueue* _d3d12CommandQueue=nullptr;
     inline static D3D12_COMMAND_LIST_TYPE _commandListType=D3D12_COMMAND_LIST_TYPE_DIRECT;
-    inline static std::mutex _publicationMutex;
     inline static bool _constructingPair=false,_publicationInterrupted=false;
     struct PairReservation {~PairReservation(){_constructingPair=false;}};
     static void UpdateStateObjects(){State::Instance().currentD3D12Device=_d3d12Device;State::Instance().currentCommandQueue=_d3d12CommandQueue;}

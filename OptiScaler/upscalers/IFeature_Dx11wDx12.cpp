@@ -2,21 +2,15 @@
 #include <native/OpticalFgNrPolicy.h>
 #include <integration/HoYoShade.h>
 #include "IFeature_Dx11wDx12.h"
-#include <runtime/F6InputPolicy.h>
 #include <runtime/GuideCapture.h>
 #include <runtime/GuideSourceMetadataNgx.h>
-#include <genshin/GenshinFsrSubstageProgress.h>
-#include <genshin/GenshinLegacyCapture.h>
 #include <runtime/FenceCompletion.h>
-#include <genshin/GenshinSrReceipt.h>
 #include "Dx11BridgeStateGuard.h"
 #include "BridgeResourceParameterGuard.h"
 #include "NgxDx12ResourceView.h"
 #include "NgxOptionalDx12Inputs.h"
 #include "CallerCpuTrace.h"
-#include <genshin/GenshinBridgeConsumer.h>
-#include <genshin/GenshinCpuStageTiming.h>
-#include <genshin/GenshinHookCpuTiming.h>
+#include <runtime/HookCpuTiming.h>
 #include <optional>
 #include <format>
 
@@ -57,7 +51,6 @@ struct Dx11BridgeInitRetention
     Dx11BridgeInitRetention* next = nullptr;
     std::unique_ptr<IFeature_Dx12> feature;
     Microsoft::WRL::ComPtr<ID3D12Device> device;
-    FramePipeline::GpuWorkDomain workDomain; // Both roles and creation receipts survive quarantine.
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence;
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocators[DX11WDX12_COMMAND_BUFFER_COUNT];
@@ -80,9 +73,9 @@ InitRetentionSlots& RetentionSlots()
 Dx11BridgeInitRetention* ReserveInitRetention()
 {
     auto& pool = RetentionSlots();
-    GenshinHookCpuTiming::Scope r448Wait(GenshinHookCpuTiming::Stage::ProviderPoolLock);
+    HookCpuTiming::Scope r448Wait(HookCpuTiming::Stage::ProviderPoolLock);
     std::lock_guard<std::mutex> lock(pool.mutex);r448Wait.Finish();
-    GenshinHookCpuTiming::Scope r448Held(GenshinHookCpuTiming::Stage::ProviderPoolLocked);
+    HookCpuTiming::Scope r448Held(HookCpuTiming::Stage::ProviderPoolLocked);
     for (auto& slot : pool.slots)
         if (!slot.claimed) { slot.claimed = true; return &slot; }
     return nullptr;
@@ -91,24 +84,24 @@ void ReleaseInitReservation(Dx11BridgeInitRetention*& slot)
 {
     if (!slot) return;
     auto& pool = RetentionSlots();
-    GenshinHookCpuTiming::Scope r448Wait(GenshinHookCpuTiming::Stage::ProviderPoolLock);
+    HookCpuTiming::Scope r448Wait(HookCpuTiming::Stage::ProviderPoolLock);
     std::lock_guard<std::mutex> lock(pool.mutex);r448Wait.Finish();
-    GenshinHookCpuTiming::Scope r448Held(GenshinHookCpuTiming::Stage::ProviderPoolLocked);
-    slot->device.Reset(); slot->queue.Reset(); slot->workDomain={};
+    HookCpuTiming::Scope r448Held(HookCpuTiming::Stage::ProviderPoolLocked);
+    slot->device.Reset(); slot->queue.Reset();
     slot->claimed = false;
     slot = nullptr;
 }
 
 // DRED retains only the last 64K operations; its counter is not ring-bounded.
 // A late failure report must never index the history with that absolute counter.
-int GenshinDredOperation(const D3D12_AUTO_BREADCRUMB_NODE1& node,UINT ordinal) noexcept
+int DredOperation(const D3D12_AUTO_BREADCRUMB_NODE1& node,UINT ordinal) noexcept
 {
     constexpr UINT historyCapacity=65536;
     const auto retainedBegin=node.BreadcrumbCount>historyCapacity?node.BreadcrumbCount-historyCapacity:0;
     if(!node.pCommandHistory || ordinal<retainedBegin || ordinal>=node.BreadcrumbCount)return -1;
     return static_cast<int>(node.pCommandHistory[ordinal%historyCapacity]);
 }
-const char* GenshinDredOperationName(int op) noexcept
+const char* DredOperationName(int op) noexcept
 {
     switch(op) {
     case D3D12_AUTO_BREADCRUMB_OP_DISPATCH:return "Dispatch";
@@ -122,7 +115,7 @@ const char* GenshinDredOperationName(int op) noexcept
     default:return op<0?"Unavailable":"Other";
     }
 }
-void LogGenshinDred(ID3D12Device* device,HRESULT reason)
+void LogBridgeDred(ID3D12Device* device,HRESULT reason)
 {
     // An early ordinary refusal must not consume the later device-loss report.
     static std::atomic<unsigned> commandReports{0},deviceReports{0};
@@ -146,8 +139,8 @@ void LogGenshinDred(ID3D12Device* device,HRESULT reason)
             if(pending)++unfinished;
             if(index>=96 && (!pending || logged>=128))continue;
             ++logged;
-            const int nextOp=known?GenshinDredOperation(*node,completed):-1;
-            const int priorOp=known&&completed?GenshinDredOperation(*node,completed-1):-1;
+            const int nextOp=known?DredOperation(*node,completed):-1;
+            const int priorOp=known&&completed?DredOperation(*node,completed-1):-1;
             const std::string listA=node->pCommandListDebugNameA?node->pCommandListDebugNameA:"";
             const std::string listW=node->pCommandListDebugNameW?wstring_to_string(node->pCommandListDebugNameW):"";
             const std::string queueA=node->pCommandQueueDebugNameA?node->pCommandQueueDebugNameA:"";
@@ -156,15 +149,15 @@ void LogGenshinDred(ID3D12Device* device,HRESULT reason)
                 "completed_known={} prior_name={} next_name={} queueA={} queueW={} causal_order=false",
                 index,reinterpret_cast<uint64_t>(node->pCommandList),reinterpret_cast<uint64_t>(node->pCommandQueue),
                 node->BreadcrumbCount,completed,priorOp,nextOp,listA,listW,known,
-                GenshinDredOperationName(priorOp),GenshinDredOperationName(nextOp),queueA,queueW);
+                DredOperationName(priorOp),DredOperationName(nextOp),queueA,queueW);
             if(!pending || detailNodes++>=16)continue;
             const UINT begin=completed>4?completed-4:0;
             const UINT end=completed+std::min<UINT>(node->BreadcrumbCount-completed,5);
             for(UINT ordinal=begin;ordinal<end;++ordinal) {
-                const auto op=GenshinDredOperation(*node,ordinal);
+                const auto op=DredOperation(*node,ordinal);
                 LOG_WARN("R1068 DRED history: index={} list={} ordinal={} completed={} op={} name={} "
                     "retained={} failed_operation=UNKNOWN",index,reinterpret_cast<uint64_t>(node->pCommandList),
-                    ordinal,completed,op,GenshinDredOperationName(op),op>=0);
+                    ordinal,completed,op,DredOperationName(op),op>=0);
             }
             // Runtime/vendor context strings may identify the recording phase;
             // never dereference removed command-list/queue pointers as live COM.
@@ -192,46 +185,7 @@ void LogGenshinDred(ID3D12Device* device,HRESULT reason)
     }
 }
 }
-void IFeature_Dx11wDx12::LogGenshinFailure(const char* phase,HRESULT reason,UINT commandFrame,
-                                        UINT64 waitTarget,bool waitTargetKnown) noexcept
-{
-    if(!genshinWorkDomain.Creator())return;
-    const auto lastError=GetLastError();
-    const auto deviceReason=BridgeWorkDevice()->GetDeviceRemovedReason();
-    auto& reported=FAILED(deviceReason)?genshinDeviceFailureReported:genshinCommandFailureReported;
-    if(reported){SetLastError(lastError);return;}
-    reported=true; // One ordinary failure plus one actual device failure per feature.
-    try {
-        const auto* current=GenshinTransport::Scope::Current();
-        const auto requested=current?current->owner:GenshinTransport::Owner{};
-        const auto completed=Dx12Fence?Dx12Fence->GetCompletedValue():UINT64_MAX;
-        LOG_WARN("R1068 SR first failure: pid={} handle={} phase={} status_hr={:X} requested_slot={} instance={} "
-            "generation={} source_frame={} queue={} feature_fence={} feature_value={} completed={} "
-            "last_submitted={} last_isolated={} path_failed={} unfenced={} provider={} "
-            "device_hr={:X} hr_is_failure={} wait_target={} wait_target_known={} max_is_not_complete=true observation_only=true",
-            GetCurrentProcessId(),Handle()?Handle()->Id:0,phase,static_cast<UINT>(reason),commandFrame,
-            requested.instance,requested.generation,requested.sourceFrame,reinterpret_cast<uint64_t>(Dx12CommandQueue),
-            reinterpret_cast<uint64_t>(Dx12Fence),Dx12FenceValue,completed,genshinLastSubmittedFence,
-            genshinLastSubmissionIsolated,genshinCommandPathFailed,genshinSubmissionUnfenced,
-            dx12Feature?static_cast<int>(dx12Feature->GetUpscalerType()):-1,static_cast<UINT>(deviceReason),
-            FAILED(reason),waitTarget,waitTargetKnown);
-        for(UINT i=0;i<DX11WDX12_COMMAND_BUFFER_COUNT;++i) {
-            const auto& r=genshinRecordings[i];auto lease=r.lease.lock();
-            LOG_WARN("R1068 SR recording: pid={} handle={} slot={} valid={} instance={} generation={} source_frame={} "
-                "frame={} phase={} list={} allocator={} required_fence={} completed_fence={} "
-                "reset_hr={:X} close_hr={:X} provider_returned={} provider_ok={} executed={} execute_returned={} "
-                "transport_submitted={} submit_hr={:X} signal_hr={:X} copyback_ordered={} isolated={} lease_alive={} observation_only=true",
-                GetCurrentProcessId(),Handle()?Handle()->Id:0,i,r.valid,r.owner.instance,r.owner.generation,r.owner.sourceFrame,
-                r.frame,r.phase,reinterpret_cast<uint64_t>(Dx12CommandList[i]),reinterpret_cast<uint64_t>(Dx12CommandAllocator[i]),
-                Dx12CommandAllocatorFenceValue[i],completed,static_cast<UINT>(r.resetHr),static_cast<UINT>(r.closeHr),
-                r.providerReturned,r.providerOk,r.executed,r.executeReturned,r.submitted,static_cast<UINT>(r.submitHr),
-                static_cast<UINT>(r.signalHr),r.copyback,r.isolated,bool(lease));
-            if(lease)lease->LogFailureSnapshot(i);
-        }
-        LogGenshinDred(BridgeWorkDevice(),reason);
-    }catch(...){} // Logging cannot change submission, copyback or quarantine.
-    SetLastError(lastError);
-}
+
 void IFeature_Dx11wDx12::ReportInteropFenceFault(const char* phase,UINT slot,UINT64 target,
                                                UINT64 completed,DWORD waitResult) noexcept
 {
@@ -247,7 +201,7 @@ void IFeature_Dx11wDx12::ReportInteropFenceFault(const char* phase,UINT slot,UIN
             "completed={} wait_result={} dx12_removed={:X} dx11_removed={:X} max_is_not_complete=true observation_only=true",
             GetCurrentProcessId(),phase,_frameCount,slot,reinterpret_cast<uintptr_t>(Dx12CommandQueue),
             reinterpret_cast<uintptr_t>(Dx12Fence),target,completed,waitResult,static_cast<UINT>(dx12),static_cast<UINT>(dx11));
-        if(FAILED(dx12))LogGenshinDred(device,dx12);
+        if(FAILED(dx12))LogBridgeDred(device,dx12);
     }catch(...){}
     SetLastError(lastError);
 }
@@ -267,11 +221,11 @@ void IFeature_Dx11wDx12::RetainFailedInitialization()
     SetInit(false);
     LOG_ERROR("DX11 bridge init failed after submission; provider and command resources retained. Restart required.");
 }
-void IFeature_Dx11wDx12::RetainGenshinRuntime() noexcept
+void IFeature_Dx11wDx12::RetainRuntime() noexcept
 {
     // No allocation after Execute or during destruction. Retain the provider,
     // upload/descriptors, device, queue, allocators, lists, fence and event together.
-    auto* retained=genshinRuntimeRetention.release();
+    auto* retained=runtimeRetention.release();
     retained->feature=std::move(dx12Feature);
     for(unsigned i=0;i<DX11WDX12_COMMAND_BUFFER_COUNT;++i){
         retained->allocators[i].Attach(Dx12CommandAllocator[i]);Dx12CommandAllocator[i]=nullptr;
@@ -292,25 +246,6 @@ bool IFeature_Dx11wDx12::CreateD3D12Objects()
 
     for (size_t i = 0; i < DX11WDX12_COMMAND_BUFFER_COUNT; i++)
     {
-        if(genshinWorkDomain.Creator()) {
-            static_assert(DX11WDX12_COMMAND_BUFFER_COUNT==GenshinTransport::GpuWorkDomain::RecordingCount);
-            if(!Dx12CommandAllocator[i] && !Dx12CommandList[i]) {
-                FramePipeline::GpuWitness witness;
-                if(!genshinWorkDomain.CreateRecording(i,&Dx12CommandAllocator[i],&Dx12CommandList[i],witness)) {
-                    LOG_ERROR("Genshin SR recording creation refused: slot={} reason={} hr={:X}",
-                        i,witness.reason,static_cast<UINT>(witness.hr));
-                    return false;
-                }
-                // Debug identity belongs to the real recording's creation,
-                // not every dispatch/generation. Runtime owner/generation remain
-                // in the existing submission/return logs.
-                try {
-                    const auto name=std::format(L"OptiGenshinSR_h{}_slot{}",Handle()?Handle()->Id:0,i);
-                    Dx12CommandList[i]->SetName(name.c_str());
-                }catch(...){} // A debug label cannot refuse a valid recording.
-            }
-            continue;
-        }
         if (Dx12CommandAllocator[i] == nullptr)
         {
             result =
@@ -358,17 +293,6 @@ bool IFeature_Dx11wDx12::CreateD3D12Objects()
         }
     }
 
-    if(genshinWorkDomain.Creator())for(size_t i=0;i<DX11WDX12_COMMAND_BUFFER_COUNT;++i){
-        FramePipeline::GpuWitness witness;
-        if(!genshinWorkDomain.Commands(Dx12CommandQueue,Dx12CommandList[i],Dx12CommandAllocator[i],Dx12Fence,witness)){
-            static std::atomic<unsigned> reports{0};
-            if(reports.fetch_add(1,std::memory_order_relaxed)<6)
-                LOG_ERROR("Genshin SR created object refused: slot={} reason={} hr={:X} expected_device={} observed_device={}",
-                    i,witness.reason,static_cast<UINT>(witness.hr),reinterpret_cast<uint64_t>(BridgeWorkDevice()),
-                    reinterpret_cast<uint64_t>(witness.actual.Get()));
-            return false;
-        }
-    }
     return true;
 }
 
@@ -376,7 +300,7 @@ bool IFeature_Dx11wDx12::ReleaseSharedResources(bool releaseProvider)
 {
     // An exception after Execute but before its successful Signal has no safe
     // fence target. Do not manufacture a future target or release those owners.
-    if(genshinSubmissionUnfenced)return false;
+    if(submissionUnfenced)return false;
     UINT64 lastFence = Dx12FenceValue;
     for (const auto value : Dx12CommandAllocatorFenceValue)
         lastFence = std::max(lastFence, value);
@@ -384,7 +308,7 @@ bool IFeature_Dx11wDx12::ReleaseSharedResources(bool releaseProvider)
 
     if (lastFence != 0 && Dx12Fence != nullptr)
     {
-        const auto completedBefore = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},GenshinHookCpuTiming::ResultKind::Fence);
+        const auto completedBefore = HookCpuTiming::Call(HookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},HookCpuTiming::ResultKind::Fence);
         if (completedBefore == UINT64_MAX)
         {
             LOG_ERROR("Dx11wDx12 release fence returned UINT64_MAX; retaining bridge resources, fence {}", lastFence);
@@ -400,7 +324,7 @@ bool IFeature_Dx11wDx12::ReleaseSharedResources(bool releaseProvider)
                 return false;
             }
 
-            const auto setEventResult = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceArmApi,[&]{return Dx12Fence->SetEventOnCompletion(lastFence, Dx12FenceEvent);},GenshinHookCpuTiming::ResultKind::Hresult);
+            const auto setEventResult = HookCpuTiming::Call(HookCpuTiming::Stage::FenceArmApi,[&]{return Dx12Fence->SetEventOnCompletion(lastFence, Dx12FenceEvent);},HookCpuTiming::ResultKind::Hresult);
             if (setEventResult != S_OK)
             {
                 LOG_ERROR("Dx11wDx12 release SetEventOnCompletion failed for fence {}: {:X}; retaining bridge resources",
@@ -408,8 +332,8 @@ bool IFeature_Dx11wDx12::ReleaseSharedResources(bool releaseProvider)
                 return false;
             }
 
-            const auto waitResult = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::CpuEventWait,[&]{return WaitForSingleObject(Dx12FenceEvent, 5000);},GenshinHookCpuTiming::ResultKind::Event);
-            const auto completedAfter = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},GenshinHookCpuTiming::ResultKind::Fence);
+            const auto waitResult = HookCpuTiming::Call(HookCpuTiming::Stage::CpuEventWait,[&]{return WaitForSingleObject(Dx12FenceEvent, 5000);},HookCpuTiming::ResultKind::Event);
+            const auto completedAfter = HookCpuTiming::Call(HookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},HookCpuTiming::ResultKind::Fence);
             if (waitResult != WAIT_OBJECT_0 || completedAfter < lastFence || completedAfter == UINT64_MAX)
             {
                 LOG_ERROR("Dx11wDx12 release fence drain failed: fence {}, completed before {}, after {}, wait {:X}; "
@@ -454,9 +378,6 @@ bool IFeature_Dx11wDx12::ReleaseSharedResources(bool releaseProvider)
 
     SAFE_RELEASE(Dx12Fence);
     Dx12FenceValue = 0;
-    genshinLastSubmittedFence = 0;
-    genshinLastSubmissionIsolated = false;
-    genshinRecordings = {}; // Only after the existing physical drain above.
 
     if (Dx12FenceEvent)
     {
@@ -464,7 +385,6 @@ bool IFeature_Dx11wDx12::ReleaseSharedResources(bool releaseProvider)
         Dx12FenceEvent = nullptr;
     }
 
-    genshinWorkDomain.RetireRecordings(); // Reached only after the existing fence drain.
     // SAFE_RELEASE(Dx12Device);
     return true;
 }
@@ -525,13 +445,13 @@ bool IFeature_Dx11wDx12::ProcessDx11Textures(const NVSDK_NGX_Parameter* InParame
     }
 
     const auto allocatorFenceValue = Dx12CommandAllocatorFenceValue[commandFrame];
-    const auto completedBefore = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},GenshinHookCpuTiming::ResultKind::Fence);
+    const auto completedBefore = HookCpuTiming::Call(HookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},HookCpuTiming::ResultKind::Fence);
     const auto completionBefore = FramePipeline::ObserveFence(completedBefore, allocatorFenceValue);
     if (completionBefore == FramePipeline::FenceCompletion::Invalid)
     { ReportInteropFenceFault("allocator-fence-invalid",commandFrame,allocatorFenceValue,completedBefore,WAIT_FAILED);return false; }
     if (completionBefore == FramePipeline::FenceCompletion::Pending)
     {
-        result = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceArmApi,[&]{return Dx12Fence->SetEventOnCompletion(allocatorFenceValue, Dx12FenceEvent);},GenshinHookCpuTiming::ResultKind::Hresult);
+        result = HookCpuTiming::Call(HookCpuTiming::Stage::FenceArmApi,[&]{return Dx12Fence->SetEventOnCompletion(allocatorFenceValue, Dx12FenceEvent);},HookCpuTiming::ResultKind::Hresult);
         if (result != S_OK)
         {
             LOG_ERROR("SetEventOnCompletion error for allocator {} fence {}: {:X}", commandFrame, allocatorFenceValue,
@@ -541,10 +461,10 @@ bool IFeature_Dx11wDx12::ProcessDx11Textures(const NVSDK_NGX_Parameter* InParame
 
         const auto waitStart = Util::MillisecondsNow();
         CallerCpuTrace::Scope waitCpu(CallerCpuTrace::Op::AllocatorWait, this, Handle() ? Handle()->Id : 0, _frameCount, commandFrame, allocatorFenceValue, completedBefore, false, true);
-        const auto waitResult = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::AllocatorCpuEventWait,[&]{return WaitForSingleObject(Dx12FenceEvent, 5000);},GenshinHookCpuTiming::ResultKind::Event);
+        const auto waitResult = HookCpuTiming::Call(HookCpuTiming::Stage::AllocatorCpuEventWait,[&]{return WaitForSingleObject(Dx12FenceEvent, 5000);},HookCpuTiming::ResultKind::Event);
         waitCpu.Stop();
         const auto waitMs = Util::MillisecondsNow() - waitStart;
-        const auto completedAfter = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},GenshinHookCpuTiming::ResultKind::Fence);
+        const auto completedAfter = HookCpuTiming::Call(HookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},HookCpuTiming::ResultKind::Fence);
         waitCpu.Finish(waitResult, true);
 
         if (waitMs > 0.25)
@@ -579,7 +499,7 @@ bool IFeature_Dx11wDx12::ProcessDx11Textures(const NVSDK_NGX_Parameter* InParame
     if (result != S_OK)
     {
         LOG_ERROR("CommandAllocator Reset error for frame {}, allocator fence {}, completed {}: {:X}", commandFrame,
-                  allocatorFenceValue, GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},GenshinHookCpuTiming::ResultKind::Fence), (UINT) result);
+                  allocatorFenceValue, HookCpuTiming::Call(HookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},HookCpuTiming::ResultKind::Fence), (UINT) result);
         return false;
     }
 
@@ -606,9 +526,6 @@ bool IFeature_Dx11wDx12::CopyBackOutput()
 
 bool IFeature_Dx11wDx12::Init(ID3D11Device* InDevice, ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters)
 {
-    // A disabled captured FSR source cannot acquire or borrow the native DLSS route.
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled)
-        if (GenshinSrReceipt::active || GenshinTransport::Scope::Current()) return false;
 
     CallerCpuTrace::Scope callerCpuScope(CallerCpuTrace::Op::Init, this, Handle() ? Handle()->Id : 0, _frameCount);
     LOG_FUNC();
@@ -647,7 +564,6 @@ bool IFeature_Dx11wDx12::Init(ID3D11Device* InDevice, ID3D11DeviceContext* InCon
         return false;
     }
     initRetention->device = BridgeWorkDevice();
-    initRetention->workDomain = genshinWorkDomain;
     initRetention->queue = Dx12CommandQueue;
     SetInitParameters(InParameters);
 
@@ -693,20 +609,6 @@ bool IFeature_Dx11wDx12::Init(ID3D11Device* InDevice, ID3D11DeviceContext* InCon
         return failUnsubmitted();
     }
     DlssNr::FinishedPictureResetCommandList(Dx12CommandList[0]);
-    if(genshinWorkDomain.Creator()) {
-        FramePipeline::GpuWitness witness;
-        if(!genshinWorkDomain.Commands(Dx12CommandQueue,Dx12CommandList[0],Dx12CommandAllocator[0],Dx12Fence,witness)) {
-            LOG_ERROR("Genshin SR provider init refused: reason={} hr={:X}",witness.reason,static_cast<UINT>(witness.hr));
-            return failUnsubmitted();
-        }
-        static std::atomic<unsigned> reports{0};
-        if(reports.fetch_add(1,std::memory_order_relaxed)<4)
-            LOG_INFO("Genshin SR provider creation domain: pid={} creator={} public_owner={} queue={} list={} allocator={} fence={} heap_probe={} list_owner=creator heap_owner=creator allocator_owner=public_owner fence_owner=public_owner exact_recording_receipt=true",
-                GetCurrentProcessId(),reinterpret_cast<uint64_t>(genshinWorkDomain.Creator()),
-                reinterpret_cast<uint64_t>(genshinWorkDomain.PublicOwner()),reinterpret_cast<uint64_t>(Dx12CommandQueue),
-                reinterpret_cast<uint64_t>(Dx12CommandList[0]),reinterpret_cast<uint64_t>(Dx12CommandAllocator[0]),
-                reinterpret_cast<uint64_t>(Dx12Fence),reinterpret_cast<uint64_t>(genshinWorkDomain.HeapProbe()));
-    }
     CallerCpuTrace::Scope providerInitCpu(CallerCpuTrace::Op::ProviderInit, this, Handle() ? Handle()->Id : 0, _frameCount);
     const bool initialised = dx12Feature->Init(BridgeWorkDevice(), Dx12CommandList[0], InParameters);
     providerInitCpu.Finish();
@@ -716,48 +618,41 @@ bool IFeature_Dx11wDx12::Init(ID3D11Device* InDevice, ID3D11DeviceContext* InCon
         LOG_ERROR("Init command-list Close failed, creation not submitted: {:X}", (UINT)closed);
         return failUnsubmitted();
     }
-    if(genshinWorkDomain.Creator()) {
-        FramePipeline::GpuWitness witness;
-        if(!genshinWorkDomain.Commands(Dx12CommandQueue,Dx12CommandList[0],Dx12CommandAllocator[0],Dx12Fence,witness)) {
-            LOG_ERROR("Genshin SR init submit refused: reason={} hr={:X}",witness.reason,static_cast<UINT>(witness.hr));
-            return failUnsubmitted();
-        }
-    }
     ID3D12CommandList* lists[] = { Dx12CommandList[0] };
     bridgeInitState.Submitted();
     CallerCpuTrace::Scope initExecuteCpu(CallerCpuTrace::Op::Execute, this, Handle() ? Handle()->Id : 0, _frameCount, 0);
     const auto initSubmitCallbacks=DlssNr::FinishedPictureSubmissionCallbacks();
     const auto initPreviewReceipt=DlssNr::FinishedPictureSubmitting(Dx12CommandQueue,1,lists);
-    GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::Dx12Submit,[&]{return Dx12CommandQueue->ExecuteCommandLists(1, lists);},GenshinHookCpuTiming::ResultKind::None);
+    HookCpuTiming::Call(HookCpuTiming::Stage::Dx12Submit,[&]{return Dx12CommandQueue->ExecuteCommandLists(1, lists);},HookCpuTiming::ResultKind::None);
     if(initSubmitCallbacks==DlssNr::FinishedPictureSubmissionCallbacks())
         DlssNr::FinishedPictureSubmitted(Dx12CommandQueue,1,lists,initPreviewReceipt);
     initExecuteCpu.Finish();
     const UINT64 signalled = ++Dx12FenceValue;
     CallerCpuTrace::Scope initSignalCpu(CallerCpuTrace::Op::Signal, this, Handle() ? Handle()->Id : 0, _frameCount, 0, signalled);
-    const HRESULT signalResult = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::Dx12SignalApi,[&]{return Dx12CommandQueue->Signal(Dx12Fence, signalled);},GenshinHookCpuTiming::ResultKind::Hresult);
+    const HRESULT signalResult = HookCpuTiming::Call(HookCpuTiming::Stage::Dx12SignalApi,[&]{return Dx12CommandQueue->Signal(Dx12Fence, signalled);},HookCpuTiming::ResultKind::Hresult);
     initSignalCpu.Finish();
     bridgeInitState.Signalled(signalled, SUCCEEDED(signalResult));
     if (FAILED(signalResult))
     {
-        bridgeInitState.Observe(GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},GenshinHookCpuTiming::ResultKind::Fence), FAILED(initRetention->device->GetDeviceRemovedReason()));
+        bridgeInitState.Observe(HookCpuTiming::Call(HookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},HookCpuTiming::ResultKind::Fence), FAILED(initRetention->device->GetDeviceRemovedReason()));
         LOG_ERROR("Init queue Signal failed after Execute: {:X}; phase {}", (UINT)signalResult, (unsigned)bridgeInitState.Get());
         RetainFailedInitialization();
         return false;
     }
     Dx12CommandAllocatorFenceValue[0] = signalled;
-    UINT64 completed = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},GenshinHookCpuTiming::ResultKind::Fence);
+    UINT64 completed = HookCpuTiming::Call(HookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},HookCpuTiming::ResultKind::Fence);
     bool ready = bridgeInitState.Observe(completed, FAILED(initRetention->device->GetDeviceRemovedReason()));
     if (!ready && bridgeInitState.Get() == Dx11BridgeInit::Phase::SubmittedFenced)
     {
-        const HRESULT armed = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceArmApi,[&]{return Dx12Fence->SetEventOnCompletion(signalled, Dx12FenceEvent);},GenshinHookCpuTiming::ResultKind::Hresult);
+        const HRESULT armed = HookCpuTiming::Call(HookCpuTiming::Stage::FenceArmApi,[&]{return Dx12Fence->SetEventOnCompletion(signalled, Dx12FenceEvent);},HookCpuTiming::ResultKind::Hresult);
         DWORD waited = WAIT_FAILED;
         if (SUCCEEDED(armed))
         {
             CallerCpuTrace::Scope initWaitCpu(CallerCpuTrace::Op::InitWait, this, Handle() ? Handle()->Id : 0, _frameCount, 0, signalled, completed, false, true);
-            waited = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::InitCpuEventWait,[&]{return WaitForSingleObject(Dx12FenceEvent, 5000);},GenshinHookCpuTiming::ResultKind::Event);
+            waited = HookCpuTiming::Call(HookCpuTiming::Stage::InitCpuEventWait,[&]{return WaitForSingleObject(Dx12FenceEvent, 5000);},HookCpuTiming::ResultKind::Event);
             initWaitCpu.Finish(waited, true);
         }
-        completed = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},GenshinHookCpuTiming::ResultKind::Fence);
+        completed = HookCpuTiming::Call(HookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},HookCpuTiming::ResultKind::Fence);
         ready = bridgeInitState.Observe(completed, FAILED(initRetention->device->GetDeviceRemovedReason()));
         if (!ready)
             LOG_ERROR("Init completion not proven: SetEvent {:X}, wait {}, required {}, completed {}, phase {}",
@@ -778,56 +673,7 @@ bool IFeature_Dx11wDx12::Init(ID3D11Device* InDevice, ID3D11DeviceContext* InCon
 // Called only after authenticating the Genshin producer. No new input handoff
 // has been queued yet. The previous invocation already flushed its input signal;
 // its feature fence precedes D3D11 output retirement and depends on no new frame.
-HRESULT IFeature_Dx11wDx12::CheckRecordingAvailable(UINT commandFrame, bool isolatedPassResources)
-{
-    GenshinCpuStageTiming::Scope cpu(GenshinCpuStageTiming::Stage::OptRecordingWait);
-    GenshinHookCpuTiming::Scope r448Recording(GenshinHookCpuTiming::Stage::RecordingWait);
-    UINT64 waitTarget=0;bool waitTargetKnown=false;
-    const auto finish=[&](HRESULT hr) {
-        if(FAILED(hr) && hr!=DXGI_ERROR_WAS_STILL_DRAWING)
-            LogGenshinFailure("recording-check",hr,commandFrame,waitTarget,waitTargetKnown);
-        return r448Recording.Return(hr);
-    };
-    GenshinTransport::ClearRecordingPending();
-    if(commandFrame >= DX11WDX12_COMMAND_BUFFER_COUNT || genshinCommandPathFailed || genshinSubmissionUnfenced || !Dx12Fence || !BridgeWorkDevice())
-        return finish(E_FAIL);
-    // A completed value is meaningful only for this feature's actual work domain.
-    FramePipeline::GpuWitness witness;
-    if(!genshinWorkDomain.Commands(Dx12CommandQueue,Dx12CommandList[commandFrame],
-        Dx12CommandAllocator[commandFrame],Dx12Fence,witness)){
-        static std::atomic<unsigned> reports{0};
-        if(reports.fetch_add(1,std::memory_order_relaxed)<6)
-            LOG_WARN("Genshin SR recording witness refused: reason={} hr={:X} expected_device={} observed_device={}",
-                witness.reason,static_cast<UINT>(witness.hr),reinterpret_cast<uint64_t>(BridgeWorkDevice()),
-                reinterpret_cast<uint64_t>(witness.actual.Get()));
-        return finish(witness.hr);
-    }
-    // Isolated passes cannot refer to another slot's CPU-mutable resources.
-    // Their final dispatch/queries are on this exact list, before its Signal.
-    // Unsupported routes still drain the latest submission as before.
-    // Legacy OS/Magnifier timing queries use their own dispatch counters.
-    // Drain once on entry/re-entry to isolated mode before binding every query
-    // to commandFrame. No legacy query range can still alias the new slot.
-    const bool isolatedReuse = isolatedPassResources && genshinLastSubmissionIsolated;
-    const UINT64 target = isolatedReuse ? Dx12CommandAllocatorFenceValue[commandFrame]
-        : std::max(genshinLastSubmittedFence,Dx12CommandAllocatorFenceValue[commandFrame]);
-    waitTarget=target;waitTargetKnown=true;
-    // A busy recording slot is ordinary backpressure, not a provider failure.
-    // Do not park the render thread in a one-second event loop. No allocator,
-    // descriptor, texture or lease is reused here; the capture adapter replays
-    // the current native draw and retries only on a later real source.
-    const auto removed=BridgeWorkDevice()->GetDeviceRemovedReason();
-    if(FAILED(removed))return finish(removed);
-    const auto completed=GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},GenshinHookCpuTiming::ResultKind::Fence);
-    switch(FramePipeline::ObserveFence(completed,target)) {
-    case FramePipeline::FenceCompletion::Invalid: return finish(DXGI_ERROR_DEVICE_REMOVED);
-    case FramePipeline::FenceCompletion::Complete: return finish(S_OK);
-    case FramePipeline::FenceCompletion::Pending:
-        GenshinTransport::NoteRecordingPending();
-        return finish(DXGI_ERROR_WAS_STILL_DRAWING);
-    }
-    return finish(E_FAIL);
-}
+
 
 bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Parameter* InParameters)
 {
@@ -836,27 +682,21 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
     // Revoke the last successful observation even on the earliest failure.
     currentInputMetadata.reset();
     GuideSourceMetadata::Ptr evaluatedInputMetadata;
-    // A disabled captured FSR source cannot acquire or borrow the native DLSS route.
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled)
-        if (GenshinSrReceipt::active || GenshinTransport::Scope::Current()) return false;
 
     CallerCpuTrace::Scope callerCpuScope(CallerCpuTrace::Op::Evaluate, this, Handle() ? Handle()->Id : 0, _frameCount, UINT64_MAX, 0, 0, true);
     LOG_FUNC();
 
-    if (!IsInited() || genshinSubmissionUnfenced || !InParameters)
+    if (!IsInited() || submissionUnfenced || !InParameters)
         return false;
 
     // Real bridge owner, before BeforeSR admission and any SDK work.
     HoYoShade::RenderOwnerScope hoYoSettingsOwner;
-    // The synchronous capture adapter supplies the exact per-invocation
-    // source. Executable names neither create nor authenticate a transport.
-    auto* const genshinScope = F6InputPolicy::FsrBridgeEnabled ? GenshinTransport::Scope::Current() : nullptr;
     // Read DX11 inputs through the caller until translation, then expose only
     // the exact DX12 cache resources to SR/NR. Never write cross-API pointers
     // into a native DX11 NGX table. The private legacy transport retains its
     // separately authenticated parameter identity.
     OptiBridge::NgxDx12ResourceView dx12Parameters(*InParameters);
-    if (!genshinScope) InParameters = &dx12Parameters;
+    InParameters = &dx12Parameters;
     // The prior feature fence was signalled by its DX12 queue. Waiting for
     // recording reuse does not require a second D3D11 output Flush: the next
     // Lease input submit carries prior Wait/copy/retire commands as well.
@@ -895,13 +735,6 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
 
     if (dc != nullptr)
         dc->Release();
-
-    // A TLS scope alone is not state-isolation proof. Only the exact internal
-    // capture invocation can lend a single-use witness. Unknown backends and
-    // changed contexts keep the full state guard.
-    const bool isolatedSrState = genshinScope && dx12Feature && contextUnchanged &&
-        dx12Feature->GetUpscalerType()==Upscaler::DLSS &&
-        GenshinLegacy::InternalSrStateScope::Consume(InDeviceContext,*genshinScope,InParameters);
 
     const auto commandFrame = (UINT) (_frameCount % DX11WDX12_COMMAND_BUFFER_COUNT);
     const auto resourceFrame = (UINT) (_frameCount % DX11_WITH_DX12_CACHED_FRAMES);
@@ -953,109 +786,25 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
     // Do not unbind/rebind or snapshot all CS/OM slots a third time. Optional
     // consumers, unknown witnesses and external calls retain the complete guard.
     std::unique_ptr<Dx11BridgeStateGuard> savedState;
-    if(!isolatedSrState)savedState=std::make_unique<Dx11BridgeStateGuard>(InDeviceContext);
+    savedState=std::make_unique<Dx11BridgeStateGuard>(InDeviceContext);
     OptiBridge::ResourceParameterGuard<NVSDK_NGX_Parameter,ID3D11Resource,NVSDK_NGX_Result,6> restoreParameters(
         InParameters,
         {NVSDK_NGX_Parameter_Color,NVSDK_NGX_Parameter_Depth,NVSDK_NGX_Parameter_MotionVectors,
          NVSDK_NGX_Parameter_Output,NVSDK_NGX_Parameter_ExposureTexture,NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask},
         {restoreParamColor,restoreParamDepth,restoreParamMv,restoreParamOutput,restoreParamExposure,restoreParamReactive},
-        {hasRestoreParamColor||bool(genshinScope),hasRestoreParamDepth||bool(genshinScope),
-         hasRestoreParamMv||bool(genshinScope),hasRestoreParamOutput||bool(genshinScope),true,true},
+        {hasRestoreParamColor,hasRestoreParamDepth,
+         hasRestoreParamMv,hasRestoreParamOutput,true,true},
         NVSDK_NGX_Result_Success);
 
     bool dx12EvalResult = false;
     bool commandListRecording = false;
     bool commandListExecuted = false;
     bool commandListExecuteReturned = false;
-    // No assumption that FG/Present NR/filter are absent: they consume leased
-    // inputs/final output, not these private Opt pass intermediates. Inline NR,
-    // optical NR, unknown providers and inline DX12 menu retain global wait.
-    const auto canIsolatePassResources = [&] {
-        const auto& cfg = *Config::Instance();
-        return dx12Feature && dx12Feature->CanIsolateRecordingResources() && !native::OpticalFgNrEnabled() &&
-            (!cfg.DlssNrEnabled.value_or_default() ||
-             (cfg.DlssNrFinishedPicture.value_or_default() && !cfg.DlssNrRunBeforeSr.value_or_default() &&
-              !cfg.DlssNrDeferredDlss.value_or_default()));
-    };
-    bool isolatedPassResources = false;
-    GenshinSrRecordingCpu::ReportOnExit recordingCpuReport;
-    GenshinCpuStageTiming::Scope genshinCpu(genshinScope?GenshinCpuStageTiming::Stage::OptSrEvaluate:GenshinCpuStageTiming::Stage::Count);
-    std::shared_ptr<GenshinTransport::Lease> genshinTransport;
-    if (auto* scope = genshinScope; scope != nullptr)
-    {
-        const std::array<ID3D11Resource*, 4> actual = {
-            restoreParamColor, restoreParamDepth, restoreParamMv, restoreParamOutput };
-        // No inferred owner, reused scope, or optional unleased guide may enter this seam.
-        if (scope->parameters != InParameters || scope->resources != actual || scope->lease ||
-            restoreParamExposure || restoreParamReactive || !AutoExposure())
-            return false;
-        if(InDeviceContext->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE ||
-           scope->owner.context!=reinterpret_cast<uint64_t>(InDeviceContext) ||
-           scope->owner.thread!=GetCurrentThreadId())return false;
-        try {
-            if(!genshinRuntimeRetention)genshinRuntimeRetention=std::make_unique<Dx11BridgeInitRetention>();
-            genshinRuntimeRetention->device=BridgeWorkDevice();
-            genshinRuntimeRetention->workDomain=genshinWorkDomain;
-            genshinRuntimeRetention->queue=Dx12CommandQueue;
-        }catch(...){return false;}
-        // Slot isolation is an actual resource choice, not a claim based on
-        // inactive consumers. Unknown/inline paths retain the old global wait.
-        isolatedPassResources = canIsolatePassResources();
-        recordingCpuReport.feature = dx12Feature.get();
-        GenshinSrRecordingCpu::Scope recordingWaitCpu(dx12Feature.get(), GenshinSrRecordingCpu::Stage::RecordingWait, true);
-        const auto recordingReady=CheckRecordingAvailable(commandFrame, isolatedPassResources);
-        recordingWaitCpu.Finish(recordingReady);
-        if(FAILED(recordingReady)){
-            if(recordingReady!=DXGI_ERROR_WAS_STILL_DRAWING)
-                LOG_WARN("SR recording resources not available: {:X}",static_cast<UINT>(recordingReady));
-            return false;
-        }
-        GenshinSubstage::Event(GenshinSubstage::Stage::ResourceMapping,GenshinSubstage::State::Running);
-        auto preparedInputs=scope->preparedInputs;
-        // The known full stack uses the same prepared pair, pinned by every
-        // exported packet until its existing reader retirement. Re-read actual
-        // route selection here; changed/unknown consumers retain private copies.
-        if(!GenshinTransport::PreparedSrOutput::PureSr() &&
-           !GenshinTransport::CurrentOutputRoute().batchAtNativeAcquire)
-            preparedInputs.reset();
-        if (!scope->lease)
-            scope->lease = GenshinTransport::Lease::Begin(scope->owner, InDeviceContext, genshinWorkDomain, Dx12CommandQueue,
-                                                           scope->resources, InParameters, std::move(preparedInputs));
-        genshinTransport = scope->lease;
-        if (!genshinTransport)
-        {
-            GenshinSubstage::Event(GenshinSubstage::Stage::ResourceMapping,GenshinSubstage::State::Failed,
-                GenshinSubstage::Resource::Inputs,GenshinSubstage::Domain::Mapping,0,GenshinSubstage::Issue::Rejected);
-            LOG_WARN("Genshin observation transport refused this owner/resource set");
-            return false;
-        }
-    }
-    if(genshinTransport)GenshinSubstage::Event(GenshinSubstage::Stage::ResourceMapping,GenshinSubstage::State::Succeeded);
-    std::unique_ptr<GenshinCaller::BridgeAfterUpscale> genshinNrCaller;
-    bool genshinSubmitted=false;
-    const char* genshinStop="provider-not-reached";
-    HRESULT genshinStatus=S_OK;
     try
     {
     do
     {
-        if (genshinTransport)
-        {
-            // This exact allocator slot was completed before Begin; other isolated slots may still run.
-            const auto completed=GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},GenshinHookCpuTiming::ResultKind::Fence);
-            if(genshinCommandPathFailed || completed==UINT64_MAX || completed<Dx12CommandAllocatorFenceValue[commandFrame]){genshinStop="allocator-fence-not-ready";break;}
-            auto& recording=genshinRecordings[commandFrame];recording={};
-            recording.valid=true;recording.owner=genshinScope->owner;recording.frame=_frameCount;
-            recording.lease=genshinTransport;recording.phase="reset";
-            auto reset=Dx12CommandAllocator[commandFrame]->Reset();
-            if(SUCCEEDED(reset))reset=cmdList->Reset(Dx12CommandAllocator[commandFrame],nullptr);
-            recording.resetHr=reset;
-            if(FAILED(reset)){genshinStop="allocator-or-list-reset";genshinStatus=reset;genshinCommandPathFailed=true;break;}
-            DlssNr::FinishedPictureResetCommandList(cmdList);
-            commandListRecording=true;
-            genshinTransport->BeginGpuTimeline(genshinScope->owner,cmdList,Dx12CommandAllocator[commandFrame]);
-        }
-        else if (!ProcessDx11Textures(InParameters))
+        if (!ProcessDx11Textures(InParameters))
         {
             LOG_ERROR("Can't process Dx11 textures!");
             break;
@@ -1068,64 +817,14 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
 
         commandListRecording = true;
 
-        if (genshinTransport)
-        {
-            auto* scope = genshinScope;
-            std::array<ID3D12Resource*, 4> imported{};
-            for (size_t i = 0; i < imported.size(); ++i)
-                imported[i] = genshinTransport->Resource(scope->owner, i);
-            if (!imported[0] || !imported[1] || !imported[2] || !imported[3])
-                break;
-            // The private owner supplies a neutral table: native D3D11 tables
-            // silently ignore this typed D3D12 setter. Prove the provider-facing
-            // getter returns each exact imported resource before invoking it.
-            InParameters->Set(NVSDK_NGX_Parameter_Color, static_cast<ID3D12Resource*>(imported[0]));
-            InParameters->Set(NVSDK_NGX_Parameter_Depth, static_cast<ID3D12Resource*>(imported[1]));
-            InParameters->Set(NVSDK_NGX_Parameter_MotionVectors, static_cast<ID3D12Resource*>(imported[2]));
-            InParameters->Set(NVSDK_NGX_Parameter_Output, static_cast<ID3D12Resource*>(imported[3]));
-            const std::array<const char*,4> names={NVSDK_NGX_Parameter_Color,NVSDK_NGX_Parameter_Depth,
-                NVSDK_NGX_Parameter_MotionVectors,NVSDK_NGX_Parameter_Output};
-            bool parametersMatch=true;
-            const GenshinSubstage::Resource substageResources[]={GenshinSubstage::Resource::Color,
-                GenshinSubstage::Resource::Depth,GenshinSubstage::Resource::Motion,GenshinSubstage::Resource::Output};
-            GenshinSubstage::Event(GenshinSubstage::Stage::ParameterCheck,GenshinSubstage::State::Running);
-            // Observe actual dimensions without changing this path's existing checks/gates.
-            for(size_t i=0;i<imported.size();++i)if(imported[i]->GetDesc().Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
-                GenshinSubstage::Event(GenshinSubstage::Stage::ParameterCheck,GenshinSubstage::State::Running,
-                    substageResources[i],GenshinSubstage::Domain::Parameters,0,GenshinSubstage::Issue::NonTex2D);break;
-            }
-            for(size_t i=0;i<imported.size();++i)
-            {
-                ID3D12Resource* typed=nullptr;
-                void* generic=nullptr;
-                if(InParameters->Get(names[i],&typed)!=NVSDK_NGX_Result_Success || typed!=imported[i] ||
-                   InParameters->Get(names[i],&generic)!=NVSDK_NGX_Result_Success || generic!=imported[i])
-                {
-                    GenshinSubstage::Event(GenshinSubstage::Stage::ParameterCheck,GenshinSubstage::State::Failed,
-                        substageResources[i],GenshinSubstage::Domain::Parameters,E_INVALIDARG,GenshinSubstage::Issue::Rejected);
-                    LOG_ERROR("Genshin D3D12 parameter roundtrip failed for {}",names[i]);
-                    parametersMatch=false;
-                    break;
-                }
-            }
-            if(!parametersMatch){genshinStop="resource-parameter-roundtrip";genshinStatus=E_INVALIDARG;break;}
-        }
-        else
-        {
+
             InParameters->Set(NVSDK_NGX_Parameter_Color, static_cast<ID3D12Resource*>(dx11Color.Dx12Resource));
             InParameters->Set(NVSDK_NGX_Parameter_MotionVectors, static_cast<ID3D12Resource*>(dx11Mv.Dx12Resource));
             InParameters->Set(NVSDK_NGX_Parameter_Output, static_cast<ID3D12Resource*>(dx11Out.Dx12Resource));
             InParameters->Set(NVSDK_NGX_Parameter_Depth, static_cast<ID3D12Resource*>(dx11Depth.Dx12Resource));
-        }
 
-        if (genshinTransport)
-        {
-            // The observation seam leases exactly four resources; optional cache guides cannot escape into it.
-            InParameters->Set(NVSDK_NGX_Parameter_ExposureTexture, (void*) nullptr);
-            InParameters->Set(NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, (void*) nullptr);
-        }
-        else
-            SetOptionalDx12Inputs(InParameters, dx11Exp.Dx12Resource, dx11Reactive.Dx12Resource, AutoExposure(),
+
+        SetOptionalDx12Inputs(InParameters, dx11Exp.Dx12Resource, dx11Reactive.Dx12Resource, AutoExposure(),
                                   Config::Instance()->DisableReactiveMask.value_or(false));
 
         LOG_DEBUG("Dispatch!!");
@@ -1163,7 +862,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
                 InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, &e.colorY);
             }
         };
-        ID3D12Resource* hoyoColor = genshinTransport ? genshinTransport->Resource(genshinScope->owner, 0) : dx11Color.Dx12Resource;
+        ID3D12Resource* hoyoColor = dx11Color.Dx12Resource;
         if (HoYoShade::Selected(HoYoShade::Stage::BeforeSr) && hoyoColor && Dx12Fence &&
             Dx12FenceValue < UINT64_MAX - 1)
         {
@@ -1173,63 +872,40 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             // Preallocate the existing failure owner before the filter can
             // record. Legacy bridge routes need the same no-release handling
             // as Genshin when a source barrier/submission becomes uncertain.
-            if (!genshinRuntimeRetention) {
-                genshinRuntimeRetention = std::make_unique<Dx11BridgeInitRetention>();
-                genshinRuntimeRetention->device = BridgeWorkDevice();
-                genshinRuntimeRetention->workDomain = genshinWorkDomain;
-                genshinRuntimeRetention->queue = Dx12CommandQueue;
+            if (!runtimeRetention) {
+                runtimeRetention = std::make_unique<Dx11BridgeInitRetention>();
+                runtimeRetention->device = BridgeWorkDevice();
+                runtimeRetention->queue = Dx12CommandQueue;
             }
             const auto producerValue = ++Dx12FenceValue;
-            const auto producerHr = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::Dx12SignalApi,[&]{return Dx12CommandQueue->Signal(Dx12Fence, producerValue);},GenshinHookCpuTiming::ResultKind::Hresult);
-            if (FAILED(producerHr)) { genshinStop="hoyoshade-upload-signal"; genshinStatus=producerHr; break; }
+            const auto producerHr = HookCpuTiming::Call(HookCpuTiming::Stage::Dx12SignalApi,[&]{return Dx12CommandQueue->Signal(Dx12Fence, producerValue);},HookCpuTiming::ResultKind::Hresult);
+            if (FAILED(producerHr)) {   break; }
             Microsoft::WRL::ComPtr<ID3D11Device> sourceDevice;
             InDeviceContext->GetDevice(&sourceDevice);
             HoYoShade::ColorEndpoint endpoint;
             endpoint.stage = HoYoShade::Stage::BeforeSr; endpoint.color = hoyoColor; endpoint.queue = Dx12CommandQueue;
             endpoint.ready = {Dx12CommandQueue, Dx12Fence, producerValue};
             endpoint.stream = reinterpret_cast<uint64_t>(this);
-            endpoint.generation = genshinScope ? genshinScope->owner.generation : 1;
-            endpoint.frame = genshinScope ? genshinScope->owner.sourceFrame : _frameCount;
+            endpoint.generation = 1;
+            endpoint.frame = _frameCount;
             readBeforeSrRegion(endpoint);
             endpoint.state = D3D12_RESOURCE_STATE_COMMON; endpoint.stateKnown = true;
-            if (genshinTransport && genshinScope) {
-                // API20 external RTV processing preserves native typed values.
-                // Output swapchain metadata and requested !HDR cannot certify
-                // this pre-SR color's transfer. Leave sdr=false, bind its real
-                // producer, and authenticate again at recording boundaries.
-                endpoint.colorMode = HoYoShade::ColorMode::GenshinNativeTypedBeforeSr;
-                endpoint.nativeColor.producer = GenshinTransport::ProducerInvocation::Current();
-                endpoint.nativeColor.transport = genshinTransport;
-                endpoint.nativeColor.scope = genshinScope;
-                endpoint.nativeColor.providerHdrKnown = dx12Feature->GetFeatureFlagsKnown();
-                endpoint.nativeColor.providerHdr = endpoint.nativeColor.providerHdrKnown &&
-                    (dx12Feature->GetFeatureFlags() & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0;
-            } else {
+
                 // Other games/routes retain the transfer-qualified contract.
                 endpoint.sdr = dx12Feature->GetFeatureFlagsKnown() &&
                     (dx12Feature->GetFeatureFlags() & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) == 0 &&
                     State::Instance().outputColorSpace.valid &&
                     State::Instance().outputColorSpace.dxgiColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-            }
+
             // Source observation only: a natural selection donor may belong
             // to another API/device. It never lends GPU objects to this stage.
             endpoint.naturalDevice = reinterpret_cast<uint64_t>(sourceDevice.Get());
-            endpoint.naturalContract = genshinTransport && genshinScope
-                ? HoYoShade::NaturalSourceContract::BeforeSrOwnedRuntimeWithSelectionDonor
-                : HoYoShade::NaturalSourceContract::BeforeSrExactDevice;
-            if (genshinTransport && genshinScope) {
-                const bool directionKnown = dx12Feature->GetFeatureFlagsKnown();
-                const bool reversed = directionKnown && (dx12Feature->GetFeatureFlags() &
-                    NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
-                endpoint.depth = HoYoShade::Depth::FromBeforeSr(genshinTransport, genshinScope->owner,
-                    Dx12CommandQueue, Dx12Fence, producerValue, endpoint.stream,
-                    endpoint.generation, endpoint.frame, endpoint.width, endpoint.height, directionKnown, reversed);
-            }
+            endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrExactDevice;
             const auto filtered = HoYoShade::RenderStage(endpoint);
             if (filtered.Uncertain()) {
                 // No SR consumer may read a color with uncertain barriers or
                 // an unsignalled owned batch. Keep this feature's transport.
-                genshinSubmissionUnfenced = true; genshinStop="hoyoshade-before-SR-uncertain"; break;
+                submissionUnfenced = true;  break;
             }
             if (filtered.Submitted()) {
                 // RenderStage submitted and restored THIS input on THIS queue.
@@ -1238,15 +914,15 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
                 if (!filtered.completion.fence || !filtered.completion.value ||
                     filtered.completion.value == UINT64_MAX ||
                     filtered.completion.fence->GetCompletedValue() == UINT64_MAX) {
-                    genshinSubmissionUnfenced = true; genshinStop="hoyoshade-before-SR-tail"; break;
+                    submissionUnfenced = true;  break;
                 }
-                if (!genshinTransport &&
+                if (
                     (WithDx12::GetD3D12CommandQueue() != Dx12CommandQueue ||
                      !Dx11WithDx12::SyncDx12ToDx11())) {
                     // Even if provider evaluation later fails, the legacy
                     // D3D11 cache/unknown readers must not race filter copyback.
                     // Failed handoff keeps the actual owners until restart.
-                    genshinSubmissionUnfenced = true; genshinStop="hoyoshade-before-SR-handoff"; break;
+                    submissionUnfenced = true;  break;
                 }
                 beforeSrFilter = filtered;
                 beforeSrInput = endpoint;
@@ -1259,11 +935,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         CallerCpuTrace::Scope nrBeforeCpu(CallerCpuTrace::Op::NrBefore, this, Handle() ? Handle()->Id : 0, _frameCount, commandFrame);
         HoYoShade::ColorEndpoint nrSourceRegion;
         const bool diagnosticSource=!Config::Instance()->DlssNrEnabled.value_or_default() && GuideCapture::Wanted(GuideCapture::Stream::Source);
-        if (!genshinTransport)
-            readBeforeSrRegion(nrSourceRegion);
-        if (!genshinTransport)
-        {
-            GuideSourceMetadata::Descriptor raw;
+        readBeforeSrRegion(nrSourceRegion);GuideSourceMetadata::Descriptor raw;
             raw.feature=dx12Feature->Handle()?dx12Feature->Handle()->Id:0;
             raw.context=reinterpret_cast<uintptr_t>(dx12Feature.get());
             raw.generation=Handle()?Handle()->Id:0;
@@ -1287,8 +959,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             if(InParameters->Get(NVSDK_NGX_Parameter_MotionVectors,&motion)!=NVSDK_NGX_Result_Success)
                 InParameters->Get(NVSDK_NGX_Parameter_MotionVectors,reinterpret_cast<void**>(&motion));
             evaluatedInputMetadata=GuideSourceMetadata::ReadNgx(*InParameters,std::move(raw),depth,motion);
-        }
-        if (!genshinTransport && (fixedPresentNr || !native::OpticalFgNrEnabled()) && ((bridgeFinishedNr && Config::Instance()->DlssNrEnabled.value_or_default()) || diagnosticSource))
+        if ( (fixedPresentNr || !native::OpticalFgNrEnabled()) && ((bridgeFinishedNr && Config::Instance()->DlssNrEnabled.value_or_default()) || diagnosticSource))
             DlssNr::CaptureFinishedPictureDx11Bridge(cmdList, Dx12CommandQueue, InParameters,
                                                     dx12Feature->GetUpscalerType() == Upscaler::DLSSD,
                                                     (unsigned) dx12Feature->GetFeatureFlags(),
@@ -1299,7 +970,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
                                                       nrSourceRegion.width, nrSourceRegion.height,
                                                       nrSourceRegion.width!=0 && nrSourceRegion.height!=0,
                                                       evaluatedInputMetadata });
-        else if (!genshinTransport && !native::OpticalFgNrEnabled() && !bridgeFinishedNr)
+        else if ( !native::OpticalFgNrEnabled() && !bridgeFinishedNr)
             DlssNr::EvaluateBeforeUpscale(cmdList, InParameters, Dx12CommandQueue, nrSourceAttempt,
                                       dx12Feature->GetUpscalerType() == Upscaler::DLSSD,
                                       { dx12Feature->Handle() ? dx12Feature->Handle()->Id : 0,
@@ -1310,80 +981,32 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
                                         evaluatedInputMetadata });
         nrBeforeCpu.Finish();
         CallerCpuTrace::Scope providerEvaluateCpu(CallerCpuTrace::Op::ProviderEvaluate, this, Handle() ? Handle()->Id : 0, _frameCount, commandFrame);
-        GenshinCpuStageTiming::Scope genshinProviderCpu(genshinScope?GenshinCpuStageTiming::Stage::OptProviderEvaluate:GenshinCpuStageTiming::Stage::Count);
-        if (genshinTransport && !native::OpticalFgNrEnabled() &&
-            Config::Instance()->DlssNrEnabled.value_or_default() && !bridgeFinishedNr &&
-            !Config::Instance()->DlssNrRunBeforeSr.value_or_default() &&
-            !Config::Instance()->DlssNrDeferredDlss.value_or_default())
-            genshinNrCaller = GenshinCaller::BridgeAfterUpscale::Observe(
-                InDeviceContext, InParameters, Dx12CommandQueue, cmdList);
         const auto beforeSrConsumerMatches = [&] {
             // Scratch warmup has a real retirement tail but no copyback to SR.
             if (!beforeSrFilter.EffectsExecuted()) return true;
             if (dx12Feature.get() != beforeSrProvider || Dx12CommandQueue != beforeSrInput.queue ||
                 dx12Feature->GetFeatureFlagsKnown() != beforeSrFlagsKnown ||
                 dx12Feature->GetFeatureFlags() != beforeSrFlags) return false;
-            if (genshinTransport && (GenshinTransport::Scope::Current() != genshinScope ||
-                genshinScope->lease != genshinTransport || genshinScope->parameters != InParameters)) return false;
             auto actual = beforeSrInput;
             actual.queue = Dx12CommandQueue;
             actual.stream = reinterpret_cast<uint64_t>(this);
-            actual.generation = genshinScope ? genshinScope->owner.generation : 1;
-            actual.frame = genshinScope ? genshinScope->owner.sourceFrame : _frameCount;
+            actual.generation = 1;
+            actual.frame = _frameCount;
             actual.color = nullptr;
             if (InParameters->Get(NVSDK_NGX_Parameter_Color, &actual.color) != NVSDK_NGX_Result_Success)
                 InParameters->Get(NVSDK_NGX_Parameter_Color, reinterpret_cast<void**>(&actual.color));
             readBeforeSrRegion(actual);
             if (!beforeSrFilter.BeforeSrInputMatches(actual)) return false;
-            if (genshinTransport) {
-                const auto observed = genshinTransport->Snapshot();
-                if (observed.revoked || observed.stage != GenshinTransport::Stage::InputsOrdered ||
-                    !GenshinGuides::SameOwner(observed.owner, genshinScope->owner) ||
-                    observed.queue != reinterpret_cast<uint64_t>(Dx12CommandQueue) ||
-                    observed.parameters != reinterpret_cast<uint64_t>(InParameters) ||
-                    genshinTransport->Resource(genshinScope->owner, 0) != actual.color) return false;
-                for (size_t i = 0; i < genshinScope->resources.size(); ++i)
-                    if (observed.source[i] != reinterpret_cast<uint64_t>(genshinScope->resources[i])) return false;
-            }
             return true;
         };
         const auto evaluateProvider = [&] {
             // Only the authenticated Genshin transport has acquired its
             // selected recording dependencies. Other routes retain their legacy entry.
-            if (genshinTransport)
-            {
-                GenshinSrRecordingCpu::Scope recordingCpu(dx12Feature.get(), GenshinSrRecordingCpu::Stage::ProviderRecord, true);
-                // Upgrade to the old global wait before entering any newly
-                // selected shared helper. No pass has been recorded here yet.
-                if (isolatedPassResources && !canIsolatePassResources())
-                {
-                    const auto sharedReady = CheckRecordingAvailable(commandFrame, false);
-                    if (FAILED(sharedReady)) return false;
-                    isolatedPassResources = false;
-                }
-                auto& observation=genshinRecordings[commandFrame];observation.phase="provider-record";
-                observation.isolated=isolatedPassResources;
-                if (!beforeSrConsumerMatches()) { genshinStop="hoyoshade-before-SR-consumer"; return false; }
-                const bool evaluated = dx12Feature->EvaluateForRecordingSlot(cmdList, InParameters, commandFrame,
-                                                                             isolatedPassResources);
-                observation.providerReturned=true;observation.providerOk=evaluated;
-                recordingCpu.Finish(evaluated ? S_OK : E_FAIL);
-                return evaluated;
-            }
-            if (!beforeSrConsumerMatches()) { genshinStop="hoyoshade-before-SR-consumer"; return false; }
-            return GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::ProviderEvaluate,[&]{return dx12Feature->Evaluate(cmdList, InParameters);},GenshinHookCpuTiming::ResultKind::Boolean);
+            if (!beforeSrConsumerMatches()) {  return false; }
+            return HookCpuTiming::Call(HookCpuTiming::Stage::ProviderEvaluate,[&]{return dx12Feature->Evaluate(cmdList, InParameters);},HookCpuTiming::ResultKind::Boolean);
         };
-        if (genshinNrCaller)
-            dx12EvalResult = genshinNrCaller->EvaluateProvider(evaluateProvider);
-        else
-            dx12EvalResult = evaluateProvider();
+        dx12EvalResult = evaluateProvider();
         providerEvaluateCpu.Finish();
-        if(genshinTransport)genshinStop=dx12EvalResult?"provider-succeeded":"provider-refused";
-
-        // DLSS 5 Neural Rendering rides the bridge: at this moment the block carries the D3D12 copies
-        // of every input, the list is still recording, and the model's edit lands on the D3D12 output
-        // before it is copied back to the game's D3D11 texture. This one call is what makes the pass
-        // work in DirectX 11 games, whatever upscaler carried it here.
         static bool reportedNrOffer = false;
 
         if (!reportedNrOffer)
@@ -1395,7 +1018,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         }
 
         CallerCpuTrace::Scope nrAfterCpu(CallerCpuTrace::Op::NrAfter, this, Handle() ? Handle()->Id : 0, _frameCount, commandFrame);
-        if (!genshinTransport && !native::OpticalFgNrEnabled() && dx12EvalResult && Config::Instance()->DlssNrEnabled.value_or_default())
+        if ( !native::OpticalFgNrEnabled() && dx12EvalResult && Config::Instance()->DlssNrEnabled.value_or_default())
         {
             if (!bridgeFinishedNr)
                 DlssNr::EvaluateAfterUpscale(cmdList, InParameters, Dx12CommandQueue,
@@ -1410,26 +1033,6 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         }
         // Only the existing after-SR inline NR lifecycle is supported here.
         // Before-SR/deferred/finished-picture and FG retain their previous admission.
-        if (genshinNrCaller && !native::OpticalFgNrEnabled() && dx12EvalResult &&
-            Config::Instance()->DlssNrEnabled.value_or_default() && !bridgeFinishedNr &&
-            !Config::Instance()->DlssNrRunBeforeSr.value_or_default() &&
-            !Config::Instance()->DlssNrDeferredDlss.value_or_default())
-        {
-            // Acquire inside the actual consumer branch, never through an
-            // earlier config reread that can race this decision. NR cannot
-            // run its shared helpers after only the private-slot wait.
-            if (isolatedPassResources)
-            {
-                const auto sharedReady = CheckRecordingAvailable(commandFrame, false);
-                if (FAILED(sharedReady)) dx12EvalResult = false;
-                else isolatedPassResources = false;
-            }
-            if (dx12EvalResult)
-                genshinNrCaller->OfferNr([&](unsigned long long sourceFrame) {
-                    DlssNr::EvaluateAfterUpscale(cmdList, InParameters, Dx12CommandQueue,
-                        dx12Feature->GetUpscalerType() == Upscaler::DLSSD, sourceFrame);
-                });
-        }
         nrAfterCpu.Finish();
 
     } while (false);
@@ -1437,69 +1040,31 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
     }
     catch (...)
     {
-        if(genshinTransport){genshinCommandPathFailed=true;genshinTransport->Revoke();}
         if(commandListRecording)cmdList->Close();
-        if(genshinTransport && dx12Feature) dx12Feature->FinishRecordingSlotResources(commandFrame, false);
-        if(genshinTransport)LogGenshinFailure("recording-exception",E_FAIL,commandFrame);
         throw; // Six resource parameters and actual D3D11 state unwind before the SR scope adopts the lease.
     }
     const bool parametersRestored=restoreParameters.RestoreNow();
-    if (genshinTransport)
-    {
-        savedState.reset();
-        auto* scope=genshinScope;
-        if(!genshinTransport->Restored(scope->owner,parametersRestored,true))dx12EvalResult=false;
-    }
-
-    // An unsuccessful Evaluate or Close is not a successful recording Reset.
-    // Keep all recorded owners until the next actual Reset discards this list.
     if (commandListRecording)
     {
-        if(genshinTransport)genshinTransport->EndGpuTimeline(genshinScope->owner,cmdList);
         const auto closeResult = cmdList->Close();
-        if(genshinTransport)genshinRecordings[commandFrame].closeHr=closeResult;
         if (closeResult != S_OK)
         {
-            if(genshinTransport){genshinStop="command-list-close";genshinStatus=closeResult;}
             LOG_ERROR("CommandList Close error: {:X}", (UINT) closeResult);
             dx12EvalResult = false;
-            if(genshinTransport){genshinCommandPathFailed=true;genshinTransport->Revoke();}
-        }
+            }
     }
 
     if (dx12EvalResult)
     {
         ID3D12CommandList* ppCommandLists[] = { cmdList };
-        GenshinSrRecordingCpu::Scope executeSignalCpu(dx12Feature.get(), GenshinSrRecordingCpu::Stage::ExecuteSignal,
-                                                    genshinTransport != nullptr);
         CallerCpuTrace::Scope executeCpu(CallerCpuTrace::Op::Execute, this, Handle() ? Handle()->Id : 0, _frameCount, commandFrame);
-        if(genshinTransport)GenshinSubstage::Event(GenshinSubstage::Stage::QueueExecute,GenshinSubstage::State::Running);
-        genshinSubmissionUnfenced = true; // every bridge Execute needs its own successful Signal
+        submissionUnfenced = true; // every bridge Execute needs its own successful Signal
         const auto nrSubmitCallbacksBefore = DlssNr::FinishedPictureSubmissionCallbacks();
         GuideCapture::ExecutionReceipt previewReceipt;
-        if(genshinTransport){
-            GenshinSrRecordingCpu::Scope transportCpu(dx12Feature.get(), GenshinSrRecordingCpu::Stage::TransportExecuteSignal, true);
-            genshinRecordings[commandFrame].phase="execute";
-            const auto submission=genshinTransport->Execute(genshinScope->owner,Dx12CommandQueue,cmdList,Dx12CommandAllocator[commandFrame]);
-            auto& observation=genshinRecordings[commandFrame];
-            observation.executed=submission.executed;observation.executeReturned=submission.returned;
-            observation.submitted=submission.submitted;observation.submitHr=submission.hr;
-            transportCpu.Finish(submission.submitted ? S_OK : E_FAIL);
-            commandListExecuted=submission.executed;commandListExecuteReturned=submission.returned;
-            genshinSubmitted=submission.submitted;
-            if(!genshinSubmitted){
-                genshinStop=submission.reason;genshinStatus=submission.hr;
-                genshinCommandPathFailed=true;dx12EvalResult=false;
-                // Preflight failure issued no Execute and needs no feature-fence quarantine.
-                if(!commandListExecuted)genshinSubmissionUnfenced=false;
-            }
-            GenshinSubstage::Event(GenshinSubstage::Stage::QueueExecute,
-                genshinSubmitted?GenshinSubstage::State::Succeeded:GenshinSubstage::State::Failed,
-                GenshinSubstage::Resource::Queue,GenshinSubstage::Domain::Hresult,submission.hr);
-        }else{
+
             previewReceipt=DlssNr::FinishedPictureSubmitting(Dx12CommandQueue,1,ppCommandLists);
-            GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::Dx12Submit,[&]{return Dx12CommandQueue->ExecuteCommandLists(1, ppCommandLists);},GenshinHookCpuTiming::ResultKind::None);commandListExecuted=commandListExecuteReturned=true;
-        }
+            HookCpuTiming::Call(HookCpuTiming::Stage::Dx12Submit,[&]{return Dx12CommandQueue->ExecuteCommandLists(1, ppCommandLists);},HookCpuTiming::ResultKind::None);commandListExecuted=commandListExecuteReturned=true;
+
         executeCpu.Finish();
         // Fall back only when this synchronous Execute did not reach the real submit hook.
         // Persistent recording watchers must not mistake duplicate notification for replay.
@@ -1510,41 +1075,26 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             const auto fenceValue = ++Dx12FenceValue;
             CallerCpuTrace::Scope signalCpu(CallerCpuTrace::Op::Signal, this, Handle() ? Handle()->Id : 0, _frameCount, commandFrame, fenceValue);
             FramePipeline::GpuWitness featureFence;
-            if(genshinTransport && (!genshinWorkDomain.BoundQueue(Dx12CommandQueue,featureFence) ||
-                !featureFence.Owns(genshinWorkDomain.PublicOwner(),Dx12Fence,"feature-fence-device"))){
-                result=featureFence.hr;genshinStop=featureFence.reason;genshinStatus=result;
-            }else {
-                GenshinSrRecordingCpu::Scope featureSignalCpu(dx12Feature.get(), GenshinSrRecordingCpu::Stage::FeatureSignal,
-                                                            genshinTransport != nullptr);
-                result = GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::Dx12SignalApi,[&]{return Dx12CommandQueue->Signal(Dx12Fence, fenceValue);},GenshinHookCpuTiming::ResultKind::Hresult);
-                featureSignalCpu.Finish(result);
-            }
+
+                result = HookCpuTiming::Call(HookCpuTiming::Stage::Dx12SignalApi,[&]{return Dx12CommandQueue->Signal(Dx12Fence, fenceValue);},HookCpuTiming::ResultKind::Hresult);
+
             signalCpu.Finish();
-            if(genshinTransport)genshinRecordings[commandFrame].signalHr=result;
             if (result != S_OK)
             {
-                if(genshinTransport){if(SUCCEEDED(featureFence.hr))genshinStop="feature-fence-signal";genshinStatus=result;}
                 LOG_ERROR("Dx12CommandQueue Signal failed for feature fence {}: {:X}", fenceValue, (UINT) result);
                 dx12EvalResult = false;
-                if(genshinTransport){genshinCommandPathFailed=true;genshinTransport->Revoke();}
-            }
+                }
             else
             {
                 Dx12CommandAllocatorFenceValue[commandFrame] = fenceValue;
-                genshinSubmissionUnfenced = false;
-                if(genshinTransport){genshinLastSubmittedFence=fenceValue;
-                    genshinLastSubmissionIsolated=isolatedPassResources;}
-            }
+                submissionUnfenced = false;
+                }
         }
-        executeSignalCpu.Finish(dx12EvalResult ? S_OK : E_FAIL);
     }
 
     // Execute is irreversible even when its later Signal fails. Such work
     // retains every slot through the existing unfenced/quarantine owner.
     // Only unexecuted lists may roll back CPU resource-state bookkeeping.
-    if(genshinTransport) dx12Feature->FinishRecordingSlotResources(commandFrame, commandListExecuted);
-    if(genshinTransport && !genshinSubmitted)dx12EvalResult=false;
-
     auto evalResult = false;
 
     do
@@ -1552,57 +1102,19 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         if (!dx12EvalResult || !commandListExecuted)
             break;
 
-        if (!genshinTransport && !CopyBackOutput())
+        if ( !CopyBackOutput())
         {
             LOG_ERROR("Can't copy output texture back!");
             break;
         }
 
-        if (genshinTransport)
-        {
-            auto* scope = genshinScope;
-            const auto outputRoute=GenshinTransport::CurrentOutputRoute();
-            const bool deferOutputFlush=dx12Feature->GetUpscalerType()==Upscaler::DLSS && outputRoute.deferOutputFlush;
-            if (!genshinTransport->Copyback(scope->owner,deferOutputFlush)){
-                genshinStop="output-copyback-refused";
-                break;
-            }
-            if(deferOutputFlush &&
-               !GenshinTransport::QueueDeferredOutputFlush(genshinTransport,scope->owner)){
-                genshinTransport->Revoke();genshinStop="output-flush-handoff-refused";break;
-            }
-            genshinStop="output-copyback-ordered";
-        }
-
-        if (!genshinTransport)
-            DlssNr::FinishedPictureDx11BridgeOutputHandoff(Dx12CommandQueue, cmdList);
-
-        evalResult = true;
+        DlssNr::FinishedPictureDx11BridgeOutputHandoff(Dx12CommandQueue, cmdList);evalResult = true;
 
     } while (false);
 
     if (evalResult)
         _frameCount++;
-    else if (!genshinTransport)
-        Dx11WithDx12::ClearLastPreparedUpscalerFrameState();
-
-    if(genshinTransport){
-        auto& observation=genshinRecordings[commandFrame];
-        observation.phase=genshinStop;observation.copyback=evalResult;
-        if(!evalResult)LogGenshinFailure(genshinStop,genshinStatus,commandFrame);
-        static std::atomic<unsigned> failures{0},successes{0};
-        auto& count=evalResult?successes:failures;
-        if(count.fetch_add(1,std::memory_order_relaxed)<6){const auto o=genshinTransport->Snapshot();
-            LOG_INFO("Genshin SR command return: pid={} instance={} generation={} stop={} hr={:X} "
-                "recording={} executed={} submitted={} provider_ok={} result={} stage={} queue={} list={} "
-                "allocator={} frame={} required_fence={} completed_fence={}",GetCurrentProcessId(),o.owner.instance,
-                o.owner.generation,genshinStop,static_cast<UINT>(genshinStatus),commandListRecording,commandListExecuted,
-                genshinSubmitted,dx12EvalResult,evalResult,static_cast<unsigned>(o.stage),o.queue,
-                reinterpret_cast<uint64_t>(cmdList),reinterpret_cast<uint64_t>(Dx12CommandAllocator[commandFrame]),
-                commandFrame,Dx12CommandAllocatorFenceValue[commandFrame],GenshinHookCpuTiming::Call(GenshinHookCpuTiming::Stage::FenceQueryApi,[&]{return Dx12Fence->GetCompletedValue();},GenshinHookCpuTiming::ResultKind::Fence));
-        }
-    }
-    callerCpuScope.Result(evalResult);
+    else Dx11WithDx12::ClearLastPreparedUpscalerFrameState();callerCpuScope.Result(evalResult);
     DlssNr::CompleteGenshinPresentSource(presentSourceAttempt, evaluatedInputMetadata, restoreParamOutput, evalResult);
     if(evalResult)currentInputMetadata=std::move(evaluatedInputMetadata);
     return evalResult;
@@ -1674,25 +1186,11 @@ bool IFeature_Dx11wDx12::BaseInit(ID3D11Device* InDevice, ID3D11DeviceContext* I
     // native upscaler inputs retain the supplied interop queue, including the
     // existing StarRail schedule. The receipt's real resources are validated
     // separately before Evaluate; a process name grants no ownership.
-    if(F6InputPolicy::FsrBridgeEnabled && GenshinSrReceipt::active){
-        FramePipeline::GpuWitness witness;
-        if(!genshinWorkDomain.Create(_dx11on12Device,witness)){
-            static std::atomic<unsigned> reports{0};
-            if(reports.fetch_add(1,std::memory_order_relaxed)<6)
-                LOG_ERROR("Genshin SR work domain refused: reason={} hr={:X}",witness.reason,static_cast<UINT>(witness.hr));
-            return false;
-        }
-        Dx12CommandQueue=genshinWorkDomain.Queue();
-        Dx12CommandListType=D3D12_COMMAND_LIST_TYPE_DIRECT;
-    }
-    // Reserve failure ownership before any provider or NR recording can be
-    // submitted, including the external NGX bridge with the internal bridge off.
     try
     {
-        if (!genshinRuntimeRetention) genshinRuntimeRetention = std::make_unique<Dx11BridgeInitRetention>();
-        genshinRuntimeRetention->device = BridgeWorkDevice();
-        genshinRuntimeRetention->queue = Dx12CommandQueue;
-        genshinRuntimeRetention->workDomain = genshinWorkDomain;
+        if (!runtimeRetention) runtimeRetention = std::make_unique<Dx11BridgeInitRetention>();
+        runtimeRetention->device = BridgeWorkDevice();
+        runtimeRetention->queue = Dx12CommandQueue;
     }
     catch (...) { return false; }
     if (!CreateD3D12Objects())
@@ -1719,10 +1217,10 @@ IFeature_Dx11wDx12::~IFeature_Dx11wDx12()
         else ReleaseInitReservation(initRetention);
     }
 
-    if(genshinRuntimeRetention){
+    if(runtimeRetention){
         // Shutdown is not completion. Do not let member destruction free the
         // provider/pass uploads while a prior submission lacks a safe witness.
-        if(State::Instance().isShuttingDown || !ReleaseSharedResources(true))RetainGenshinRuntime();
+        if(State::Instance().isShuttingDown || !ReleaseSharedResources(true))RetainRuntime();
         return;
     }
     if (State::Instance().isShuttingDown)
@@ -1730,5 +1228,5 @@ IFeature_Dx11wDx12::~IFeature_Dx11wDx12()
 
     // This also covers an initialized Genshin feature destroyed before Evaluate,
     // when the runtime retention slot has not yet been allocated.
-    ReleaseSharedResources(genshinWorkDomain.Creator() != nullptr);
+    ReleaseSharedResources(true);
 }

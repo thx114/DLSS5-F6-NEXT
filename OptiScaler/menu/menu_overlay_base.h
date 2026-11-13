@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "SysUtils.h"
 
@@ -18,7 +18,6 @@ class MenuOverlayBase
     static bool IsVisible();
 
     static void Init(HWND InHandle, bool isUWP);
-    static bool RetargetGenshinWindow(HWND hwnd);
     static bool RenderMenu();
     static void Shutdown();
     static void HideMenu();

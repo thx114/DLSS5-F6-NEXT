@@ -9,7 +9,7 @@
 #include "KernelBase_Proxy.h"
 
 #include <detours/detours.h>
-#include <genshin/GenshinOwnHookProvenance.h>
+#include <hooks/HookOwnership.h>
 
 // List of functions to proxy
 #define PROXY_FUNCTIONS(X)                                                                                             \
@@ -70,11 +70,11 @@ class Kernel32Proxy
 
     // Hook_FreeLibrary
 #define DEFINE_HOOK(name) \
-    static PFN_##name& Original_##name() { return GenshinNativeQuery::Own::Original<PFN_##name>(_own_##name); } \
+    static PFN_##name& Original_##name() { return HookOwnership::Own::Original<PFN_##name>(_own_##name); } \
     static PFN_##name Hook_##name(PVOID method) \
     { \
         if (_own_##name.live) return Original_##name(); \
-        const auto result = GenshinNativeQuery::Own::Install(_own_##name, &(PVOID&) _##name, \
+        const auto result = HookOwnership::Own::Install(_own_##name, &(PVOID&) _##name, \
             (PVOID) name##_Hooked(), method, _dll, #name); \
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; } \
         return Original_##name(); \
@@ -86,7 +86,7 @@ class Kernel32Proxy
     inline static HMODULE _dll = nullptr;
 
     // inline static PFN_FreeLibrary _FreeLibrary = nullptr;
-#define DEFINE_STORAGE(name) inline static PFN_##name _##name = nullptr; inline static GenshinNativeQuery::Own::Slot _own_##name;
+#define DEFINE_STORAGE(name) inline static PFN_##name _##name = nullptr; inline static HookOwnership::Own::Slot _own_##name;
     PROXY_FUNCTIONS(DEFINE_STORAGE)
 #undef DEFINE_STORAGE
 };

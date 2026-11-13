@@ -33,7 +33,8 @@ $suites = @(
     @{ Name = 'NrDetailHistoryPolicy'; Source = 'OptiScaler/dlssnr/tests/nr_detail_history_policy.cpp' },
     @{ Name = 'NrHistoryDebug'; Source = 'OptiScaler/runtime/tests/NrHistoryDebugTests.cpp' },
     @{ Name = 'NrDetailHistoryWarp'; Source = 'OptiScaler/runtime/tests/NrDetailHistoryWarpTests.cpp'; Libraries = 'd3d11.lib d3dcompiler.lib' },
-    @{ Name = 'NrDetailHistoryRuntime'; Source = 'OptiScaler/shaders/dlssnr/tests/detail-history-runtime/fixture.cpp'; StubInclude = 'OptiScaler/shaders/dlssnr/tests/detail-history-runtime/stubs'; Libraries = 'd3d12.lib dxgi.lib' },
+    @{ Name = 'NrDetailHistoryRuntime'; Source = 'OptiScaler/shaders/dlssnr/tests/detail-history-runtime/fixture.cpp'; AdditionalSource = 'OptiScaler/shaders/dlssnr/NrGpuExecutionLifetime.cpp'; CompilerFlags = '/DDLSSNR_LIFETIME_TEST_SEAM'; StubInclude = 'OptiScaler/shaders/dlssnr/tests/detail-history-runtime/stubs'; Libraries = 'd3d12.lib dxgi.lib' },
+    @{ Name = 'NrGpuExecutionLifetime'; Source = 'OptiScaler/runtime/tests/NrGpuExecutionLifetimeTests.cpp'; AdditionalSource = 'OptiScaler/shaders/dlssnr/NrGpuExecutionLifetime.cpp' },
     @{ Name = 'NrLayerLookWarp'; Source = 'OptiScaler/shaders/dlssnr/tests/LookWarpTests.cpp'; StubInclude = 'build/common-core-tests'; Libraries = 'd3d11.lib d3dcompiler.lib' },
     @{ Name = 'NrGpuTimeWarp'; Source = 'OptiScaler/shaders/dlssnr/tests/gpu-time/fixture.cpp'; StubInclude = 'OptiScaler/shaders/dlssnr/tests/gpu-time'; Libraries = 'd3d12.lib dxgi.lib' },
     @{ Name = 'GuideMetadata'; Source = 'OptiScaler/dlssnr/tests/GuideMetadata/GuideMetadataTests.cpp' },
@@ -52,6 +53,7 @@ $suites = @(
     @{ Name = 'GuideOrientation'; Source = 'OptiScaler/framegen/tests/GuideOrientationTests.cpp'; StubInclude = 'build/common-core-tests' },
     @{ Name = 'ResourceFlipWarp'; Source = 'OptiScaler/shaders/resource_flip/tests/RFWarp.cpp'; Libraries = 'd3d12.lib dxgi.lib d3dcompiler.lib' },
     @{ Name = 'F6InputPolicy'; Source = 'OptiScaler/runtime/tests/F6InputPolicyTests.cpp' },
+    @{ Name = 'HookOwnership'; Source = 'OptiScaler/runtime/tests/HookOwnershipTests.cpp'; Libraries = ('"{0}"' -f (Join-Path $root 'OptiScaler/library/detours/detours.lib')) },
     @{ Name = 'SourcePresent'; Source = 'OptiScaler/runtime/tests/SourcePresentTests.cpp' },
     @{ Name = 'FeatureTransition'; Source = 'OptiScaler/upscalers/tests/FeatureTransitionTests.cpp' },
     @{ Name = 'NgxDx12ResourceView'; Source = 'OptiScaler/upscalers/tests/NgxDx12ResourceViewTests.cpp' },
@@ -59,14 +61,6 @@ $suites = @(
     @{ Name = 'ProducerProgress'; Source = 'OptiScaler/runtime/tests/ProducerProgressTests.cpp' },
     @{ Name = 'NativeProducerCpuTiming'; Source = 'OptiScaler/runtime/tests/NativeProducerCpuTimingTests.cpp' },
     @{ Name = 'NativePrepGpuTiming'; Source = 'OptiScaler/runtime/tests/NativePrepGpuTimingTests.cpp'; Libraries = 'd3d12.lib dxgi.lib' },
-    @{ Name = 'DrawAdmission'; Source = 'OptiScaler/genshin/tests/DrawAdmissionTests.cpp' },
-    @{ Name = 'FsrComposite'; Source = 'OptiScaler/genshin/tests/FsrCompositeTests.cpp'; Libraries = 'd3d11.lib d3dcompiler.lib' },
-    @{ Name = 'FsrPassObservation'; Source = 'OptiScaler/genshin/tests/FsrPassObservationTests.cpp'; Libraries = 'd3d11.lib' },
-    @{ Name = 'ShaderCurrent'; Source = 'OptiScaler/genshin/tests/shader-current/fixture.cpp'; AdditionalSource = 'OptiScaler/genshin/GenshinHookCpuTiming.cpp'; Libraries = ('d3d11.lib d3dcompiler.lib /LIBPATH:"{0}"' -f (Join-Path $root 'OptiScaler/library/detours')) },
-    @{ Name = 'FsrHookHudMetrics'; Source = 'OptiScaler/runtime/tests/FsrHookHudMetricsTests.cpp' },
-    @{ Name = 'OutputRevealHandoff'; Source = 'OptiScaler/with_dx12/tests/OutputRevealHandoffTests.cpp'; Libraries = 'user32.lib' },
-    @{ Name = 'VisibleLeaseCompletion'; Source = 'OptiScaler/with_dx12/tests/VisibleLeaseCompletionTests.cpp'; Libraries = 'user32.lib d3d12.lib dxgi.lib' },
-    @{ Name = 'GenshinFsrHudWiring'; Source = 'OptiScaler/runtime/tests/GenshinFsrHudWiringTests.cpp'; AdditionalSource = 'OptiScaler/genshin/GenshinHookCpuTiming.cpp' },
     @{ Name = 'StarRailResidencyPolicy'; Source = 'OptiScaler/upscalers/tests/StarRailResidencyPolicyTests.cpp' },
     @{ Name = 'NrResident'; Source = 'OptiScaler/runtime/tests/NrResidentTests.cpp' },
     @{ Name = 'NrResidentConsumer'; Source = 'OptiScaler/runtime/tests/NrResidentConsumerTests.cpp'; StubInclude = 'OptiScaler/runtime/tests/nr-resident/stubs' },
@@ -74,13 +68,10 @@ $suites = @(
     @{ Name = 'CpuMappingTransactions'; Source = 'OptiScaler/runtime/tests/CpuMappingTransactionsTests.cpp' },
     @{ Name = 'CpuChangedByteRanges'; Source = 'OptiScaler/runtime/tests/CpuChangedByteRangesTests.cpp' },
     @{ Name = 'CpuIndexBounds'; Source = 'OptiScaler/runtime/tests/CpuIndexBoundsTests.cpp' },
-    @{ Name = 'HookTimingPublication'; Source = 'OptiScaler/genshin/tests/HookTimingPublicationTests.cpp'; AdditionalSource = 'OptiScaler/genshin/GenshinHookCpuTiming.cpp' },
-    @{ Name = 'CpuMappingDx11'; Source = 'OptiScaler/runtime/tests/CpuMappingDx11Tests.cpp'; Libraries = 'd3d11.lib' },
+    @{ Name = 'HookCpuTiming'; Source = 'OptiScaler/runtime/tests/HookCpuTimingTests.cpp'; AdditionalSource = 'OptiScaler/runtime/HookCpuTiming.cpp' },
+    @{ Name = 'HookTimingPublication'; Source = 'OptiScaler/runtime/tests/HookTimingPublicationTests.cpp'; AdditionalSource = 'OptiScaler/runtime/HookCpuTiming.cpp' },
     @{ Name = 'Dx11SharedRead'; Source = 'OptiScaler/runtime/tests/Dx11SharedReadTests.cpp'; Libraries = 'd3d11.lib d3d12.lib dxgi.lib' },
     @{ Name = 'Dx11RasterBindings'; Source = 'OptiScaler/runtime/tests/Dx11RasterBindingsTests.cpp'; Libraries = 'd3d11.lib d3dcompiler.lib' },
-    @{ Name = 'DepthRetention'; Source = 'OptiScaler/genshin/tests/depth-retention/DepthRetentionTests.cpp'; Libraries = 'd3d11.lib' },
-    @{ Name = 'CpuWriterProbe'; Source = 'OptiScaler/genshin/tests/CpuWriterProbeTests.cpp'; AdditionalSource = 'OptiScaler/genshin/GenshinCpuWriterProbe.cpp'; StubInclude = 'OptiScaler/genshin/tests/cpu-writer-probe/stubs' },
-    @{ Name = 'RecordingBackpressure'; Source = 'OptiScaler/runtime/tests/RecordingBackpressureTests.cpp'; AdditionalSource = 'OptiScaler/inputs/GenshinFsrContract.cpp' },
     @{ Name = 'DlssgTelemetry'; Source = 'OptiScaler/runtime/tests/DlssgTelemetryTests.cpp' },
     @{ Name = 'LoaderStartupContext'; Source = 'OptiScaler/runtime/tests/LoaderStartupContextTests.cpp' },
     @{ Name = 'PluginStartupGate'; Source = 'OptiScaler/runtime/tests/PluginStartupGateTests.cpp' },
@@ -92,7 +83,7 @@ $suites = @(
     @{ Name = 'NrDepthOrientation'; Source = 'OptiScaler/dlssnr/tests/nr_depth_orientation.cpp' },
     @{ Name = 'NrReconfiguration'; Source = 'OptiScaler/dlssnr/tests/nr-reconfiguration/fixture.cpp' },
     @{ Name = 'DlssgOptionsPolicy'; Source = 'OptiScaler/framegen/dlssg/tests/DlssgOptionsPolicyTests.cpp' },
-    @{ Name = 'HookCpuProcessOverride'; Source = 'OptiScaler/genshin/tests/hook_cpu_process_override.cpp'; ProcessEnvironment = $true }
+    @{ Name = 'HookCpuProcessOverride'; Source = 'OptiScaler/runtime/tests/hook_cpu_process_override.cpp'; ProcessEnvironment = $true }
 )
 
 $SuiteName = @($SuiteName | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
@@ -165,6 +156,7 @@ foreach ($suite in $suites) {
         $stub = Join-Path $root $suite.StubInclude
         $command = $command.Replace('cl /nologo', ('cl /I"{0}" /nologo' -f $stub))
     }
+    if ($suite.ContainsKey('CompilerFlags')) { $command += ' ' + $suite.CompilerFlags }
     if ($suite.ContainsKey('Libraries')) { $command += ' /link ' + $suite.Libraries }
     & cmd.exe /d /s /c $command
     if ($LASTEXITCODE -ne 0) { throw "CPU suite $($suite.Name) failed with exit $LASTEXITCODE" }
@@ -179,11 +171,6 @@ foreach ($suite in $suites) {
             }
         } finally { [Environment]::SetEnvironmentVariable('OPTISCALER_HOOK_CPU_TIMING', $previous, 'Process') }
         Write-Output 'HookCpuProcessOverride: 8 fresh-process cases passed'
-    } elseif ($suite.Name -eq 'ShaderCurrent' -and
-              (Test-Path -LiteralPath (Join-Path $root 'build/fsr-78057A29AF6C2D99.dxbc')) -and
-              (Test-Path -LiteralPath (Join-Path $root 'build/fsr-FEAC669E48FD931E.dxbc'))) {
-        & $exe (Join-Path $root 'build')
-        if ($LASTEXITCODE -ne 0) { throw "Real captured shader authentication failed with exit $LASTEXITCODE" }
     } elseif ($suite.Name -eq 'GuidePairExport') {
         $fixture=Join-Path $suiteOutput 'pair-fixture.json'
         & $exe --write-fixture $fixture
@@ -290,11 +277,7 @@ if ($LASTEXITCODE -ne 0) { throw "Direct DLSS scene wiring checks failed with ex
 & $Python -B (Join-Path $root 'OptiScaler/dlssnr/tests/check_detail_history_continuity.py')
 if ($LASTEXITCODE -ne 0) { throw "NR detail history continuity checks failed with exit $LASTEXITCODE" }
 
-& $Python -B (Join-Path $root 'OptiScaler/with_dx12/tests/test_genshin_output_owner.py')
-if ($LASTEXITCODE -ne 0) { throw "Output owner wiring checks failed with exit $LASTEXITCODE" }
 
-& $Python -B (Join-Path $root 'OptiScaler/genshin/tests/check_cpu_mapping_wiring.py')
-if ($LASTEXITCODE -ne 0) { throw "CPU mapping wiring checks failed with exit $LASTEXITCODE" }
 
 & $Python -B (Join-Path $root 'OptiScaler/hooks/tests/test_fg_sdk_present_timing.py') --cpu
 if ($LASTEXITCODE -ne 0) { throw "SDK Present observation checks failed with exit $LASTEXITCODE" }
@@ -319,23 +302,9 @@ if ($LASTEXITCODE -ne 17 -or !(Select-String -LiteralPath $suppressionNegativeLo
 & $Python -B (Join-Path $root 'OptiScaler/with_dx12/tests/test_interop_copy_retirement.py') --cpu
 if ($LASTEXITCODE -ne 0) { throw "Interop copy reader retirement checks failed with exit $LASTEXITCODE" }
 
-& $Python -B (Join-Path $root 'OptiScaler/with_dx12/tests/test_private_copy_wait.py') --cpu
-if ($LASTEXITCODE -ne 0) { throw "Private copy queue ordering checks failed with exit $LASTEXITCODE" }
 
-& $Python -B (Join-Path $root 'OptiScaler/genshin/tests/test_legacy_owner_boundary.py')
-if ($LASTEXITCODE -ne 0) { throw "Owner callback boundary checks failed with exit $LASTEXITCODE" }
 
-& $Python -B (Join-Path $root 'OptiScaler/genshin/tests/test_resource_observation.py') --cpu
-if ($LASTEXITCODE -ne 0) { throw "Resource observation lifecycle checks failed with exit $LASTEXITCODE" }
 
-& $Python -B (Join-Path $root 'OptiScaler/genshin/tests/test_input_observation.py')
-if ($LASTEXITCODE -ne 0) { throw "New input observation checks failed with exit $LASTEXITCODE" }
 
-& $Python -B (Join-Path $root 'OptiScaler/genshin/tests/test_observed_settings.py')
+& $Python -B (Join-Path $root 'OptiScaler/runtime/tests/test_observed_settings.py')
 if ($LASTEXITCODE -ne 0) { throw "Observed settings checks failed with exit $LASTEXITCODE" }
-
-& $Python -B (Join-Path $root 'OptiScaler/genshin/tests/test_returned_raster_validation.py')
-if ($LASTEXITCODE -ne 0) { throw "Returned raster validation checks failed with exit $LASTEXITCODE" }
-
-& $Python -B (Join-Path $root 'OptiScaler/genshin/tests/test_returned_raster_capture.py')
-if ($LASTEXITCODE -ne 0) { throw "Returned raster capture checks failed with exit $LASTEXITCODE" }

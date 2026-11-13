@@ -14,7 +14,6 @@ std::shared_ptr<Provider> CreateProvider() noexcept;
 void BindInput(const std::shared_ptr<Provider>&, IDXGISwapChain*) noexcept;
 // Identity of the actual SDK factory creation owner, independent of source
 // token/input epoch and physical buffer generation. No GPU completion authority.
-uint64_t ProviderIdentity(const std::shared_ptr<Provider>&) noexcept;
 void RetireProvider(std::shared_ptr<Provider>&) noexcept;
 // Closing admission persists on pending/failure. No wait and no implicit rollback to live.
 // Commit rechecks all endpoint tails after the provider's public host teardown.
@@ -50,24 +49,6 @@ public:
 // to suppress each other. No source color/guide/FG-input mutation.
 void PrepareSource(IDXGISwapChain* input, IDXGISwapChain* nativeSource,
                    UINT flags, const DXGI_PRESENT_PARAMETERS*) noexcept;
-// Genshin-only callsite authority: constructed AFTER successful private copy,
-// real queue Wait and FinishedPicture, BEFORE native parent Present. Neither a
-// bound child nor the native Present forwarder grants this authority.
-class CopiedSourceScope final
-{
-    std::shared_ptr<Provider> provider;
-    uint64_t serial = 0;
-public:
-    CopiedSourceScope(IDXGISwapChain* input, IDXGISwapChain* nativeSource, bool copied,
-        ID3D12CommandQueue* copyQueue, ID3D12Fence* copyFence, uint64_t copyValue,
-        uint64_t copyOwner, uint64_t copyGeneration, uint64_t copySerial) noexcept;
-    ~CopiedSourceScope();
-    void ParentPresented(HRESULT) noexcept;
-    // True while disabled; otherwise every observed physical output must have
-    // actual techniques, owned submission and raw S_OK. Zero outputs is failure.
-    bool Filtered() const noexcept;
-    CopiedSourceScope(const CopiedSourceScope&) = delete;
-};
 class InputScope final
 {
     std::shared_ptr<Provider> provider;
@@ -98,13 +79,6 @@ public:
     // writes, quarantine refuses consumers; it never fabricates device removal.
     HRESULT Present(UINT flags, const DXGI_PRESENT_PARAMETERS*,
                     const std::function<HRESULT()>& rawAndOverlay) noexcept;
-    // Only the real retained Genshin child calls this seam. The captured SDK
-    // stream/creation queue and its physical tail apply even with FinalOutput
-    // disabled. An input source/token is never an asynchronous output identity.
-    // The override flags are used only on the raw physical flip chain to prime
-    // hidden content; SDK input and native parent flags remain unchanged.
-    HRESULT PresentGenshin(UINT flags,const DXGI_PRESENT_PARAMETERS*,
-                           const std::function<HRESULT(UINT)>& rawAndOverlay) noexcept;
     void SetColorSpace(DXGI_COLOR_SPACE_TYPE) noexcept;
 #ifdef HOYOSHADE_STAGE_TEST
     friend struct RetirementFixture;
@@ -131,8 +105,7 @@ public:
         Resize(const Resize&) = delete;
     };
 private:
-    HRESULT PresentImpl(UINT,const DXGI_PRESENT_PARAMETERS*,const std::function<HRESULT()>&,
-                        UINT* genshinRawFlags) noexcept;
+    HRESULT PresentImpl(UINT,const DXGI_PRESENT_PARAMETERS*,const std::function<HRESULT()>&) noexcept;
     Endpoint() = default;
 };
 }

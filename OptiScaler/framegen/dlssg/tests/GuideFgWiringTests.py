@@ -4,6 +4,9 @@ import re
 
 ROOT = Path(__file__).resolve().parents[3]
 source = (ROOT / "framegen/dlssg/DLSSG_Dx12.cpp").read_text(encoding="utf-8-sig")
+source += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+    next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+         if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
 dx11 = (ROOT / "inputs/FG/Upscaler_Inputs_Dx11wDx12.cpp").read_text(encoding="utf-8-sig")
 dx12 = (ROOT / "inputs/FG/Upscaler_Inputs_Dx12.cpp").read_text(encoding="utf-8-sig")
 ngx = (ROOT / "inputs/NVNGX_DLSS_Dx12.cpp").read_text(encoding="utf-8-sig")
@@ -67,7 +70,7 @@ assert "GuideCapture::Stream::Fg,_uiCommandList[slot],inputs,snapshot" in captur
 assert "CaptureAcceptedGuides(" not in pair # wait until final colour is joined
 assert "std::try_to_lock" in capture
 assert "final->source==_upscalerColourSources[slot]" in capture
-assert "UpscalerColourIdentity(colour)==final->endpoint.colour" in capture
+assert "ComIdentity::Get(colour)==final->endpoint.colour" in capture
 assert "ready!=_resourceReady[slot].end() && ready->second" in capture
 assert "inputs.colour=colour;inputs.colourState=actual.state" in capture
 
@@ -184,7 +187,10 @@ assert "pixelPhaseVerified=true" not in join + dispatch
 assert "generatedIdentityKnown=true" not in source
 assert "StreamlineHooks::QueryDlssgState(" in query
 assert "sample.counterIntervalKnown" in query and "sample.previousQueryEndNs" in query
-assert "framegen::DlssgStateQueryReason::CompletionFence" in source
+assert "const auto done=observation.fence->GetCompletedValue()" in poll
+assert "done==UINT64_MAX || done<observation.value" in poll
+assert "GuideDiagnostics::Stage::Completed" in poll
+assert "observation.fence=fence;observation.value=value;observation.submitted=true" in submit
 assert "FrameTrace::Api::D3D12, handleId" in ngx and "InCmdList), nrUpscale)" in ngx
 assert "evaluateObservation.Result(optiResult)" in ngx and "evaluateObservation.Result(result)" in ngx
 assert ngx11.index("GuideDiagnostics::EvaluationScope evaluateObservation(") > ngx11.index(

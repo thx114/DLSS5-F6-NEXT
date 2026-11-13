@@ -9,6 +9,9 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--negative', action='store_true', help='bypass the source hook check for its current provider')
 args = parser.parse_args()
 source = (ROOT / 'OptiScaler/framegen/dlssg/DLSSG_Dx12.cpp').read_text(encoding='utf-8-sig')
+source += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+    next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+         if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
 start = source.index('bool DLSSG_Dx12::CanSubmitInputs()')
 brace = source.index('{', start)
 depth, end = 1, brace + 1

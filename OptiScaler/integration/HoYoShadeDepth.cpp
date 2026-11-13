@@ -1,7 +1,6 @@
 #include "pch.h"
 #include "HoYoShadeDepth.h"
 #include <native/NativeSubmissionReceipt.h>
-#include <genshin/GenshinDx12Transport.h>
 #include <cstring>
 #include <stdexcept>
 
@@ -91,38 +90,6 @@ public:
         // one-shot BindReaderCompletion: source.Return binds the final native
         // consumer fence, ordered after this owned batch on the same queue.
         // Its failure path retains the parent rather than minting completion.
-        return RetainedReader::BindCompletion(fence, value);
-    }
-};
-class BeforeSrReader final : public RetainedReader
-{
-public:
-    std::shared_ptr<GenshinTransport::Lease> lease;
-    GenshinGuides::Owner owner;
-    Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
-    Microsoft::WRL::ComPtr<ID3D12Fence> ready;
-    uint64_t value = 0, stream = 0, generation = 0;
-    bool Validate(const Access& a) const noexcept override
-    {
-        if (!lease || owner.thread != GetCurrentThreadId() || !owner.device || !owner.context ||
-            !owner.deviceEpoch || !owner.producerEpoch || !owner.configEpoch || !owner.instance ||
-            !owner.generation || !owner.historyEpoch || a.frame != owner.sourceFrame ||
-            a.owner != stream || a.generation != generation || a.epoch != owner.historyEpoch ||
-            a.queue != queue.Get() || a.readyFence != ready.Get() || a.readyValue != value) return false;
-        const auto observation = lease->Snapshot();
-        return !observation.revoked && observation.stage == GenshinTransport::Stage::InputsOrdered &&
-            GenshinGuides::SameOwner(owner, observation.owner) && observation.queue == reinterpret_cast<uint64_t>(queue.Get()) &&
-            lease->Resource(owner, 1) == a.resource;
-    }
-    bool BindCompletion(ID3D12Fence* fence, uint64_t value) noexcept override
-    {
-        Microsoft::WRL::ComPtr<ID3D12Device> readyOwner, doneOwner;
-        if (!fence || FAILED(ready->GetDevice(IID_PPV_ARGS(&readyOwner))) ||
-            FAILED(fence->GetDevice(IID_PPV_ARGS(&doneOwner))) || !Same(readyOwner.Get(), doneOwner.Get()))
-        { Quarantine(); return false; }
-        // The full transport stays in this reader until the OWNED completion,
-        // even if SR later refuses/never submits. Its surface pool cannot run
-        // until the lease's last owner disappears. Unknown work self-retains.
         return RetainedReader::BindCompletion(fence, value);
     }
 };
@@ -277,24 +244,5 @@ Input FromNative(const native::FrameInput& frame, ID3D12CommandQueue* queue, con
         return reader->Validate(a) && Compatible(desc, a) ? a : Access{};
     } catch (...) { return {}; }
 }
-Input FromBeforeSr(const std::shared_ptr<GenshinTransport::Lease>& lease, const GenshinGuides::Owner& owner,
-    ID3D12CommandQueue* queue, ID3D12Fence* fence, uint64_t value, uint64_t stream, uint64_t generation,
-    uint64_t frame, uint32_t width, uint32_t height, bool directionKnown, bool reversed) noexcept
-{
-    try {
-        if (!lease || !directionKnown || frame != owner.sourceFrame) return {};
-        auto reader = std::make_shared<BeforeSrReader>();
-        reader->lease = lease; reader->owner = owner; reader->queue = queue; reader->ready = fence;
-        reader->value = value; reader->stream = stream; reader->generation = generation;
-        Access a;
-        a.resource = lease->Resource(owner, 1); a.typedFormat = DXGI_FORMAT_R32_FLOAT;
-        a.width = width; a.height = height; a.stateKnown = a.directionKnown = true;
-        a.entryState = D3D12_RESOURCE_STATE_COMMON; a.reversed = reversed;
-        // This is the already prepared SR plane. Preserve its actual orientation;
-        // do not apply the original game's extraction Y transform a second time.
-        a.queue = queue; a.readyFence = fence; a.readyValue = value;
-        a.owner = stream; a.generation = generation; a.frame = frame; a.epoch = owner.historyEpoch; a.reader = reader;
-        return a.resource && reader->Validate(a) && Compatible(a.resource->GetDesc(), a) ? a : Access{};
-    } catch (...) { return {}; }
-}
+
 }

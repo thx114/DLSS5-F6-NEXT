@@ -15,39 +15,7 @@
 
 // Observation only: fixed thread-local counters, never consulted by admission.
 // These are host elapsed spans, including driver blocking/scheduling, not GPU time.
-namespace GenshinSrRecordingCpu
-{
-enum class Stage : unsigned
-{
-    RecordingWait, ProviderRecord, NgxEvaluate, TransportExecuteSignal, FeatureSignal, ExecuteSignal, Count
-};
-void Report(const void* feature) noexcept;
-struct ReportOnExit final
-{
-    const void* feature = nullptr;
-    ~ReportOnExit() noexcept { Report(feature); }
-};
-class Scope final
-{
-    const void* feature_ = nullptr;
-    Stage stage_;
-    uint64_t epoch_ = 0;
-    int64_t start_ = 0;
-    bool active_ = false;
-    void Complete(HRESULT result, bool aborted) noexcept;
 
-  public:
-    Scope(const void* feature, Stage stage, bool enabled) noexcept;
-    ~Scope() noexcept { Complete(E_ABORT, true); }
-    HRESULT Finish(HRESULT result) noexcept
-    {
-        Complete(result, false);
-        return result;
-    }
-    Scope(const Scope&) = delete;
-    Scope& operator=(const Scope&) = delete;
-};
-}
 
 class IFeature_Dx12 : public virtual IFeature
 {

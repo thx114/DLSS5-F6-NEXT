@@ -11,6 +11,9 @@ sl = (root / "hooks/Streamline_Hooks.cpp").read_text(encoding="utf-8-sig")
 reflex = (root / "hooks/Reflex_Hooks.cpp").read_text(encoding="utf-8-sig")
 inputs = (root / "inputs/FG/Upscaler_Inputs_Dx12.cpp").read_text(encoding="utf-8-sig")
 provider = (root / "framegen/dlssg/DLSSG_Dx12.cpp").read_text(encoding="utf-8-sig")
+provider += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+    next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+         if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
 header = (root / "framegen/dlssg/DLSSG_Dx12.h").read_text(encoding="utf-8-sig")
 contract = (root / "framegen/dlssg/ZzzFrameScope.h").read_text(encoding="utf-8-sig")
 ngx = (root / "hooks/ngx/NativeDx12Hooks.cpp").read_text(encoding="utf-8-sig")
@@ -123,7 +126,7 @@ refusal = body(provider, "bool DLSSG_Dx12::RefuseDepthContract(")
 check("frameKnown &&" in refusal and "source.sdkFrameKnown" in refusal, "null-tag refusal invents unknown frame ID")
 check("nativeZzzSourceFailed=!dispatched || tokenResult!=sl::Result::eOk" in fg, "failed dispatch can acquire a stale consumption receipt")
 fg_present = body(fg, "HRESULT FGHooks::FGPresent(")
-dispatch = body(fg_present, "else if (fgPresentAdmitted && !starRailSourceFallback)")
+dispatch = body(fg_present, "if (fgPresentAdmitted && !starRailSourceFallback)")
 check(dispatch.index("nativeZzzSourceAttempted=nativeZzzDlssg!=nullptr") < dispatch.index("const bool dispatched=fg->Present()"), "attempt not latched in admitted Dispatch branch before vendor callbacks")
 check(fg_present.count("nativeZzzSourceAttempted=") == 2 and "nativeZzzSourceAttempted=false" in fg_present, "attempt latch reset/recomputed or not initialized false")
 check("if (dispatched && state.currentFG==nativeZzzDlssg)" in dispatch and "if (nativeZzzSourceFailed && state.currentFG==nativeZzzDlssg)" in dispatch, "changed provider dereferenced after Dispatch callback")
@@ -151,17 +154,13 @@ passthrough = body(fg_present, "else if (willPresent && fg != nullptr)")
 check("pass-through present only" in passthrough and "nativeZzzSourceAttempted" not in passthrough and "BeginNativeGuidePresent" not in passthrough, "inactive branch attempts source consumption")
 check("const bool fgPresentAdmitted = willPresent && fg != nullptr &&" in fg_present and "fgFeatureActive || starRailSourceFallback" in fg_present, "test/non-admitted Present enters Dispatch")
 check("config->FGEnabled.value_or_default() &&" in fg_present and "fg->IsActive() && !fg->IsPaused()" in fg_present, "FG Off/paused/warmup no longer skip active admission")
-original_present_paths = """if (starRailSourceFailed)
-        result = DXGI_ERROR_INVALID_CALL; // Unknown input cannot consume stale guides.
-    else
-        result = dlssg::zzz::RunPresent(nativeZzzAction,DXGI_ERROR_INVALID_CALL,[&]() -> HRESULT {
-            return ObserveFgSdkPresent(collectSdkPresent,[&]() -> HRESULT {
-                if (pPresentParameters == nullptr)
-                    return o_FGSCPresent(This, SyncInterval, Flags);
-                return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, effectivePresentParameters);
-            },&starRailSdkWall);
-        });"""
-check(original_present_paths in fg_present, "unattempted Present no longer follows original Present/Present1 paths")
+original_present = body(fg_present, "result = dlssg::zzz::RunPresent(")
+check("return ObserveFgSdkPresent(collectSdkPresent" in original_present and
+      "pPresentParameters == nullptr" in original_present and
+      "o_FGSCPresent(This, SyncInterval, Flags)" in original_present and
+      "o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, effectivePresentParameters)" in original_present and
+      "return apiResult;" in original_present,
+      "unattempted Present must preserve original Present/Present1 arguments and result")
 gap = body(provider, "bool DLSSG_Dx12::PrepareNativeGuideGapPresent(")
 safe = body(provider, "bool DLSSG_Dx12::NativeGuideGapSafe(")
 check("_nativeGapOffProof.Ensure(owner,localViewport" in gap and

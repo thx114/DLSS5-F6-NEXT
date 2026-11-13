@@ -35,7 +35,7 @@ def require(value, why):
 
 route = block(late, "bool DirectDlssSceneBridgeEnabled()")
 require("F6InputPolicy::DirectDlssInputs" in route, "route follows product NGX input policy")
-require("!F6InputPolicy::FsrBridgeEnabled" in route, "internal FSR source cannot claim NGX identity")
+require("GenshinSrReceipt" not in feature and "GenshinTransport" not in feature, "external NGX uses the ordinary resource view")
 require("!native::OpticalFgNrEnabled()" in route, "explicit optical producer keeps its own contract")
 require("DirectDlssSceneBridgeEnabled()" in block(late, "bool BridgeContinuationEnabled()"),
         "generic NGX bridge advances a source clock independently of physical FG")
@@ -56,7 +56,7 @@ flow_condition = re.search(r"if \(\(\(!bridgeScene.*?PictureHistoryReady", late,
 require(flow_condition is not None, "ordinary NGX scene route cannot silently replace model MV with optical flow")
 require("if (bridgeScene || (nativeFreshColorRoute" in late,
         "scene endpoint commits its own owner/shape so history does not reset every frame")
-require("if (g_nr.feature == nullptr && !g_nrRetired.empty())\n        Late::RetireCompletedPrivateRecordings();" in late,
+require("if (g_nr.feature == nullptr && !g_nrGpuWork.Empty())\n        Late::RetireCompletedPrivateRecordings();" in late,
         "every NR endpoint progresses completed idle private recordings during rebuild")
 require(re.search(r"if\s*\(!freshColorFallback\s*&&\s*\(DetailReuse::PendingRecordings\(\)\s*!=\s*0\s*\|\|\s*"
                   r"DetailHistory::PendingRecordings\(\)\s*!=\s*0\)\)\s*Late::RetireCompletedPrivateRecordings\(&slot\)",late),

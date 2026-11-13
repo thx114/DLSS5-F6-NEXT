@@ -18,9 +18,7 @@
 #include <ankerl/unordered_dense.h>
 #include <imgui/ImGuiNotify.hpp>
 #include <misc/IdentifyGpu.h>
-#include <genshin/GenshinSrReceipt.h>
 #include <runtime/GuideDiagnostics.h>
-#include "FSR2_Dx11_Internal.h"
 
 static ID3D11Device* D3D11Device = nullptr;
 static ankerl::unordered_dense::map<unsigned int, ContextData<IFeature_Dx11>> Dx11Contexts;
@@ -28,22 +26,6 @@ static int evalCounter = 0;
 static bool shutdown = false;
 static bool _skipInit = false;
 static wchar_t const** paths;
-
-// Only the authenticated internal Genshin call publishes this witness.
-static void PublishGenshinSrOutcome(ID3D11DeviceContext* context, NVSDK_NGX_Parameter* parameters,
-                                   const NVSDK_NGX_Handle* handle, GenshinSrReceipt::Outcome outcome,
-                                   bool evaluated=false)
-{
-    if (!GenshinSrReceipt::active) return;
-    Microsoft::WRL::ComPtr<ID3D11Device> device;
-    Microsoft::WRL::ComPtr<IUnknown> outputIdentity;
-    auto* output=DlssNr::NgxParameter::ReadResource<ID3D11Resource>(parameters,NVSDK_NGX_Parameter_Output);
-    if (context) context->GetDevice(&device);
-    if (output) output->QueryInterface(IID_PPV_ARGS(&outputIdentity));
-    GenshinSrReceipt::Publish({reinterpret_cast<uint64_t>(device.Get()),reinterpret_cast<uint64_t>(context),
-        reinterpret_cast<uint64_t>(parameters),reinterpret_cast<uint64_t>(outputIdentity.Get()),
-        reinterpret_cast<uint64_t>(handle)},outcome,evaluated);
-}
 
 class ScopedInitDx11
 {
@@ -576,12 +558,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
                                                              NVSDK_NGX_Parameter* InParameters,
                                                              NVSDK_NGX_Handle** OutHandle)
 {
-    if (GenshinSrReceipt::active && (!InDevCtx || !InParameters || !OutHandle ||
-        InFeatureID != NVSDK_NGX_Feature_SuperSampling))
-    {
-        PublishGenshinSrOutcome(InDevCtx,InParameters,nullptr,GenshinSrReceipt::Outcome::UnsupportedFeature);
-        return NVSDK_NGX_Result_Fail;
-    }
     if (!InDevCtx || !InParameters || !OutHandle) return NVSDK_NGX_Result_Fail;
     FeatureLifecycleTrace lifecycle("DX11 CreateFeature");
     // FeatureId check
@@ -621,19 +597,13 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
         // DLSS path so its private D3D11 resources can reach the native DLSS provider.
         // Keep the existing GPU/provider gates in FeatureProvider_Dx11; without them
         // this request still fails closed or falls back to the configured FSR path.
-        if (GenshinSrReceipt::active)
-        {
-            upscalerChoice = Upscaler::DLSS_on12;
-            LOG_INFO("Authenticated Genshin SR dispatch selecting DLSS_on12 bridge");
-        }
-
         LOG_INFO("Creating new {} feature", UpscalerDisplayName(upscalerChoice));
 
         Dx11Contexts[handleId] = {};
 
         // The authenticated producer still requires its DLSS-specific receipt.
         if (!FeatureProvider_Dx11::GetFeature(upscalerChoice, handleId, InParameters, &Dx11Contexts[handleId].feature,
-                                             !GenshinSrReceipt::active))
+                                             true))
         {
             LOG_ERROR("Can't create {} feature", UpscalerDisplayName(upscalerChoice));
             return NVSDK_NGX_Result_Fail;
@@ -646,7 +616,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
         Dx11Contexts[handleId] = {};
 
         if (!FeatureProvider_Dx11::GetFeature(Upscaler::DLSSD, handleId, InParameters, &Dx11Contexts[handleId].feature,
-                                             !GenshinSrReceipt::active))
+                                             true))
         {
             LOG_ERROR("Can't create DLSSD feature");
             return NVSDK_NGX_Result_Fail;
@@ -675,15 +645,15 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
     if (deviceContext->ModuleLoaded() && deviceContext->Init(D3D11Device, InDevCtx, InParameters))
     {
         State::Instance().currentFeature = deviceContext;
-        PublishGenshinSrOutcome(InDevCtx,InParameters,*OutHandle,GenshinSrReceipt::Outcome::AwaitingEvaluate);
+
         return NVSDK_NGX_Result_Success;
     }
 
-    PublishGenshinSrOutcome(InDevCtx,InParameters,*OutHandle,GenshinSrReceipt::Outcome::CreateRebuild);
+
     LOG_ERROR("CreateFeature failed");
 
     State::Instance().newBackend = FeatureProvider_Dx11::FallbackUpscaler(
-        deviceContext->GetUpscalerType(), !GenshinSrReceipt::active);
+        deviceContext->GetUpscalerType(), true);
     State::Instance().changeBackend[handleId] = true;
 
     return NVSDK_NGX_Result_Success;
@@ -723,7 +693,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_ReleaseFeature(NVSDK_NGX_Handle* 
 
     if (auto deviceContext = existingContext->second.feature.get(); deviceContext != nullptr)
     {
-        if (!shutdown && !GenshinFsrInternal::providerReleaseQuiesced)
+        if (!shutdown && true)
         {
             LOG_TRACE("sleeping for 500ms before reset()!");
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -733,7 +703,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_ReleaseFeature(NVSDK_NGX_Handle* 
             State::Instance().currentFeature = nullptr;
 
         existingContext->second.feature.reset();
-        if (!shutdown && !GenshinFsrInternal::providerReleaseQuiesced &&
+        if (!shutdown &&
             Config::Instance()->Dx11DelayedInit.value_or_default())
         {
             LOG_TRACE("sleeping for 500ms after reset()!");
@@ -791,7 +761,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
 {
     if (InFeatureHandle == nullptr)
     {
-        PublishGenshinSrOutcome(InDevCtx,InParameters,InFeatureHandle,GenshinSrReceipt::Outcome::NoHandle);
+
         LOG_DEBUG("InFeatureHandle is null");
         return NVSDK_NGX_Result_FAIL_FeatureNotFound;
     }
@@ -802,7 +772,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
 
     if (InDevCtx == nullptr)
     {
-        PublishGenshinSrOutcome(InDevCtx,InParameters,InFeatureHandle,GenshinSrReceipt::Outcome::InvalidContext);
+
         LOG_ERROR("InDevCtx is null!!!");
         return NVSDK_NGX_Result_Fail;
     }
@@ -811,11 +781,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
     auto handleId = InFeatureHandle->Id;
     if (handleId < DLSS_MOD_ID_OFFSET)
     {
-        if (GenshinSrReceipt::active)
-        {
-            PublishGenshinSrOutcome(InDevCtx,InParameters,InFeatureHandle,GenshinSrReceipt::Outcome::UnsupportedFeature);
-            return NVSDK_NGX_Result_Fail;
-        }
         if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::D3D11_EvaluateFeature() != nullptr)
         {
             LOG_DEBUG("D3D11_EvaluateFeature for ({0})", handleId);
@@ -834,7 +799,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
     evalCounter++;
     if (Config::Instance()->SkipFirstFrames.has_value() && evalCounter < Config::Instance()->SkipFirstFrames.value())
     {
-        PublishGenshinSrOutcome(InDevCtx,InParameters,InFeatureHandle,GenshinSrReceipt::Outcome::SkipFirstFrames);
+
         evaluateObservation.Result(NVSDK_NGX_Result_Success);
         return NVSDK_NGX_Result_Success;
     }
@@ -849,7 +814,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
     {
         auto successfulPhase = FeatureProvider_Dx11::ChangeFeature(state.newBackend, D3D11Device, InDevCtx, handleId,
                                                                    InParameters, activeContext,
-                                                                   !GenshinSrReceipt::active);
+                                                                   true);
 
         evalCounter = 0;
 
@@ -857,8 +822,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
         {
             // Only the internal Genshin receipt distinguishes a successful
             // incomplete phase from failure; public NGX return semantics stay unchanged.
-            PublishGenshinSrOutcome(InDevCtx,InParameters,InFeatureHandle,successfulPhase
-                ? GenshinSrReceipt::Outcome::BackendRebuild : GenshinSrReceipt::Outcome::EvaluateFailed);
+
             evaluateObservation.Result(NVSDK_NGX_Result_Success);
             return NVSDK_NGX_Result_Success;
         }
@@ -884,32 +848,22 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
 
     if (deviceContext == nullptr)
     {
-        PublishGenshinSrOutcome(InDevCtx,InParameters,InFeatureHandle,GenshinSrReceipt::Outcome::NoFeature);
+
         LOG_DEBUG("trying to use released handle, returning NVSDK_NGX_Result_Success");
         evaluateObservation.Result(NVSDK_NGX_Result_Success);
         return NVSDK_NGX_Result_Success;
     }
 
-    const bool genshinBridge = GenshinSrReceipt::active && deviceContext->IsWithDx12();
-    if (GenshinSrReceipt::active && (deviceContext->GetUpscalerType()==Upscaler::DLSSD ||
-        (genshinBridge && !GenshinSrReceipt::active->BeginObservationTransport(InDevCtx,InParameters,
-            Config::Instance()->AcquireGenshinControls().epoch))))
-    {
-        PublishGenshinSrOutcome(InDevCtx,InParameters,InFeatureHandle,GenshinSrReceipt::Outcome::UnsupportedFeature);
-        evaluateObservation.Result(NVSDK_NGX_Result_Fail);
-        return NVSDK_NGX_Result_Fail;
-    }
     auto upscaleResult = deviceContext->Evaluate(InDevCtx, InParameters);
-    PublishGenshinSrOutcome(InDevCtx,InParameters,deviceContext->Handle(),
-        upscaleResult ? GenshinSrReceipt::Outcome::ActualEvaluateSucceeded : GenshinSrReceipt::Outcome::EvaluateFailed,true);
+
 
     const auto upscaler = deviceContext->GetUpscalerType();
     const auto fallback = FeatureProvider_Dx11::FallbackUpscaler(upscaler,
-        !GenshinSrReceipt::active);
+        true);
     const bool bridgeFallback = fallback == Upscaler::FSR22_on12;
 
     // A failed ordinary bridge evaluation must not publish its cached guides as fresh.
-    if (upscaleResult && GenshinSrReceipt::AllowsDownstreamGuides() &&
+    if (upscaleResult &&
         State::Instance().activeFgInput == FGInput::Upscaler)
     {
         if (WithDx12::IsInited())

@@ -8,28 +8,6 @@
 class WithDx12
 {
   private:
-    // Only first publication in Genshin uses this transaction. The mutex never
-    // spans COM, driver calls, hooks, logging, or candidate reference release.
-    inline static std::mutex _publicationMutex;
-    inline static bool _constructingPair = false, _publicationInterrupted = false;
-    inline static thread_local unsigned _internalPairCreationDepth = 0;
-    class InternalPairCreationScope
-    {
-      public:
-        InternalPairCreationScope() noexcept { ++_internalPairCreationDepth; }
-        ~InternalPairCreationScope() { --_internalPairCreationDepth; }
-        InternalPairCreationScope(const InternalPairCreationScope&) = delete;
-        InternalPairCreationScope& operator=(const InternalPairCreationScope&) = delete;
-    };
-    struct PairReservation
-    {
-        ~PairReservation();
-        PairReservation() = default;
-        PairReservation(const PairReservation&) = delete;
-        PairReservation& operator=(const PairReservation&) = delete;
-    };
-    static bool PrepareGenshinPair(ID3D11Device* device11, D3D_FEATURE_LEVEL level, IDXGIAdapter* adapter);
-    static bool InitializeInternalPairDevice(ID3D12Device* device);
     inline static D3D12_COMMAND_LIST_TYPE _commandListType = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
     inline static ID3D12Device* _d3d12Device = nullptr;
@@ -54,7 +32,6 @@ class WithDx12
 
     // Factory-hook call boundary only. Only WithDx12 can construct its scope;
     // this TLS value grants no identity, provenance, or resource authority.
-    static bool InternalPairCreationActive() noexcept { return _internalPairCreationDepth != 0; }
 
     static ID3D12Device* RequestD3D12Device(D3D_FEATURE_LEVEL InFeatureLevel);
     static ID3D12Device* RequestD3D12Device(D3D_FEATURE_LEVEL InFeatureLevel, IDXGIAdapter* adapter = nullptr);

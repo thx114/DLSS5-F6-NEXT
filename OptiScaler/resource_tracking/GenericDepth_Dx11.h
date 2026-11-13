@@ -17,30 +17,9 @@
 // RSSetViewports and the draw calls on the immediate context, and copy the picked buffer into the finder's own textures there
 // (native/DepthCopyDx11.h: the game's compute bindings it uses for that are put back; nothing else of the game's is changed).
 // The hooks patch the functions, which every context of the kind shares: only the watched context's calls are counted.
-namespace GenshinQueryScope { class CreationWitness; }
 namespace GenericDepthDx11
 {
-// Called only with the private factory witness, before exposing the new device.
-// Commits the full context hook set and seeds only an absent context state; failure
-// cancels the witness and never blocks the ordinary device/SR initialization.
-bool PrepareCreatedContextQueries(ID3D11Device*, GenshinQueryScope::CreationWitness&);
-
-// R587: exact SDK CreateDeferredContext[1..3] return notification. Records only
-// context-owned birth metadata after checking type and canonical device owner.
-// Deferred replay is not covered by the immediate-context hook set: no fresh
-// query state/certificate is created, and existing UnknownPast is untouched.
-HRESULT NoteDeferredContextBirth(ID3D11Device*, ID3D11DeviceContext*, unsigned apiVersion,
-    uint64_t entryTick, uint64_t returnTick, const void* caller, const void* executed) noexcept;
-
-// Hooks the immediate context once a D3D11 device is known. A later bridge request
-// may add its query/state hooks to the same common targets without reattaching
-// them. Neither this late entry nor a completed upgrade supplies a birth witness.
-void Install(ID3D11Device* device, bool genshinBridge = false);
-// Complete the retained optional CPU binding-cache request only after the
-// calling device initializer's owned shader/sampler hook transactions return.
-// Does not seed query history or refresh an installed coverage generation.
-void CompletePsStateCacheInstall(ID3D11Device* device) noexcept;
-
+void Install(ID3D11Device* device);
 // Once per presented frame: closes the frame's counts, picks, and logs. The swap chain gives the picture's size, and its
 // device the context watched: a device the game makes again is followed once it presents (a D3D12 swap chain, as under
 // Dx11wDx12, says nothing, and the context Install found is kept).

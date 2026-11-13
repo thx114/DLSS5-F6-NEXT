@@ -1,5 +1,5 @@
+﻿#include <runtime/ComIdentity.h>
 #include "pch.h"
-#include <runtime/F6InputPolicy.h>
 #include <integration/HoYoShade.h>
 #include <integration/HoYoShadeNaturalAssociation.h>
 #include <native/OpticalFgNrPolicy.h>
@@ -8,10 +8,7 @@
 #include <runtime/NativeProducerCpuTiming.h>
 #include <ui_mask/DrawUiMask.h>
 #include "BridgeDepthReader.h"
-#include <genshin/GenshinPresentNr.h>
-#include <genshin/GenshinDx12Transport.h>
-#include <inputs/GenshinFsrContract.h>
-#include <menu/GenshinNrWritebackNotice.h>
+#include <runtime/GameIdentity.h>
 
 #include <Util.h>
 #include <dlssnr/DlssNrFeature_Dx12.h>
@@ -23,11 +20,7 @@ namespace native
 
 namespace
 {
-bool RequireExactSharedOwner()
-{
-    static const bool selected = (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()));
-    return selected;
-}
+bool RequireExactSharedOwner() { return false; }
 ColorSpace ToColorSpace(DXGI_COLOR_SPACE_TYPE type)
 {
     switch (type)
@@ -94,7 +87,7 @@ void Dx11FrameSource::ReportDeliveryObservation()
     _delivery = {};
 }
 
-void Dx11FrameSource::BeginDeliveryObservation(bool presented)
+void Dx11FrameSource::BeginDeliveryObservation()
 {
     const auto thread = GetCurrentThreadId();
     if (!_deliveryThread) _deliveryThread = thread;
@@ -102,7 +95,7 @@ void Dx11FrameSource::BeginDeliveryObservation(bool presented)
     _delivery.capturing = false;
     ReportDeliveryObservation(); // outside the next sampled Acquire interval
     const auto now = GetTickCount64();
-    if (!presented || _delivery.active || (_deliveryLastSample && now - _deliveryLastSample < 1000)) return;
+    if (_delivery.active || (_deliveryLastSample && now - _deliveryLastSample < 1000)) return;
     _deliveryLastSample = now;
     _delivery.active = _delivery.capturing = true;
     _delivery.previousSharedUse = _sharedInUse;
@@ -216,17 +209,10 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
     if (_quarantined || _swapChain == nullptr || _device11 == nullptr)
         return AcquireStatus::Unavailable;
 
-    auto* presented=GenshinPresentNr::Scope::Current();
-    BeginDeliveryObservation(presented != nullptr);
-    if (_delivery.capturing && _deliveryThread == GetCurrentThreadId()) {
-        _delivery.generation=presented->ticket.source.generation;
-        _delivery.sourceFrame=presented->ticket.source.sourceFrame;
-        _delivery.presentEpoch=presented->ticket.presentEpoch;
-        _delivery.pictureSerial=presented->ticket.pictureSerial;
-    }
+    BeginDeliveryObservation();
     const bool colorStage = _copyBack && (HoYoShade::Selected(HoYoShade::Stage::BeforeNr) ||
         HoYoShade::Selected(HoYoShade::Stage::FinalOutput));
-    const bool gameUpscaler = !presented && !native::OpticalFgNrEnabled() && GenericDepthDx11::GameCallsUpscaler();
+    const bool gameUpscaler = !native::OpticalFgNrEnabled() && GenericDepthDx11::GameCallsUpscaler();
     if (gameUpscaler && !colorStage)
         return AcquireStatus::WaitingForUpscaler;
 
@@ -252,8 +238,6 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
     D3D11_TEXTURE2D_DESC desc {};
     _backBuffer->GetDesc(&desc);
 
-    if(presented && (!presented->MatchesPresent(_swapChain,_device11,_context11.Get(),_backBuffer.Get()) || !_copyBack))
-        return AcquireStatus::Unavailable;
     const DXGI_FORMAT pictureFormat = SharedPictureFormat(desc.Format);
     const bool multisampled = desc.SampleDesc.Count > 1;
 
@@ -342,12 +326,11 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
     // silently promoted to postprocessing/HUD depth authority.
     auto depthSnap = GenericDepthDx11::BestSnapshot();
     const char* genericDepthStage = depthSnap.valid ? "snapshot" : "no-snapshot";
-    if(presented || (colorStage && (gameUpscaler || !Config::Instance()->DlssNrEnabled.value_or_default())))
+    if(colorStage && (gameUpscaler || !Config::Instance()->DlssNrEnabled.value_or_default()))
     {
-        genericDepthStage = presented ? "suppressed-present-ticket" : "suppressed-color-stage";
+        genericDepthStage = "suppressed-color-stage";
         depthSnap.valid=false;
     }
-    auto bridgeDepth=presented ? presented->ticket.depth : GenshinTransport::BridgeDepthReceipt{};
     bool depthReady = false;
 
     // The finder follows the device the game presents with, a frame or more after a new one appears: until then its copy can be
@@ -384,85 +367,6 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
     // This same-context copy needs a COMPLETED producer receipt, an exact
     // picture relation, and ownership armed before touching the D3D11 source.
     const uint64_t signalValue = _fence.Next();
-    BridgeDepthReader depthReader;
-    const bool bridgeTicketDepth=presented && presented->ticket.DepthMatches();
-    const bool bridgeReceiptKnown=bridgeTicketDepth && bridgeDepth.Known();
-    const char* bridgeDepthStage = !presented ? "not-presented" : !bridgeTicketDepth ? "ticket-depth-mismatch" :
-        !bridgeDepth.lease ? "mapped-lease-missing" : "mapped-receipt-not-known";
-    bool nativeDepthReady=false;
-    ID3D12Resource* mappedDepthResource=nullptr;
-    if(bridgeReceiptKnown) {
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;Microsoft::WRL::ComPtr<ID3D11Device> bridgeDevice;
-        D3D11_TEXTURE2D_DESC depthDesc{};
-        if(SUCCEEDED(bridgeDepth.source.As(&texture))) {texture->GetDesc(&depthDesc);texture->GetDevice(&bridgeDevice);}
-        const bool sourceMatches=texture && GenshinPresentNr::Identity(bridgeDevice.Get())==GenshinPresentNr::Identity(_device11) &&
-            bridgeDepth.context==GenshinPresentNr::Identity(_context11.Get()) &&
-            depthDesc.Width==bridgeDepth.width && depthDesc.Height==bridgeDepth.height &&
-            depthDesc.Format==DXGI_FORMAT_R32G32B32A32_FLOAT && depthDesc.ArraySize==1 && depthDesc.MipLevels==1 &&
-            depthDesc.SampleDesc.Count==1 && !depthDesc.SampleDesc.Quality;
-        bridgeDepthStage="source-descriptor-or-owner";
-        if(sourceMatches) {
-            const auto mappedLease=std::dynamic_pointer_cast<GenshinTransport::PreparedDepthLease>(bridgeDepth.lease);
-            const auto direct=mappedLease?mappedLease->DirectMappedRead(_device12.Get(),bridgeDepth.source.Get()):nullptr;
-            if(direct && depthReader.Begin(bridgeDepth.lease,bridgeDepth.source.Get(),direct,_fence.Fence12(),signalValue)) {
-                mappedDepthResource=direct;depthReady=true;bridgeDepthStage="mapped-read-order-bound";
-            }
-            if(!depthReady) {
-                bool haveTexture=_depth.Matches(bridgeDepth.width,bridgeDepth.height,DXGI_FORMAT_R32G32B32A32_TYPELESS);
-                if(!haveTexture) {
-                    // Replacing an existing depth still requires its original
-                    // fence gate. A direct import never overwrites that object.
-                    const bool canReplace=!_depth.Tex11() || CanReleaseShared();
-                    bridgeDepthStage="previous-shared-use-pending";
-                    if(canReplace) {
-                        haveTexture=_depth.Create(_device11,bridgeDepth.width,bridgeDepth.height,
-                            DXGI_FORMAT_R32G32B32A32_TYPELESS,D3D11_BIND_SHADER_RESOURCE);
-                        bridgeDepthStage=haveTexture?"shared-created":"shared-create-failed";
-                    }
-                }
-                if(haveTexture) {
-                    bridgeDepthStage="shared-open-failed";
-                    if(_depth.Open(_device12.Get(), RequireExactSharedOwner())) {
-                        bridgeDepthStage="lease-not-ready";
-                        if(bridgeDepth.lease->Ready()) {
-                            bridgeDepthStage="reader-refused";
-                            if(depthReader.Begin(bridgeDepth.lease,_depth.Tex11(),_depth.Res12(),_fence.Fence12(),signalValue)) {
-                                _context11->CopyResource(_depth.Tex11(),bridgeDepth.source.Get());
-                                mappedDepthResource=_depth.Res12();depthReady=true;bridgeDepthStage="copy-ordered";
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    static unsigned bridgeDepthSamples=0;
-    static const char* previousBridgeDepthStage=nullptr;
-    static bool previousBridgeDepthReady=false;
-    if(!depthReady && bridgeTicketDepth && !bridgeDepth.lease && bridgeDepth.NativeIdentityKnown() &&
-       bridgeDepth.nativeLease && bridgeDepth.nativeTransfer) {
-        bridgeDepthStage="native-resource-or-lease-type-missing";
-        const auto resource=bridgeDepth.nativeTransfer->Get().imported[1];
-        const auto nativeLease=std::dynamic_pointer_cast<GenshinTransport::NativeQueuedDepthLease>(bridgeDepth.nativeLease);
-        if(resource && nativeLease) {
-            if(!nativeLease->OrderForAcquire(_queue12.Get(),_context4.Get(),_fence.Fence12(),signalValue))
-                bridgeDepthStage="native-order-refused";
-            else if(!depthReader.Begin(nativeLease,bridgeDepth.nativeTransfer->Prepared(1),resource.Get(),_fence.Fence12(),signalValue))
-                bridgeDepthStage="native-begin-refused";
-            else {nativeDepthReady=depthReady=true;bridgeDepthStage="native-read-order-bound";}
-        }
-    }
-    if(presented) {
-        const unsigned sample=++bridgeDepthSamples;
-        const bool transition=bridgeDepthStage!=previousBridgeDepthStage || depthReady!=previousBridgeDepthReady;
-        previousBridgeDepthStage=bridgeDepthStage;previousBridgeDepthReady=depthReady;
-        if(sample<=16 || sample%300==0 || transition)
-        LOG_INFO("R824 native depth: pid={} generation={} picture={} stage={} depth_ready={} ticket_depth={} receipt_known={} lease={} native_identity={} native_transfer={} native_lease={} native_ready={} shared11={} shared12={} shared_error={} no_authority=true",
-            GetCurrentProcessId(),presented->ticket.source.generation,presented->ticket.pictureSerial,bridgeDepthStage,depthReady,
-            bridgeTicketDepth,bridgeReceiptKnown,static_cast<bool>(bridgeDepth.lease),
-            bridgeDepth.NativeIdentityKnown(),static_cast<bool>(bridgeDepth.nativeTransfer),static_cast<bool>(bridgeDepth.nativeLease),nativeDepthReady,
-            reinterpret_cast<uintptr_t>(_depth.Tex11()),reinterpret_cast<uintptr_t>(_depth.Res12()),_depth.Error());
-    }
     // Mask commands were recorded at THIS Present, after all selected UI.
     // This upload signal/Flush orders them, not the earlier SR producer fence.
     StampDelivery(DeliveryObservation::Depth);
@@ -479,8 +383,6 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
         _delivery.ready=signalValue;
         _delivery.sharedAfterUpload=_fence.Fence12()->GetCompletedValue();
     }
-    GenshinTransport::ObserveOutputFlush(_context11.Get());
-    depthReader.InputReady();
 
     input = FrameInput {};
     input.uiMask=std::move(uiMask);
@@ -493,7 +395,7 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
             _backBuffer.Get(), backbufferIndex, reinterpret_cast<uint64_t>(static_cast<IFrameSource*>(this)), 1, input.frame);
     input.finalOriginal = _copyBack;
     input.colorOnly = colorStage && (gameUpscaler ||
-        (!presented && !Config::Instance()->DlssNrNativeMotion.value_or_default()) ||
+        (!false && !Config::Instance()->DlssNrNativeMotion.value_or_default()) ||
         !Config::Instance()->DlssNrEnabled.value_or_default());
     input.picture = _picture.Res12();
     input.pictureFormat = pictureFormat;
@@ -515,7 +417,7 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
     input.width = desc.Width;
     input.height = desc.Height;
 
-    if (depthReady && !presented)
+    if (depthReady && !false)
     {
         input.depth[0] = _depth.Res12();
         input.depthCount = 1;
@@ -525,98 +427,7 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
         input.depthReversed = depthSnap.reversed;
     }
 
-    if(depthReady && !nativeDepthReady && presented && presented->ticket.DepthMatches()) {
-        input.depth[0]=mappedDepthResource;input.depthView=DXGI_FORMAT_R32G32B32A32_FLOAT;input.depthValidityPaired=true;
-        input.depthWidth=bridgeDepth.width;input.depthHeight=bridgeDepth.height;
-        input.depthReversed=bridgeDepth.convention==GenshinGuides::DepthConvention::DeviceZReversed;
-        input.depthGeneration=bridgeDepth.generation;input.depthSourceFrame=bridgeDepth.sourceFrame;
-        input.depthPictureSerial=bridgeDepth.pictureSerial;input.depthEpoch=bridgeDepth.epoch;
-        input.depthOriginX=bridgeDepth.originX;input.depthOriginY=bridgeDepth.originY;
-        input.depthYFlip=bridgeDepth.yFlip;input.depthCoverage=bridgeDepth.coverage;
-        input.depthProducerReady=bridgeDepth.producerReady;input.depthResource=mappedDepthResource;input.depthLease=bridgeDepth.lease;
-        input.depthCount=1;
-        input.depthCoordinates=DepthCoordinates::Picture; // Executed ResolveDepth, including its per-pixel validity.
-        input.preparedDepthSource=bridgeDepth.preparedPacket?bridgeDepth.preparedPacket->Source():nullptr;
-    }
-    if(nativeDepthReady) {
-        input.depth[0]=bridgeDepth.nativeTransfer->Get().imported[1].Get();input.depthCount=1;
-        input.depthView=DXGI_FORMAT_R32_FLOAT;
-        input.depthWidth=bridgeDepth.producerWidth;input.depthHeight=bridgeDepth.producerHeight;
-        input.depthReversed=bridgeDepth.convention==GenshinGuides::DepthConvention::DeviceZReversed;
-        input.depthValidityPaired=false;input.depthResource=input.depth[0];input.depthLease=bridgeDepth.nativeLease;
-        input.depthGeneration=bridgeDepth.generation;input.depthSourceFrame=bridgeDepth.sourceFrame;
-        input.depthPictureSerial=bridgeDepth.pictureSerial;input.depthEpoch=bridgeDepth.epoch;
-        input.depthOriginX=bridgeDepth.originX;input.depthOriginY=bridgeDepth.originY;
-        input.depthYFlip=bridgeDepth.yFlip;input.depthCoverage=bridgeDepth.coverage;
-        // This is the SR producer plane, not Capture::Resolve's final-picture
-        // mapping. Keep its real lease for retirement/FG; NR cannot infer the
-        // missing Scene/Picture UV basis merely by enlarging its dimensions.
-        input.depthCoordinates=DepthCoordinates::UnmappedProducer;
-        input.depthProducerReady=bridgeDepth.NativeIdentityKnown();
-        input.preparedDepthSource=bridgeDepth.preparedPacket?bridgeDepth.preparedPacket->Source():nullptr;
-    }
-    if(presented)input.gameMotion=presented->ticket.gameMotion;
     input.ready = SyncPoint { _fence.Fence12(), signalValue };
-    // Bound COM identity queries/logging to the first 32 captured Genshin
-    // pictures. This adds no queue waits, readbacks, gate or lifetime changes.
-    static std::atomic<uint32_t> presentDiagnosticSamples{0};
-    if(presented && presentDiagnosticSamples.load(std::memory_order_relaxed)<32 &&
-        presentDiagnosticSamples.fetch_add(1,std::memory_order_relaxed)<32) {
-        Microsoft::WRL::ComPtr<IDXGIDevice> dxgi;
-        Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
-        Microsoft::WRL::ComPtr<ID3D12Device> queueDevice;
-        DXGI_ADAPTER_DESC adapterDesc{};
-        const bool adapterKnown=SUCCEEDED(_device11->QueryInterface(IID_PPV_ARGS(&dxgi))) &&
-            SUCCEEDED(dxgi->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetDesc(&adapterDesc));
-        const auto queueHr=_queue12->GetDevice(IID_PPV_ARGS(&queueDevice));
-        const auto luid12=_device12->GetAdapterLuid();
-        LOG_INFO("Genshin Present32 input: pid={} tid={} tick={} instance={} generation={} sourceFrame={} presentEpoch={} pictureSerial={} device11={} realDevice11={} context11={} device12={} queue12={} queueDevice={} queueDeviceHr={:X} adapter11Known={} luid11={:X}:{:X} luid12={:X}:{:X} backbuffer={} sharedPicture11={} sharedPicture12={} inputFence11={} inputFence12={} inputValue={} sr={}x{} picture={}x{} format={}",
-            GetCurrentProcessId(),GetCurrentThreadId(),GetTickCount64(),presented->ticket.source.instance,
-            presented->ticket.source.generation,presented->ticket.source.sourceFrame,presented->ticket.presentEpoch,presented->ticket.pictureSerial,
-            GenshinPresentNr::Identity(_device11),GenshinPresentNr::Identity(_realDevice11),GenshinPresentNr::Identity(_context11.Get()),
-            GenshinPresentNr::Identity(_device12.Get()),GenshinPresentNr::Identity(_queue12.Get()),GenshinPresentNr::Identity(queueDevice.Get()),static_cast<unsigned>(queueHr),
-            adapterKnown,static_cast<unsigned>(adapterDesc.AdapterLuid.HighPart),adapterDesc.AdapterLuid.LowPart,
-            static_cast<unsigned>(luid12.HighPart),luid12.LowPart,GenshinPresentNr::Identity(_backBuffer.Get()),
-            GenshinPresentNr::Identity(_picture.Tex11()),GenshinPresentNr::Identity(_picture.Res12()),
-            reinterpret_cast<uintptr_t>(_fence.Fence11()),reinterpret_cast<uintptr_t>(_fence.Fence12()),signalValue,
-            presented->ticket.source.width,presented->ticket.source.height,desc.Width,desc.Height,static_cast<unsigned>(pictureFormat));
-    }
-    if(presented) {
-        input.cutHint=presented->flowReset;
-        if(!presented->BindInput(input,_device12.Get(),_queue12.Get())) {
-            // The exact parent contract remains fail-closed. Record this actual
-            // pre-RunFrame exit instead of inventing a missing stage callback.
-            // Public queries are rate-limited and all returned owners stay live.
-            static thread_local uint64_t lastBindReport=0;
-            const auto now=GetTickCount64();
-            if(colorStage && (!lastBindReport || now-lastBindReport>=30000)) {
-                lastBindReport=now;
-                Microsoft::WRL::ComPtr<ID3D12Device> pictureOwner,queueOwner,fenceOwner;
-                const auto ph=input.picture?input.picture->GetDevice(IID_PPV_ARGS(&pictureOwner)):E_POINTER;
-                const auto qh=_queue12?_queue12->GetDevice(IID_PPV_ARGS(&queueOwner)):E_POINTER;
-                const auto fh=input.ready.fence?input.ready.fence->GetDevice(IID_PPV_ARGS(&fenceOwner)):E_POINTER;
-                LOG_INFO("HoYoShade source stage unavailable exit=presented-BindInput acquire=Unavailable source_frame={} picture_owner=0x{:x} queue_owner=0x{:x} fence_owner=0x{:x} expected_device=0x{:x} picture_hr=0x{:08x} queue_hr=0x{:08x} fence_hr=0x{:08x} admission=existing-parent-contract unchanged_gate=true stage_called=false",
-                    input.frame,reinterpret_cast<uintptr_t>(pictureOwner.Get()),reinterpret_cast<uintptr_t>(queueOwner.Get()),
-                    reinterpret_cast<uintptr_t>(fenceOwner.Get()),reinterpret_cast<uintptr_t>(_device12.Get()),
-                    static_cast<unsigned>(ph),static_cast<unsigned>(qh),static_cast<unsigned>(fh));
-            }
-            return AcquireStatus::Unavailable;
-        }
-    }
-    // Mint only from this exact final B -> shared11/opened12 copy. The source
-    // descriptor and shared creation facts already exist; no extra GetDesc/QI,
-    // GPU copy, conversion or queue operation is introduced for color.
-    if(presented && RequireExactSharedOwner() && _copyBack &&
-       HoYoShade::Selected(HoYoShade::Stage::BeforeNr) && !multisampled &&
-       _picture.Matches(desc.Width,desc.Height,pictureFormat))
-        presented->CaptureNativeColor(input,static_cast<IFrameSource*>(this),_device11,_context11.Get(),
-            _backBuffer.Get(),_picture.Tex11(),desc);
-    // BindInput may accept color while refusing optional depth. In that case
-    // the guard retires ONLY the unconsumed, successfully signalled reader.
-    // Early exits/exceptions before that signal retain its bounded quarantine.
-    if(input.depthLease && !depthReader.HandOff(input)) {
-        _error="D3D11 depth reader handoff failed";return AcquireStatus::Unavailable;
-    }
     // Diagnose the final admitted input, not the intentionally suppressed
     // generic snapshot. Bridge/native attempts and optional BindInput refusal
     // have all finished; a successful alternative never emits a missing-depth warning.
@@ -631,15 +442,8 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
         if (!lastNoDepthReport || now - lastNoDepthReport >= 30000)
         {
             lastNoDepthReport = now;
-            const char* finalReason = depthReady ? "present-BindInput-depth-refused" :
-                presented ? bridgeDepthStage : genericDepthStage;
-            LOG_WARN("Native motion (D3D11): no depth admitted for this frame: reason={} generic={} bridge={} frames_without_depth={} frame={} generation={} picture={} shared_error={}",
-                finalReason, genericDepthStage, bridgeDepthStage, noDepthStreak, input.frame,
-                presented ? presented->ticket.source.generation : 0,
-                presented ? presented->ticket.pictureSerial : 0, _depth.Error());
         }
     }
-    if(auto* r=GenshinPresentNrTrace::Current())r->sourceReady=true;
     if (_delivery.capturing && _deliveryThread == GetCurrentThreadId()) {
         _delivery.frame=input.frame;
         _delivery.acquired=true;
@@ -674,10 +478,6 @@ void Dx11FrameSource::Return(const FrameInput& input, const FrameOutput& output)
     if (output.uncertain) {
         _quarantined = true; _uncertainBackBuffer = _backBuffer; return;
     }
-    auto* presented=GenshinPresentNr::Scope::Current();
-    if(presented && (!presented->MatchesPresent(_swapChain,_device11,_context11.Get(),_backBuffer.Get()) ||
-        !presented->Returned(input,output))) {_quarantined=true;_backBuffer.Reset();return;}
-
     if (_backBuffer == nullptr)
         return;
 
@@ -713,21 +513,19 @@ void Dx11FrameSource::Return(const FrameInput& input, const FrameOutput& output)
         }
     }
 
-    if(auto* r=GenshinPresentNrTrace::Current())r->returnWait=output.done.fence && _queue12;
     D3D11_TEXTURE2D_DESC backDesc {};
     _backBuffer->GetDesc(&backDesc);
 
     // Warmup/failed consumers only ran flow preparation. Keep the actual
     // native backbuffer; still order/signal its shared-picture GPU lifetime.
-    const bool copyPicture=output.filtered || !presented || (output.processed && presented->consumerReached);
+    const bool copyPicture=true;
     bool pictureCopyIssued=false;
     if(copyPicture) {
         if (backDesc.SampleDesc.Count <= 1)
         {
             _context11->CopyResource(_backBuffer.Get(), _picture.Tex11());
             pictureCopyIssued=true;
-            if(auto* r=GenshinPresentNrTrace::Current()){r->copy=true;r->copySeq=GenshinPresentNrTrace::Sequence();}
-        }
+            }
         else if (const char* why = _msaa.WriteBack(_context11.Get(), _picture.Tex11(), _backBuffer.Get()))
         {
             // The frame goes out as the game drew it
@@ -747,7 +545,6 @@ void Dx11FrameSource::Return(const FrameInput& input, const FrameOutput& output)
     // NR-off HoYo color-only frames without a GenshinPresentNr scope. The owned
     // or NativeProducer D3D12 fence cannot retire this later D3D11 texture read.
     // Optional FG snapshot still belongs to the same existing return signal.
-    if(presented)presented->StageReturnedSnapshot(_device11,_context11.Get(),_picture.Tex11());
     StampDelivery(DeliveryObservation::Copyback);
     const auto copied=_fence.Next();
     if(FAILED(_context4->Signal(_fence.Fence11(),copied))) {
@@ -760,46 +557,6 @@ void Dx11FrameSource::Return(const FrameInput& input, const FrameOutput& output)
     if (_delivery.capturing && _deliveryThread == GetCurrentThreadId()) {
         _delivery.copyValue=copied;
         _delivery.sharedAfterCopy=_fence.Fence12()->GetCompletedValue();
-    }
-    GenshinTransport::ObserveOutputFlush(_context11.Get());
-    if(presented) {
-        if(auto* r=GenshinPresentNrTrace::Current()){r->copySignal=true;r->copyFence=reinterpret_cast<uintptr_t>(_fence.Fence11());r->copyValue=copied;}
-        if(copyPicture && pictureCopyIssued)presented->CopyOrdered();
-        // NoWrite preserves native B. Only this checked Return/order/signal
-        // branch may authenticate it, independently of NR's copyback receipt.
-        if(!copyPicture && !pictureCopyIssued)presented->OrderOriginal();
-        // Publish only the exact ticket's completed final-picture writeback.
-        // Signal/model readiness/queue submission alone never reaches this path.
-        if(copyPicture && pictureCopyIssued && output.processed && presented->consumerReached && presented->screenCopyOrdered &&
-           presented->ticket.source.NoticeKeyMatches() && presented->ticket.source.context==GenshinPresentNr::Identity(_context11.Get())){
-            CriticalUi::NrWriteback::Receipt receipt;
-            receipt.session=presented->ticket.source.progress.session;
-            receipt.attempt=presented->ticket.source.attempt;
-            receipt.ownerEpoch=presented->ticket.source.ownerEpoch;
-            receipt.context=presented->ticket.source.context;
-            receipt.serial=presented->ticket.source.progress.serial;
-            receipt.pictureSerial=presented->ticket.pictureSerial;
-            receipt.presentEpoch=presented->ticket.presentEpoch;
-            receipt.copybackFence=reinterpret_cast<uintptr_t>(_fence.Fence11());
-            receipt.copybackValue=copied;receipt.tick=GetTickCount64();
-            receipt.modelProcessed=output.processed;
-            receipt.screenCopyOrdered=presented->screenCopyOrdered;
-            const bool published=CriticalUi::NrWriteback::Runtime().Publish(receipt);
-            static std::atomic<unsigned> noticeLogs{0};const auto notice=noticeLogs.fetch_add(1,std::memory_order_relaxed);
-            if(notice<8)
-                LOG_INFO("Genshin NR writeback notice: published={} pid={} process_start={} device_epoch={} controls_epoch={} attempt={} owner_epoch={} context={} serial={} picture_serial={} present_epoch={} fence={} value={} tick={} final_visible=UNKNOWN",
-                    published,receipt.session.processId,receipt.session.processStart,receipt.session.deviceEpoch,receipt.session.controlsEpoch,
-                    receipt.attempt,receipt.ownerEpoch,receipt.context,receipt.serial,receipt.pictureSerial,receipt.presentEpoch,
-                    receipt.copybackFence,receipt.copybackValue,receipt.tick);
-        }
-        static std::atomic<uint32_t> returnDiagnosticSamples{0};
-        if(returnDiagnosticSamples.load(std::memory_order_relaxed)<32 &&
-            returnDiagnosticSamples.fetch_add(1,std::memory_order_relaxed)<32)
-            LOG_INFO("Genshin Present32 return: pid={} tid={} tick={} instance={} generation={} sourceFrame={} presentEpoch={} consumerReached={} modelComposed={} copyPicture={} screenCopyOrdered={} completionFence={} completionValue={} copybackFence={} copybackValue={} final_visible=UNKNOWN",
-                GetCurrentProcessId(),GetCurrentThreadId(),GetTickCount64(),presented->ticket.source.instance,
-                presented->ticket.source.generation,presented->ticket.source.sourceFrame,presented->ticket.presentEpoch,
-                presented->consumerReached,output.processed,copyPicture,presented->screenCopyOrdered,
-                reinterpret_cast<uintptr_t>(output.done.fence),output.done.value,reinterpret_cast<uintptr_t>(_fence.Fence11()),copied);
     }
     _backBuffer.Reset();
 }

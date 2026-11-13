@@ -24,7 +24,6 @@
 #include <new>
 #include <string>
 
-namespace GenshinPresentNr { class NativeParentConsumer; }
 
 namespace native
 {
@@ -60,7 +59,6 @@ struct NativeFrame
     using BeforeSrFn = std::function<BeforeSrResult(ID3D12GraphicsCommandList*&, ID3D12Resource*, DXGI_FORMAT,
         D3D12_RESOURCE_STATES, const std::shared_ptr<void>&)>;
     BeforeSrFn beforeSr_;
-    friend class GenshinPresentNr::NativeParentConsumer;
     // Minted only after this frame's successful BuildGuides, never from telemetry.
     // Finished-picture UV, prev-current in picture pixels, no raster jitter term.
     bool pictureTemporalGuides_ = false;
@@ -171,7 +169,6 @@ class NativeProducer
     // Owner-thread polling before the next FG motion Prepare. Release only this
     // producer's redundant input reference after its exact final submission.
     // Provider/preview roots and motion-pool admission remain independent.
-    unsigned CollectCompletedMotionReferences() noexcept;
 
     // Explicit continuity reset; detector-only flow/trust resets use ResetGuides instead.
     void Reset();

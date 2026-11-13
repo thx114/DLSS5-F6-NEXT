@@ -1,7 +1,6 @@
 ﻿#include "pch.h"
 #include <menu/GuideDiagnosticsMenu.h>
 #include <dlssnr/ModelScalarPolicy.h>
-#include <runtime/F6InputPolicy.h>
 #include <runtime/GuideCapture.h>
 
 #if defined(_MSC_VER)
@@ -21,11 +20,6 @@
 #include <menu/MenuPages.h>
 #include <menu/UiLocalization.h>
 #include <menu/HoYoShadeControls.h>
-#include <genshin/GenshinManualCapture.h>
-#include <genshin/GenshinLegacyCapture.h>
-#include <genshin/GenshinFsrSubstageProgress.h>
-#include <genshin/GenshinDepthProvider.h>
-#include <genshin/GenshinFgPreview.h>
 #include "DlssNrFgDetailReuse.h"
 #include <resource_tracking/GenericDepth_Dx12.h>
 #include <resource_tracking/GenericDepth_Dx11.h>
@@ -709,9 +703,7 @@ static void InheritedPresetCombo(Config* config, unsigned pass,
     if (InheritedProfileCombo("模型预设", opt, names, nameCount))
     {
         Profiles::ClampConfiguredModelScalars(*config);
-        if constexpr (F6InputPolicy::FsrBridgeEnabled)
-            GenshinSubstage::RequestPreset(pass, before, Profiles::PassPreset(*config, pass));
-    }
+        }
 }
 
 // Per-pass profile values the pass presets write. One table shared by ApplyPassPreset and
@@ -1403,30 +1395,15 @@ static void RenderEnableToggle(Config* config)
 
 // Legacy bridge UI must not constrain genuine DLSS inputs, even in Genshin.
 // Executable identity affects labels only when the bridge is enabled.
-static bool GenshinBridgeMenuProcess()
-{
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return false;
-    static const bool value = [] {
-        const auto executable = Util::ExePath().filename().wstring();
-        return _wcsicmp(executable.c_str(), L"YuanShen.exe") == 0 ||
-               _wcsicmp(executable.c_str(), L"GenshinImpact.exe") == 0;
-    }();
-    return value;
-}
+
 
 // A loaded model is not proof of current Genshin final-picture consumption or visible output.
-static bool GenshinPresentedStatus(const NrCommon& nr)
-{
-    return F6InputPolicy::FsrBridgeEnabled && nr.finishedPicture && !nr.vulkan &&
-           GenshinLegacy::GetStatus().effectiveEnabled &&
-           State::Instance().swapchainInteropApi == SwapchainInteropApi::None;
-}
+
 
 // Both the current present pipeline and the legacy bridge report publication.
 static bool CurrentPresentedStatus(const NrCommon& nr)
 {
-    return (nr.finishedPicture && !nr.vulkan && DlssNr::UsesGenshinPresentPipeline()) ||
-           GenshinPresentedStatus(nr);
+    return nr.finishedPicture && !nr.vulkan && DlssNr::UsesGenshinPresentPipeline();
 }
 
 static void RenderFinishedPictureStatus(const NrCommon& nr, const char* fallback = "")
@@ -2671,9 +2648,8 @@ static void RenderExposureSection(Config* config, float menuResScale)
 static void RenderSharedDlssUpsampling(Config* config, const NrCommon& nr)
 {
     const bool finishedPicture = nr.finishedPicture;
-    const bool genshin = GenshinBridgeMenuProcess();
-    if (genshin && !config->MenuShowUnfinished.value_or_default()) return;
-    ImGui::BeginDisabled(genshin);
+
+    ImGui::BeginDisabled(false);
     bool beforeSr = config->DlssNrRunBeforeSr.value_or_default() ||
                     (finishedPicture && config->DlssNrDeferredDlss.value_or_default());
     const auto activeFeature = State::Instance().currentFeature;
@@ -2683,7 +2659,7 @@ static void RenderSharedDlssUpsampling(Config* config, const NrCommon& nr)
     // placement -- progressive disclosure, same as every other mode-gated control in this file.
     if (finishedPicture)
     {
-        if (MenuText::Checkbox(genshin ? "BeforeSR（未完成）" : "在超分辨率之前运行模型", &beforeSr))
+        if (MenuText::Checkbox("在超分辨率之前运行模型", &beforeSr))
         {
             config->DlssNrRunBeforeSr = beforeSr;
             config->DlssNrDeferredDlss = false;
@@ -2694,7 +2670,7 @@ static void RenderSharedDlssUpsampling(Config* config, const NrCommon& nr)
     bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
     if (!finishedPicture)
     {
-        if (MenuText::Checkbox(genshin ? "Auto-afterSR（未完成）" : "超分前计算、超分后应用（DLSS）", &deferredDlss))
+        if (MenuText::Checkbox("超分前计算、超分后应用（DLSS）", &deferredDlss))
             config->DlssNrDeferredDlss = deferredDlss;
         HelpMarker("在小图计算 NR 修改，用 DLSS 放大并在超分后应用。实验功能，可能闪烁且开销较高；需要 D3D12 DLSS，不支持光线重建。关闭冻结帧、对比和调试视图。");
         if (deferredDlss && rayReconstruction)
@@ -2721,18 +2697,15 @@ static void RenderOptionsPage(Config* config, float menuResScale, const NrCommon
     const bool rayReconstruction = activeFeature && activeFeature->GetUpscalerType() == Upscaler::DLSSD;
     const bool deferredActive = !finishedPicture && config->DlssNrDeferredDlss.value_or_default() && !rayReconstruction;
 
-    const bool genshin = GenshinBridgeMenuProcess();
-    const char* placementNames[] = { genshin ? "Auto-afterSR（未完成）" : "超分辨率之后",
-                                    genshin ? "BeforeSR（未完成）" : "超分辨率之前",
+
+    const char* placementNames[] = { "超分辨率之后",
+                                    "超分辨率之前",
                                     "最终画面（呈现模式）" };
     const bool fixedPresent = DlssNr::UsesGenshinPresentPipeline();
     int placement = fixedPresent || finishedPicture ? 2 : (beforeSr ? 1 : 0);
-    const bool showUnfinished = config->MenuShowUnfinished.value_or_default();
     bool placementChanged = false;
     ImGui::BeginDisabled(deferredActive);
-    const bool placementEnabled[]={!genshin,!genshin,true};
-    const bool placementVisible[]={!genshin || showUnfinished,!genshin || showUnfinished,true};
-    placementChanged=MenuText::Segmented("NR 处理位置：",&placement,placementNames,3,placementEnabled,placementVisible);
+    placementChanged=MenuText::Segmented("NR 处理位置：",&placement,placementNames,3);
     ImGui::EndDisabled();
     if (fixedPresent)
         MenuText::TextDisabled("当前入口：呈现输入 → NR → 细节保留 → FG；每个真实源帧一次。");
@@ -2776,26 +2749,12 @@ static void RenderOptionsPage(Config* config, float menuResScale, const NrCommon
         const auto feature = State::Instance().currentFeature;
         const bool bridge = feature && feature->Api() == API::DX11 && feature->IsWithDx12() &&
                             State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12;
-        const bool genshinPresent = F6InputPolicy::FsrBridgeEnabled &&
-            GenshinLegacy::GetStatus().effectiveEnabled &&
-            State::Instance().swapchainInteropApi == SwapchainInteropApi::None;
+
         if (bridge && (config->DlssNrRunBeforeSr.value_or_default() || config->DlssNrDeferredDlss.value_or_default()))
             MenuText::TextWrapped("DX11 桥接的呈现模式暂不支持在超分前运行模型，请关闭下方选项。");
-        else if (feature && !bridge && !genshinPresent && (feature->Api() != API::DX12 || feature->IsWithDx12()))
+        else if (feature && !bridge && (feature->Api() != API::DX12 || feature->IsWithDx12()))
             MenuText::TextWrapped("此选项需要原生 DirectX 12 游戏。");
-        else if (genshinPresent)
-        {
-            const auto status = DlssNr::FinishedPictureStatus();
-            // The generic game-input slot may leave this message behind before
-            // the separate native picture consumer has been reached. Show a wait,
-            // never a successful/model-running state, for this supported route.
-            if (status.empty() || status == "This option needs a native DirectX 12 game.")
-                MenuText::TextWrapped("等待原神当前成品画面；呈现入口拒绝原因见日志。");
-            else
-                MenuText::TextWrapped("%s", NrOptionsStatusChinese(status).c_str());
-        }
-        else
-            MenuText::TextWrapped("%s", NrOptionsStatusChinese(DlssNr::FinishedPictureStatus()).c_str());
+        else MenuText::TextWrapped("%s", NrOptionsStatusChinese(DlssNr::FinishedPictureStatus()).c_str());
     }
 
     // Placement and deferred DLSS application are Global controls, independent of layer editors.
@@ -3688,9 +3647,7 @@ static void RenderFirstLayerParameters(Config* config, float menuResScale)
             const auto before = config->DlssNrPreset.value_or_default();
             config->DlssNrPreset = preset;
             Profiles::ClampConfiguredModelScalars(*config);
-            if constexpr (F6InputPolicy::FsrBridgeEnabled)
-                GenshinSubstage::RequestPreset(0u, before, preset);
-        }
+            }
         ImGui::EndDisabled();
         HelpMarker("与模型选择独立的预设提示：默认、预设 A、预设 B。切换时将强度收敛到当前预设上限：B 为 1，其他为 2；默认均为 1。未知／旧版值会保留，直到主动选择其他选项。");
         const auto effective = Profiles::EffectivePassProfileFor(*config, 0u);
@@ -3882,167 +3839,7 @@ static void RenderColourAndLighting(Config* config, float menuResScale)
 }
 
 // Process-local diagnostic capture. Only the capture API owns collection and file IO.
-static void RenderGenshinManualCapture()
-{
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
-    namespace Capture = GenshinLegacy::ManualCapture;
-    using Phase = Capture::Phase;
-    using Reason = Capture::Reason;
-    const auto tr = [](const char* cn, const char* en) { return NextgenUi::English() ? en : cn; };
-    const auto phaseName = [&](Phase phase) -> const char* {
-        switch (phase)
-        {
-        case Phase::Off: return tr("关闭（默认）", "Off (default)");
-        case Phase::Requested: return tr("已请求，等待原生绘制边界", "Requested; waiting for a native draw boundary");
-        case Phase::Starting: return tr("正在启动采集", "Starting capture");
-        case Phase::Armed: return tr("已待命，等待已知着色器绘制", "Armed; waiting for a known shader draw");
-        case Phase::Capturing: return tr("采集中", "Capturing");
-        case Phase::Draining: return tr("正在停止并等待在途读回与写出", "Stopping; waiting for pending readback and export");
-        case Phase::Complete: return tr("本轮已结束", "Session complete");
-        case Phase::Failed: return tr("失败", "Failed");
-        }
-        return tr("未知阶段", "Unknown phase");
-    };
-    const auto reasonName = [&](Reason reason) -> const char* {
-        switch (reason)
-        {
-        case Reason::None: return tr("无", "None");
-        case Reason::AwaitingNativeBoundary: return tr("等待原生绘制边界", "Waiting for a native draw boundary");
-        case Reason::UserStop: return tr("用户停止", "Stopped by user");
-        case Reason::DurationLimit: return tr("达到时间上限", "Duration limit reached");
-        case Reason::CountLimit: return tr("达到样本数量上限", "Sample count limit reached");
-        case Reason::DiskLimit: return tr("达到尝试写入字节上限", "Attempted write byte limit reached");
-        case Reason::RequestTimeout: return tr("请求超时：未遇到原生绘制边界", "Request timed out before a native draw boundary");
-        case Reason::ShaderHookUnavailable: return tr("着色器创建观测不可用", "Shader creation observation unavailable");
-        case Reason::OutputFailure: return tr("输出文件写入失败", "Output file write failed");
-        case Reason::DeviceChanged: return tr("设备改变或重建", "Device changed or recreated");
-        case Reason::ContextBoundary: return tr("上下文边界使待处理观测失效", "Context boundary invalidated pending observations");
-        case Reason::Shutdown: return tr("模块正在关闭", "Module is shutting down");
-        case Reason::Busy: return tr("上一轮仍在处理，暂不能重新待命", "Previous session is still busy; cannot rearm yet");
-        case Reason::SessionLimit: return tr("达到本进程轮次上限", "Process session limit reached");
-        case Reason::InternalFailure: return tr("采集内部错误", "Internal capture error");
-        }
-        return tr("未知原因", "Unknown reason");
-    };
 
-    MenuText::SeparatorText(tr("原神：手动证据采集", "Genshin: manual evidence capture"));
-    MenuText::TextWrapped("%s", tr("仅原神 D3D11。默认关闭，仅本进程生效；按钮不写入 INI。待命或请求被接受均不代表已经采到数据。",
-        "Genshin D3D11 only. Off by default and local to this process; buttons do not write the INI. Arming or accepting a request does not mean data was captured."));
-    ImGui::PushID("genshin-manual-capture");
-    auto snapshot = Capture::GetSnapshot();
-    enum class Action { None, ArmRequested, ArmRejected, StopRequested };
-    static Action lastAction = Action::None;
-    constexpr uint32_t compiledApi = Capture::Snapshot {}.apiVersion;
-    const bool knownApi = (compiledApi == 1 || compiledApi == 2) && snapshot.apiVersion == compiledApi;
-    const bool active = snapshot.phase == Phase::Requested || snapshot.phase == Phase::Starting ||
-        snapshot.phase == Phase::Armed || snapshot.phase == Phase::Capturing || snapshot.phase == Phase::Draining;
-    const bool canArm = knownApi && snapshot.supported && snapshot.sessionNumber < snapshot.maxSessions &&
-        (snapshot.phase == Phase::Off || snapshot.phase == Phase::Complete || snapshot.phase == Phase::Failed);
-    const bool canStop = knownApi && active && snapshot.phase != Phase::Draining;
-    const char* startLabel = tr("开始采集###arm", "Arm capture###arm");
-    const char* stopLabel = tr("停止采集###stop", "Stop capture###stop");
-    const float buttonsWidth = ImGui::CalcTextSize(startLabel, nullptr, true).x +
-        ImGui::CalcTextSize(stopLabel, nullptr, true).x + ImGui::GetStyle().FramePadding.x * 4.f +
-        ImGui::GetStyle().ItemSpacing.x;
-    const bool sameLine = buttonsWidth <= ImGui::GetContentRegionAvail().x;
-    ImGui::BeginDisabled(!canArm);
-    if (MenuText::Button(startLabel))
-    {
-        lastAction = Capture::RequestArm() ? Action::ArmRequested : Action::ArmRejected;
-        snapshot = Capture::GetSnapshot();
-    }
-    ImGui::EndDisabled();
-    if (sameLine) ImGui::SameLine();
-    ImGui::BeginDisabled(!canStop);
-    if (MenuText::Button(stopLabel))
-    {
-        Capture::RequestStop();
-        lastAction = Action::StopRequested;
-        snapshot = Capture::GetSnapshot();
-    }
-    ImGui::EndDisabled();
-
-    if (!knownApi)
-        MenuText::TextWrapped("%s", tr("捕获接口版本不受支持，操作已停用。", "Unsupported capture API version; actions are disabled."));
-    if (!snapshot.supported)
-        MenuText::TextWrapped("%s", tr("当前进程不支持或原神 D3D11 设备尚未就绪；无法开始采集。",
-            "This process is unsupported or its Genshin D3D11 device is not ready; capture cannot be armed."));
-    MenuText::TextWrapped(tr("状态：%s | 原因：%s", "State: %s | Reason: %s"),
-                          phaseName(snapshot.phase), reasonName(snapshot.reason));
-    if (lastAction == Action::ArmRequested && snapshot.phase == Phase::Requested)
-        MenuText::TextWrapped("%s", tr("待命请求已接收；仍需等待绘制与实际写出。", "Arm request acknowledged; drawing and actual export are still pending."));
-    else if (lastAction == Action::ArmRejected)
-        MenuText::TextWrapped("%s", tr("最近一次待命请求未被接受，请查看原因和轮次上限。", "The last arm request was rejected; check the reason and session limit."));
-    else if (lastAction == Action::StopRequested && snapshot.phase == Phase::Draining)
-        MenuText::TextWrapped("%s", tr("已请求停止；在途读回和写出完成前不能重新待命。", "Stop requested; rearming must wait for pending readback and export."));
-
-    // v2 adds actual object/consumer exports; compile against either reviewed header,
-    // never treat a mismatched binary layout as a compatible snapshot.
-    const auto extraExports = []<class Snapshot>(const Snapshot& value) {
-        std::array<unsigned long long, 2> counts {};
-        if constexpr (requires { value.shaderObjectsWritten; value.consumerLedgerWritten; })
-            counts = { static_cast<unsigned long long>(value.shaderObjectsWritten),
-                       static_cast<unsigned long long>(value.consumerLedgerWritten) };
-        return counts;
-    }(snapshot);
-    const bool hasData = snapshot.shaderArtifactsWritten != 0 || snapshot.constantArtifactsWritten != 0 ||
-        snapshot.bindingRecordsWritten != 0 || snapshot.recordsWritten != 0 || extraExports[0] != 0 || extraExports[1] != 0;
-    MenuText::TextWrapped("%s", hasData
-        ? tr("已有实际写出数据；完整证据与语义仍需审查。", "Some data has been written; evidence completeness and semantics still require review.")
-        : tr("尚无实际写出数据（待命、结束或路径已创建均不等于采集成功）。", "No actual data has been written (arming, completing or creating a path does not prove capture succeeded)."));
-    MenuText::TextWrapped(tr("实际写出：着色器 %llu | CB %llu | 绑定 %llu | 记录 %llu",
-                            "Actual exports: shaders %llu | CB %llu | bindings %llu | records %llu"),
-        static_cast<unsigned long long>(snapshot.shaderArtifactsWritten), static_cast<unsigned long long>(snapshot.constantArtifactsWritten),
-        static_cast<unsigned long long>(snapshot.bindingRecordsWritten), static_cast<unsigned long long>(snapshot.recordsWritten));
-    if (knownApi && compiledApi == 2)
-        MenuText::TextWrapped(tr("实际观测：着色器对象 %llu | 消费记录 %llu", "Actual observations: shader objects %llu | consumer records %llu"),
-                              extraExports[0], extraExports[1]);
-    MenuText::TextWrapped(tr("PID %u | 本轮 %llu / %u | 已运行 %.1f / %.1f 秒",
-                            "PID %u | Session %llu / %u | Elapsed %.1f / %.1f s"),
-        snapshot.processId, static_cast<unsigned long long>(snapshot.sessionNumber), snapshot.maxSessions,
-        snapshot.elapsedMilliseconds / 1000.0, snapshot.maxSessionMilliseconds / 1000.0);
-    FILETIME created { static_cast<DWORD>(snapshot.processCreationFileTime),
-                       static_cast<DWORD>(snapshot.processCreationFileTime >> 32) };
-    SYSTEMTIME utc {};
-    if (snapshot.processCreationFileTime != 0 && FileTimeToSystemTime(&created, &utc))
-        MenuText::TextWrapped(tr("进程创建：%04u-%02u-%02u %02u:%02u:%02u.%03u UTC",
-                          "Process created: %04u-%02u-%02u %02u:%02u:%02u.%03u UTC"),
-            unsigned(utc.wYear), unsigned(utc.wMonth), unsigned(utc.wDay), unsigned(utc.wHour),
-            unsigned(utc.wMinute), unsigned(utc.wSecond), unsigned(utc.wMilliseconds));
-    else
-        MenuText::TextWrapped("%s", tr("进程创建时间：未知", "Process creation time: unknown"));
-    MenuText::TextWrapped(tr("尝试写入 %llu / %llu 字节 | 队列丢弃 %llu | 写入失败 %llu",
-                            "Attempted writes %llu / %llu bytes | Queue drops %llu | Write failures %llu"),
-        static_cast<unsigned long long>(snapshot.diskBytes), static_cast<unsigned long long>(snapshot.maxDiskBytes),
-        static_cast<unsigned long long>(snapshot.queueDrops), static_cast<unsigned long long>(snapshot.writeFailures));
-    MenuText::TextWrapped(tr("本轮上限：着色器 %u | CB %u | 绑定 %u | 队列 %u 项 / %llu 字节",
-                            "Session limits: shaders %u | CB %u | bindings %u | queue %u jobs / %llu bytes"),
-        snapshot.maxShaderArtifacts, snapshot.maxConstantSamples, snapshot.maxBindingSamples, snapshot.maxQueueJobs,
-        static_cast<unsigned long long>(snapshot.maxQueuePayloadBytes));
-    MenuText::TextWrapped(tr("采集入口：%s | 着色器创建观测：%s | 写出线程结束：%s",
-                            "Capture entry: %s | Shader creation observation: %s | Export worker finished: %s"),
-        snapshot.entryHookInstalled ? tr("可用", "ready") : tr("未就绪", "not ready"),
-        snapshot.shaderHookInstalled ? tr("可用", "ready") : tr("未就绪", "not ready"),
-        snapshot.workerFinished ? tr("是", "yes") : tr("否", "no"));
-
-    const auto pathEnd = std::find(std::begin(snapshot.outputDirectory), std::end(snapshot.outputDirectory), L'\0');
-    const int pathLength = static_cast<int>(pathEnd - std::begin(snapshot.outputDirectory));
-    const int utf8Bytes = pathLength > 0
-        ? WideCharToMultiByte(CP_UTF8, 0, snapshot.outputDirectory, pathLength, nullptr, 0, nullptr, nullptr) : 0;
-    std::string outputPath(utf8Bytes > 0 ? static_cast<size_t>(utf8Bytes) : 0, '\0');
-    if (utf8Bytes > 0)
-        WideCharToMultiByte(CP_UTF8, 0, snapshot.outputDirectory, pathLength, outputPath.data(), utf8Bytes, nullptr, nullptr);
-    MenuText::TextUnformatted(tr("输出目录：", "Output directory:"));
-    if (!outputPath.empty()) ImGui::TextWrapped("%s", outputPath.c_str());
-    else MenuText::TextWrapped("%s", tr("尚未创建（或路径不可用）。", "Not created yet (or path unavailable)."));
-    ImGui::BeginDisabled(outputPath.empty());
-    if (MenuText::SmallButton(tr("复制输出路径###copyPath", "Copy output path###copyPath")))
-        ImGui::SetClipboardText(outputPath.c_str());
-    ImGui::EndDisabled();
-    MenuText::TextWrapped("%s", tr("这只采集诊断证据，不会启用超分、NR 或 FG，也不证明输入语义或输出消费已经成立。",
-        "This collects diagnostic evidence only. It does not enable SR, NR or FG, or prove input semantics or output consumption."));
-    ImGui::PopID();
-}
 
 static void RenderDetectedColourFormat()
 {
@@ -4067,153 +3864,6 @@ static void RenderDetectedColourFormat()
 }
 
 // R844 diagnostic-only preview drawing: no backend textures or GPU uploads.
-struct GenshinFgPreviewRuns {
-    struct Run { unsigned short first,end,y; ImU32 colour; };
-    std::array<Run,GenshinFgPreview::N> runs{};
-    GenshinFgPreview::Stamp stamp{};
-    unsigned count=0;
-    bool contrast=false;
-    float range=0;
-    void Update(const GenshinFgPreview::Snapshot& image,bool motion,bool depthContrast,float motionRange) {
-        if (count && stamp.tick==image.stamp.tick && stamp.generation==image.stamp.generation &&
-            stamp.providerFrame==image.stamp.providerFrame && stamp.sourceFrame==image.stamp.sourceFrame &&
-            stamp.picture==image.stamp.picture && (motion ? range==motionRange : contrast==depthContrast)) return;
-        count=0;stamp=image.stamp;contrast=depthContrast;range=motionRange;
-        const auto byte = [](float v) { return (unsigned)(std::clamp(v,0.0f,1.0f)*255.0f+0.5f); };
-        for (unsigned y=0;y<GenshinFgPreview::H;++y) for (unsigned x=0;x<GenshinFgPreview::W;++x) {
-            const auto i=y*GenshinFgPreview::W+x;
-            ImU32 colour=IM_COL32(255,0,255,255);
-            if (motion) {
-                const auto vx=image.motion[i][0],vy=image.motion[i][1];
-                if (GenshinFgPreview::ValidMotion(vx,vy))
-                    colour=IM_COL32(byte(0.5f+vx/(2*motionRange)),byte(0.5f+vy/(2*motionRange)),byte(std::sqrt(vx*vx+vy*vy)/motionRange),255);
-            } else {
-                const auto z=image.depth[i];
-                if (std::isfinite(z) && z>=0 && z<=1) {
-                    const float span=image.maxDepth-image.minDepth;
-                    const auto value=byte(depthContrast && span>0 ? (z-image.minDepth)/span : z);
-                    colour=IM_COL32(value,value,value,255);
-                }
-            }
-            if (x && runs[count-1].colour==colour) runs[count-1].end=static_cast<unsigned short>(x+1);
-            else runs[count++]={static_cast<unsigned short>(x),static_cast<unsigned short>(x+1),static_cast<unsigned short>(y),colour};
-        }
-    }
-};
-
-// EndGroup reports the entire preview section, rather than the switch's last
-// item. Scrolling the switch offscreen must not turn off a visible image.
-struct GenshinFgPreviewDemandScope {
-    bool& enabled;
-    const char* unavailable;
-    GenshinFgPreviewDemandScope(bool& value,const char* reason):enabled(value),unavailable(reason) { ImGui::BeginGroup(); }
-    ~GenshinFgPreviewDemandScope() {
-        ImGui::EndGroup();
-        const bool visible=ImGui::IsItemVisible();
-        const bool wanted=enabled && !unavailable && visible;
-        GenshinFgPreview::Trace(GenshinFgPreview::TraceStage::Control,
-            unavailable?unavailable:"debug-control-reached",(enabled?1u:0u)|(visible?2u:0u)|(!unavailable?4u:0u));
-        GenshinFgPreview::Request(wanted,unavailable?unavailable:!enabled?"switch-disabled":!visible?"section-clipped":"section-visible",
-            []() noexcept { return MenuCommon::IsVisible(); });
-    }
-};
-
-static void RenderGenshinFgGuidePreview()
-{
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
-    if (!GenshinBridgeMenuProcess()) return;
-    const auto& state = State::Instance();
-    const char* unavailable=state.api==Vulkan || state.swapchainApi==Vulkan ? "Vulkan-disabled" :
-        state.swapchainInteropApi!=SwapchainInteropApi::Dx11wDx12 ? "Dx11wDx12-route-unavailable" : nullptr;
-    static bool enabled = false, depthContrast = true;
-    static float motionRange = 16.0f;
-    GenshinFgPreviewDemandScope demand(enabled,unavailable);
-    MenuText::SeparatorText("FG 接收图调试（独立于 NR）");
-    ImGui::BeginDisabled(unavailable!=nullptr);
-    MenuText::Checkbox("显示 FG 接收的深度和运动图", &enabled);
-    ImGui::EndDisabled();
-    if (unavailable) {
-        MenuText::TextWrapped("FG 接收图不可用：%s", state.api==Vulkan || state.swapchainApi==Vulkan
-            ? "Vulkan 暂不支持此预览。" : "当前未检测到原神 DX11 到 DX12 的 FG 交换链。请确认所选 FG 已开启。追踪日志记录当前路由；此控件不会切换后端。");
-        return;
-    }
-    MenuText::TextWrapped("本开关在此显示 FG 已接收的深度/运动快照，不替换游戏画面；NR 调试视图和 FG 后端调试开关不会开启本预览。");
-    if (!enabled) return;
-    if (!state.currentFG || !state.currentFG->IsActive())
-        MenuText::TextWrapped("预览已请求，等待 FG 后端运行并接收输入；目前没有可显示的新 FG 输入。");
-    else if (state.currentFG->IsPaused())
-        MenuText::TextWrapped("预览已请求，但 FG 后端已暂停；恢复并接收输入后才会更新。");
-    MenuText::TextWrapped("低带宽采样 DLSSG 实际接收的深度和运动纹理，每秒最多两次、每次一个 192×120 以内区域；九个位置轮换，不拼接、不冒充全帧。紫色表示无效值；预览不会修改输入。");
-    MenuText::Checkbox("深度显示自动对比度", &depthContrast);
-    MenuText::SliderFloat("运动显示范围（像素）", &motionRange, 0.1f, 512.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
-    motionRange = std::clamp(motionRange, 0.1f, 512.0f);
-    GenshinFgPreview::Snapshot image;
-    const char* status = nullptr;
-    if (!GenshinFgPreview::Read(image, status)) {
-        MenuText::TextWrapped("等待 FG 输入：%s", status ? status : "pending");
-        return;
-    }
-    MenuText::TextWrapped("FG 接收图状态：%s", status ? status : "pending");
-    const auto age = image.ageMs;
-    MenuText::TextWrapped("最近接收：游戏帧 %llu / FG 帧 %llu，源画面 %ux%u，%llu ms 前；本帧派发%s。",
-        (unsigned long long) image.stamp.sourceFrame, (unsigned long long) image.stamp.providerFrame,
-        image.width, image.height, (unsigned long long) age, image.stamp.submitted ? "已接受" : "未接受");
-    MenuText::TextWrapped("%s：区域 %u/%u，源坐标 (%u,%u)，%ux%u；复制 %.1f KiB。区域图只检查空间和数值，不证明动态历史正确。",
-        image.fullFrame ? "完整小画面" : "局部同帧采样",image.region.index+1,image.region.count,
-        image.region.x,image.region.y,image.region.width,image.region.height,image.readbackBytes/1024.0);
-    if (image.stale) MenuText::TextWrapped("最近未收到新的 FG 输入；下方保留上次区域快照。");
-    MenuText::TextWrapped("深度 R32_FLOAT：Z %.7g .. %.7g，有效 %u/%u。运动 RG16_FLOAT：最大 %.3f 像素，无效 %u/%u，近零 %u/%u。",
-        image.minDepth, image.maxDepth, image.validDepth, GenshinFgPreview::N,
-        image.maxMotion, GenshinFgPreview::N-image.validMotion, GenshinFgPreview::N,
-        image.zeroMotion, GenshinFgPreview::N);
-    const float available = ImGui::GetContentRegionAvail().x;
-    const bool sideBySide = available >= 600.0f;
-    const float width = (std::min)(400.0f, sideBySide ? (available-ImGui::GetStyle().ItemSpacing.x)*0.5f : available);
-    if (width <= 0) return;
-    const float height = image.region.width ? width*image.region.height/image.region.width : 0.0f;
-    bool drew=false;
-    const auto draw = [&](bool motion) {
-        ImGui::BeginGroup();
-        MenuText::TextUnformatted(motion ? "FG 接收：区域运动矢量（像素）" : "FG 接收：区域深度（原始 Z）");
-        const auto origin = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton(motion ? "##fgReceivedMotion" : "##fgReceivedDepth", ImVec2(width,height));
-        if (!ImGui::IsItemVisible()) { ImGui::EndGroup(); return; }
-        drew=true;
-        // CPU-only bounded caches. Rebuild colour/run data only for a fresh
-        // snapshot or display-control change; numeric samples remain untouched.
-        static GenshinFgPreviewRuns caches[2];
-        auto& cache=caches[motion ? 1 : 0];
-        cache.Update(image,motion,depthContrast,motionRange);
-        auto* list = ImGui::GetWindowDrawList();
-        list->PushClipRect(origin, ImVec2(origin.x+width,origin.y+height), true);
-        // One reservation per visible image, stock PrimRect geometry per same-
-        // colour horizontal run. PrimReserve preserves ImGui's VtxOffset path.
-        list->PrimReserve(int(cache.count*6),int(cache.count*4));
-        for (unsigned i=0;i<cache.count;++i) {
-            const auto& run=cache.runs[i];
-            list->PrimRect(ImVec2(origin.x+width*run.first/GenshinFgPreview::W,origin.y+height*run.y/GenshinFgPreview::H),
-                ImVec2(origin.x+width*run.end/GenshinFgPreview::W,origin.y+height*(run.y+1)/GenshinFgPreview::H),run.colour);
-        }
-        list->PopClipRect();
-        if (ImGui::IsItemHovered()) {
-            const auto mouse=ImGui::GetMousePos();
-            const auto x=(std::min)(GenshinFgPreview::W-1,unsigned((std::max)(0.0f,(mouse.x-origin.x)/width)*GenshinFgPreview::W));
-            const auto y=(std::min)(GenshinFgPreview::H-1,unsigned((std::max)(0.0f,(mouse.y-origin.y)/height)*GenshinFgPreview::H));
-            const auto i=y*GenshinFgPreview::W+x;
-            const auto sx=image.region.x+unsigned((uint64_t(2*x+1)*image.region.width)/(2*GenshinFgPreview::W));
-            const auto sy=image.region.y+unsigned((uint64_t(2*y+1)*image.region.height)/(2*GenshinFgPreview::H));
-            MenuText::SetTooltip("源像素 (%u,%u)\nZ=%.9g  MV=(%.6g, %.6g) px",sx,sy,image.depth[i],image.motion[i][0],image.motion[i][1]);
-        }
-        ImGui::EndGroup();
-    };
-    draw(false);
-    if (sideBySide) ImGui::SameLine();
-    draw(true);
-    MenuText::TextWrapped("运动颜色：R=X，G=Y（0.5 为零），B=长度；65504 哨兵为紫色。深度对比度只影响显示，不线性化 Z，不翻转方向。");
-    if (drew) GenshinFgPreview::Trace(GenshinFgPreview::TraceStage::Draw,"visible-accepted-tag-snapshot",
-        image.stamp.submitted?1:0,image.stamp);
-}
-
 // Compare and Debug.
 static void RenderDebugPage(Config* config, float menuResScale)
 {
@@ -4221,11 +3871,6 @@ static void RenderDebugPage(Config* config, float menuResScale)
 
     // Keep the FG control above the long manual-capture panel and the NR-only
     // debug controls. It is a core Debug control, independent of NR enablement.
-    if constexpr (F6InputPolicy::FsrBridgeEnabled)
-    {
-        RenderGenshinFgGuidePreview();
-        RenderGenshinManualCapture();
-    }
     RenderDetectedColourFormat();
 
     MenuText::SeparatorText("对比");
@@ -4310,18 +3955,15 @@ static void RenderDebugPage(Config* config, float menuResScale)
     static const char* debugNames[] = { "关闭", "代理输入（模型所见）", "模型原始输出",
                                         "放大的差异" };
     int debugView = (int) config->DlssNrDebugView.value_or_default();
-    if (MenuText::Segmented(GenshinBridgeMenuProcess() ? "NR 调试视图" : "调试视图", &debugView, debugNames,
+    if (MenuText::Segmented("调试视图", &debugView, debugNames,
                             IM_ARRAYSIZE(debugNames)))
         config->DlssNrDebugView = (uint32_t) debugView;
 
-    HelpMarker(GenshinBridgeMenuProcess() ? "仅切换 NR 模型画面，需要 NR 实际执行。FG 接收的深度/运动请使用本页顶部的独立开关；灰色表示 NR 无差异。" : "显示模型输入、原始输出或放大 20 倍的差异；灰色表示无变化。");
+    HelpMarker("显示模型输入、原始输出或放大 20 倍的差异；灰色表示无变化。");
 
     GuideDiagnosticsMenu::RenderPreviewStrip(config);
 
     // Independent, process-local raw preview demand on the ordinary Compare/Debug page.
-    if constexpr (F6InputPolicy::FsrBridgeEnabled)
-        GenshinDepthProvider::DrawPreview();
-
     ImGui::PopItemWidth();
 }
 
@@ -4519,16 +4161,12 @@ void RenderMenu(Config* config, float menuResScale, MenuPages::Page page)
     using MenuPages::Page;
     if (MenuPages::NavigationPage(page) == Page::ProFilters)
     {
-        if (GenshinBridgeMenuProcess()) GenshinFgPreview::Request(false,"debug-page-hidden");
         HoYoShadeControls::Render(config, CurrentNativeApi() == NativeApi::Vulkan,
                                   CurrentNativeApi() == NativeApi::Dx11 &&
                                   State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12);
         return;
     }
     Profiles::ClampConfiguredModelScalars(*config);
-    if (GenshinBridgeMenuProcess() && MenuPages::NavigationPage(page)!=Page::Debug)
-        GenshinFgPreview::Request(false,"debug-page-hidden");
-
     static int previousFrame = -1;
     const int frame = ImGui::GetFrameCount();
     nrMenuTraceActive = false;

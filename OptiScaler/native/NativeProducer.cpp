@@ -70,51 +70,10 @@ void NativeProducer::SealHeldFinalSubmission(UINT slot) noexcept
     if(slot<kRing && _held[slot] && _values[slot])
         DrawUiMask::Observe(_held[slot]->input.uiMask,DrawUiMask::Consumer::Nr,DrawUiMask::Lifecycle::Submitted,
             reinterpret_cast<uintptr_t>(this),_held[slot]->inputEpoch,_values[slot]);
-    // Called only at the two successful final exits, after every optional
-    // split/filter/consumer submission. Intermediate signals grant no receipt.
-    if (GetCurrentThreadId()!=_heldOwnerThread || !_heldAccessActive || _quarantined ||
-        !_initialized || slot>=kRing || !_held[slot] || !_held[slot]->input.gameMotion ||
-        !_domain || !_device || !_queue || !_fence || !_signalled || _signalled==UINT64_MAX ||
-        _values[slot]!=_signalled || !_domain->Generation() || _domain->Generation()==UINT64_MAX)
-        return;
-    auto& held=*_held[slot];
-    if (!held.inputEpoch || held.inputEpoch==UINT64_MAX || held.finalSubmission.fence) return;
-    HRESULT hr=S_OK;
-    if (_domain->Creator()!=_device.Get() || !_domain->PublicOwner() ||
-        !_domain->Queue(_queue.Get(),hr) || !_domain->Object(_fence,true,hr)) return;
-    held.finalSubmission={_device,_domain->PublicOwner(),_queue,_fence,
-        _domain->Generation(),held.inputEpoch,held.input.frame,_signalled};
+
 }
 
-unsigned NativeProducer::CollectCompletedMotionReferences() noexcept
-{
-    // No wait, submission, teardown, pool mutation or use_count exception.
-    // The creation/Run owner is the only caller allowed to inspect these slots.
-    if (GetCurrentThreadId()!=_heldOwnerThread || _heldAccessActive || _quarantined ||
-        !_initialized || !_domain || !_device || !_queue || !_fence) return 0;
-    HeldAccessScope access(_heldAccessActive); // ref destruction cannot reenter
-    HRESULT hr=S_OK;
-    if (_domain->Creator()!=_device.Get() || !_domain->Generation() ||
-        _domain->Generation()==UINT64_MAX || !_domain->PublicOwner() ||
-        !_domain->Queue(_queue.Get(),hr) || !_domain->Object(_fence,true,hr)) return 0;
-    unsigned released=0;
-    for (auto& slot:_held) {
-        if (!slot || !slot->input.gameMotion) continue;
-        const auto& receipt=slot->finalSubmission;
-        if (!receipt.generation || receipt.generation!=_domain->Generation() ||
-            !receipt.inputEpoch || receipt.inputEpoch==UINT64_MAX || receipt.inputEpoch!=slot->inputEpoch ||
-            receipt.frame!=slot->input.frame || receipt.creator.Get()!=_device.Get() ||
-            receipt.publicOwner.Get()!=_domain->PublicOwner() || receipt.queue.Get()!=_queue.Get() ||
-            receipt.fence.Get()!=_fence || !receipt.value || receipt.value==UINT64_MAX) continue;
-        const auto completed=receipt.fence->GetCompletedValue();
-        if (completed==UINT64_MAX || completed<receipt.value) continue;
-        // Reset only our own copy. Other GPU readers retain their own roots;
-        // the motion pool still needs actual completion AND sole ownership.
-        slot->input.gameMotion.reset();
-        ++released;
-    }
-    return released;
-}
+
 
 bool NativeProducer::WaitFor(UINT64 value)
 {

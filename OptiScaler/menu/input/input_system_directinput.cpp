@@ -4,7 +4,7 @@
 #include <hooks/Kernel_Hooks.h>
 
 #include <detours/detours.h>
-#include <genshin/GenshinInputHookTransaction.h>
+#include <hooks/HookTransaction.h>
 
 #include <cstring>
 
@@ -401,7 +401,7 @@ bool HookDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
 
     {
         std::scoped_lock detourLock(GetDetourTransactionMutex());
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
 
         if (attachRelease)
             inputTransaction.AttachInputMethod(reinterpret_cast<PVOID*>(&releaseHook->Trampoline), hkDirectInputDeviceRelease, reinterpret_cast<IUnknown*>(device), 2);
@@ -481,7 +481,7 @@ bool HookDirectInputInterfaceLocked(void* directInput, bool wide)
 
         {
             std::scoped_lock detourLock(GetDetourTransactionMutex());
-            GenshinInputHooks::Transaction inputTransaction;
+            HookTransactions::Transaction inputTransaction;
             inputTransaction.AttachInputMethod(reinterpret_cast<PVOID*>(&slot->Trampoline), hkDirectInputCreateDeviceA, reinterpret_cast<IUnknown*>(directInput), 3);
             result = inputTransaction.Commit();
         }
@@ -583,7 +583,7 @@ bool InstallDirectInputExportHook(HMODULE module, const char* exportName, void**
 
     {
         std::scoped_lock detourLock(GetDetourTransactionMutex());
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
         inputTransaction.Attach(reinterpret_cast<PVOID*>(original), hook);
         result = inputTransaction.Commit();
     }
@@ -671,7 +671,7 @@ bool RemoveDirectInputHooksLocked()
         return true;
     }
 
-    GenshinInputHooks::Transaction inputTransaction;
+    HookTransactions::Transaction inputTransaction;
 
     if (_state.DirectInput8CreateHookInstalled && o_DirectInput8Create != nullptr)
         inputTransaction.Detach(reinterpret_cast<PVOID*>(&o_DirectInput8Create), hkDirectInput8Create);

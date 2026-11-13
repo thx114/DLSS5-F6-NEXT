@@ -3,7 +3,7 @@
 #include "SysUtils.h"
 
 #include <detours/detours.h>
-#include <genshin/GenshinOwnHookProvenance.h>
+#include <hooks/HookOwnership.h>
 
 class KernelBaseProxy
 {
@@ -89,117 +89,117 @@ class KernelBaseProxy
         return (PFN_GetModuleHandleExW) KernelBaseProxy::GetProcAddress_()(_dll, "GetModuleHandleExW");
     }
 
-    static PFN_FreeLibrary& Original_FreeLibrary() { return GenshinNativeQuery::Own::Original<PFN_FreeLibrary>(_own_FreeLibrary); }
+    static PFN_FreeLibrary& Original_FreeLibrary() { return HookOwnership::Own::Original<PFN_FreeLibrary>(_own_FreeLibrary); }
     static PFN_FreeLibrary Hook_FreeLibrary(PVOID method)
     {
         if (_own_FreeLibrary.live) return Original_FreeLibrary();
-        const auto result = GenshinNativeQuery::Own::Install(_own_FreeLibrary, &(PVOID&) _FreeLibrary,
+        const auto result = HookOwnership::Own::Install(_own_FreeLibrary, &(PVOID&) _FreeLibrary,
             (PVOID) FreeLibrary_Hooked(), method, _dll, "FreeLibrary");
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_FreeLibrary();
     }
 
-    static PFN_LoadLibraryA& Original_LoadLibraryA() { return GenshinNativeQuery::Own::Original<PFN_LoadLibraryA>(_own_LoadLibraryA); }
+    static PFN_LoadLibraryA& Original_LoadLibraryA() { return HookOwnership::Own::Original<PFN_LoadLibraryA>(_own_LoadLibraryA); }
     static PFN_LoadLibraryA Hook_LoadLibraryA(PVOID method)
     {
         if (_own_LoadLibraryA.live) return Original_LoadLibraryA();
-        const auto result = GenshinNativeQuery::Own::Install(_own_LoadLibraryA, &(PVOID&) _LoadLibraryA,
+        const auto result = HookOwnership::Own::Install(_own_LoadLibraryA, &(PVOID&) _LoadLibraryA,
             (PVOID) LoadLibraryA_Hooked(), method, _dll, "LoadLibraryA");
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_LoadLibraryA();
     }
 
-    static PFN_LoadLibraryW& Original_LoadLibraryW() { return GenshinNativeQuery::Own::Original<PFN_LoadLibraryW>(_own_LoadLibraryW); }
+    static PFN_LoadLibraryW& Original_LoadLibraryW() { return HookOwnership::Own::Original<PFN_LoadLibraryW>(_own_LoadLibraryW); }
     static PFN_LoadLibraryW Hook_LoadLibraryW(PVOID method)
     {
         if (_own_LoadLibraryW.live) return Original_LoadLibraryW();
-        const auto result = GenshinNativeQuery::Own::Install(_own_LoadLibraryW, &(PVOID&) _LoadLibraryW,
+        const auto result = HookOwnership::Own::Install(_own_LoadLibraryW, &(PVOID&) _LoadLibraryW,
             (PVOID) LoadLibraryW_Hooked(), method, _dll, "LoadLibraryW");
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_LoadLibraryW();
     }
 
-    static PFN_LoadLibraryExA& Original_LoadLibraryExA() { return GenshinNativeQuery::Own::Original<PFN_LoadLibraryExA>(_own_LoadLibraryExA); }
+    static PFN_LoadLibraryExA& Original_LoadLibraryExA() { return HookOwnership::Own::Original<PFN_LoadLibraryExA>(_own_LoadLibraryExA); }
     static PFN_LoadLibraryExA Hook_LoadLibraryExA(PVOID method)
     {
         if (_own_LoadLibraryExA.live) return Original_LoadLibraryExA();
-        const auto result = GenshinNativeQuery::Own::Install(_own_LoadLibraryExA, &(PVOID&) _LoadLibraryExA,
+        const auto result = HookOwnership::Own::Install(_own_LoadLibraryExA, &(PVOID&) _LoadLibraryExA,
             (PVOID) LoadLibraryExA_Hooked(), method, _dll, "LoadLibraryExA");
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_LoadLibraryExA();
     }
 
-    static PFN_LoadLibraryExW& Original_LoadLibraryExW() { return GenshinNativeQuery::Own::Original<PFN_LoadLibraryExW>(_own_LoadLibraryExW); }
+    static PFN_LoadLibraryExW& Original_LoadLibraryExW() { return HookOwnership::Own::Original<PFN_LoadLibraryExW>(_own_LoadLibraryExW); }
     static PFN_LoadLibraryExW Hook_LoadLibraryExW(PVOID method)
     {
         if (_own_LoadLibraryExW.live) return Original_LoadLibraryExW();
-        const auto result = GenshinNativeQuery::Own::Install(_own_LoadLibraryExW, &(PVOID&) _LoadLibraryExW,
+        const auto result = HookOwnership::Own::Install(_own_LoadLibraryExW, &(PVOID&) _LoadLibraryExW,
             (PVOID) LoadLibraryExW_Hooked(), method, _dll, "LoadLibraryExW");
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_LoadLibraryExW();
     }
 
-    static PFN_GetProcAddress& Original_GetProcAddress() { return GenshinNativeQuery::Own::Original<PFN_GetProcAddress>(_own_GetProcAddress); }
+    static PFN_GetProcAddress& Original_GetProcAddress() { return HookOwnership::Own::Original<PFN_GetProcAddress>(_own_GetProcAddress); }
     static PFN_GetProcAddress Hook_GetProcAddress(PVOID method)
     {
         if (_own_GetProcAddress.live) return Original_GetProcAddress();
-        const auto result = GenshinNativeQuery::Own::Install(_own_GetProcAddress, &(PVOID&) _GetProcAddress,
+        const auto result = HookOwnership::Own::Install(_own_GetProcAddress, &(PVOID&) _GetProcAddress,
             (PVOID) GetProcAddress_Hooked(), method, _dll, "GetProcAddress");
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_GetProcAddress();
     }
 
-    static PFN_GetModuleHandleA& Original_GetModuleHandleA() { return GenshinNativeQuery::Own::Original<PFN_GetModuleHandleA>(_own_GetModuleHandleA); }
+    static PFN_GetModuleHandleA& Original_GetModuleHandleA() { return HookOwnership::Own::Original<PFN_GetModuleHandleA>(_own_GetModuleHandleA); }
     static PFN_GetModuleHandleA Hook_GetModuleHandleA(PVOID method)
     {
         if (_own_GetModuleHandleA.live) return Original_GetModuleHandleA();
-        const auto result = GenshinNativeQuery::Own::Install(_own_GetModuleHandleA, &(PVOID&) _GetModuleHandleA,
+        const auto result = HookOwnership::Own::Install(_own_GetModuleHandleA, &(PVOID&) _GetModuleHandleA,
             (PVOID) GetModuleHandleA_Hooked(), method, _dll, "GetModuleHandleA");
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_GetModuleHandleA();
     }
 
-    static PFN_GetModuleHandleW& Original_GetModuleHandleW() { return GenshinNativeQuery::Own::Original<PFN_GetModuleHandleW>(_own_GetModuleHandleW); }
+    static PFN_GetModuleHandleW& Original_GetModuleHandleW() { return HookOwnership::Own::Original<PFN_GetModuleHandleW>(_own_GetModuleHandleW); }
     static PFN_GetModuleHandleW Hook_GetModuleHandleW(PVOID method)
     {
         if (_own_GetModuleHandleW.live) return Original_GetModuleHandleW();
-        const auto result = GenshinNativeQuery::Own::Install(_own_GetModuleHandleW, &(PVOID&) _GetModuleHandleW,
+        const auto result = HookOwnership::Own::Install(_own_GetModuleHandleW, &(PVOID&) _GetModuleHandleW,
             (PVOID) GetModuleHandleW_Hooked(), method, _dll, "GetModuleHandleW");
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_GetModuleHandleW();
     }
 
-    static PFN_GetModuleHandleExA& Original_GetModuleHandleExA() { return GenshinNativeQuery::Own::Original<PFN_GetModuleHandleExA>(_own_GetModuleHandleExA); }
+    static PFN_GetModuleHandleExA& Original_GetModuleHandleExA() { return HookOwnership::Own::Original<PFN_GetModuleHandleExA>(_own_GetModuleHandleExA); }
     static PFN_GetModuleHandleExA Hook_GetModuleHandleExA(PVOID method)
     {
         if (_own_GetModuleHandleExA.live) return Original_GetModuleHandleExA();
-        const auto result = GenshinNativeQuery::Own::Install(_own_GetModuleHandleExA, &(PVOID&) _GetModuleHandleExA,
+        const auto result = HookOwnership::Own::Install(_own_GetModuleHandleExA, &(PVOID&) _GetModuleHandleExA,
             (PVOID) GetModuleHandleExA_Hooked(), method, _dll, "GetModuleHandleExA");
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_GetModuleHandleExA();
     }
 
-    static PFN_GetModuleHandleExW& Original_GetModuleHandleExW() { return GenshinNativeQuery::Own::Original<PFN_GetModuleHandleExW>(_own_GetModuleHandleExW); }
+    static PFN_GetModuleHandleExW& Original_GetModuleHandleExW() { return HookOwnership::Own::Original<PFN_GetModuleHandleExW>(_own_GetModuleHandleExW); }
     static PFN_GetModuleHandleExW Hook_GetModuleHandleExW(PVOID method)
     {
         if (_own_GetModuleHandleExW.live) return Original_GetModuleHandleExW();
-        const auto result = GenshinNativeQuery::Own::Install(_own_GetModuleHandleExW, &(PVOID&) _GetModuleHandleExW,
+        const auto result = HookOwnership::Own::Install(_own_GetModuleHandleExW, &(PVOID&) _GetModuleHandleExW,
             (PVOID) GetModuleHandleExW_Hooked(), method, _dll, "GetModuleHandleExW");
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_GetModuleHandleExW();
     }
 
   private:
-    inline static GenshinNativeQuery::Own::Slot _own_FreeLibrary;
-    inline static GenshinNativeQuery::Own::Slot _own_LoadLibraryA;
-    inline static GenshinNativeQuery::Own::Slot _own_LoadLibraryW;
-    inline static GenshinNativeQuery::Own::Slot _own_LoadLibraryExA;
-    inline static GenshinNativeQuery::Own::Slot _own_LoadLibraryExW;
-    inline static GenshinNativeQuery::Own::Slot _own_GetProcAddress;
-    inline static GenshinNativeQuery::Own::Slot _own_GetModuleHandleA;
-    inline static GenshinNativeQuery::Own::Slot _own_GetModuleHandleW;
-    inline static GenshinNativeQuery::Own::Slot _own_GetModuleHandleExA;
-    inline static GenshinNativeQuery::Own::Slot _own_GetModuleHandleExW;
+    inline static HookOwnership::Own::Slot _own_FreeLibrary;
+    inline static HookOwnership::Own::Slot _own_LoadLibraryA;
+    inline static HookOwnership::Own::Slot _own_LoadLibraryW;
+    inline static HookOwnership::Own::Slot _own_LoadLibraryExA;
+    inline static HookOwnership::Own::Slot _own_LoadLibraryExW;
+    inline static HookOwnership::Own::Slot _own_GetProcAddress;
+    inline static HookOwnership::Own::Slot _own_GetModuleHandleA;
+    inline static HookOwnership::Own::Slot _own_GetModuleHandleW;
+    inline static HookOwnership::Own::Slot _own_GetModuleHandleExA;
+    inline static HookOwnership::Own::Slot _own_GetModuleHandleExW;
     inline static HMODULE _dll = nullptr;
 
     inline static PFN_FreeLibrary _FreeLibrary = nullptr;

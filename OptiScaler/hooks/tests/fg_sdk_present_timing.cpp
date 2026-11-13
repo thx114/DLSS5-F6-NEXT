@@ -1,6 +1,6 @@
 // The Python test inserts the exact adapter from FG_Hooks.cpp at the marker.
 // Compile with the real CPU sampler implementation; no graphics SDK is called.
-#include <genshin/GenshinHookCpuTiming.h>
+#include <runtime/HookCpuTiming.h>
 #include <runtime/GuideDiagnostics.h>
 #include <cstdio>
 #include <stdexcept>
@@ -10,7 +10,7 @@
 namespace {
 // INSERT_PRODUCT_FG_SDK_TIMING
 
-using namespace GenshinHookCpuTiming;
+using namespace HookCpuTiming;
 constexpr HRESULT DXGI_ERROR_TEST=static_cast<HRESULT>(0x887A000Au);
 unsigned checks=0;
 void Check(bool ok,const char* message)
@@ -18,11 +18,11 @@ void Check(bool ok,const char* message)
     ++checks;
     if(!ok)throw std::runtime_error(message);
 }
-constexpr unsigned Bucket(unsigned mode=1)
+constexpr unsigned Bucket()
 {
-    return HookCount*PathCount+static_cast<unsigned>(Stage::FgSdkPresent)*2+((mode&2)?1:0);
+    return HookCount*PathCount+static_cast<unsigned>(Stage::FgSdkPresent);
 }
-const Values& Current(unsigned mode=1){return local.values[Bucket(mode)];}
+const Values& Current(){return local.values[Bucket()];}
 void Reset(unsigned mode=1)
 {
     control.store(0);
@@ -139,9 +139,6 @@ void ExceptionsAndStride()
     }
     Check(originals==65 && Current()[Calls]==65 && Current()[ResultOk]==65,"unsampled outer calls also suppress duplicate nested stage accounting");
     Check(Current()[Samples]==2,"existing stride64 remains unchanged");
-    Reset(3);
-    ObserveFgSdkPresent(true,[]{return S_OK;});
-    Check(Current(3)[Calls]==1 && Current(1)[Calls]==0,"existing Active snapshot selects the original sampler path");
 }
 }
 int main()

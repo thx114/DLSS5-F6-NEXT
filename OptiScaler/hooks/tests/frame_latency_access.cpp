@@ -92,7 +92,7 @@ struct Dx11wDx12SC
     IDXGISwapChain2* _fgSwapChain = nullptr;
     Flags _frameLatencyFlags;
     std::mutex _frameLatencyMutex;
-    bool _nativeParentRoute = false, _sourceFrameLatencyOwner = false, _starRailF5DsTransport = false;
+    bool _sourceFrameLatencyOwner = false, _starRailF5DsTransport = false;
     HRESULT SetMaximumFrameLatency(UINT);
     HRESULT GetMaximumFrameLatency(UINT*);
     HANDLE GetFrameLatencyWaitableObject();
@@ -166,15 +166,14 @@ void Run()
         wrapped._real2 = &native; wrapped._frameLatencyFlags = item.flags;
         CallsUseOneReceiver(wrapped, native, provider, item.wrapped == Target::None ? nullptr : &native);
         Check(wrapped.observations != 0, "physical setter telemetry remains present on success and refusal");
-        for (bool parent : {false, true}) for (bool sourceOwner : {false, true}) for (bool f5ds : {false, true})
+        for (bool sourceOwner : {false, true}) for (bool f5ds : {false, true})
         {
             Dx11wDx12SC interop;
             interop._real2 = &native; interop._fgSwapChain = &provider; interop._frameLatencyFlags = item.flags;
-            interop._nativeParentRoute = parent; interop._sourceFrameLatencyOwner = sourceOwner;
+            interop._sourceFrameLatencyOwner = sourceOwner;
             interop._starRailF5DsTransport = f5ds;
             auto expected = item.interop;
-            if (parent && expected == Target::Provider) expected = Target::Preserve;
-            if (expected == Target::Preserve) expected = !parent && (!sourceOwner || f5ds) ? Target::Provider : Target::Native;
+            if (expected == Target::Preserve) expected = (!sourceOwner || f5ds) ? Target::Provider : Target::Native;
             CallsUseOneReceiver(interop, native, provider,
                 expected == Target::None ? nullptr : expected == Target::Native ? &native : &provider);
         }
@@ -183,8 +182,6 @@ void Run()
     IDXGISwapChain2 native, provider;
     Dx11wDx12SC missing;
     CallsUseOneReceiver(missing, native, provider, nullptr, DXGI_ERROR_DEVICE_REMOVED);
-    missing._nativeParentRoute = true;
-    CallsUseOneReceiver(missing, native, provider, nullptr, E_NOINTERFACE);
     WrappedIDXGISwapChain4 wrappedMissing;
     CallsUseOneReceiver(wrappedMissing, native, provider, nullptr, E_NOINTERFACE);
     std::printf("PASS %u real frame-latency adapter CPU checks (DXGI/caller mocks; no SDK/game/GPU)\n", checks);

@@ -58,9 +58,7 @@
     <ClInclude Include="runtime\StarRailResidencyPolicy.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="runtime\OutputRevealHandoff.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
+
     <ClInclude Include="runtime\ProducerProgress.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -70,15 +68,7 @@
     <ClInclude Include="runtime\ObservedSetting.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="genshin\GenshinInputObservation.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="genshin\GenshinDrawAdmission.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="genshin\GenshinFsrPassObservation.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
+
     <ClInclude Include="runtime\ManagedIni.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -1632,7 +1622,7 @@
     <ClCompile Include="wrapped\wrapped_factory.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="genshin\GenshinHookCpuTiming.cpp">
+    <ClCompile Include="runtime\HookCpuTiming.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="hooks\FG_Hooks.cpp">
@@ -1964,5 +1954,25 @@
     <ClInclude Include="runtime\PluginStartupGate.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="framegen\dlssg\NativeGuideListInterest.h"><Filter>Header Files</Filter></ClInclude>
     <ClCompile Include="runtime\AsiPluginStartup.cpp"><Filter>Source Files</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="hooks\HookOwnership.h" />
+    <ClInclude Include="hooks\HookTransaction.h" />
+    <ClInclude Include="motion\DepthShaderCapabilities.h" />
+    <ClInclude Include="runtime\ComIdentity.h" />
+    <ClInclude Include="runtime\GameIdentity.h" />
+    <ClInclude Include="runtime\HookCpuTiming.h" />
+    <ClInclude Include="dlssnr\DlssNrStageTiming.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="framegen\dlssg\DLSSG_Dx12_Inputs.cpp" />
+    <ClCompile Include="framegen\dlssg\DLSSG_Dx12_Lifetime.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="framegen\dlssg\DLSSG_Dx12_Internal.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="shaders\dlssnr\NrGpuExecutionLifetime.cpp" />
+    <ClInclude Include="shaders\dlssnr\NrGpuExecutionLifetime.h" />
   </ItemGroup>
 </Project>

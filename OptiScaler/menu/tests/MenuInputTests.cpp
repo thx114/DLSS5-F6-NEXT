@@ -148,12 +148,6 @@ struct MenuCpuFrame
 };
 struct MenuCpuSpan { MenuCpuSpan(MenuCpuStage) {} void Finish() {} };
 namespace NativeMotionDx11 { void OnPresent(IDXGISwapChain*, ID3D11Device*) {} }
-namespace F6InputPolicy { constexpr bool FsrBridgeEnabled = false; }
-namespace GenshinDepthProvider
-{
-void BeginPreviewDraw(ID3D11DeviceContext*) {}
-void EndPreviewDraw(ID3D11DeviceContext*, bool) {}
-}
 namespace MenuOverlayBase
 {
 std::function<bool()> render;

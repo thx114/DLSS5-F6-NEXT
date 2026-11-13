@@ -8,7 +8,6 @@
 #include <wrl/client.h>
 #include <runtime/GuideSourceMetadata.h>
 
-namespace GenshinPresentNr { class ReturnedPicture; }
 
 // Shared observation contract; no model, shader, UI, or Config dependencies.
 namespace DlssNr
@@ -57,7 +56,6 @@ struct FinishedPictureOutcome
     // Only the real Bridge endpoint forwards this wrapper-issued original
     // receipt. NoWrite alone, including failures/disabled generic calls, has no
     // FG authority. fence/submissionSerial above remain NR-write evidence only.
-    std::shared_ptr<const GenshinPresentNr::ReturnedPicture> original;
 
     bool Written() const noexcept { return result == FinishedPictureResult::WrittenOrdered; }
 };

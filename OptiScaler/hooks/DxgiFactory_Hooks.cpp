@@ -1,8 +1,9 @@
+﻿#include <runtime/ComIdentity.h>
 #include "pch.h"
+#include <runtime/ComIdentity.h>
 #include <runtime/F6InputPolicy.h>
 #include "DxgiFactory_Hooks.h"
 #include "SwapchainCreateRule.h"
-#include <genshin/GenshinPresentNr.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
 #include "DxgiSwapchainSizing.h"
 
@@ -16,7 +17,7 @@
 
 #include <misc/HiddenWindow.h>
 #include <native/VkPresentBridge.h>
-#include <inputs/GenshinFsrContract.h>
+#include <runtime/GameIdentity.h>
 #include <with_dx12/with_dx12.h>
 #include <wrapped/wrapped_swapchain.h>
 #include <with_dx12/dx11_with_dx12_sc.h>
@@ -24,7 +25,7 @@
 #include <d3d11.h>
 #include <magic_enum.hpp>
 #include <detours/detours.h>
-#include <genshin/GenshinApplicationProxyHook.h>
+#include <hooks/HookOwnership.h>
 
 // #define DETAILED_SC_LOGS
 
@@ -274,21 +275,21 @@ void DxgiFactoryHooks::HookToFactory(IDXGIFactory* pFactory)
 
     void** pFactoryVTable = *reinterpret_cast<void***>(real);
 
-    GenshinNativeQuery::Own::Batch hooks;
+    HookOwnership::Own::Batch hooks;
 
     if (o_EnumAdapters == nullptr)
     {
-        static GenshinNativeQuery::Own::Slot own_o_EnumAdapters;
+        static HookOwnership::Own::Slot own_o_EnumAdapters;
         if (pFactoryVTable[7] != nullptr)
-            GenshinApplicationProxyHook::AddMethod(hooks, own_o_EnumAdapters, &(PVOID&) o_EnumAdapters, pFactoryVTable, 7,
+            HookOwnership::AddMethod(hooks, own_o_EnumAdapters, &(PVOID&) o_EnumAdapters, pFactoryVTable, 7,
                 (PVOID) DxgiFactoryHooks::EnumAdapters);
     }
 
     if (o_CreateSwapChain == nullptr)
     {
-        static GenshinNativeQuery::Own::Slot own_o_CreateSwapChain;
+        static HookOwnership::Own::Slot own_o_CreateSwapChain;
         if (pFactoryVTable[10] != nullptr)
-            GenshinApplicationProxyHook::AddMethod(hooks, own_o_CreateSwapChain, &(PVOID&) o_CreateSwapChain, pFactoryVTable, 10,
+            HookOwnership::AddMethod(hooks, own_o_CreateSwapChain, &(PVOID&) o_CreateSwapChain, pFactoryVTable, 10,
                 (PVOID) DxgiFactoryHooks::CreateSwapChain);
     }
 
@@ -299,9 +300,9 @@ void DxgiFactoryHooks::HookToFactory(IDXGIFactory* pFactory)
 
         if (o_EnumAdapters1 == nullptr)
         {
-            static GenshinNativeQuery::Own::Slot own_o_EnumAdapters1;
+            static HookOwnership::Own::Slot own_o_EnumAdapters1;
             if (factory1VTable[12] != nullptr)
-                GenshinApplicationProxyHook::AddMethod(hooks, own_o_EnumAdapters1, &(PVOID&) o_EnumAdapters1, factory1VTable, 12,
+                HookOwnership::AddMethod(hooks, own_o_EnumAdapters1, &(PVOID&) o_EnumAdapters1, factory1VTable, 12,
                     (PVOID) DxgiFactoryHooks::EnumAdapters1);
         }
         factory1->Release();
@@ -314,25 +315,25 @@ void DxgiFactoryHooks::HookToFactory(IDXGIFactory* pFactory)
 
         if (o_CreateSwapChainForHwnd == nullptr)
         {
-            static GenshinNativeQuery::Own::Slot own_o_CreateSwapChainForHwnd;
+            static HookOwnership::Own::Slot own_o_CreateSwapChainForHwnd;
             if (factory2VTable[15] != nullptr)
-                GenshinApplicationProxyHook::AddMethod(hooks, own_o_CreateSwapChainForHwnd, &(PVOID&) o_CreateSwapChainForHwnd, factory2VTable, 15,
+                HookOwnership::AddMethod(hooks, own_o_CreateSwapChainForHwnd, &(PVOID&) o_CreateSwapChainForHwnd, factory2VTable, 15,
                     (PVOID) DxgiFactoryHooks::CreateSwapChainForHwnd);
         }
 
         if (o_CreateSwapChainForCoreWindow == nullptr)
         {
-            static GenshinNativeQuery::Own::Slot own_o_CreateSwapChainForCoreWindow;
+            static HookOwnership::Own::Slot own_o_CreateSwapChainForCoreWindow;
             if (factory2VTable[16] != nullptr)
-                GenshinApplicationProxyHook::AddMethod(hooks, own_o_CreateSwapChainForCoreWindow, &(PVOID&) o_CreateSwapChainForCoreWindow, factory2VTable, 16,
+                HookOwnership::AddMethod(hooks, own_o_CreateSwapChainForCoreWindow, &(PVOID&) o_CreateSwapChainForCoreWindow, factory2VTable, 16,
                     (PVOID) DxgiFactoryHooks::CreateSwapChainForCoreWindow);
         }
 
         if (o_CreateSwapChainForComposition == nullptr)
         {
-            static GenshinNativeQuery::Own::Slot own_o_CreateSwapChainForComposition;
+            static HookOwnership::Own::Slot own_o_CreateSwapChainForComposition;
             if (factory2VTable[24] != nullptr)
-                GenshinApplicationProxyHook::AddMethod(hooks, own_o_CreateSwapChainForComposition, &(PVOID&) o_CreateSwapChainForComposition, factory2VTable, 24,
+                HookOwnership::AddMethod(hooks, own_o_CreateSwapChainForComposition, &(PVOID&) o_CreateSwapChainForComposition, factory2VTable, 24,
                     (PVOID) DxgiFactoryHooks::CreateSwapChainForComposition);
         }
         factory2->Release();
@@ -345,9 +346,9 @@ void DxgiFactoryHooks::HookToFactory(IDXGIFactory* pFactory)
 
         if (o_EnumAdapterByLuid == nullptr)
         {
-            static GenshinNativeQuery::Own::Slot own_o_EnumAdapterByLuid;
+            static HookOwnership::Own::Slot own_o_EnumAdapterByLuid;
             if (factory4VTable[26] != nullptr)
-                GenshinApplicationProxyHook::AddMethod(hooks, own_o_EnumAdapterByLuid, &(PVOID&) o_EnumAdapterByLuid, factory4VTable, 26,
+                HookOwnership::AddMethod(hooks, own_o_EnumAdapterByLuid, &(PVOID&) o_EnumAdapterByLuid, factory4VTable, 26,
                     (PVOID) DxgiFactoryHooks::EnumAdapterByLuid);
         }
         factory4->Release();
@@ -360,9 +361,9 @@ void DxgiFactoryHooks::HookToFactory(IDXGIFactory* pFactory)
 
         if (o_EnumAdapterByGpuPreference == nullptr)
         {
-            static GenshinNativeQuery::Own::Slot own_o_EnumAdapterByGpuPreference;
+            static HookOwnership::Own::Slot own_o_EnumAdapterByGpuPreference;
             if (factory6VTable[29] != nullptr)
-                GenshinApplicationProxyHook::AddMethod(hooks, own_o_EnumAdapterByGpuPreference, &(PVOID&) o_EnumAdapterByGpuPreference, factory6VTable, 29,
+                HookOwnership::AddMethod(hooks, own_o_EnumAdapterByGpuPreference, &(PVOID&) o_EnumAdapterByGpuPreference, factory6VTable, 29,
                     (PVOID) DxgiFactoryHooks::EnumAdapterByGpuPreference);
         }
         factory6->Release();
@@ -476,11 +477,11 @@ void DxgiFactoryHooks::HookToDLSSGFactory(IDXGIFactory* pFactory)
     // Keep exact commit/mirror/rollback ownership, but do not enroll vendor code as
     // Windows-native query authority. If any native dependency reaches that code,
     // the unchanged signed-image/import/whole-code gates still refuse it.
-    GenshinNativeQuery::Own::Batch hooks;
+    HookOwnership::Own::Batch hooks;
 
     if (o_DLSSGCreateSwapChain == nullptr)
     {
-        static GenshinNativeQuery::Own::Slot own_o_DLSSGCreateSwapChain;
+        static HookOwnership::Own::Slot own_o_DLSSGCreateSwapChain;
         const auto entry_o_DLSSGCreateSwapChain = (PVOID) pFactoryVTable[10];
         if (entry_o_DLSSGCreateSwapChain != nullptr)
             hooks.Add(own_o_DLSSGCreateSwapChain, &(PVOID&) o_DLSSGCreateSwapChain, nullptr, entry_o_DLSSGCreateSwapChain,
@@ -494,7 +495,7 @@ void DxgiFactoryHooks::HookToDLSSGFactory(IDXGIFactory* pFactory)
 
         if (o_DLSSGCreateSwapChainForHwnd == nullptr)
         {
-            static GenshinNativeQuery::Own::Slot own_o_DLSSGCreateSwapChainForHwnd;
+            static HookOwnership::Own::Slot own_o_DLSSGCreateSwapChainForHwnd;
             const auto entry_o_DLSSGCreateSwapChainForHwnd = (PVOID) pFactoryVTable[15];
             if (entry_o_DLSSGCreateSwapChainForHwnd != nullptr)
                 hooks.Add(own_o_DLSSGCreateSwapChainForHwnd, &(PVOID&) o_DLSSGCreateSwapChainForHwnd, nullptr, entry_o_DLSSGCreateSwapChainForHwnd,
@@ -503,7 +504,7 @@ void DxgiFactoryHooks::HookToDLSSGFactory(IDXGIFactory* pFactory)
 
         if (o_DLSSGCreateSwapChainForCoreWindow == nullptr)
         {
-            static GenshinNativeQuery::Own::Slot own_o_DLSSGCreateSwapChainForCoreWindow;
+            static HookOwnership::Own::Slot own_o_DLSSGCreateSwapChainForCoreWindow;
             const auto entry_o_DLSSGCreateSwapChainForCoreWindow = (PVOID) pFactoryVTable[16];
             if (entry_o_DLSSGCreateSwapChainForCoreWindow != nullptr)
                 hooks.Add(own_o_DLSSGCreateSwapChainForCoreWindow, &(PVOID&) o_DLSSGCreateSwapChainForCoreWindow, nullptr, entry_o_DLSSGCreateSwapChainForCoreWindow,
@@ -665,12 +666,8 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
                 State::Instance().activeFgOutput != FGOutput::NoFG &&
                 State::Instance().activeFgInput != FGInput::NvngxFG && !DxvkFrameGenerationViaVulkan())
             {
-                const bool genshinChild = State::Instance().activeFgOutput == FGOutput::DLSSG &&
-                    (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()));
-                auto visibleChild = genshinChild && localDesc.Windowed
-                    ? GenshinVisibleChild::Create(localDesc.OutputWindow) : nullptr;
-                const HWND fgHwnd = genshinChild ? (visibleChild ? visibleChild->Child() : nullptr) : localDesc.OutputWindow;
-                auto hiddenHwnd = genshinChild ? localDesc.OutputWindow : CreateHiddenSwapchainWindow();
+                const HWND fgHwnd = localDesc.OutputWindow;
+                auto hiddenHwnd = CreateHiddenSwapchainWindow();
 
                 ID3D12Device* dx12Device = nullptr;
                 ID3D12CommandQueue* dx12Queue = nullptr;
@@ -681,38 +678,18 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
                     dx12Queue = WithDx12::GetD3D12CommandQueue();
                 }
 
-                if (hiddenHwnd != nullptr && (genshinChild || (dx12Device != nullptr && dx12Queue != nullptr)))
+                if (hiddenHwnd != nullptr && (dx12Device != nullptr && dx12Queue != nullptr))
                 {
                     DXGI_SWAP_CHAIN_DESC realDesc = localDesc;
                     realDesc.OutputWindow = hiddenHwnd;
-                    if (!genshinChild) realDesc.Windowed = TRUE;
-
-                    IDXGISwapChain* realDx11SwapChain = nullptr;
+                    realDesc.Windowed = TRUE;IDXGISwapChain* realDx11SwapChain = nullptr;
                     HRESULT realScResult = E_FAIL;
                     {
                         ScopedSkipParentWrapping skipParentWrapping {};
                         realScResult = o_CreateSwapChain(realFactory, pDevice, &realDesc, &realDx11SwapChain);
                     }
 
-                    DXGI_SWAP_CHAIN_DESC nativeActual{};
-                    ComPtr<ID3D11Device> nativeDevice;
-                    const bool nativeReady=realDx11SwapChain && SUCCEEDED(realScResult) &&
-                        SUCCEEDED(realDx11SwapChain->GetDesc(&nativeActual)) && nativeActual.OutputWindow==hiddenHwnd &&
-                        SUCCEEDED(realDx11SwapChain->GetDevice(IID_PPV_ARGS(&nativeDevice))) &&
-                        GenshinPresentNr::Identity(nativeDevice.Get())==GenshinPresentNr::Identity(device);
                     DXGI_SWAP_CHAIN_DESC fgDesc = localDesc;
-                    if (genshinChild)
-                    {
-                        DXGI_SWAP_CHAIN_DESC actual{};
-                        if (realDx11SwapChain && SUCCEEDED(realDx11SwapChain->GetDesc(&actual)))
-                        {
-                            fgDesc.BufferDesc.Width = actual.BufferDesc.Width;
-                            fgDesc.BufferDesc.Height = actual.BufferDesc.Height;
-                        }
-                        fgDesc.OutputWindow = fgHwnd;
-                        fgDesc.Windowed = TRUE;
-                        fgDesc.Flags &= ~DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-                    }
                     HRESULT fgScResult = E_FAIL;
                     IDXGISwapChain* fgSwapChain = nullptr;
                     IDXGISwapChain4* fgSwapChain4 = nullptr;
@@ -720,7 +697,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
                     bool sourceFrameLatencyOwner = false;
                     const bool tearingSupported = IsTearingSupported(realFactory);
 
-                    if (SUCCEEDED(realScResult) && (!genshinChild || nativeReady) && dx12Device && dx12Queue && fgHwnd &&
+                    if (SUCCEEDED(realScResult) && dx12Device && dx12Queue && fgHwnd &&
                         PrepareDx12InteropDesc(fgDesc, tearingSupported))
                     {
                         {
@@ -730,7 +707,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
                             fgSwapChainIsRealFG = SUCCEEDED(fgScResult) && fgSwapChain != nullptr;
                         }
 
-                        if (!genshinChild && (FAILED(fgScResult) || fgSwapChain == nullptr))
+                        if (!false && (FAILED(fgScResult) || fgSwapChain == nullptr))
                         {
                             fgSwapChainIsRealFG = false;
 
@@ -750,12 +727,10 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
                     const bool childReady = fgScResult==S_OK && fgSwapChain4 && fgSwapChainIsRealFG &&
                         State::Instance().activeFgInput==FGInput::Upscaler && State::Instance().activeFgOutput==FGOutput::DLSSG &&
                         dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG) &&
-                        GenshinPresentNr::Identity(State::Instance().currentFGSwapchain)==GenshinPresentNr::Identity(fgSwapChain4);
-                    if (genshinChild && !childReady && fgSwapChain4)
-                    { fgSwapChain4->Release(); fgSwapChain4=nullptr; }
-                    if (genshinChild ? nativeReady : (SUCCEEDED(realScResult) && realDx11SwapChain && fgSwapChain4))
+                        ComIdentity::Get(State::Instance().currentFGSwapchain)==ComIdentity::Get(fgSwapChain4);
+                    if ((SUCCEEDED(realScResult) && realDx11SwapChain && fgSwapChain4))
                     {
-                        State::Instance().currentSwapchainDesc = genshinChild ? nativeActual : fgDesc;
+                        State::Instance().currentSwapchainDesc = fgDesc;
                         State::Instance().currentRealSwapchain = realDx11SwapChain;
                         State::Instance().currentFGSwapchain = fgSwapChain4;
                         State::Instance().currentD3D11Device = device;
@@ -767,7 +742,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
                             FGHooks::SetDx12InteropPresentSC(fgSwapChain4, localDesc.OutputWindow);
 
                         *ppSwapChain = new Dx11wDx12SC(realDx11SwapChain, fgSwapChain4, device, localDesc.OutputWindow,
-                                                       localDesc.Flags, std::move(visibleChild), genshinChild,
+                                                       localDesc.Flags,
                                                        fgSwapChainIsRealFG && sourceFrameLatencyOwner, applicationFlags);
 
                         State::Instance().currentSwapchain = *ppSwapChain;
@@ -1083,12 +1058,9 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
                 State::Instance().activeFgInput != FGInput::NvngxFG && !DxvkFrameGenerationViaVulkan())
             {
                 // For dx11 swapchain
-                const bool genshinChild = State::Instance().activeFgOutput == FGOutput::DLSSG &&
-                    (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()));
                 const bool windowed = !pFullscreenDesc || localFullscreenDesc.Windowed;
-                auto visibleChild = genshinChild && windowed ? GenshinVisibleChild::Create(hWnd) : nullptr;
-                const HWND fgHwnd = genshinChild ? (visibleChild ? visibleChild->Child() : nullptr) : hWnd;
-                auto hiddenHwnd = genshinChild ? hWnd : CreateHiddenSwapchainWindow();
+                const HWND fgHwnd = hWnd;
+                auto hiddenHwnd = CreateHiddenSwapchainWindow();
 
                 ID3D12Device* dx12Device = nullptr;
                 ID3D12CommandQueue* dx12Queue = nullptr;
@@ -1099,7 +1071,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
                     dx12Queue = WithDx12::GetD3D12CommandQueue();
                 }
 
-                if (hiddenHwnd != nullptr && (genshinChild || (dx12Device != nullptr && dx12Queue != nullptr)))
+                if (hiddenHwnd != nullptr && (dx12Device != nullptr && dx12Queue != nullptr))
                 {
                     DXGI_SWAP_CHAIN_DESC1 realDesc = localDesc;
                     IDXGISwapChain1* realDx11SwapChain1 = nullptr;
@@ -1107,24 +1079,11 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
                     {
                         ScopedSkipParentWrapping skipParentWrapping {};
                         realScResult = o_CreateSwapChainForHwnd(realFactory, pDevice, hiddenHwnd, &realDesc,
-                            genshinChild && pFullscreenDesc ? &localFullscreenDesc : nullptr,
+                            false && pFullscreenDesc ? &localFullscreenDesc : nullptr,
                                                                 pRestrictToOutput, &realDx11SwapChain1);
                     }
 
-                    DXGI_SWAP_CHAIN_DESC nativeActual{};
-                    ComPtr<ID3D11Device> nativeDevice;
-                    const bool nativeReady=realDx11SwapChain1 && realScResult == S_OK &&
-                        SUCCEEDED(realDx11SwapChain1->GetDesc(&nativeActual)) && nativeActual.OutputWindow==hiddenHwnd &&
-                        SUCCEEDED(realDx11SwapChain1->GetDevice(IID_PPV_ARGS(&nativeDevice))) &&
-                        GenshinPresentNr::Identity(nativeDevice.Get())==GenshinPresentNr::Identity(device);
                     DXGI_SWAP_CHAIN_DESC1 fgDesc = localDesc;
-                    if (genshinChild)
-                    {
-                        DXGI_SWAP_CHAIN_DESC1 actual{};
-                        if (realDx11SwapChain1 && SUCCEEDED(realDx11SwapChain1->GetDesc1(&actual)))
-                        { fgDesc.Width = actual.Width; fgDesc.Height = actual.Height; }
-                        fgDesc.Flags &= ~DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-                    }
                     HRESULT fgScResult = E_FAIL;
                     IDXGISwapChain1* fgSwapChain1 = nullptr;
                     IDXGISwapChain4* fgSwapChain4 = nullptr;
@@ -1132,20 +1091,20 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
                     bool sourceFrameLatencyOwner = false;
                     const bool tearingSupported = IsTearingSupported(realFactory);
 
-                    if (realScResult == S_OK && (!genshinChild || nativeReady) && dx12Device && dx12Queue && fgHwnd &&
+                    if (realScResult == S_OK && dx12Device && dx12Queue && fgHwnd &&
                         PrepareDx12InteropDesc1(fgDesc, tearingSupported))
                     {
                         {
                             ScopedSkipFGSCCreation skipFGSCCreation {};
                             fgScResult = FGHooks::CreateSwapChainForHwnd(
                                 realFactory, dx12Queue, fgHwnd, &fgDesc,
-                                !genshinChild && pFullscreenDesc != nullptr ? &localFullscreenDesc : nullptr, pRestrictToOutput,
+                                !false && pFullscreenDesc != nullptr ? &localFullscreenDesc : nullptr, pRestrictToOutput,
                                 &fgSwapChain1, &sourceFrameLatencyOwner);
 
                             fgSwapChainIsRealFG = fgScResult == S_OK && fgSwapChain1 != nullptr;
                         }
 
-                        if (!genshinChild && (fgScResult != S_OK || fgSwapChain1 == nullptr))
+                        if (!false && (fgScResult != S_OK || fgSwapChain1 == nullptr))
                         {
                             fgSwapChainIsRealFG = false;
 
@@ -1168,13 +1127,10 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
                     const bool childReady = fgScResult==S_OK && fgSwapChain4 && fgSwapChainIsRealFG &&
                         State::Instance().activeFgInput==FGInput::Upscaler && State::Instance().activeFgOutput==FGOutput::DLSSG &&
                         dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG) &&
-                        GenshinPresentNr::Identity(State::Instance().currentFGSwapchain)==GenshinPresentNr::Identity(fgSwapChain4);
-                    if (genshinChild && !childReady && fgSwapChain4)
-                    { fgSwapChain4->Release(); fgSwapChain4=nullptr; }
-                    if (genshinChild ? nativeReady : (realScResult == S_OK && realDx11SwapChain1 && fgSwapChain4))
+                        ComIdentity::Get(State::Instance().currentFGSwapchain)==ComIdentity::Get(fgSwapChain4);
+                    if ((realScResult == S_OK && realDx11SwapChain1 && fgSwapChain4))
                     {
-                        if (genshinChild) realDx11SwapChain1->GetDesc(&State::Instance().currentSwapchainDesc);
-                        else ((IDXGISwapChain*) fgSwapChain4)->GetDesc(&State::Instance().currentSwapchainDesc);
+                        ((IDXGISwapChain*) fgSwapChain4)->GetDesc(&State::Instance().currentSwapchainDesc);
                         State::Instance().currentSwapchainDesc.OutputWindow = hWnd;
                         State::Instance().currentRealSwapchain = realDx11SwapChain1;
                         State::Instance().currentFGSwapchain = fgSwapChain4;
@@ -1187,7 +1143,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
                             FGHooks::SetDx12InteropPresentSC((IDXGISwapChain*) fgSwapChain4, hWnd);
 
                         *ppSwapChain = (IDXGISwapChain1*) new Dx11wDx12SC(realDx11SwapChain1, fgSwapChain4, device,
-                                                                          hWnd, localDesc.Flags, std::move(visibleChild), genshinChild,
+                                                                          hWnd, localDesc.Flags,
                                                                           fgSwapChainIsRealFG && sourceFrameLatencyOwner, applicationFlags);
 
                         State::Instance().currentSwapchain = *ppSwapChain;

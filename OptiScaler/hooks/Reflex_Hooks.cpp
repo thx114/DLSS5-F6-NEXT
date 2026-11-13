@@ -14,7 +14,7 @@
 #include <framegen/dlssg/DLSSG_Dx12.h>
 #include <framegen/dlssg/FgDepthContract.h>
 #include <framegen/dlssg/StarRailF5DsPolicy.h>
-#include <genshin/GenshinHookCpuTiming.h>
+#include <runtime/HookCpuTiming.h>
 #include <low_latency/GpuTimeline.h>
 
 #include <magic_enum.hpp>
@@ -535,14 +535,14 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
 
             // R897: the process was admitted by the actual StarRail source wrapper.
             // Unknown/worker callers keep parentKnown=false; no provider query or lock here.
-            const bool collectMarker=GenshinHookCpuTiming::StarRailTimingActive() &&
+            const bool collectMarker=HookCpuTiming::StarRailTimingActive() &&
                 !State::Instance().externalFrameGeneration && !State::Instance().gameCalledSlInit &&
                 State::Instance().swapchainInteropApi==SwapchainInteropApi::Dx11wDx12 &&
                 State::Instance().activeFgInput==FGInput::Upscaler;
-            auto markerStamp=collectMarker ? GenshinHookCpuTiming::MakeStarRailStamp(gameCall ?
-                GenshinHookCpuTiming::StarRailOrigin::NvapiForwardGame : (_ownCall ?
-                GenshinHookCpuTiming::StarRailOrigin::NvapiForwardOwn : GenshinHookCpuTiming::StarRailOrigin::NvapiForwardOther)) :
-                GenshinHookCpuTiming::StarRailStamp{};
+            auto markerStamp=collectMarker ? HookCpuTiming::MakeStarRailStamp(gameCall ?
+                HookCpuTiming::StarRailOrigin::NvapiForwardGame : (_ownCall ?
+                HookCpuTiming::StarRailOrigin::NvapiForwardOwn : HookCpuTiming::StarRailOrigin::NvapiForwardOther)) :
+                HookCpuTiming::StarRailStamp{};
             if(collectMarker){
                 markerStamp.marker=static_cast<uint32_t>(marker);markerStamp.frame=pSetLatencyMarkerParams->frameID;
                 if (tokenResult == sl::Result::eOk && frameToken != nullptr)
@@ -551,7 +551,7 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
                 }
             }
             skip[index] = true;
-            GenshinHookCpuTiming::Scope markerTiming(GenshinHookCpuTiming::Stage::FgPclMarker,collectMarker);
+            HookCpuTiming::Scope markerTiming(HookCpuTiming::Stage::FgPclMarker,collectMarker);
             const auto actualPclFrame=static_cast<uint32_t>(*frameToken);
             const auto markerResult=StreamlineProxy::PCLSetMarker()(marker, *frameToken);
             const auto markerWall=markerTiming.Finish();
@@ -566,7 +566,7 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
             }
             if(collectMarker){
                 markerStamp.result=static_cast<uint32_t>(markerResult);markerStamp.resultKnown=true;
-                GenshinHookCpuTiming::RecordStarRailCall(GenshinHookCpuTiming::StarRailCall::PclMarker,markerStamp,markerWall);
+                HookCpuTiming::RecordStarRailCall(HookCpuTiming::StarRailCall::PclMarker,markerStamp,markerWall);
             }
 
             return NvAPI_Status::NVAPI_OK;

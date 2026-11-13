@@ -1,3 +1,4 @@
+﻿#include <runtime/ComIdentity.h>
 // Included inside namespace DlssNr. All entry points share g_nrMutex.
 // The private helper must declare its integration dependencies at global scope.
 } // namespace DlssNr (resumed below)
@@ -312,7 +313,7 @@ bool DirectDlssSceneBridgeEnabled()
 {
     // The F6 input policy admits only real NGX Evaluate calls. The optional
     // optical producer has its own explicit picture-flow contract.
-    return F6InputPolicy::DirectDlssInputs && !F6InputPolicy::FsrBridgeEnabled &&
+    return F6InputPolicy::DirectDlssInputs &&
         !native::OpticalFgNrEnabled();
 }
 
@@ -377,9 +378,6 @@ ID3D12CommandQueue* RealQueue(ID3D12CommandQueue* queue)
 // runs); the check is repeated so capture, which has no such caller, decides the same way.
 bool PausedForGameFrameGeneration()
 {
-    // Only the exact ordinary parent producer callback can bypass the game-FG
-    // pause. Capture/menu/unrelated interop callers have no such capability.
-    if (GenshinPresentNr::NativeParentConsumer::Active()) return false;
     auto& state = State::Instance();
     auto* fg = state.currentFG;
     return GameFrameGenerationOn(fg && fg->IsActive() && !fg->IsPaused(),
@@ -1369,8 +1367,7 @@ void FinishedPictureColorSpace(IDXGISwapChain* swapchain, DXGI_COLOR_SPACE_TYPE 
 #include "DlssNr_GenshinPresentation.inl"
 
 static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue, bool dx11Bridge,
-                                          ID3D12CommandQueue* orderedProducerQueue = nullptr,
-                                          const GenshinPresentNr::ReturnedPicture* nativeReturned = nullptr)
+                                          ID3D12CommandQueue* orderedProducerQueue = nullptr)
 {
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
     const bool resident = Late::ForceNRResident();
@@ -1419,49 +1416,7 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
     }
     if(dx11Bridge && (!queue || queue->GetDesc().Type!=D3D12_COMMAND_LIST_TYPE_DIRECT))return;
     Late::finishedPictureOutcome.reason = FinishedPictureReason::NoCurrentInput;
-    if(dx11Bridge && nativeReturned) {
-        const auto& state=State::Instance();
-        Late::ComPtr<IDXGISwapChain3> endpoint;Late::ComPtr<ID3D12Resource> color;Late::ComPtr<ID3D12Device> device;
-        const auto& cfg=*Config::Instance();
-        const auto kind=GenshinPresentNr::SelectFgPicture(cfg.DlssNrEnabled.value_or_default(),cfg.DlssNrFinishedPicture.value_or_default(),
-            cfg.DlssNrApplyModel.value_or_default(),cfg.DlssNrRunBeforeSr.value_or_default(),cfg.DlssNrDeferredDlss.value_or_default());
-        if(kind==GenshinPresentNr::FgPictureKind::Unknown || kind!=nativeReturned->Kind()) {
-            Late::finishedPictureOutcome.reason=FinishedPictureReason::InvalidEndpoint;return;
-        }
-        if(!swapchain || !queue || !orderedProducerQueue || state.swapchainInteropApi!=SwapchainInteropApi::Dx11wDx12 || state.activeFgInput!=FGInput::Upscaler ||
-           state.activeFgOutput!=FGOutput::DLSSG || !Config::Instance()->GenshinControlsCurrent(nativeReturned->ControlsEpoch()) ||
-           FAILED(swapchain->QueryInterface(IID_PPV_ARGS(&endpoint))) ||
-           FAILED(endpoint->GetBuffer(endpoint->GetCurrentBackBufferIndex(),IID_PPV_ARGS(&color))) ||
-           FAILED(queue->GetDevice(IID_PPV_ARGS(&device))) ||
-           !nativeReturned->Matches(swapchain,queue,orderedProducerQueue,color.Get(),device.Get(),state.frameCount,
-               reinterpret_cast<uintptr_t>(state.currentFG))) {
-            Late::finishedPictureOutcome.reason=FinishedPictureReason::InvalidEndpoint;return;
-        }
-        if(GenshinPresentNr::Original(kind)) {
-            // Real same-History guides submitted, original B retained, then B
-            // copied to this exact provider color and queue-waited. This is no
-            // NR evaluation/write/submission; keep all NR completion fields zero.
-            Late::finishedPictureOutcome.result=FinishedPictureResult::NoWrite;
-            Late::finishedPictureOutcome.reason=kind==GenshinPresentNr::FgPictureKind::OriginalNrDisabled
-                ?FinishedPictureReason::Disabled:FinishedPictureReason::ModelDisabled;
-            try {Late::finishedPictureOutcome.original=std::make_shared<const GenshinPresentNr::ReturnedPicture>(*nativeReturned);}
-            catch(const std::bad_alloc&) {Late::finishedPictureOutcome.reason=FinishedPictureReason::RecordingFailed;}
-            return;
-        }
-        // NativeDriver actually evaluated NR, Return actually copied to native B,
-        // and the wrapper copied that B into THIS color and ordered THIS queue.
-        // No second model call and no NoWrite/disabled promotion.
-        Late::finishedPictureOutcome.result=FinishedPictureResult::WrittenOrdered;
-        Late::finishedPictureOutcome.reason=FinishedPictureReason::None;
-        Late::finishedPictureOutcome.fence=nativeReturned->Fence();
-        Late::finishedPictureOutcome.fenceValue=nativeReturned->Value();
-        Late::finishedPictureOutcome.submissionSerial=nativeReturned->Serial();
-        return;
-    }
-    // Every endpoint can leave an owned private list idle after reconfiguration.
-    // Close only completed private generations; never a borrowed capture list.
-    // This must advance while focused, independently of which slot is selected.
-    if (g_nr.feature == nullptr && !g_nrRetired.empty())
+    if (g_nr.feature == nullptr && !g_nrGpuWork.Empty())
         Late::RetireCompletedPrivateRecordings();
     // A physical/generated interop Present is not a new StarRail source picture.
     // Reject that generic entry before it can erase the bridge's coverage.
@@ -1577,7 +1532,7 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
     // completed private lists before selecting/recording this source picture;
     // captured producer/game lists and incomplete uses keep their owners.
     if (nativeStarRail && persistentBridge && orderedProducer != nullptr &&
-        !g_nrRetired.empty() && (g_nr.feature == nullptr || DetailReuse::HasParkedAllocations()))
+        !g_nrGpuWork.Empty() && (g_nr.feature == nullptr || DetailReuse::HasParkedAllocations()))
         Late::RetireCompletedPrivateRecordings();
     // No fresh-slot allocation, allocator Reset, filter work, conversion or model
     // creation has happened at this point. A defer is an ordinary NR NoWrite; the
@@ -2318,7 +2273,6 @@ void FinishedPictureDx11BridgeOutputHandoff(ID3D12CommandQueue* queue, ID3D12Gra
 
 FinishedPictureOutcome ApplyToFinishedPictureDx11Bridge(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue,
                                      ID3D12CommandQueue* orderedProducerQueue,
-                                     const GenshinPresentNr::ReturnedPicture* nativeReturned,
                                      GuideSourceMetadata::Ptr selectedSource)
 {
     // Return this exact invocation under the owning lock, including invalid,
@@ -2326,15 +2280,12 @@ FinishedPictureOutcome ApplyToFinishedPictureDx11Bridge(IDXGISwapChain* swapchai
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
     if (UsesGenshinPresentPipeline())
         return GenshinPresentation::Apply(swapchain, queue, orderedProducerQueue, selectedSource);
-    ApplyToFinishedPictureInternal(swapchain, queue, true, orderedProducerQueue, nativeReturned);
+    ApplyToFinishedPictureInternal(swapchain, queue, true, orderedProducerQueue);
     // This entry follows the actual source copy/order, before hidden, physical
     // or generated Presents. A skipped NR picture also consumes its boundary.
     if (Late::BridgeContinuationEnabled() && Late::bridgeSourceEpoch != UINT64_MAX)
         ++Late::bridgeSourceEpoch;
     auto outcome=Late::finishedPictureOutcome;
-    // The receipt is consumed on this Present stack. The global diagnostic
-    // outcome must not retain native B across Resize/Release on Original.
-    Late::finishedPictureOutcome.original.reset();
     return outcome;
 }
 
@@ -2358,7 +2309,7 @@ bool NativeInputBlockedBySwapChainInterop()
 bool ApplyNativeInput(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* cmd, ID3D12Resource* color,
                       ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* historyDistrust,
                       bool depthReversed, bool reset,
-                      DXGI_COLOR_SPACE_TYPE colorSpace, D3D12_RESOURCE_STATES pictureState, unsigned long long epoch, bool opticalFgNr, const GenshinPresentNr::Scope* genshinSender)
+                      DXGI_COLOR_SPACE_TYPE colorSpace, D3D12_RESOURCE_STATES pictureState, unsigned long long epoch, bool opticalFgNr)
 {
     if (UsesGenshinPresentPipeline()) return false;
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
@@ -2374,28 +2325,11 @@ bool ApplyNativeInput(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* cmd,
         cmd && cmd->GetType() == D3D12_COMMAND_LIST_TYPE_DIRECT &&
         queue && queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT;
     const auto& state=State::Instance();
-    const bool genshinBridge=genshinSender && genshinSender==GenshinPresentNr::Scope::Current() &&
-        state.activeFgInput==FGInput::Upscaler && state.activeFgOutput==FGOutput::DLSSG &&
-        state.swapchainInteropApi==SwapchainInteropApi::Dx11wDx12 &&
-        Config::Instance()->GenshinControlsCurrent(genshinSender->ticket.source.configEpoch) &&
-        genshinSender->MatchesFgInput(reinterpret_cast<uintptr_t>(state.currentFG),
-            GenshinPresentNr::Identity(state.currentFGSwapchain),cmd,queue,color,depth,motion,historyDistrust);
-    // Ordinary NR is authorized by the exact real parent + producer callback,
-    // with current selected controls. This grants no FG or global interop right.
-    const auto* nativeScope=GenshinPresentNr::Scope::Current();
-    const bool genshinNative=!opticalFgNr && nativeScope &&
-        state.swapchainInteropApi==SwapchainInteropApi::Dx11wDx12 &&
-        state.api!=Vulkan && state.swapchainApi!=Vulkan &&
-        !Config::Instance()->DlssNrRunBeforeSr.value_or_default() &&
-        !Config::Instance()->DlssNrDeferredDlss.value_or_default() && !native::OpticalFgNrEnabled() &&
-        Config::Instance()->GenshinControlsCurrent(nativeScope->ticket.source.configEpoch) &&
-        GenshinPresentNr::NativeParentConsumer::Matches(cmd,queue,color,depth,motion,historyDistrust,epoch);
     // A stale FG sender is never upgraded into a bridge receipt. The private
     // ordinary parent capability may still run NR on this exact native picture.
-    if (genshinSender && !genshinBridge && !genshinNative)return false;
-    if (!queue || !cmd || !color || !motion || (NativeInputBlockedBySwapChainInterop() && !opticalBridge && !genshinBridge && !genshinNative))
+    if (!queue || !cmd || !color || !motion || (NativeInputBlockedBySwapChainInterop() && !opticalBridge && !false && !false))
         return false;
-    if (!genshinBridge && Late::PausedForGameFrameGeneration() && !Late::ZzzGameFrameGenerationStale())
+    if (!false && Late::PausedForGameFrameGeneration() && !Late::ZzzGameFrameGenerationStale())
     {
         if (!Late::ComposeOnGameFg()) Late::Say(Late::pausedForGameFg);
         return false;
@@ -2408,7 +2342,7 @@ bool ApplyNativeInput(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* cmd,
         Late::Say("The graphics device changed. Restart the game to use this option.");
         return false;
     }
-    if (opticalBridge || genshinBridge || genshinNative)
+    if (opticalBridge)
     {
         Late::ComPtr<ID3D12Device> queueDevice;
         if (FAILED(queue->GetDevice(IID_PPV_ARGS(&queueDevice))) || queueDevice != currentDevice) return false;
@@ -2455,11 +2389,10 @@ bool ApplyNativeInput(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* cmd,
     frame.ColourEncodingForced = !screenChoice.choice.automatic;
     frame.WhitePointOverride = scrgb ? 203.0f / 80.0f : 0.0f;
     frame.Reset = reset || Late::reset;
-    if(auto* r=GenshinPresentNrTrace::Current()){r->lateReset=Late::reset;r->dispatchReset=frame.Reset;}
     frame.OutputWidth = (unsigned) desc.Width;
     frame.OutputHeight = desc.Height;
     frame.FinishedPicture = true;
-    frame.FrameGenerationInput = opticalBridge || genshinBridge;
+    frame.FrameGenerationInput = opticalBridge || false;
     // Optical F5Low measured the motion on this picture, so detail reuse may move detail with it.
     frame.MotionMatchesPicture = true;
     // NativeProducer supplies TrustMask picture-space guides to both callers:
@@ -2473,45 +2406,6 @@ bool ApplyNativeInput(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* cmd,
     // R583: scope authenticates game/picture, thread, exact queue, list device and measured guides.
     // NativeDriver's callback is inside NativeProducer::Run; Run closes this list and executes it
     // on that same queue. Do not extend this capability to arbitrary native/FG callers or hints.
-    if (const auto* presented = GenshinPresentNr::Scope::Current())
-    {
-        native::NativeFrame witness {};
-        witness.color = color; witness.depth = depth; witness.motion = motion;
-        witness.historyDistrust = historyDistrust;
-        frame.OrderedPictureReuseQueue = !opticalBridge &&
-            Config::Instance()->GenshinControlsCurrent(presented->ticket.source.configEpoch) &&
-            epoch == presented->ticket.presentEpoch && presented->MatchesConsumer(cmd, queue, witness);
-        if (frame.OrderedPictureReuseQueue)
-        {
-            const auto& source = presented->ticket.source;
-            frame.OrderedPictureReuseOwner[0] = presented->ticket.swapchain;
-            frame.OrderedPictureReuseOwner[1] = source.deviceEpoch;
-            frame.OrderedPictureReuseOwner[2] = source.ownerEpoch;
-            frame.OrderedPictureReuseOwner[3] = source.instance;
-            frame.OrderedPictureReuseOwner[4] = source.historyEpoch;
-            frame.OrderedPictureReuseOwner[5] = source.configEpoch;
-        }
-    }
-    // R628: ordinary authenticated Genshin picture feedback is independent of the native
-    // scene route and FG. Missing mapped depth keeps the original full-model fallback.
-    frame.PictureTemporalRoute = genshinNative && frame.OrderedPictureReuseQueue;
-    GenshinPresentNr::TemporalGuideFacts temporalGuides {};
-    frame.PictureTemporalGuidesVerified = frame.PictureTemporalRoute &&
-        GenshinPresentNr::NativeParentConsumer::TemporalGuides(cmd, queue, color, depth, motion,
-            historyDistrust, epoch, temporalGuides);
-    // At interval 1 only, the same real producer can supply flow/trust without depth.
-    // This never upgrades the depth receipt or authorizes model-skipping reuse.
-    frame.PictureFlowGuidesVerified = frame.PictureTemporalRoute && depth == nullptr &&
-        Config::Instance()->DlssNrPresentedTemporalDetail.value_or_default() &&
-        Config::Instance()->DlssNrDetailReuseInterval.value_or_default() == 1 &&
-        GenshinPresentNr::NativeParentConsumer::PictureFlowGuides(cmd, queue, color, depth, motion,
-            historyDistrust, epoch, temporalGuides);
-    if (frame.PictureTemporalGuidesVerified || frame.PictureFlowGuidesVerified)
-    {
-        frame.PictureGuideEpoch = temporalGuides.guideEpoch;
-        frame.PictureGuideCutSerial = temporalGuides.guideCutSerial;
-        frame.PictureTemporalReset = temporalGuides.reset;
-    }
     frame.OutputArrivalState = pictureState;
     // The first evaluate waits for the epoch to move past the frame the model was made on, and detail reuse numbers
     // frames by it (a step over 1 is a skipped frame). The caller's present count (native::PresentEpoch): each comes
@@ -2530,8 +2424,6 @@ bool ApplyNativeInput(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* cmd,
         modelEpochBefore.config==DetailReuse::ledger.epoch.config &&
         DetailReuse::ledger.modelCalls>=modelCallsBefore;
     const auto modelCalls=modelCallsKnown?DetailReuse::ledger.modelCalls-modelCallsBefore:0;
-    if(auto* r=GenshinPresentNrTrace::Current()) {r->modelSeq=GenshinPresentNrTrace::Sequence();r->modelObserved=modelCallsKnown;
-        r->modelCalls=modelCalls;}
     const bool ran = g_nr.successfulDispatches > before;
     const auto* inputObservation = native::NrInputObservation::Current(queue, cmd, color, depth, motion,
                                                                       historyDistrust, epoch);

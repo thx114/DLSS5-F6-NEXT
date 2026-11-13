@@ -86,8 +86,7 @@ uint64_t ParkedBytes()
     uint64_t bytes = 0;
     for (auto it = parked.begin(); it != parked.end();)
     {
-        const bool retained = std::any_of(g_nrRetired.begin(), g_nrRetired.end(),
-            [&](const NrRetired& r) { return r.resource == it->resource; });
+        const bool retained = g_nrGpuWork.ContainsRetiredResource(it->resource);
         if (!retained) it = parked.erase(it);
         else { bytes = AddBytes(bytes, it->bytes); ++it; }
     }

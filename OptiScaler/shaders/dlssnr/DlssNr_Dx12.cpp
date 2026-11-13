@@ -1,9 +1,4 @@
-#include "pch.h"
-#include <genshin/GenshinPresentNrTrace.h>
-#include <genshin/GenshinNrStageTiming.h>
-#include <genshin/GenshinFsrSubstageProgress.h>
-#include <genshin/GenshinPresentNr.h>
-#include <genshin/GenshinNrProfile.h>
+﻿#include "pch.h"
 #include <hooks/Reflex_Hooks.h>
 #include <native/OpticalFgNrPolicy.h>
 #include <native/NrInputObservation.h>
@@ -26,6 +21,7 @@
 #include <dlssnr/DlssNrDetailReuse.h>
 #include <dlssnr/DlssNrDetailReuseHost.h>
 #include <dlssnr/DlssNrCadenceLedger.h>
+#include <dlssnr/DlssNrStageTiming.h>
 #include <dlssnr/DlssNr_SettingsQueue.h>
 #include <dlssnr/DlssNrSceneCut.h>
 #include <motion/SceneCut_Dx12.h>
@@ -79,6 +75,7 @@
 #include <gpu_time/GpuTime_Dx12.h>
 #include "DlssNr_WatchedLists.h"
 #include "DlssNr_GpuTime.h"
+#include "NrGpuExecutionLifetime.h"
 
 #include <atomic>
 #include <chrono>
@@ -969,25 +966,7 @@ void DiscoverFloatSlot(NVSDK_NGX_Parameter* params)
 // Releasing them immediately was the device hang: with frame generation the GPU runs several frames
 // behind, this work rides the game's own queue that no module fence covers, and an NGX feature or
 // scratch texture freed under in-flight work kills the device.
-struct NrRetired
-{
-    void* feature = nullptr;
-    ID3D12Resource* resource = nullptr;
-    // nullptr -> release through the DLSS-NR forwarder's own dlssnr_call_release (g_nr.release), as
-    // every feature here used to. A non-null override is for a feature of a different NGX type,
-    // released through a different API entirely.
-    void (*featureRelease)(void*) = nullptr;
-    // Retired with the feature it belongs to, never before it. NGX reads a parameter block for as
-    // long as the evaluate that was handed it is still in flight, and with frame generation that is
-    // several frames after the CPU moved on -- destroying it on the spot while the feature itself sat
-    // out the usual 32-frame delay is the same use-after-free this whole retirement list exists to
-    // prevent. DlssNr_DeferredSr.inl's ~Generation tears both down together for the same reason.
-    NVSDK_NGX_Parameter* parameters = nullptr;
-    DlssNrGpuLifetime::Uses uses;
-};
-
-std::vector<NrRetired> g_nrRetired;
-DlssNrGpuLifetime::Registry g_nrGpuWork;
+NrGpuExecutionLifetime g_nrGpuWork;
 
 DlssNrGpuLifetime::Use NrRecording(ID3D12Device* device, ID3D12CommandList* list)
 {
@@ -1040,59 +1019,19 @@ std::string NrRecordingLogIdentity(const DlssNrGpuLifetime::Use& use,
 void ParkNrFeature(void*& feature, void (*releaseFn)(void*) = nullptr,
                   NVSDK_NGX_Parameter** parameters = nullptr)
 {
-    if (feature == nullptr && (parameters == nullptr || *parameters == nullptr))
-        return;
-
-    NrRetired r;
-    r.uses = g_nrGpuWork.Snapshot();
-    r.feature = feature;
-    r.featureRelease = releaseFn;
-    feature = nullptr;
-
-    if (parameters != nullptr)
-    {
-        r.parameters = *parameters;
-        *parameters = nullptr;
-    }
-
-    g_nrRetired.push_back(r);
+    g_nrGpuWork.ParkFeature(feature,releaseFn,parameters);
 }
-
-void ParkNrResource(ID3D12Resource*& res)
+void ParkNrResource(ID3D12Resource*& resource) { g_nrGpuWork.ParkResource(resource); }
+void CollectRetiredNrAllocations()
 {
-    if (res == nullptr)
-        return;
-
-    NrRetired r;
-    r.uses = g_nrGpuWork.Snapshot();
-    r.resource = res;
-    res = nullptr;
-    g_nrRetired.push_back(r);
+    g_nrGpuWork.CollectCompleted(g_nr.release,+[](NVSDK_NGX_Parameter* parameters) {
+        if (auto destroy=NVNGXProxy::D3D12_DestroyParameters()) destroy(parameters);
+    });
 }
-
-void ReleaseNrFeature(const NrRetired& r)
-{
-    if (r.feature != nullptr)
-    {
-        if (r.featureRelease != nullptr)
-            r.featureRelease(r.feature);
-        else if (g_nr.release != nullptr)
-            g_nr.release(r.feature);
-    }
-
-    // After the feature, never before -- same order as DlssNr_DeferredSr.inl's ~Generation.
-    if (r.parameters != nullptr && NVNGXProxy::D3D12_DestroyParameters())
-        NVNGXProxy::D3D12_DestroyParameters()(r.parameters);
-}
-
 void TickNrRetired()
 {
     DlssNrGuideObservation::Poll();
-    DlssNrGpuLifetime::CollectRetired(g_nrRetired, [](const NrRetired& entry)
-    {
-        ReleaseNrFeature(entry);
-        if (entry.resource) entry.resource->Release();
-    });
+    CollectRetiredNrAllocations();
 }
 
 // The inject point decides which buffer is being measured -- the upscaler's linear output or the
@@ -1124,7 +1063,7 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT modelFormat, DXGI_FORMAT colourF
              "screen edges changed) pid={} dispatch={} retiredEntries={} trackedRecordings={} registryHalted={} "
              "watchedOverflow={} watchedOverflowPeak={}",
              (int) haveModel, (int) modelFormat, (int) haveColour, (int) colourFormat,
-             GetCurrentProcessId(), g_frames, g_nrRetired.size(), g_nrGpuWork.Tracked(), g_nrGpuWork.Halted(),
+             GetCurrentProcessId(), g_frames, g_nrGpuWork.RetiredCount(), g_nrGpuWork.Tracked(), g_nrGpuWork.Halted(),
              DlssNrWatchedLists::g_overflowCount.load(std::memory_order_acquire),
              DlssNrWatchedLists::g_overflowPeak.load(std::memory_order_relaxed));
 
@@ -2202,17 +2141,7 @@ void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* backbuffer
 
 // The existing authenticated Present-NR ticket supplies this source. An absent
 // ticket stays UNKNOWN; never substitute the global frame or newest SR snapshot.
-GenshinSubstage::PresetSource PresetNrSource(const native::NrInputObservation::Dispatch* input,
-                                            bool finished) noexcept
-{
-    const auto* presented = GenshinPresentNr::Scope::Current();
-    if (!finished || !presented || !presented->consumerReached || !input) return {};
-    const auto& source = presented->ticket.source;
-    if (input->generation != source.generation || input->sourceFrame != source.sourceFrame ||
-        input->pictureSerial != presented->ticket.pictureSerial || input->epoch != presented->ticket.presentEpoch)
-        return {};
-    return {source.progress, source.instance, source.generation, source.sourceFrame, source.historyEpoch};
-}
+
 
 bool TuningMatchesFeature(const Config& cfg, unsigned int requestedPasses)
 {
@@ -3695,19 +3624,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                  "retiredEntries={} trackedRecordings={} registryHalted={} watchedOverflow={} watchedOverflowPeak={}",
                  g_nr.width, g_nr.height, width, height, g_nr.workWidth, g_nr.workHeight,
                  modelWidth, modelHeight, resolutionChanged, tuningChanged, placementChanged,
-                 GetCurrentProcessId(), g_frames, g_nrRetired.size(), g_nrGpuWork.Tracked(), g_nrGpuWork.Halted(),
+                 GetCurrentProcessId(), g_frames, g_nrGpuWork.RetiredCount(), g_nrGpuWork.Tracked(), g_nrGpuWork.Halted(),
                  DlssNrWatchedLists::g_overflowCount.load(std::memory_order_acquire),
                  DlssNrWatchedLists::g_overflowPeak.load(std::memory_order_relaxed));
         // R721 observes only actual preset differences at this render boundary.
         // Retirement and every real GPU owner below are untouched.
-        if (GenshinSubstage::Runtime().PresetRequestPending())
-            for (unsigned int pass = 0; pass < requestedPasses; ++pass)
-                if ((pass == 0 ? g_nr.feature : g_nr.passFeature[pass]) != nullptr &&
-                    g_nr.builtPreset[pass] != PassPreset(cfg, pass))
-                    GenshinSubstage::PresetRebuilding(pass, g_nr.builtPreset[pass],
-                        PassPreset(cfg, pass), PresetNrSource(nativeInputObservation, frame.FinishedPicture));
-        // Parked rather than released: with frame generation the GPU can still be several frames
-        // deep in work that references all of it.
         ParkNrFeature(g_nr.feature);
         g_nr.featurePendingSubmission = false;
         g_nr.featureCreateUse.reset();
@@ -3750,11 +3671,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // A slider can request another model while the previous generation still owns
     // GPU memory. Drain its actual submission fences without blocking the game or
     // allocating a second model. Also retire reuse history with the old surfaces.
-    if (g_nr.feature == nullptr && !g_nrRetired.empty())
+    if (g_nr.feature == nullptr && !g_nrGpuWork.Empty())
     {
         DetailReuse::ParkAll();
         TickNrRetired();
-        if (!g_nrRetired.empty())
+        if (!g_nrGpuWork.Empty())
         {
             ReportSkipOnce("waiting for the previous NR generation to finish before rebuilding");
             device->Release();
@@ -3978,7 +3899,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         const auto tuning = PassTuning(cfg, 0);
         DlssNr::ModelScalars::Invalidate(DlssNr::ModelScalars::Consumer::Dx12);
         const auto createPreset = PassPreset(cfg, 0);
-        const auto presetRequest = GenshinSubstage::PresetCreateRequest(0, createPreset);
         g_nr.feature =
             g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
                         device, cmdList, g_nr.capabilityParams, modelWidth, modelHeight,
@@ -3989,8 +3909,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                         // UI correction at the model's own default: with no UI layer fed to it there
                         // is nothing for it to correct.
                         1);
-        GenshinSubstage::PresetCreated(presetRequest, 0, createPreset, frame.SubmissionEpoch,
-                                       g_nr.feature != nullptr, presetRequest ? PresetNrSource(nativeInputObservation, frame.FinishedPicture) : GenshinSubstage::PresetSource{});
+
 
         if (g_nr.feature == nullptr)
         {
@@ -4153,7 +4072,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
                 const auto tuning = PassTuning(cfg, pass);
                 const auto createPreset = PassPreset(cfg, pass);
-                const auto presetRequest = GenshinSubstage::PresetCreateRequest(pass, createPreset);
                 g_nr.passFeature[pass] = g_nr.create(
                     snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
                     device, cmdList, g_nr.capabilityParams, modelWidth, modelHeight,
@@ -4161,8 +4079,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     (int) PassStyle(cfg, pass),
                     tuning.structure, tuning.tone, tuning.skin,
                     tuning.autoMask ? 1 : 0, 1);
-                GenshinSubstage::PresetCreated(presetRequest, pass, createPreset, frame.SubmissionEpoch,
-                                               g_nr.passFeature[pass] != nullptr, presetRequest ? PresetNrSource(nativeInputObservation, frame.FinishedPicture) : GenshinSubstage::PresetSource{});
+
 
                 if (g_nr.passFeature[pass] != nullptr)
                 {
@@ -5698,8 +5615,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // A Tune step pins the white point (calibrationPinned); a Measure detail run copies and measures without pinning,
     // and measures Reuse bottleneck as it runs.
     reuseFrame.fullModelRequired = frame.FullModelRequired;
-    reuseFrame.blocked = calibrationPinned || g_nr.heldActive || frame.FreshColorResetFallback ||
-        (GenshinNr::Scope::Current() != nullptr && !pictureFeedbackQualified);
+    reuseFrame.blocked = calibrationPinned || g_nr.heldActive || frame.FreshColorResetFallback;
     // Temporal identity belongs to a captured native base frame, not the model clock.
     reuseFrame.frameNumber = reuseFrame.nativeTemporalRouteRequested
         ? frame.SourceCaptureSerial
@@ -5767,9 +5683,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // No old detail, spread or composed history may cross into this unphased
         // base profile, including the first frame after a different NR route.
         // Keep BeforeModel/AfterModel's existing pending-fence lifecycle intact.
-        if(GenshinNr::Scope::Current() && !pictureFeedbackQualified) {
-            DetailReuse::cadence.Drop();DetailReuse::shownValid=false;
-        }
         reusePlan = DetailReuse::BeforeModel(reuseFrame);
     }
     DetailHistory::Before(reuseFrame);
@@ -5848,7 +5761,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     DlssNrCadence::StageScope modelCpu(DetailReuse::ledger, DlssNrCadence::Stage::ModelLoop, cadenceIdentity);
     if (!reused) ++DetailReuse::ledger.reuseFull; // a fresh chain, including a failed/shortened chain
 
-    if(!reused)GenshinSubstage::Event(GenshinSubstage::Stage::NrExecute,GenshinSubstage::State::Running);
+
     static_assert(DlssNr::MaxPassCount == DlssNrSceneCut::SubmissionReceipts::kPasses);
     const auto sceneCutAttempt = SceneCut::BeginModelAttempt(reused ? 0u : effectivePasses, false);
     unsigned completedModelPasses = 0;
@@ -5882,7 +5795,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             cfg.DlssNrDetailReuse.value_or_default(), cfg.DlssNrDetailReuseInterval.value_or_default(),
             cfg.DlssNrPresentedTemporalDetail.value_or_default());
         const bool vitEveryFrame = frame.FullModelRequired || frame.FreshColorResetFallback || detailModeSelected || reusePlan.active ||
-            State::Instance().api == Vulkan || GenshinNr::Scope::Current()!=nullptr;
+            State::Instance().api == Vulkan;
         // Sample the actual first-pass consumer after normalization, packing,
         // and composed-motion selection. Borrowed game lists cannot run the sampler.
         if (pass==0 && frame.IndependentCommands) {
@@ -6167,9 +6080,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     }
 
     SceneCut::EndModelAttempt(sceneCutAttempt); // revoke a shortened/abandoned chain, keep its request pending
-    if(!reused)GenshinSubstage::Event(GenshinSubstage::Stage::NrExecute,
-        result==NVSDK_NGX_Result_Success?GenshinSubstage::State::Succeeded:GenshinSubstage::State::Failed,
-        GenshinSubstage::Resource::Nr,GenshinSubstage::Domain::Ngx,static_cast<uint32_t>(result));
+
     if (g_ngxTime != nullptr)
         g_ngxTime->End(cmdList);
     if (g_gpuTime) g_gpuTime->Mark(cmdList, DlssNrGpuTime::Point::ModelEnd);
@@ -6834,10 +6745,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             const bool evidenceStatus = evidenceObservations <= 3 || evidenceObservations % 600 == 0;
             // R835 NR timing: reuse existing CPU/GPU timestamps only. This
             // diagnostic has no route/gate/configuration or GPU-work authority.
-            static GenshinNrStageTiming::Accounting nrTiming;
+            static DlssNrStageTiming::Accounting nrTiming;
             static unsigned nrTimingExports=0;
-            if (GenshinPresentNrTrace::IsGenshinProcess() && frame.FinishedPicture &&
-                frame.IndependentCommands && !vulkanGame)
+            if (frame.IndependentCommands && !vulkanGame)
             {
                 nrTiming.Observe(DetailReuse::ledger,frame.NativeSceneRoute,g_frames);
                 if (evidenceStatus && nrTimingExports<64)
@@ -6944,7 +6854,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     modelInputSample.calls ? modelWidth : 0u, modelInputSample.calls ? modelHeight : 0u,
                     DlssNrWatchedLists::g_overflowCount.load(std::memory_order_acquire),
                     DlssNrWatchedLists::g_overflowPeak.load(std::memory_order_relaxed),
-                    g_nrRetired.size(), g_nrGpuWork.Tracked(), g_nrGpuWork.Halted(), cadenceEvidenceLines);
+                    g_nrGpuWork.RetiredCount(), g_nrGpuWork.Tracked(), g_nrGpuWork.Halted(), cadenceEvidenceLines);
             }
             const auto observe = [&](const char* scope, DlssNrGpuTime* timer,
                                      const std::vector<DlssNrGpuTime::Evidence>& fresh) {
@@ -7188,15 +7098,7 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
         appliedColourGeneration = queuedColourGeneration;
     }
     static_assert(DlssNrColourEncoding::kAuto==0,"Genshin external Auto selector must stay synchronized");
-    const auto* genshinNr=GenshinNr::Scope::Current();
-    if(genshinNr && (!genshinNr->Matches(cmdList,params,timingQueue,submissionEpoch) ||
-        !genshinNr->Supports(selectedColourEncoding,beforeUpscale,rayReconstruction,
-            cfg.DlssNrRunBeforeSr.value_or_default(),cfg.DlssNrDeferredDlss.value_or_default(),
-            cfg.DlssNrFinishedPicture.value_or_default(),cfg.DlssNrHoldFrame.value_or_default(),
-            cfg.DlssNrDepthTextureFlipY.value_or_default(),cfg.DlssNrMotionTextureFlipY.value_or_default(),
-            cfg.DlssNrMotionYInverted.value_or_default()))) {
-        ReportSkipOnce("Genshin bounded NR profile does not support this route or transform");return;
-    }
+
     static unsigned lastPrecision=0;
     const unsigned precision=cfg.DlssNrPrecision.value_or_default();
     if(lastPrecision!=precision)
@@ -7434,9 +7336,6 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
         return;
     }
 
-    if(genshinNr && !genshinNr->Resources(output,depth,motion)) {
-        ReportSkipOnce("Genshin NR resources changed after admission");return;
-    }
     unsigned int createFlags = source.featureFlags;
     if (!source.featureFlagsKnown)
         params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &createFlags);
@@ -7466,20 +7365,10 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
     // malformed parameter block.
     ID3D12Resource* colourAuthority = beforeUpscale ? target : (output != nullptr ? output : target);
     // Finished Picture decodes the screen, not this evaluate, and reports its own choice.
-    if(!genshinNr)ApplyColourEncoding(frame, appliedColourEncoding,
+    ApplyColourEncoding(frame, appliedColourEncoding,
                         (createFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0,
                         colourAuthority != nullptr ? colourAuthority->GetDesc().Format : DXGI_FORMAT_UNKNOWN,
-                        !Config::Instance()->DlssNrFinishedPicture.value_or_default());
-
-    // The game telling the upscaler to forget everything it has accumulated: a cut, a teleport, a
-    // load. Every upscaler in this tree reads it and this pass did not, so the model's history was
-    // only ever reset by things that happened to us -- a resize, a rebuild, a recovery from failure
-    // -- and never by anything that happened in the game. Across a cut the model was reprojecting
-    // the previous scene onto the new one and being asked to reconcile them.
-    //
-    // Read the same way FFXFeature_Dx12 reads it, including leaving it alone when the parameter is
-    // absent: a game that never sets it is not asking for a reset every frame.
-    {
+                        !Config::Instance()->DlssNrFinishedPicture.value_or_default());{
         unsigned int gameReset = 0;
 
         if (params->Get(NVSDK_NGX_Parameter_Reset, &gameReset) == NVSDK_NGX_Result_Success)
@@ -7489,7 +7378,7 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
     // Read numeric facts from this exact Evaluate and the live feature. Diagnostic
     // observations are never a capability for source identity or GPU retirement.
     EvaluateGuides::Read(frame, *params, source, depth, motion);
-    if (beforeUpscale && !genshinNr)
+    if (beforeUpscale)
     {
         frame.NativePreSrRoute = true;
         frame.NativeSceneRoute = true;
@@ -7518,26 +7407,6 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
 
     // Consume immutable source-frame/profile values rather than mutable provider flags.
     // The identity domain sets the actual encode/resolve passthrough path.
-    if(genshinNr && !genshinNr->Apply(frame)) {
-        ReportSkipOnce("Genshin bounded NR identity processing contract missing");return;
-    }
-
-    // What the game says about its own exposure. Logged, used for nothing yet.
-    //
-    // The white point measured from the frame turned out to be a control loop rather than a
-    // measurement: the pass writes into the buffer it reads, most games adapt their exposure to the
-    // finished frame, and the two chase each other -- 0.01 to 97.9 in one Enshrouded session. Any
-    // statistic taken from a frame we modify has that problem.
-    //
-    // These do not. DLSS.Pre.Exposure is the scale the game applied before handing the buffer over,
-    // and ExposureTexture is a 1x1 the game fills with the exposure it is using; both are the game's
-    // own numbers, decided upstream of anything here. Whether either is close to the divisor the model
-    // actually wants is unknown, which is why this only prints them.
-    //
-    // The auto-exposure flag decides whether the texture means anything: with it set the game is
-    // telling DLSS to work exposure out for itself and may supply nothing. OptiScaler forces that flag
-    // on for eighteen games, so it is logged too -- reading a value whose flag has been overridden is
-    // how the debug views lied earlier tonight.
     {
         float preExposure = 0.0f;
         const bool havePre =
@@ -7959,15 +7828,7 @@ void Shutdown()
     CalibrationShutdown();
     EdgeCompression::Shutdown();
 
-    for (auto& r : g_nrRetired)
-    {
-        ReleaseNrFeature(r);
-
-        if (r.resource != nullptr)
-            r.resource->Release();
-    }
-
-    g_nrRetired.clear();
+    CollectRetiredNrAllocations();
 
     if (g_nr.feature != nullptr && g_nr.release != nullptr)
         g_nr.release(g_nr.feature);

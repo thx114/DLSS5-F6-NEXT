@@ -2,7 +2,7 @@
 #include "input_system_internal.h"
 
 #include <detours/detours.h>
-#include <genshin/GenshinInputHookTransaction.h>
+#include <hooks/HookTransaction.h>
 
 #include <tlhelp32.h>
 #include <vector>
@@ -263,7 +263,6 @@ void ResolveOptionalUser32Exports()
 
 bool InstallHooks()
 {
-    GenshinNativeQuery::StartupInstallScope inputInstallScope;
     if (_state.HooksInstalled)
         return true;
 
@@ -274,7 +273,7 @@ bool InstallHooks()
 
     if (!messageHooks)
     {
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
 
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_PeekMessageA), hkPeekMessageA);
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_PeekMessageW), hkPeekMessageW);
@@ -292,7 +291,7 @@ bool InstallHooks()
 
     if (!keyStateHooks)
     {
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
 
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_GetAsyncKeyState), hkGetAsyncKeyState);
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_GetKeyState), hkGetKeyState);
@@ -309,7 +308,7 @@ bool InstallHooks()
 
     if (!getPosHooks)
     {
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
 
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_GetMessagePos), hkGetMessagePos);
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_GetMouseMovePointsEx), hkGetMouseMovePointsEx);
@@ -325,7 +324,7 @@ bool InstallHooks()
 
     if (!clipCursorHooks)
     {
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
 
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_ClipCursor), hkClipCursor);
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_GetClipCursor), hkGetClipCursor);
@@ -341,7 +340,7 @@ bool InstallHooks()
 
     if (!message2Hooks)
     {
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
 
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_SendInput), hkSendInput);
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_mouse_event), hkmouse_event);
@@ -362,7 +361,7 @@ bool InstallHooks()
 #ifdef USE_HID_HOOKS
     if (!State::Instance().isRunningOnLinux && !hidHooks)
     {
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
 
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_CreateFileA), hkCreateFileA);
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_CreateFileW), hkCreateFileW);
@@ -382,7 +381,7 @@ bool InstallHooks()
 
     if (!rawHooks)
     {
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
 
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_GetRawInputData), hkGetRawInputData);
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_GetRawInputBuffer), hkGetRawInputBuffer);
@@ -399,7 +398,7 @@ bool InstallHooks()
 
     if (!windowsHooks)
     {
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
 
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_SetWindowsHookExA), hkSetWindowsHookExA);
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_SetWindowsHookExW), hkSetWindowsHookExW);
@@ -420,7 +419,7 @@ bool InstallHooks()
         // Decide before Detours replaces the original slots with trampolines.
         const bool getAlias = o_GetPhysicalCursorPos != nullptr && o_GetPhysicalCursorPos == o_GetCursorPos;
         const bool setAlias = o_SetPhysicalCursorPos != nullptr && o_SetPhysicalCursorPos == o_SetCursorPos;
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
 
         // Extend the EXISTING input transaction/teardown owner, no second hook.
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_SetCursor), hkGameSetCursor);
@@ -488,7 +487,7 @@ bool RemoveHooks()
 
     if (hasDetourHooks)
     {
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
 
         if (messageHooks)
         {

@@ -15,7 +15,7 @@
 #include "UiLocalization.h"
 #include <mods/gimi/GimiRuntime.h>
 #include <uid/DrawUidPanel.h>
-#include <inputs/GenshinFsrContract.h>
+#include <runtime/GameIdentity.h>
 #include <runtime/F6InputPolicy.h>
 #include <framegen/dlssg/DlssgTelemetry.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
@@ -253,11 +253,7 @@ static bool capturingKey = false;
 static bool menuOpenRequested = false;
 static bool menuIntentEligibleForRebuild = false;
 
-static bool IsAuthenticatedGenshinRebuildWindow(HWND hwnd) noexcept
-{
-    return GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) &&
-        hwnd != nullptr && GenshinNativeParentFrame::IsRetainedChildWindow(hwnd);
-}
+
 
 template <typename T, size_t N> struct RingBuffer
 {
@@ -346,19 +342,7 @@ inline std::string StrFmt(const char* fmt, ...)
 // on the same native owner as native Presents, including backend re-init.
 // Switching away from a foreign subclass chain can otherwise lose the saved
 // original and reinstall OptiInput above a chain that still calls OptiInput.
-static HWND ResolveMenuInputOwner(HWND hwnd) noexcept
-{
-    if (!hwnd || !GenshinNativeParentFrame::IsRetainedChildWindow(hwnd)) return hwnd;
-    const auto root = GetAncestor(hwnd, GA_ROOT);
-    DWORD pid = 0;
-    if (!root || root == hwnd || !IsWindow(root) ||
-        !GetWindowThreadProcessId(root, &pid) || pid != GetCurrentProcessId()) return hwnd;
-    static std::atomic<unsigned> reports{0};
-    if (reports.fetch_add(1, std::memory_order_relaxed) < 8)
-        LOG_INFO("R827 phase35 input owner: pid={} child={:X} native={:X} retained_child=true",
-            GetCurrentProcessId(), reinterpret_cast<uintptr_t>(hwnd), reinterpret_cast<uintptr_t>(root));
-    return root;
-}
+static HWND ResolveMenuInputOwner(HWND hwnd) noexcept { return hwnd; }
 
 // FG alone requires an explicit opt-in and a new press/release after every interruption.
 // Keep its arm separate: another shortcut can share this VK (including the menu key).
@@ -2029,7 +2013,7 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
         {
             inputFG = false;
 
-            const bool genshinDlssgRequest = GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()) &&
+            const bool genshinDlssgRequest = GameRouting::IsGenshinExecutable(Util::ExePath().wstring()) &&
                 !state.externalFrameGeneration && state.activeFgInput == FGInput::Upscaler &&
                 state.activeFgOutput == FGOutput::DLSSG;
             if (genshinDlssgRequest ||
@@ -2043,9 +2027,6 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
                 if (config->FGEnabled.value_or_default())
                 {
                     state.fgChanged = true;
-                    if (genshinDlssgRequest)
-                        if (auto* provider = dynamic_cast<DLSSG_Dx12*>(state.currentFG))
-                            provider->RequestGenshinResume();
                 }
             }
         }
@@ -3262,7 +3243,7 @@ void MenuCommon::RenderGimiSettings(RenderMenuContext& ctx)
     static const bool genshinProcess = [] {
         wchar_t path[32768]{};
         const auto length = GetModuleFileNameW(nullptr, path, 32768);
-        return length && length < 32768 && GenshinFsr::IsGenshinExecutable(std::wstring_view(path, length));
+        return length && length < 32768 && GameRouting::IsGenshinExecutable(std::wstring_view(path, length));
     }();
     if (!genshinProcess)
     {
@@ -4225,7 +4206,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // Match startup routing without rewriting the persisted legacy selection.
     const auto effectiveInput = [](FGInput saved) {
-        if constexpr (!F6InputPolicy::FsrBridgeEnabled)
+        if constexpr (!F6InputPolicy::PublicFsrInputs)
             if (saved == FGInput::FSRFG || saved == FGInput::FSRFG30)
                 return FGInput::Upscaler;
         return saved;
@@ -4287,12 +4268,12 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // FSRFG inputs requirements
     auto constexpr fsrfgInputIndex = (uint32_t) FGInput::FSRFG;
-    inputOptions[fsrfgInputIndex].set_hidden(!F6InputPolicy::FsrBridgeEnabled);
+    inputOptions[fsrfgInputIndex].set_hidden(!F6InputPolicy::PublicFsrInputs);
     inputOptions[fsrfgInputIndex].set_disabled(state.swapchainApi != API::DX12, "不支持此图形接口");
 
     // FSRFG30 inputs requirements
     auto constexpr fsrfg30InputIndex = (uint32_t) FGInput::FSRFG30;
-    inputOptions[fsrfg30InputIndex].set_hidden(!F6InputPolicy::FsrBridgeEnabled);
+    inputOptions[fsrfg30InputIndex].set_hidden(!F6InputPolicy::PublicFsrInputs);
     inputOptions[fsrfg30InputIndex].set_disabled(state.swapchainApi != API::DX12, "不支持此图形接口");
 
     if (!config->FGInput.has_value())
@@ -4814,7 +4795,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
     // Keep the Genshin multiplier directly below its enable request. Readiness
     // selects the original capability source; editing still changes only the
     // saved request and cannot admit FG work or claim measured output.
-    static const bool genshinProcess = GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
+    static const bool genshinProcess = GameRouting::IsGenshinExecutable(Util::ExePath().wstring());
     const bool genshinDlssgRequested = genshinProcess && !state.externalFrameGeneration &&
         ((state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::DLSSG) ||
          (config->FGInput.value_or_default() == FGInput::Upscaler && config->FGOutput.value_or_default() == FGOutput::DLSSG));
@@ -4834,8 +4815,6 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             if (requested)
             {
                 state.fgChanged = true;
-                if (auto* provider = dynamic_cast<DLSSG_Dx12*>(state.currentFG))
-                    provider->RequestGenshinResume();
             }
         }
         ImGui::EndDisabled();
@@ -9013,8 +8992,7 @@ void MenuCommon::Init(HWND InHwnd, bool isUWP)
     }
 
     _handle = InHwnd;
-    const bool authenticatedRebuild = IsAuthenticatedGenshinRebuildWindow(InHwnd) ||
-        menuIntentEligibleForRebuild;
+    const bool authenticatedRebuild = menuIntentEligibleForRebuild;
     _isVisible = authenticatedRebuild && menuOpenRequested;
     menuIntentEligibleForRebuild = authenticatedRebuild;
     _isUWP = isUWP;
@@ -9265,32 +9243,7 @@ void MenuCommon::Init(HWND InHwnd, bool isUWP)
     _isInited = true;
 }
 
-bool MenuCommon::RetargetGenshinWindow(HWND hwnd)
-{
-    // Called only after the overlay owner retires the outgoing renderer and
-    // authenticates the incoming native-fallback or physical-child Present.
-    // Preserve CPU UI state; this grants no old renderer/texture/fence reuse.
-    if (!_isInited || _isUWP || State::Instance().isShuttingDown ||
-        !ImGui::GetCurrentContext() || !_handle || !hwnd || hwnd == _handle ||
-        !IsWindow(_handle) || !IsWindow(hwnd))
-        return false;
-    if (!IsAuthenticatedGenshinRebuildWindow(_handle) && !IsAuthenticatedGenshinRebuildWindow(hwnd))
-        return false;
-    const HWND inputOwner = ResolveMenuInputOwner(hwnd);
-    if (!inputOwner || ResolveMenuInputOwner(_handle) != inputOwner ||
-        ImGui::GetMainViewport()->PlatformHandleRaw != inputOwner ||
-        ImGui::GetIO().BackendRendererUserData != nullptr)
-        return false;
-    DWORD process = 0;
-    if (!GetWindowThreadProcessId(inputOwner, &process) || process != GetCurrentProcessId())
-        return false;
 
-    _handle = hwnd;
-    ++g_menuGpuLifetime;
-    menuIntentEligibleForRebuild = true;
-    ResetFgShortcut();
-    return true;
-}
 
 void MenuCommon::Shutdown()
 {

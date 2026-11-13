@@ -135,7 +135,7 @@ bool ReserveFrame(ID3D12Device* device, const Config& cfg, const Sp::Layout& l, 
                   bool beforeUpscale, bool rayReconstruction)
 {
     FrameReservation plan(device);
-    for (const auto& retired : g_nrRetired) plan.Keep(retired.resource);
+    g_nrGpuWork.VisitRetiredResources([&](ID3D12Resource* resource) { plan.Keep(resource); });
     for (auto* current : { color, depth, motion, proxy, answer, proxyNative, answerNative,
              g_nr.output, g_nr.passScratch, g_nr.passClampScratch, g_nr.passClampScratch2, g_nr.colorCopy,
              g_nr.hdrCopy, g_nr.colorSmall, g_nr.outputNative, g_nr.activeColor, g_nr.lutScratch,
@@ -146,7 +146,7 @@ bool ReserveFrame(ID3D12Device* device, const Config& cfg, const Sp::Layout& l, 
     for (auto* current : g_nr.meterReadback) plan.Keep(current);
     for (auto* current : g_nr.calibReadback) plan.Keep(current);
     // Reuse is gated off for a packed frame, but its old history may still be resident
-    // before BeforeModel parks it. Moving it to g_nrRetired later must not hide its cost.
+    // before BeforeModel parks it. Parking it later must not hide its cost.
     for (auto* current : { DetailReuse::detail[0], DetailReuse::detail[1], DetailReuse::colourDepth[0],
              DetailReuse::colourDepth[1], DetailReuse::prevMotion[0], DetailReuse::prevMotion[1],
              DetailReuse::shownDetail, DetailReuse::composed, DetailReuse::estimate, DetailReuse::steadied,

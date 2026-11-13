@@ -10,8 +10,8 @@ present = overlay[overlay.index('void MenuOverlayDx::Present('):]
 route = 'const bool sealedPreviewOutput = waitForOutputMenu || State::Instance().activeFgOutput == FGOutput::NoFG;'
 assert route in present
 assert present.index(route) < present.index('RenderImGui_DX11(pSwapChain)')
-assert 'RenderImGui_DX12(pSwapChain, waitForOutputMenu, resumedGenshinContext, sealedPreviewOutput)' in present
-assert 'bool resumedGenshinContext, const bool sealedPreviewOutput)' in render
+assert 'RenderImGui_DX12(pSwapChain, waitForOutputMenu, sealedPreviewOutput)' in present
+assert 'const bool sealedPreviewOutput)' in render
 assert 'FGEnabled' not in render and 'activeFgOutput' not in render and 'fgRoute' not in render
 assert 'const bool sealedPreviewOutput =' not in render
 assert 'g_menuPreviewOutput.Select(GuideCapture::GetPreviewDemand(), sealedPreviewOutput)' in render

@@ -32,7 +32,7 @@ void Hr(HRESULT hr) { Check(SUCCEEDED(hr), "real WARP operation failed"); }
 #define LOG_WARN(...) ((void)0)
 #define LOG_INFO(...) ((void)0)
 #define SAFE_RELEASE(value) do { if (value) { (value)->Release(); (value) = nullptr; } } while (false)
-namespace GenshinHookCpuTiming {
+namespace HookCpuTiming {
 enum class Stage { FenceQueryApi, FenceArmApi, CpuEventWait };
 enum class ResultKind { Fence, Hresult, Event };
 template<class F> auto Call(Stage stage, F&& fn, ResultKind) {
@@ -66,20 +66,15 @@ struct Provider {
     explicit Provider(unsigned& value) : released(&value) {}
     ~Provider() { ++*released; }
 };
-struct Domain {
-    bool retired = false;
-    void RetireRecordings() { retired = true; }
-};
+;
 class IFeature_Dx11wDx12 {
 public:
     ID3D12GraphicsCommandList* Dx12CommandList[3] {};
     ID3D12CommandAllocator* Dx12CommandAllocator[3] {};
     ID3D12Fence* Dx12Fence = nullptr;
-    UINT64 Dx12CommandAllocatorFenceValue[3] {}, Dx12FenceValue = 0, genshinLastSubmittedFence = 0;
+    UINT64 Dx12CommandAllocatorFenceValue[3] {}, Dx12FenceValue = 0;
     HANDLE Dx12FenceEvent = nullptr;
-    bool genshinSubmissionUnfenced = false, genshinLastSubmissionIsolated = false;
-    std::array<unsigned,3> genshinRecordings {};
-    Domain genshinWorkDomain;
+    bool submissionUnfenced = false;
     std::unique_ptr<Provider> dx12Feature;
     bool ReleaseSharedResources(bool releaseProvider = false);
     bool BaselineRelease(bool releaseProvider = false);
@@ -142,7 +137,7 @@ struct Fixture {
     void Retained() {
         Check(providerReleased == 0 && bridge.dx12Feature != nullptr, "refusal retains provider");
         for (unsigned i=0; i<3; ++i) Check(bridge.Dx12CommandList[i] && bridge.Dx12CommandAllocator[i], "refusal retains command owners");
-        Check(!bridge.genshinWorkDomain.retired, "refusal cannot retire domain");
+        Check(g_nrGpuWork.Tracked() != 0, "refusal retains actual NR recording owners");
     }
     ~Fixture() {
         // Test cleanup explicitly unblocks and waits every actual queue; this
@@ -172,7 +167,7 @@ void SuccessAndContext(bool releaseProvider, bool hooks) {
     Check(f.providerReleased == (releaseProvider ? 1u : 0u), "context recreation preserves provider");
     Check(g_nrGpuWork.Tracked() == 0 && callbacks == (hooks ? 6u : 3u), "all old generation tokens closed exactly once");
     for (const auto& use : f.uses) Check(use->Complete() && !use->listOwner, "old model owners can retire");
-    Check(allocatorResets == 3 && listResets == 3 && f.bridge.genshinWorkDomain.retired, "successful Reset before release");
+    Check(allocatorResets == 3 && listResets == 3 && f.bridge.Dx12CommandList[0] == nullptr && f.bridge.Dx12CommandAllocator[0] == nullptr, "successful Reset before release");
     ComPtr<ID3D12CommandAllocator> nextAllocator; ComPtr<ID3D12GraphicsCommandList> next;
     Hr(f.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&nextAllocator)));
     Hr(f.device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,nextAllocator.Get(),nullptr,IID_PPV_ARGS(&next)));
@@ -204,7 +199,7 @@ void Refusals() {
         if(mode==1) failList=true;
         if(mode==2) failClose=true;
         if(mode==3) dropReset=true;
-        if(mode==4) f.bridge.genshinSubmissionUnfenced=true;
+        if(mode==4) f.bridge.submissionUnfenced=true;
         if(mode==5) sentinel=true;
         if(mode==6) { saved.Attach(f.bridge.Dx12Fence); f.bridge.Dx12Fence=nullptr; }
         if(mode==7) f.bridge.Dx12FenceValue=UINT64_MAX;

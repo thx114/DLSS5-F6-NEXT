@@ -4,7 +4,7 @@
 #include <hooks/Kernel_Hooks.h>
 
 #include <detours/detours.h>
-#include <genshin/GenshinInputHookTransaction.h>
+#include <hooks/HookTransaction.h>
 
 namespace OptiInput
 {
@@ -120,7 +120,7 @@ void UpdateXInputIntegration()
 
     {
         std::scoped_lock detourLock(GetDetourTransactionMutex());
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
 
         if (o_XInputGetState != nullptr)
             inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_XInputGetState), hkXInputGetState);
@@ -166,7 +166,7 @@ bool RemoveXInputHooksLocked()
         return true;
     }
 
-    GenshinInputHooks::Transaction inputTransaction;
+    HookTransactions::Transaction inputTransaction;
 
     if (_state.XInputGetStateHookInstalled && o_XInputGetState != nullptr)
         inputTransaction.Detach(reinterpret_cast<PVOID*>(&o_XInputGetState), hkXInputGetState);

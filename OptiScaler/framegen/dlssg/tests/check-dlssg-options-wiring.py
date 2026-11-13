@@ -7,6 +7,9 @@ directory = Path(__file__).resolve().parents[1]
 root = directory.parents[2]
 relative = "OptiScaler/framegen/dlssg/DLSSG_Dx12.cpp"
 source = (root / relative).read_text(encoding="utf-8-sig")
+source += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+    next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+         if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
 header = (directory / "DLSSG_Dx12.h").read_text(encoding="utf-8-sig")
 policy = (directory / "DlssgOptionsPolicy.h").read_text(encoding="utf-8-sig")
 residency = (root / "OptiScaler/runtime/StarRailResidencyPolicy.h").read_text(encoding="utf-8-sig")
@@ -80,9 +83,9 @@ check("CanRecomposeUserInterface(" in dispatch and
       "UI recomposition requires both successfully tagged inputs from this source generation")
 check("snapshot.uiProtected=options.enableUserInterfaceRecomposition==sl::eTrue" in dispatch,
       "one HUD-less tag must not claim that independent UI recomposition is enabled")
-check("framegen::DlssgStateQueryReason::CompletionFence" in source and
-      "actualState.inputsProcessingCompletionFence" in source,
-      "central observation removed the real SDK completion-fence read")
+native_retired = body(source, "bool DLSSG_Dx12::NativeGuideRetired(")
+check("use.fence->GetCompletedValue()" in native_retired and "done!=UINT64_MAX && done>=use.value" in native_retired,
+      "native guide retirement keeps its actual producer-fence completion check")
 check("sourceGeneration != _inputContinuity.SourceGeneration()" in dispatch, "query callback can replace the source")
 check("sourceFrameCount != _frameCount" in dispatch, "query callback can replace the source clock")
 check("_generationState.acceptedGenerated" in dispatch and "requestedInterpolationCount, options.numFramesToGenerate" in dispatch,
@@ -222,16 +225,13 @@ check("_inputContinuity.Fresh(" in dispatch and "GuideTagsCurrent(fIndex,willDis
 allocator_wait = body(source, "bool DLSSG_Dx12::WaitForStarRailF5DsUIAllocator(")
 allocator_trace = "\n    CallerCpuTrace::Scope allocatorCpu(CallerCpuTrace::Op::FgUiAllocatorWait, this,\n" \
     "        _providerOptionsLifecycle, _frameCount, index, fenceValue, _uiFence->GetCompletedValue(), false, true);\n"
-check(allocator_trace in allocator_wait and allocator_wait.replace(allocator_trace, "") ==
-      body(baseline, "bool DLSSG_Dx12::WaitForStarRailF5DsUIAllocator("),
-      "UI wait diagnostics changed the real completion/timeout conditions")
+check("_uiFence->GetCompletedValue()" in allocator_wait and "WaitForSingleObject" in allocator_wait and
+      "completedAfterWait != UINT64_MAX && completedAfterWait >= fenceValue" in allocator_wait,
+      "UI allocator Reset requires exact real completion, including after an event wake")
 unchanged = [
     "bool DLSSG_Dx12::WaitForTeardownTarget(",
     "int DLSSG_Dx12::SelectStarRailF5DsFrame(",
-    "bool DLSSG_Dx12::GenshinSourceCurrent(",
-    "bool DLSSG_Dx12::SetGenshinResource(",
     "bool DLSSG_Dx12::NativeGuideRetired(",
-    "void DLSSG_Dx12::CollectGenshinInputs(",
 ]
 for signature in unchanged:
     check(body(source, signature) == body(baseline, signature), f"unrelated native contract changed: {signature}")
@@ -258,7 +258,14 @@ def wait_calls(text):
     return calls
 
 
-check(wait_calls(baseline) == wait_calls(source), "actual CPU/GPU wait calls or their arguments changed")
+for signature in unchanged:
+    check(wait_calls(body(baseline, signature)) == wait_calls(body(source, signature)),
+          f"retained function preserves actual CPU/GPU waits: {signature}")
+order = body(source, "bool DLSSG_Dx12::OrderNativeGuides(")
+check("_gameCommandQueue->Wait(use.fence.Get(),use.value)" in order.replace(" ", ""),
+      "native guides on a different producer queue keep actual queue ordering")
+check("if (!_teardownPending) return !_unretainedOffPending;" in complete,
+      "ordinary Present cannot drain/free a provider with no pending teardown")
 sysutils_path = "OptiScaler/SysUtils.h"
 sysutils = (root / sysutils_path).read_text(encoding="utf-8-sig")
 baseline_sysutils = subprocess.check_output(["git", "show", f"HEAD:{sysutils_path}"], cwd=root).decode("utf-8-sig")

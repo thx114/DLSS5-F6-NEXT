@@ -4,7 +4,7 @@
 #include <hooks/Kernel_Hooks.h>
 
 #include <detours/detours.h>
-#include <genshin/GenshinInputHookTransaction.h>
+#include <hooks/HookTransaction.h>
 
 namespace OptiInput
 {
@@ -49,7 +49,7 @@ void UpdateGameInputIntegration()
 
     {
         std::scoped_lock detourLock(GetDetourTransactionMutex());
-        GenshinInputHooks::Transaction inputTransaction;
+        HookTransactions::Transaction inputTransaction;
         inputTransaction.Attach(reinterpret_cast<PVOID*>(&o_GameInputCreate), hkGameInputCreate);
         result = inputTransaction.Commit();
     }
@@ -73,7 +73,7 @@ bool RemoveGameInputHooksLocked()
         return true;
     }
 
-    GenshinInputHooks::Transaction inputTransaction;
+    HookTransactions::Transaction inputTransaction;
     inputTransaction.Detach(reinterpret_cast<PVOID*>(&o_GameInputCreate), hkGameInputCreate);
 
     const LONG result = inputTransaction.Commit();

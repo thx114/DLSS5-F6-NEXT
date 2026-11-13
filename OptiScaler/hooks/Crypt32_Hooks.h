@@ -2,7 +2,7 @@
 #include "SysUtils.h"
 #include "Config.h"
 #include "detours/detours.h"
-#include <genshin/GenshinSystemHookTransaction.h>
+#include <hooks/HookTransaction.h>
 #include <wincrypt.h>
 
 #include "Hook_Utils.h"
@@ -63,7 +63,7 @@ static void hookCrypt32()
 
     if (o_CryptQueryObject != nullptr)
     {
-        GenshinSystemHooks::Transaction systemTransaction;
+        HookTransactions::Transaction systemTransaction;
 
         systemTransaction.Attach(&(PVOID&) o_CryptQueryObject, hkCryptQueryObject);
 
@@ -80,7 +80,7 @@ static void unhookCrypt32()
 {
     if (o_CryptQueryObject != nullptr)
     {
-        GenshinSystemHooks::Transaction systemTransaction;
+        HookTransactions::Transaction systemTransaction;
 
         systemTransaction.Detach(&(PVOID&) o_CryptQueryObject, hkCryptQueryObject);
 

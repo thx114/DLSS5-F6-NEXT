@@ -18,8 +18,6 @@
 #include <resource_tracking/GenericDepth_Dx11.h>
 #include <native/NativeDriverDx12.h>
 #include <native/NativeDriverDx11.h>
-#include <genshin/GenshinDepthProvider.h>
-#include <runtime/F6InputPolicy.h>
 #include <runtime/GuideCapture.h>
 
 #include <imgui/imgui_impl_dx11.h>
@@ -1046,20 +1044,6 @@ static void RenderImGui_DX11(IDXGISwapChain* pSwapChain)
             ImGui_ImplDX11_NewFrame();
             // RenderMenu owns the single platform input sample and core frame.
 
-            // A real DX11 backend owns both the SRV and its last GPU read.
-            // The provider admits only Genshin and the exact producer context.
-            if constexpr (F6InputPolicy::FsrBridgeEnabled)
-                GenshinDepthProvider::BeginPreviewDraw(g_pd3dDeviceContext);
-            struct RawDepthPreviewDraw
-            {
-                ID3D11DeviceContext* context;
-                bool recorded = false;
-                ~RawDepthPreviewDraw()
-                {
-                    if constexpr (F6InputPolicy::FsrBridgeEnabled)
-                        GenshinDepthProvider::EndPreviewDraw(context, recorded);
-                }
-            } rawDepthPreview { g_pd3dDeviceContext };
             bool drawUi;
             {
                 MenuCpuSpan span(MenuCpuStage::UiBuild);
@@ -1074,7 +1058,6 @@ static void RenderImGui_DX11(IDXGISwapChain* pSwapChain)
 
                 MenuCpuSpan record(MenuCpuStage::Record);
                 g_pd3dDeviceContext->OMSetRenderTargets(1, &g_pd3dRenderTarget, NULL);
-                rawDepthPreview.recorded = true;
                 const bool written = RenderWithBackbufferReceipt(ImGui::GetDrawData(),
                     [](ImDrawData* data) { ImGui_ImplDX11_RenderDrawData(data); });
                 record.Finish();
@@ -1090,7 +1073,7 @@ static void RenderImGui_DX11(IDXGISwapChain* pSwapChain)
 }
 
 static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain, bool physicalOutputMenu,
-                             bool resumedGenshinContext, const bool sealedPreviewOutput)
+                             const bool sealedPreviewOutput)
 {
     bool drawMenu = false;
     IDXGISwapChain3* pSwapChain = nullptr;
@@ -1235,16 +1218,11 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain, bool physicalOutpu
             pSwapChain->Release();
             return;
         }
-        if (!resumedGenshinContext)
-        {
+
             ImGui_ImplDX12_NewFrame(); // No menu work has been submitted in this generation.
             pSwapChain->Release();
             return;
         }
-        // An authenticated parent/child renderer handoff keeps its CPU context.
-        // Build the fresh target and draw this output, rather than dropping the
-        // first two child frames on every brief native fallback.
-    }
 
     if (_isInited && currentSCCommandQueue != nullptr)
     {
@@ -1258,12 +1236,10 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain, bool physicalOutpu
                 g_outputMenuSnapshotGeneration = g_outputMenuGeneration;
             }
             g_presentResult->Decision = "frame-target-init";
-            if (!resumedGenshinContext || !g_mainRenderTargetResource[0] || !g_outputMenuSwapchain)
-            {
+
                 pSwapChain->Release();
                 return;
             }
-        }
         // CPU frame/input processing does not map or reset any GPU slot. Keep
         // it running even when this output eventually exhausts the wait budget.
         // Shared texture updates retain their whole-generation completion gate.
@@ -1650,33 +1626,11 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         // child menu generation. Ordinary parent Presents keep the child's owner.
         ComPtr<IDXGISwapChain> childOwner;
         const HWND childWindow = MenuOverlayBase::Handle();
-        const bool ownFallback = GenshinNativeParentFrame::OwnsMenuFallback(pSwapChain, pDevice) &&
-            g_outputMenuOwnerSwapchain && childWindow && hWnd &&
-            GetAncestor(childWindow, GA_ROOT) == hWnd &&
-            SUCCEEDED(g_outputMenuOwnerSwapchain->QueryInterface(IID_PPV_ARGS(&childOwner))) &&
-            GenshinNativeParentFrame::IsChildOutput(childOwner.Get(), childWindow);
-        if (ownFallback)
-        {
-            // Nonblocking existing exact-fence cleanup. Never deactivate a provider here.
-            CleanupRenderTargetDx12(true);
-            static uint64_t fallbackReports = 0;
-            if (++fallbackReports <= 8 || fallbackReports % 600 == 0)
-                LOG_INFO("R827 phase15 menu fallback: pid={} retired={} pending={} generation={}",
-                    GetCurrentProcessId(),g_outputMenuOwnerSwapchain==nullptr,
-                    g_overlayCleanupPending.load(std::memory_order_acquire),g_outputMenuGeneration);
-            if (g_overlayCleanupPending.load(std::memory_order_acquire))
-            {
-                g_presentResult->Decision = "genshin-menu-fallback-drain";
-                return;
-            }
-        }
-        if (!ownFallback || !OutputMenuGenerationMatches(pSwapChain, pDevice, false))
-        {
-            g_presentResult->RouteReason = "generation-owner";
+
+        g_presentResult->RouteReason = "generation-owner";
             g_presentResult->Decision = "generation-route";
             return;
         }
-    }
     auto completion = g_overlayGpuCompletion.Poll();
     IUnknown* selectedQueue = pDevice;
     if (!CheckForRealObject(__FUNCTION__, pDevice, &selectedQueue))
@@ -1787,14 +1741,12 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // Retain only CPU menu state across the authenticated Genshin parent/child
     // pair. The actual outgoing renderer and its GPU resources still retire
     // through the existing exact-completion path above/below.
-    bool resumedGenshinContext = false;
+
     // A pending native-fallback drain can finish at the next ordinary native
     // Present, after its fallback flag has left scope. OwnsNative authenticates
     // CPU context reuse on that same parent; generation retirement above still
     // requires OwnsMenuFallback, and Retarget checks the exact owned window pair.
-    const bool authenticatedGenshinRoute = !isUWP &&
-        (GenshinNativeParentFrame::OwnsNative(pSwapChain, pDevice) ||
-         GenshinNativeParentFrame::IsChildOutput(pSwapChain, hWnd));
+
     // Incoming API identity, not stale backend flags, selects initialization.
     if (backendChanged || MenuOverlayBase::Handle() != hWnd)
     {
@@ -1809,15 +1761,9 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             return;
         }
         currentSCCommandQueue = incomingDx12 ? selectedQueue : nullptr;
-        if (authenticatedGenshinRoute && MenuOverlayBase::IsInited())
-            resumedGenshinContext = MenuOverlayBase::RetargetGenshinWindow(hWnd);
-        if (!resumedGenshinContext)
-        {
-            if (MenuOverlayBase::IsInited())
+        if (MenuOverlayBase::IsInited())
                 MenuOverlayBase::Shutdown();
             MenuOverlayBase::Init(hWnd, isUWP);
-        }
-
         _isInited = false;
     }
 
@@ -1882,7 +1828,7 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (_dx11Device)
             RenderImGui_DX11(pSwapChain);
         else if (_dx12Device)
-            RenderImGui_DX12(pSwapChain, waitForOutputMenu, resumedGenshinContext, sealedPreviewOutput);
+            RenderImGui_DX12(pSwapChain, waitForOutputMenu, sealedPreviewOutput);
     }
 
     // release used objects

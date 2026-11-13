@@ -7,7 +7,9 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def source(path):
-    return (ROOT / 'OptiScaler' / path).read_text(encoding='utf-8-sig')
+    file = ROOT / 'OptiScaler' / path
+    units = [file, *sorted(file.parent.glob('DLSSG_Dx12_*.cpp'))] if file.name == 'DLSSG_Dx12.cpp' else [file]
+    return '\n'.join(unit.read_text(encoding='utf-8-sig') for unit in units)
 
 
 class OrientationWiring(unittest.TestCase):
@@ -30,6 +32,9 @@ class OrientationWiring(unittest.TestCase):
 
     def test_owner_and_per_guide_conversion(self):
         cpp = source('framegen/dlssg/DLSSG_Dx12.cpp')
+        cpp += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+            next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+                 if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
         owner = cpp.split('DLSSG_Dx12::CurrentInputOwner() const', 1)[1].split('\n}', 1)[0]
         self.assertIn('orientation.Key()', owner)
         self.assertIn('orientation.UsesOffset()', owner)

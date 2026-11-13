@@ -267,8 +267,7 @@ uint64_t RetiredBytes()
     uint64_t bytes = 0;
     for (auto it = retiredBudget.begin(); it != retiredBudget.end();)
     {
-        const bool retained = std::any_of(g_nrRetired.begin(), g_nrRetired.end(),
-            [&](const NrRetired& r) { return r.resource == it->identity; });
+        const bool retained = g_nrGpuWork.ContainsRetiredResource(it->identity);
         if (!retained) it = retiredBudget.erase(it);
         else { bytes = DlssNrReuseBudget::Add(bytes, it->bytes); ++it; }
     }

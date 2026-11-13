@@ -1,17 +1,13 @@
+﻿#include <runtime/ComIdentity.h>
 #include "pch.h"
 #include <runtime/ModuleLifetime.h>
-#include <runtime/F6InputPolicy.h>
 #include <runtime/SourcePresent.h>
 #include <framegen/FinalOutputEndpoint.h>
 #include <integration/HoYoShade.h>
 #include <optional>
 #include <hooks/FG_Hooks.h>
 #include <hooks/Streamline_Hooks.h>
-#include <genshin/GenshinLegacyCapture.h>
-#include <genshin/GenshinDx12Transport.h>
-#include <genshin/GenshinHookCpuTiming.h>
-#include <genshin/GenshinPresentLifecycle.h>
-#include <genshin/GenshinPresentNr.h>
+#include <runtime/HookCpuTiming.h>
 #include "wrapped_swapchain.h"
 #include <dlssnr/DlssNr.h>
 #include <dlssnr/DlssNrCurrentOutputCapture.h>
@@ -28,8 +24,7 @@
 #include <hooks/D3D12_Hooks.h>
 #include <with_dx12/dx11_with_dx12_sync.h>
 #include <with_dx12/with_dx12.h>
-#include <with_dx12/GenshinVisibleChild.h>
-#include <inputs/GenshinFsrContract.h>
+#include <runtime/GameIdentity.h>
 
 #include <menu/menu_overlay_dx.h>
 #include <menu/menu_overlay_base.h>
@@ -499,290 +494,7 @@ public:
     GenshinTimerReadScope& operator=(const GenshinTimerReadScope&) = delete;
 };
 
-struct GenshinPresentCpuMetric
-{
-    UINT64 Ticks = 0, Minimum = UINT64_MAX, Maximum = 0, Samples = 0;
-    // [0,1), [1,4), [4,8), [8,16), [16,24), [24,40),
-    // [40,80), [80,160), [160,+inf) milliseconds; no clipped samples.
-    std::array<UINT64, 9> Histogram {};
-    void Add(UINT64 ticks, double msPerTick) noexcept
-    {
-        Ticks += ticks;
-        if (ticks < Minimum) Minimum = ticks;
-        if (ticks > Maximum) Maximum = ticks;
-        ++Samples;
-        constexpr double limits[] = { 1, 4, 8, 16, 24, 40, 80, 160 };
-        const double ms = ticks * msPerTick;
-        unsigned bin = 0;
-        while (bin < 8 && ms >= limits[bin]) ++bin;
-        ++Histogram[bin];
-    }
-};
 
-struct GenshinPresentCpuWindow
-{
-    struct Key
-    {
-        // Only a known existing ticket lends a lifetime-bearing key. For an
-        // unproven lifetime, pool single-call wall by observed labels below;
-        // never cache a naked chain/COM address as a pairing identity.
-        std::uintptr_t Chain = 0;
-        UINT64 Identity = 0, SwapchainEpoch = 0;
-        GenshinLegacy::Presentation::Owner Owner {};
-        UINT Sync = 0, Flags = 0;
-        int DetectedInterpolations = 0;
-        bool Present1 = false, IdentityKnown = false, LifetimeKnown = false;
-        bool D3D11Observed = false, NativeParentOwnerObserved = false;
-        bool FgRequestedObserved = false, NrRequestedObserved = false;
-        bool FeaturePresentObserved = false, FgInstancePresentObserved = false, ExternalFgObserved = false;
-        bool operator==(const Key&) const = default;
-    };
-    struct Bucket
-    {
-        Key Route {};
-        GenshinPresentCpuMetric Wall, EntryInterval, OutsideWall;
-        UINT64 Returned = 0, Ok = 0, Status = 0, Failed = 0, TimingFailures = 0;
-        UINT64 ReenteredSkipped = 0, PairSkipped = 0;
-        std::uintptr_t LastChainObserved = 0;
-        UINT64 LastIdentityObserved = 0;
-        HRESULT LastResult = S_OK;
-        bool Used = false;
-    };
-    std::array<Bucket, 8> Buckets {};
-    Key PreviousRoute {};
-    LONGLONG PreviousEntry = 0, PreviousReturn = 0;
-    UINT64 PreviousAttempt = 0;
-    bool PreviousValid = false, Reentered = false;
-    unsigned InFlight = 0;
-    ULONGLONG Start = GetTickCount64();
-    UINT64 Unbucketed = 0;
-    double MsPerTick = 0.0;
-
-    GenshinPresentCpuWindow() noexcept
-    {
-        LARGE_INTEGER frequency {};
-        if (QueryPerformanceFrequency(&frequency) && frequency.QuadPart > 0)
-            MsPerTick = 1000.0 / static_cast<double>(frequency.QuadPart);
-    }
-    void ClearBuckets() noexcept
-    {
-        for (auto& bucket : Buckets) bucket = {};
-        Unbucketed = 0;
-    }
-    void Report(ULONGLONG now)
-    {
-        if (now - Start < 1000) return;
-        // Snapshot only, at the first reporting boundary. This says nothing
-        // about entering FrameLimit::sleep or the duration of any limiter wait.
-        static std::atomic<bool> limitReported { false };
-        if (!limitReported.exchange(true, std::memory_order_relaxed))
-            LOG_INFO("R082 Present config snapshot: pid={} FramerateLimit_effective={} snapshot=first_report_only limiter_wait=UNKNOWN",
-                GetCurrentProcessId(), Config::Instance()->FramerateLimit.value_or_default());
-        for (const auto& bucket : Buckets)
-        {
-            if (!bucket.Used || bucket.Returned == 0) continue;
-            std::string phases;
-            const GenshinPresentCpuMetric* metrics[] = { &bucket.Wall, &bucket.EntryInterval, &bucket.OutsideWall };
-            constexpr const char* names[] = { "present_wall", "entry_interval", "outside_wall" };
-            for (unsigned i = 0; i < 3; ++i)
-            {
-                const auto& metric = *metrics[i];
-                const double total = metric.Ticks * MsPerTick;
-                const auto& h = metric.Histogram;
-                phases += std::format(" {}_n={} {}_ms_total={:.3f} {}_ms_avg={:.3f} {}_ms_min={:.3f} {}_ms_max={:.3f} {}_hist=[{},{},{},{},{},{},{},{},{}]",
-                    names[i], metric.Samples, names[i], total,
-                    names[i], metric.Samples ? total / metric.Samples : 0.0,
-                    names[i], metric.Samples ? metric.Minimum * MsPerTick : 0.0,
-                    names[i], metric.Maximum * MsPerTick, names[i],
-                    h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]);
-            }
-            LOG_INFO("R082 Present CPU window: schema=R086 pid={} tid={} window_ms={} sc_last_observed={:X} identity_last_observed={} identity_known={} lifetime_known={} swapchain_epoch={} owner_epoch={} device_epoch={} controls_epoch=UNKNOWN api={} SyncInterval={} Flags={:X} test=false test_excluded=true d3d11_observed={} native_parent_owner_observed={} fg_requested_observed={} nr_requested_observed={} feature_present_observed={} fg_instance_present_observed={} external_fg_observed={} detected_interpolations_observed={} sr_execution=UNKNOWN returned={} ok={} status={} failed={} last_hr={:08X} timing_ready={} timing_failures={} reentered_skipped={} pair_skipped={} pair_unknown_lifetime={} unbucketed={} clock=qpc_host_elapsed gpu_ms=UNKNOWN display_fps=UNKNOWN pair=existing_ticket_owner_swapchain_epoch_adjacent_attempt_same_observed_key wall_unproven_lifetime_pool={} outside_includes_diagnostics=true hist_ms_edges=1,4,8,16,24,40,80,160{}",
-                GetCurrentProcessId(), GetCurrentThreadId(), now - Start, bucket.LastChainObserved,
-                bucket.LastIdentityObserved, bucket.Route.IdentityKnown, bucket.Route.LifetimeKnown,
-                bucket.Route.SwapchainEpoch, bucket.Route.Owner.ownerEpoch, bucket.Route.Owner.deviceEpoch,
-                bucket.Route.Present1 ? "Present1" : "Present", bucket.Route.Sync, bucket.Route.Flags,
-                bucket.Route.D3D11Observed, bucket.Route.NativeParentOwnerObserved,
-                bucket.Route.FgRequestedObserved, bucket.Route.NrRequestedObserved, bucket.Route.FeaturePresentObserved,
-                bucket.Route.FgInstancePresentObserved, bucket.Route.ExternalFgObserved, bucket.Route.DetectedInterpolations,
-                bucket.Returned, bucket.Ok, bucket.Status, bucket.Failed, static_cast<unsigned>(bucket.LastResult),
-                MsPerTick > 0.0, bucket.TimingFailures, bucket.ReenteredSkipped, bucket.PairSkipped,
-                bucket.Route.LifetimeKnown ? UINT64(0) : bucket.Returned, Unbucketed, !bucket.Route.LifetimeKnown, phases);
-        }
-        ClearBuckets();
-        // Do not advance PreviousReturn past logger cost: that wall time really
-        // lies outside the original API and must remain visible on the next pair.
-        Start = GetTickCount64();
-    }
-};
-
-class GenshinPresentCpuScope final
-{
-    GenshinPresentCpuWindow* Window = nullptr;
-    GenshinPresentCpuWindow::Bucket* Bucket = nullptr;
-    LONGLONG Entry = 0, PreviousEntry = 0, PreviousReturn = 0;
-    UINT64 Attempt = 0;
-    bool ReportDue = false, Finished = false;
-
-  public:
-    GenshinPresentCpuScope(IDXGISwapChain* chain, UINT sync, UINT flags, bool present1,
-                           UINT64 identity, bool d3d11Observed, bool nativeParentOwnerObserved,
-                           const GenshinLegacy::Presentation::Ticket& ticket) noexcept
-    {
-        const DWORD error = GetLastError();
-        try
-        {
-            const auto& process = GenshinPresentCpuProcessFact();
-            if (!process.Known)
-            {
-                static std::atomic<bool> reported { false };
-                if (!reported.exchange(true, std::memory_order_relaxed))
-                    LOG_WARN("R082 Present observation unavailable: schema=R086 pid={} genshin_identity=UNKNOWN reason={} win32_error={} report=once no_sampling=true",
-                        GetCurrentProcessId(), process.Reason, process.Error);
-            }
-            else if (process.Genshin)
-            {
-                static thread_local GenshinPresentCpuWindow window;
-                Window = &window;
-                if (++window.InFlight != 1)
-                {
-                    window.Reentered = true;
-                    window.PreviousValid = false;
-                }
-                else
-                {
-                    window.Reentered = false;
-                    const bool previousValid = window.PreviousValid;
-                    window.PreviousValid = false;
-                    // No business predicate admits/rejects this observation.
-                    // These are entry-time scalar labels, not resource gates or
-                    // evidence of SR execution/FG activity throughout a window.
-                    if (!(flags & DXGI_PRESENT_TEST))
-                    {
-                        ReportDue = true;
-                        const auto& state = State::Instance();
-                        const auto* config = Config::Instance();
-                        GenshinPresentCpuWindow::Key key {};
-                        key.Sync = sync;
-                        key.Flags = flags;
-                        key.Present1 = present1;
-                        key.IdentityKnown = identity != 0;
-                        key.LifetimeKnown = key.IdentityKnown && ticket.Known() && ticket.swapchain == identity &&
-                            ticket.owner.thread == GetCurrentThreadId() && ticket.flags == flags && ticket.present1 == present1;
-                        if (key.LifetimeKnown)
-                        {
-                            key.Chain = reinterpret_cast<std::uintptr_t>(chain);
-                            key.Identity = identity;
-                            key.SwapchainEpoch = ticket.swapchainEpoch;
-                            key.Owner = ticket.owner;
-                            Attempt = ticket.attempt;
-                        }
-                        key.D3D11Observed = d3d11Observed;
-                        key.NativeParentOwnerObserved = nativeParentOwnerObserved;
-                        key.FgRequestedObserved = config->FGEnabled.value_or_default();
-                        key.NrRequestedObserved = config->DlssNrEnabled.value_or_default();
-                        key.FeaturePresentObserved = state.currentFeature != nullptr;
-                        key.FgInstancePresentObserved = state.currentFG != nullptr;
-                        key.ExternalFgObserved = state.externalFrameGeneration;
-                        key.DetectedInterpolations = state.dlssgDetectedInterpolationCount;
-                        for (auto& bucket : window.Buckets)
-                            if (bucket.Used && bucket.Route == key) { Bucket = &bucket; break; }
-                        if (Bucket == nullptr)
-                            for (auto& bucket : window.Buckets)
-                                if (!bucket.Used) { bucket.Used = true; bucket.Route = key; Bucket = &bucket; break; }
-                        if (Bucket != nullptr)
-                        {
-                            // Last-observed addresses describe this bucket's
-                            // latest call only; they never establish a lifetime.
-                            Bucket->LastChainObserved = reinterpret_cast<std::uintptr_t>(chain);
-                            Bucket->LastIdentityObserved = identity;
-                            if (previousValid && key.LifetimeKnown && window.PreviousRoute == key &&
-                                window.PreviousAttempt < UINT64_MAX && Attempt == window.PreviousAttempt + 1)
-                            {
-                                PreviousEntry = window.PreviousEntry;
-                                PreviousReturn = window.PreviousReturn;
-                            }
-                            // Last diagnostic action before the raw call.
-                            Entry = GenshinPresentCpuTick();
-                        }
-                        else ++window.Unbucketed; // Fixed capacity, explicitly reported.
-                    }
-                }
-            }
-        }
-        catch (...) { if (Window) Window->PreviousValid = false; }
-        SetLastError(error);
-    }
-    void Finish(HRESULT result) noexcept
-    {
-        const DWORD error = GetLastError();
-        const LONGLONG end = Bucket ? GenshinPresentCpuTick() : 0;
-        Finished = true;
-        if (Window && Window->InFlight == 1)
-        {
-            try
-            {
-                if (Bucket)
-                {
-                    ++Bucket->Returned;
-                    ++Bucket->PairSkipped; // Removed only when a proven pair is actually recorded.
-                    Bucket->Ok += result == S_OK;
-                    Bucket->Status += result != S_OK && SUCCEEDED(result);
-                    Bucket->Failed += FAILED(result);
-                    Bucket->LastResult = result;
-                    if (Window->Reentered)
-                    {
-                        // Exclude the entire inclusive outer sample, not just
-                        // its pairs. Count once per returned outer call in the
-                        // existing bucket; ClearBuckets resets it each window.
-                        ++Bucket->ReenteredSkipped;
-                        Window->PreviousValid = false;
-                    }
-                    else if (Window->MsPerTick > 0.0 && Entry > 0 && end >= Entry)
-                    {
-                        Bucket->Wall.Add(static_cast<UINT64>(end - Entry), Window->MsPerTick);
-                        if (!Window->Reentered && PreviousEntry > 0 && PreviousReturn >= PreviousEntry && Entry >= PreviousReturn)
-                        {
-                            Bucket->EntryInterval.Add(static_cast<UINT64>(Entry - PreviousEntry), Window->MsPerTick);
-                            Bucket->OutsideWall.Add(static_cast<UINT64>(Entry - PreviousReturn), Window->MsPerTick);
-                            --Bucket->PairSkipped;
-                        }
-                        if (Bucket->Route.LifetimeKnown)
-                        {
-                            Window->PreviousRoute = Bucket->Route;
-                            Window->PreviousEntry = Entry;
-                            Window->PreviousReturn = end;
-                            Window->PreviousAttempt = Attempt;
-                            Window->PreviousValid = !Window->Reentered;
-                        }
-                        // Unknown/missing lifetime still contributes single-call
-                        // wall, but never seeds a later entry/outside pair.
-                    }
-                    else ++Bucket->TimingFailures;
-                }
-                if (ReportDue) Window->Report(GetTickCount64());
-            }
-            catch (...)
-            {
-                // Only diagnostics are contained. The actual API call, HRESULT,
-                // hook callbacks and their exception behavior remain untouched.
-                Window->PreviousValid = false;
-                Window->ClearBuckets();
-                Window->Start = GetTickCount64();
-            }
-        }
-        SetLastError(error);
-    }
-    ~GenshinPresentCpuScope() noexcept
-    {
-        if (!Window) return;
-        // An original Present exception propagates normally; it cannot create a
-        // completed return stamp or a pair with a later call.
-        if (!Finished) Window->PreviousValid = false;
-        --Window->InFlight;
-    }
-    GenshinPresentCpuScope(const GenshinPresentCpuScope&) = delete;
-    GenshinPresentCpuScope& operator=(const GenshinPresentCpuScope&) = delete;
-};
 } // namespace
 
 static bool IsStarRailProcess() noexcept
@@ -801,9 +513,9 @@ template<class F> static HRESULT ObserveStarRailFinalRaw(
     const void* endpoint,IDXGISwapChain* chain,std::uintptr_t creationQueue,
     UINT sync,UINT flags,bool present1,F&& raw)
 {
-    if(!GenshinHookCpuTiming::Enabled() || !endpoint || !creationQueue)return raw();
+    if(!HookCpuTiming::Enabled() || !endpoint || !creationQueue)return raw();
     if(!IsStarRailProcess())return raw();
-    GenshinHookCpuTiming::FinalRawPresentScope timing(chain,reinterpret_cast<const void*>(creationQueue),endpoint,sync,flags,present1);
+    HookCpuTiming::FinalRawPresentScope timing(chain,reinterpret_cast<const void*>(creationQueue),endpoint,sync,flags,present1);
     return timing.Return(raw());
 }
 
@@ -877,18 +589,17 @@ void ObserveProxySource(IDXGISwapChain* chain, unsigned syncInterval, unsigned f
 
 static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                             const DXGI_PRESENT_PARAMETERS* pPresentParameters, IUnknown* pDevice, HWND hWnd, bool isUWP,
-                            std::uint64_t& genshinPresentIdentity, bool capturePolled = false, bool* actualCall = nullptr,
                             framegen::final_output::Endpoint* finalOutput = nullptr,
                             bool providerOutput = false,
                             bool starRailProviderOutput = false,
                             const void* rawEndpoint = nullptr,
                             std::uintptr_t rawCreationQueueInput = 0)
 {
-    GenshinHookCpuTiming::HookScope r448LocalHook(pPresentParameters?GenshinHookCpuTiming::Hook::Present1:GenshinHookCpuTiming::Hook::Present,
-        GenshinHookCpuTiming::presentOwner==nullptr || GenshinHookCpuTiming::presentOwner->InOriginal());
+    HookCpuTiming::HookScope r448LocalHook(pPresentParameters?HookCpuTiming::Hook::Present1:HookCpuTiming::Hook::Present,
+        HookCpuTiming::presentOwner==nullptr || HookCpuTiming::presentOwner->InOriginal());
     auto& r448Hook=r448LocalHook.Active()?r448LocalHook:
-        (GenshinHookCpuTiming::presentOwner?*GenshinHookCpuTiming::presentOwner:r448LocalHook);
-    GenshinHookCpuTiming::PresentOwnerScope r448LocalOwner(r448Hook);
+        (HookCpuTiming::presentOwner?*HookCpuTiming::presentOwner:r448LocalHook);
+    HookCpuTiming::PresentOwnerScope r448LocalOwner(r448Hook);
     const auto rawPresent=[&](const DXGI_PRESENT_PARAMETERS* params){
         return ObserveStarRailFinalRaw(rawEndpoint,pSwapChain,rawCreationQueueInput,SyncInterval,Flags,params!=nullptr,[&]{
             return params ? static_cast<IDXGISwapChain1*>(pSwapChain)->Present1(SyncInterval,Flags,params)
@@ -896,50 +607,13 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         });
     };
 
-    GenshinTransport::PresentOutputScope outputSubmission(!(Flags & DXGI_PRESENT_TEST));
     if (HoYoShade::ColorConsumers(pSwapChain) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
-    // Physical child output can run nested or on a provider worker. It owns
-    // only output counters and immutable menu replay, never native State clocks.
-    const bool physicalChild=GenshinNativeParentFrame::IsChildOutput(pSwapChain,hWnd);
-    if (physicalChild || GenshinNativeParentFrame::IsRetainedChildWindow(hWnd))
-    {
-        if(!(Flags & DXGI_PRESENT_TEST))
-            GenshinTransport::FinishPendingOutput(nullptr,GenshinTransport::OutputFlushReason::Consumer);
-        static std::atomic<uint64_t> physicalCalls{0},physicalSucceeded{0};
-        if (!(Flags & DXGI_PRESENT_TEST))
-        {
-            ++physicalCalls;
-        }
-        const auto raw = [&](UINT physicalFlags) {
-            if (physicalChild && !(Flags & DXGI_PRESENT_TEST))
-                MenuOverlayDx::Present(pSwapChain,SyncInterval,Flags,pPresentParameters,pDevice,hWnd,isUWP,true);
-            return pPresentParameters
-                ? r448Hook.Original([&]{return static_cast<IDXGISwapChain1*>(pSwapChain)->Present1(SyncInterval,physicalFlags,pPresentParameters);})
-                : r448Hook.Original([&]{return pSwapChain->Present(SyncInterval,physicalFlags);});
-        };
-        // A retained HWND is not source/queue authority. Unknown asynchronous
-        // output must not bypass provenance simply because FinalOutput is OFF.
-        if(!(Flags & DXGI_PRESENT_TEST) && (!physicalChild || !finalOutput)) {
-            GenshinVisibleChild::PresentPermit::PhysicalOutput::Refused("PhysicalEndpointUnavailable",pSwapChain);
-            return DXGI_ERROR_WAS_STILL_DRAWING;
-        }
-        const auto originalRaw=[&]{return raw(Flags);};
-        const auto hr = Flags & DXGI_PRESENT_TEST ?
-            (finalOutput ? finalOutput->Present(Flags,pPresentParameters,originalRaw) : originalRaw()) :
-            finalOutput->PresentGenshin(Flags,pPresentParameters,raw);
-        if (!(Flags & DXGI_PRESENT_TEST) && hr==S_OK)++physicalSucceeded;
-        return hr;
-    }
-    GenshinPresentNrTrace::Scope nrTrace(pSwapChain,Flags,State::Instance().frameCount,
-        GenshinPresentNrTrace::IsGenshinProcess()?Config::Instance()->LogFileName.value_or_default():L"");
     if (State::Instance().isShuttingDown)
     {
-        if(!(Flags & DXGI_PRESENT_TEST))
-            GenshinTransport::FinishPendingOutput(nullptr,GenshinTransport::OutputFlushReason::Consumer);
         const auto result=pPresentParameters
             ? r448Hook.Original([&]{return rawPresent(pPresentParameters);})
             : r448Hook.Original([&]{return rawPresent(nullptr);});
-        if(actualCall)*actualCall=true;
+
         return result;
     }
 
@@ -954,13 +628,13 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // present remakes its Vulkan swapchain after a resize, which takes the exclusive side on this same thread
     // (VkPresentBridge BeginResize): it would wait for itself. A native Vulkan game's present takes none either.
     std::shared_lock<std::shared_mutex> dx11wDx12PresentLock(Dx11wDx12Sync::PresentResizeMutex(), std::defer_lock);
-    std::optional<GenshinHookCpuTiming::Scope> r448PresentResizeHeld;
+    std::optional<HookCpuTiming::Scope> r448PresentResizeHeld;
     if (State::Instance().swapchainInteropApi != SwapchainInteropApi::None &&
         State::Instance().activeFgOutput == FGOutput::XeFG && !VkPresentBridge::DxvkThroughVulkan())
     {
-        GenshinHookCpuTiming::Scope r448Wait(GenshinHookCpuTiming::Stage::PresentResizeLock);
+        HookCpuTiming::Scope r448Wait(HookCpuTiming::Stage::PresentResizeLock);
         dx11wDx12PresentLock.lock();r448Wait.Finish();
-        r448PresentResizeHeld.emplace(GenshinHookCpuTiming::Stage::PresentResizeLocked);
+        r448PresentResizeHeld.emplace(HookCpuTiming::Stage::PresentResizeLocked);
     }
 
     LOG_DEBUG("{}", _frameCounter);
@@ -979,9 +653,8 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     static std::atomic<std::uint64_t> routinePresentLogFrames { 0 };
     const bool logRoutinePresent = willPresent &&
         routinePresentLogFrames.fetch_add(1, std::memory_order_relaxed) % 120 == 0;
-    const bool nativeParentOwner = GenshinNativeParentFrame::OwnsNative(pSwapChain, pDevice);
-    const bool deferNativeEpoch = providerOutput || GenshinNativeParentFrame::OwnsPresent(pSwapChain, hWnd) ||
-        GenshinNativeParentFrame::IsChildOutput(pSwapChain, hWnd);
+
+    const bool deferNativeEpoch = providerOutput;
 
     if (sourcePresent)
         SourcePresent::ObserveState(pSwapChain, SyncInterval, Flags, logRoutinePresent);
@@ -1004,8 +677,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         _dx11Device = true;
         State::Instance().swapchainApi = DX11;
         State::Instance().currentD3D11Device = device;
-        if (F6InputPolicy::FsrBridgeEnabled && willPresent && !capturePolled) GenshinLegacy::OnPresent(device);
-    }
+        }
     else if (pDevice->QueryInterface(IID_PPV_ARGS(&cq)) == S_OK)
     {
         cq->Release();
@@ -1143,12 +815,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (observeTimerReads) GenshinTimerReadWindowForThread().Report();
             if (upscalerTimeOpt.has_value())
             {
-                static const bool genshinTiming=(F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()));
-                if(genshinTiming){static ULONGLONG nextReport=0;const auto tick=GetTickCount64();
-                    if(tick>=nextReport){nextReport=tick+500;std::string details;
-                        for(const auto& item:State::Instance().detailedGpuTimes)details+=std::format(" {}={:.4f}ms",item.name,item.time);
-                        LOG_INFO("R858 SR model GPU: pid={} total={:.4f}ms details={} sample=500ms no_cpu_wait=true",
-                            GetCurrentProcessId(),upscalerTimeOpt.value(),details);}}
+
                 auto upscalerTime = upscalerTimeOpt.value();
                 // filter out possibly wrong measured high values
                 if (upscalerTime < 100.0)
@@ -1202,8 +869,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         else
             presentResult = r448Hook.Original([&]{return rawPresent(pPresentParameters);});
 
-        if(actualCall)*actualCall=true;
-        nrTrace.Presented(presentResult);
+
         if (presentResult == S_OK)
         {
             // DXVK returns below before the native path advances the NR epoch.
@@ -1239,8 +905,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (sourcePresent)
     {
         // Tick feature to let it know if it's frozen
-        if(nativeParentOwner || cq)
-            GenshinTransport::FinishPendingOutput(device,GenshinTransport::OutputFlushReason::Consumer);
+
         SourcePresent::TickFeature();
 
         // Before the finished-picture pass, which composes from what the virtual upscaler's call captured this frame.
@@ -1300,7 +965,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             overlayNativeRoute = nativeMenuOutput;
             overlayOwner = FGHooks::OwnsMenuOverlay(hWnd);
             overlayResult.Decision = "owner-excluded";
-            if (nativeParentOwner || menuOutput || !overlayOwner)
+            if (menuOutput || !overlayOwner)
             {
                 if (menuOutput)
                 {
@@ -1372,12 +1037,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 native::lowlatency::OnPresentBegin(lowLatencyDevice);
         }
 
-        if (F6InputPolicy::FsrBridgeEnabled && isD3D11 && willPresent && !genshinPresentIdentity)
-            genshinPresentIdentity=GenshinLegacy::ResolveNativeSwapchainIdentity(pSwapChain);
-        if (F6InputPolicy::FsrBridgeEnabled && isD3D11 && willPresent) GenshinLegacy::ObserveNativePresentTarget(pSwapChain,genshinPresentIdentity);
-        const auto genshinPresentTicket=F6InputPolicy::FsrBridgeEnabled && isD3D11 && willPresent
-            ? GenshinLegacy::BeginNativePresent(device,genshinPresentIdentity,Flags,pPresentParameters!=nullptr)
-            : GenshinLegacy::Presentation::Ticket{};
+
         // A caller-declared full update already guarantees a coherent target. Once
         // the menu wrote it, scrolling old presented pixels over those writes would
         // violate that output. Partial dirty updates need coherent background
@@ -1396,18 +1056,16 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         // Measure only the original API, after overlay, ticket and latency setup.
         // Keep the exact argument selection and all existing callbacks/returns.
-        GenshinPresentCpuScope presentCpu(pSwapChain, SyncInterval, Flags, pPresentParameters != nullptr,
-                                          genshinPresentIdentity, isD3D11, nativeParentOwner, genshinPresentTicket);
+
         // swapchain present
         if (pPresentParameters == nullptr)
             presentResult = r448Hook.Original([&]{return rawPresent(nullptr);});
         else
             presentResult = r448Hook.Original([&]{return rawPresent(effectivePresentParameters);});
-        presentCpu.Finish(presentResult);
+
         gimiPresent.Returned(pSwapChain, SyncInterval, Flags, effectivePresentParameters != nullptr, presentResult);
 
-        if(actualCall)*actualCall=true;
-        nrTrace.Presented(presentResult);
+
 
         // Bounded samples plus throttled state transitions expose missing menu
         // submissions without a per-frame log flood or additional GPU waits.
@@ -1442,7 +1100,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
         }
 
-        GenshinLegacy::CompleteNativePresent(genshinPresentTicket,presentResult);
+
 
         if (lowLatencyDevice != nullptr)
             native::lowlatency::OnPresentEnd(lowLatencyDevice);
@@ -1456,25 +1114,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         {
             LOG_ERROR("Original present result: {:X}", (UINT) presentResult);
 
-            if (presentResult == DXGI_ERROR_DEVICE_REMOVED && nativeParentOwner)
-            {
-                // The Genshin parent is D3D11; the global D3D12 pointer can describe
-                // a healthy optional bridge device. Diagnose the actual presenter.
-                try {
-                    static std::atomic<unsigned> reports{0};
-                    if(reports.fetch_add(1,std::memory_order_relaxed)<8) {
-                        Microsoft::WRL::ComPtr<ID3D11Device> nativeDevice;
-                        const HRESULT deviceResult=pSwapChain->GetDevice(IID_PPV_ARGS(&nativeDevice));
-                        const HRESULT reason=SUCCEEDED(deviceResult) && nativeDevice ?
-                            nativeDevice->GetDeviceRemovedReason() : E_NOINTERFACE;
-                        LOG_ERROR("R827 phase40 native removal: pid={} thread={} swapchain={:X} incoming_device={:X} native_d11={:X} get_device_hr={:X} removed_reason_known={} removed_reason={:X} native_present_hr={:X} diagnostic_only=true",
-                            GetCurrentProcessId(),GetCurrentThreadId(),reinterpret_cast<uintptr_t>(pSwapChain),
-                            reinterpret_cast<uintptr_t>(pDevice),reinterpret_cast<uintptr_t>(nativeDevice.Get()),
-                            static_cast<unsigned>(deviceResult),SUCCEEDED(deviceResult) && nativeDevice.Get()!=nullptr,static_cast<unsigned>(reason),static_cast<unsigned>(presentResult));
-                    }
-                }catch(...){} // Diagnostics never replace the actual native HRESULT.
-            }
-            else if (presentResult == DXGI_ERROR_DEVICE_REMOVED && State::Instance().currentD3D12Device != nullptr)
+            if (presentResult == DXGI_ERROR_DEVICE_REMOVED && State::Instance().currentD3D12Device != nullptr)
                 Util::GetDeviceRemovedReason(State::Instance().currentD3D12Device);
         }
 
@@ -1483,113 +1123,6 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     return finalOutput && HoYoShade::Selected(HoYoShade::Stage::FinalOutput)
         ? finalOutput->Present(Flags, pPresentParameters, overlayAndPresent)
         : overlayAndPresent();
-}
-
-// R612 uses the real R610 LocalPresent consumer for the game-facing parent.
-// Child/provider output may be nested inside this call's outer frame lifetime;
-// it cannot tick the native picture epoch a second time.
-GenshinNativeParentFrame::GenshinNativeParentFrame(IDXGISwapChain* native, IDXGISwapChain* child,
-    IUnknown* device, HWND parent, HWND childWindow, std::uint64_t& identity)
-    : native_(native), child_(child), device_(device), parentHwnd_(parent), childHwnd_(childWindow),
-      identity_(identity), thread_(GetCurrentThreadId())
-{
-    if (current_ || !native_ || !device_ || !parentHwnd_ ||
-        !(F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())))return;
-    // The wrapper owns this actual native chain even after a failed child
-    // factory, route change, window destruction or unsupported child topology.
-    active_=true;current_=this;
-}
-bool GenshinNativeParentFrame::OwnsNative(IDXGISwapChain* sc,IUnknown* device) noexcept
-{
-    const auto* p=current_;
-    if(!p || !p->active_ || p->thread_!=GetCurrentThreadId() || sc!=p->native_ ||
-       State::Instance().currentRealSwapchain!=sc ||
-       State::Instance().swapchainInteropApi!=SwapchainInteropApi::Dx11wDx12)return false;
-    DXGI_SWAP_CHAIN_DESC d{};ComPtr<ID3D11Device> actual;
-    if(FAILED(sc->GetDesc(&d)) || d.OutputWindow!=p->parentHwnd_ ||
-       FAILED(sc->GetDevice(IID_PPV_ARGS(&actual))) ||
-       GenshinPresentNr::Identity(actual.Get())!=GenshinPresentNr::Identity(p->device_))return false;
-    return !device || GenshinPresentNr::Identity(device)==GenshinPresentNr::Identity(p->device_);
-}
-bool GenshinNativeParentFrame::MatchesTicket(const GenshinPresentNr::Ticket& ticket) noexcept
-{
-    const auto* p=current_;
-    const auto& state=State::Instance();const auto& controls=*Config::Instance();
-    if(state.isShuttingDown || state.api==Vulkan || state.swapchainApi==Vulkan ||
-       !controls.DlssNrEnabled.value_or_default() || !controls.DlssNrFinishedPicture.value_or_default() ||
-       controls.DlssNrRunBeforeSr.value_or_default() || controls.DlssNrDeferredDlss.value_or_default() ||
-       native::OpticalFgNrEnabled() || !controls.GenshinControlsCurrent(ticket.source.configEpoch))return false;
-    if(!p || !ticket.Known() || !OwnsNative(p->native_,p->device_) ||
-       ticket.swapchain!=GenshinPresentNr::Identity(p->native_) ||
-       ticket.source.device!=GenshinPresentNr::Identity(p->device_) ||
-       ticket.source.thread!=GetCurrentThreadId() || ticket.presentEpoch!=State::Instance().frameCount)return false;
-    ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;
-    ComPtr<IDXGISwapChain3> indexed;ComPtr<ID3D11Texture2D> buffer;
-    if(FAILED(p->native_->GetDevice(IID_PPV_ARGS(&device))))return false;
-    device->GetImmediateContext(&context);
-    UINT index=0;if(SUCCEEDED(p->native_->QueryInterface(IID_PPV_ARGS(&indexed))))index=indexed->GetCurrentBackBufferIndex();
-    return context && context->GetType()==D3D11_DEVICE_CONTEXT_IMMEDIATE &&
-        GenshinPresentNr::Identity(context.Get())==ticket.source.context &&
-        GenshinPresentNr::Identity(ticket.context.Get())==ticket.source.context &&
-        SUCCEEDED(p->native_->GetBuffer(index,IID_PPV_ARGS(&buffer))) &&
-        GenshinPresentNr::Identity(buffer.Get())==GenshinPresentNr::Identity(ticket.backbuffer.Get());
-}
-bool GenshinPresentNr::MatchesNativeParentTicket(const Ticket& ticket) noexcept
-{return GenshinNativeParentFrame::MatchesTicket(ticket);}
-bool GenshinNativeParentFrame::OwnsPresent(IDXGISwapChain* sc, HWND hwnd) noexcept
-{
-    const auto* p = current_;
-    if (!p || !p->active_ || p->thread_!=GetCurrentThreadId()) return false;
-    if (sc == p->native_ && hwnd == p->parentHwnd_) return true;
-    // A Streamline physical output can differ from its proxy COM identity.
-    // It must still be the actual swapchain on this exact owned child window.
-    DXGI_SWAP_CHAIN_DESC desc{};
-    return sc && hwnd == p->childHwnd_ && SUCCEEDED(sc->GetDesc(&desc)) && desc.OutputWindow == p->childHwnd_;
-}
-bool GenshinNativeParentFrame::IsChildOutput(IDXGISwapChain* sc, HWND hwnd) noexcept
-{
-    // Streamline can issue physical/generated output on another thread, outside
-    // the parent's TLS scope. Such output is not another native game picture.
-    // Recognize only our retained, still-owned child and its actual descriptor.
-    return sc && (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())) &&
-        GenshinVisibleChild::IsPhysicalOutput(sc,hwnd);
-}
-bool GenshinNativeParentFrame::IsRetainedChildWindow(HWND hwnd) noexcept
-{
-    return (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring())) &&
-        GenshinVisibleChild::IsRetainedChild(hwnd) && GenshinVisibleChild::IsOwnedChild(hwnd);
-}
-void GenshinNativeParentFrame::PublishColorSpace(IDXGISwapChain* sc,DXGI_COLOR_SPACE_TYPE space)
-{
-    if(sc && State::Instance().currentRealSwapchain==sc &&
-       (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()))) {
-        UpdateOutputColorSpace(space);
-        DlssNr::FinishedPictureColorSpace(sc,space);
-    }
-}
-HRESULT GenshinNativeParentFrame::Present(UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* parameters,
-                                         bool capturePolled)
-{
-    GenshinHookCpuTiming::HookScope r448Hook((parameters!=nullptr)?GenshinHookCpuTiming::Hook::Present1:GenshinHookCpuTiming::Hook::Present);
-    GenshinHookCpuTiming::PresentOwnerScope r448Owner(r448Hook);
-
-    if (!native_ || called_) return DXGI_ERROR_INVALID_CALL;
-    // LocalPresent always reaches the actual native API. Eligibility for NR is
-    // checked separately by OwnsNative/MatchesTicket, never by this forwarder.
-    bool actualCall=false;
-    const auto result=LocalPresent(native_,sync,flags,parameters,device_,parentHwnd_,false,identity_,capturePolled,&actualCall);
-    called_=actualCall && (flags & DXGI_PRESENT_TEST)==0;
-    return result;
-}
-GenshinNativeParentFrame::~GenshinNativeParentFrame()
-{
-    if (current_ != this) return;
-    // Preserve LocalPresent's attempted-native-Present clock even when its
-    // HRESULT is failure; provider/child calls never authorize another tick.
-    if (called_ && !State::Instance().isShuttingDown) {
-        ++_frameCounter; State::Instance().frameCount = _frameCounter;
-    }
-    current_ = nullptr;
 }
 
 WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* pDevice, HWND hWnd, UINT flags,
@@ -1637,7 +1170,7 @@ WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* p
     LOG_INFO("{} created, real: {:X}, refCount: {}", _id, (UINT64) real, refCount);
 }
 
-WrappedIDXGISwapChain4::~WrappedIDXGISwapChain4() { GenshinLegacy::ForgetNativeSwapchain(_genshinPresentIdentity); }
+WrappedIDXGISwapChain4::~WrappedIDXGISwapChain4() = default;
 
 //
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::QueryInterface(REFIID riid, void** ppvObject)
@@ -1856,10 +1389,9 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetDevice(REFIID riid, void** 
 //
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UINT Flags)
 {
-    GenshinHookCpuTiming::HookScope r448Hook((false)?GenshinHookCpuTiming::Hook::Present1:GenshinHookCpuTiming::Hook::Present);
-    GenshinHookCpuTiming::PresentOwnerScope r448Owner(r448Hook);
+    HookCpuTiming::HookScope r448Hook((false)?HookCpuTiming::Hook::Present1:HookCpuTiming::Hook::Present);
+    HookCpuTiming::PresentOwnerScope r448Owner(r448Hook);
 
-    GenshinTransport::PresentOutputScope outputSubmission(!(Flags & DXGI_PRESENT_TEST));
     if (_real == nullptr)
         return DXGI_ERROR_DEVICE_REMOVED;
     if (HoYoShade::ColorConsumers(_real) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
@@ -1879,7 +1411,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
 
     if ((Flags & DXGI_PRESENT_TEST) == 0)
     {
-        result = LocalPresent(_real, SyncInterval, Flags, nullptr, _device, _handle, _uwp, _genshinPresentIdentity, false, nullptr, _finalOutput.get(), _providerOutput, _starRailProviderOutput,
+        result = LocalPresent(_real, SyncInterval, Flags, nullptr, _device, _handle, _uwp, _finalOutput.get(), _providerOutput, _starRailProviderOutput,
                               _starRailProviderOutput ? this : nullptr, _finalRawCreationQueueInput);
 
         // When Reflex can't be used to limit (and Optical F5Low's low latency does not keep the cap), sleep in present
@@ -1970,7 +1502,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookResizeBuffers(UINT BufferC
                                                                 DXGI_FORMAT NewFormat, UINT SwapChainFlags)
 {
     if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
-    GenshinTransport::FinishPendingOutput(nullptr,GenshinTransport::OutputFlushReason::Resize);
+
     HoYoShade::DirectResizeScope directResize(_real, this);
     if (FAILED(directResize.Result())) return directResize.Result();
     framegen::final_output::Endpoint::Resize finalResize(_finalOutput.get());
@@ -1980,8 +1512,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookResizeBuffers(UINT BufferC
     DlssNrCurrentOutput::Capture::ResizeScope outputCaptureResize(
         DlssNrCurrentOutput::Capture::ResizeScope::Mode::ReserveOnly);
     if (!outputCaptureResize) return DXGI_ERROR_WAS_STILL_DRAWING;
-    const auto captureResize=GenshinLegacy::BeforeResize(_real);
-    if (FAILED(captureResize)) return captureResize;
+
     if (!DlssNr::WaitForFinishedPicture())
         return DXGI_ERROR_WAS_STILL_DRAWING;
     // Real Late Reset has now notified any borrowed capture generation. Keep
@@ -2261,10 +1792,9 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetCoreWindow(REFIID refiid, v
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UINT Flags,
                                                            const DXGI_PRESENT_PARAMETERS* pPresentParameters)
 {
-    GenshinHookCpuTiming::HookScope r448Hook((true)?GenshinHookCpuTiming::Hook::Present1:GenshinHookCpuTiming::Hook::Present);
-    GenshinHookCpuTiming::PresentOwnerScope r448Owner(r448Hook);
+    HookCpuTiming::HookScope r448Hook((true)?HookCpuTiming::Hook::Present1:HookCpuTiming::Hook::Present);
+    HookCpuTiming::PresentOwnerScope r448Owner(r448Hook);
 
-    GenshinTransport::PresentOutputScope outputSubmission(!(Flags & DXGI_PRESENT_TEST));
     if (_real1 == nullptr)
         return DXGI_ERROR_DEVICE_REMOVED;
     if (HoYoShade::ColorConsumers(_real) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
@@ -2284,7 +1814,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
 
     if ((Flags & DXGI_PRESENT_TEST) == 0)
     {
-        result = LocalPresent(_real1, SyncInterval, Flags, pPresentParameters, _device, _handle, _uwp, _genshinPresentIdentity, false, nullptr, _finalOutput.get(), _providerOutput, _starRailProviderOutput,
+        result = LocalPresent(_real1, SyncInterval, Flags, pPresentParameters, _device, _handle, _uwp, _finalOutput.get(), _providerOutput, _starRailProviderOutput,
                               _starRailProviderOutput ? this : nullptr, _finalRawCreationQueueInput);
 
         // When Reflex can't be used to limit (and Optical F5Low's low latency does not keep the cap), sleep in present
@@ -2357,7 +1887,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetMaximumFrameLatency(UINT Ma
 
 void WrappedIDXGISwapChain4::_ObserveFrameLatencySetter(const void* caller, UINT MaxLatency, HRESULT result)
 {
-    if (!GenshinHookCpuTiming::Enabled()) return;
+    if (!HookCpuTiming::Enabled()) return;
     static const bool starRail = _wcsicmp(Util::ExePath().filename().c_str(), L"StarRail.exe") == 0;
     if (!starRail) return;
 
@@ -2537,7 +2067,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
                                                                  IUnknown* const* ppPresentQueue)
 {
     if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
-    GenshinTransport::FinishPendingOutput(nullptr,GenshinTransport::OutputFlushReason::Resize);
+
     HoYoShade::DirectResizeScope directResize(_real, this);
     if (FAILED(directResize.Result())) return directResize.Result();
     framegen::final_output::Endpoint::Resize finalResize(_finalOutput.get());
@@ -2547,8 +2077,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
     DlssNrCurrentOutput::Capture::ResizeScope outputCaptureResize(
         DlssNrCurrentOutput::Capture::ResizeScope::Mode::ReserveOnly);
     if (!outputCaptureResize) return DXGI_ERROR_WAS_STILL_DRAWING;
-    const auto captureResize=GenshinLegacy::BeforeResize(_real);
-    if (FAILED(captureResize)) return captureResize;
+
     if (!DlssNr::WaitForFinishedPicture())
         return DXGI_ERROR_WAS_STILL_DRAWING;
     // Real Late Reset has now notified any borrowed capture generation. Keep

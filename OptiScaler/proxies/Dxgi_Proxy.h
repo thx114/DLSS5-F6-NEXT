@@ -8,7 +8,7 @@
 #include <proxies/KernelBase_Proxy.h>
 
 #include <detours/detours.h>
-#include <genshin/GenshinOwnHookProvenance.h>
+#include <hooks/HookOwnership.h>
 
 #include <dxgi1_6.h>
 
@@ -131,51 +131,51 @@ class DxgiProxy
         return (PFN_GetDebugInterface) KernelBaseProxy::GetProcAddress_()(_dll, "DXGIGetDebugInterface1");
     }
 
-    static PFN_CreateDxgiFactory& Original_CreateDxgiFactory() { return GenshinNativeQuery::Own::Original<PFN_CreateDxgiFactory>(_own_CreateDxgiFactory); }
+    static PFN_CreateDxgiFactory& Original_CreateDxgiFactory() { return HookOwnership::Own::Original<PFN_CreateDxgiFactory>(_own_CreateDxgiFactory); }
     static PFN_CreateDxgiFactory Hook_CreateDxgiFactory(PVOID method)
     {
         if (_own_CreateDxgiFactory.live) return Original_CreateDxgiFactory();
-        const auto result = GenshinNativeQuery::Own::Install(_own_CreateDxgiFactory, nullptr,
+        const auto result = HookOwnership::Own::Install(_own_CreateDxgiFactory, nullptr,
             (PVOID) CreateDxgiFactory_ForHook(), method, HookModule(), "CreateDXGIFactory", HookModule() != dllModule);
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_CreateDxgiFactory();
     }
 
-    static PFN_CreateDxgiFactory1& Original_CreateDxgiFactory1() { return GenshinNativeQuery::Own::Original<PFN_CreateDxgiFactory1>(_own_CreateDxgiFactory1); }
+    static PFN_CreateDxgiFactory1& Original_CreateDxgiFactory1() { return HookOwnership::Own::Original<PFN_CreateDxgiFactory1>(_own_CreateDxgiFactory1); }
     static PFN_CreateDxgiFactory1 Hook_CreateDxgiFactory1(PVOID method)
     {
         if (_own_CreateDxgiFactory1.live) return Original_CreateDxgiFactory1();
-        const auto result = GenshinNativeQuery::Own::Install(_own_CreateDxgiFactory1, nullptr,
+        const auto result = HookOwnership::Own::Install(_own_CreateDxgiFactory1, nullptr,
             (PVOID) CreateDxgiFactory1_ForHook(), method, HookModule(), "CreateDXGIFactory1", HookModule() != dllModule);
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_CreateDxgiFactory1();
     }
 
-    static PFN_CreateDxgiFactory2& Original_CreateDxgiFactory2() { return GenshinNativeQuery::Own::Original<PFN_CreateDxgiFactory2>(_own_CreateDxgiFactory2); }
+    static PFN_CreateDxgiFactory2& Original_CreateDxgiFactory2() { return HookOwnership::Own::Original<PFN_CreateDxgiFactory2>(_own_CreateDxgiFactory2); }
     static PFN_CreateDxgiFactory2 Hook_CreateDxgiFactory2(PVOID method)
     {
         if (_own_CreateDxgiFactory2.live) return Original_CreateDxgiFactory2();
-        const auto result = GenshinNativeQuery::Own::Install(_own_CreateDxgiFactory2, nullptr,
+        const auto result = HookOwnership::Own::Install(_own_CreateDxgiFactory2, nullptr,
             (PVOID) CreateDxgiFactory2_ForHook(), method, HookModule(), "CreateDXGIFactory2", HookModule() != dllModule);
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_CreateDxgiFactory2();
     }
 
-    static PFN_DeclareAdepterRemovalSupport& Original_DeclareAdepterRemovalSupport() { return GenshinNativeQuery::Own::Original<PFN_DeclareAdepterRemovalSupport>(_own_DeclareAdepterRemovalSupport); }
+    static PFN_DeclareAdepterRemovalSupport& Original_DeclareAdepterRemovalSupport() { return HookOwnership::Own::Original<PFN_DeclareAdepterRemovalSupport>(_own_DeclareAdepterRemovalSupport); }
     static PFN_DeclareAdepterRemovalSupport Hook_DeclareAdepterRemovalSupport(PVOID method)
     {
         if (_own_DeclareAdepterRemovalSupport.live) return Original_DeclareAdepterRemovalSupport();
-        const auto result = GenshinNativeQuery::Own::Install(_own_DeclareAdepterRemovalSupport, nullptr,
+        const auto result = HookOwnership::Own::Install(_own_DeclareAdepterRemovalSupport, nullptr,
             (PVOID) DeclareAdepterRemovalSupport_ForHook(), method, HookModule(), "DXGIDeclareAdapterRemovalSupport", HookModule() != dllModule);
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_DeclareAdepterRemovalSupport();
     }
 
-    static PFN_GetDebugInterface& Original_GetDebugInterface() { return GenshinNativeQuery::Own::Original<PFN_GetDebugInterface>(_own_GetDebugInterface); }
+    static PFN_GetDebugInterface& Original_GetDebugInterface() { return HookOwnership::Own::Original<PFN_GetDebugInterface>(_own_GetDebugInterface); }
     static PFN_GetDebugInterface Hook_GetDebugInterface(PVOID method)
     {
         if (_own_GetDebugInterface.live) return Original_GetDebugInterface();
-        const auto result = GenshinNativeQuery::Own::Install(_own_GetDebugInterface, nullptr,
+        const auto result = HookOwnership::Own::Install(_own_GetDebugInterface, nullptr,
             (PVOID) GetDebugInterface_ForHook(), method, HookModule(), "DXGIGetDebugInterface1", HookModule() != dllModule);
         if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
         return Original_GetDebugInterface();
@@ -186,7 +186,7 @@ class DxgiProxy
         for (auto* slot : {&_own_CreateDxgiFactory, &_own_CreateDxgiFactory1, &_own_CreateDxgiFactory2, &_own_DeclareAdepterRemovalSupport, &_own_GetDebugInterface})
             if (slot->live && slot->hook == method && *slot->executed == addr)
             {
-                const auto result = GenshinNativeQuery::Own::Detach(*slot);
+                const auto result = HookOwnership::Own::Detach(*slot);
                 if (result != NO_ERROR) LOG_ERROR("Failed to unhook: {:X}", result);
                 return;
             }
@@ -194,11 +194,11 @@ class DxgiProxy
     }
 
   private:
-    inline static GenshinNativeQuery::Own::Slot _own_CreateDxgiFactory;
-    inline static GenshinNativeQuery::Own::Slot _own_CreateDxgiFactory1;
-    inline static GenshinNativeQuery::Own::Slot _own_CreateDxgiFactory2;
-    inline static GenshinNativeQuery::Own::Slot _own_DeclareAdepterRemovalSupport;
-    inline static GenshinNativeQuery::Own::Slot _own_GetDebugInterface;
+    inline static HookOwnership::Own::Slot _own_CreateDxgiFactory;
+    inline static HookOwnership::Own::Slot _own_CreateDxgiFactory1;
+    inline static HookOwnership::Own::Slot _own_CreateDxgiFactory2;
+    inline static HookOwnership::Own::Slot _own_DeclareAdepterRemovalSupport;
+    inline static HookOwnership::Own::Slot _own_GetDebugInterface;
     inline static HMODULE _dll = nullptr;
     inline static thread_local int _factoryCreationDepth = 0;
 

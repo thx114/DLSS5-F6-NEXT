@@ -21,6 +21,9 @@ if not args.check_only and args.output is None:
     parser.error("output is required unless --check-only is used")
 root = Path(__file__).resolve().parents[5]
 source = (root / "OptiScaler/framegen/dlssg/DLSSG_Dx12.cpp").read_text(encoding="utf-8-sig")
+source += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+    next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+         if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
 header = (root / "OptiScaler/framegen/dlssg/DLSSG_Dx12.h").read_text(encoding="utf-8-sig")
 
 

@@ -40,6 +40,9 @@ def before_work(source, signature, refusal):
 
 
 dlssg = read("OptiScaler/framegen/dlssg/DLSSG_Dx12.cpp")
+dlssg += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+    next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+         if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
 native = read("OptiScaler/hooks/ngx/NativeDx12Hooks.cpp")
 for method in ("Stop", "StopDevice", "Release", "BStop", "BStopDevice", "BRelease", "Destroy"):
     before_work(native, "NVSDK_NGX_Result " + method + "(",
@@ -81,12 +84,8 @@ for path, owner in (("OptiScaler/with_dx12/dx11_with_dx12_sc.cpp", "Dx11wDx12SC"
         for method in ("SetRotation", "SetSourceSize", "SetMatrixTransform"):
             before_work(source, f"HRESULT STDMETHODCALLTYPE {owner}::{method}(",
                         "if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;")
-        for method in ("_TryDrainNativeChild", "_TryRecoverNativeChild"):
-            before_work(source, f"bool {owner}::{method}(",
-                        "if (!ModuleLifetime::CleanupAllowed()) return false;")
-        for method in ("_TryRetireNativeChildOnOwner", "_RevokeNativeChild"):
-            before_work(source, f"void {owner}::{method}(",
-                        "if (!ModuleLifetime::CleanupAllowed()) return;")
+        check("_TryDrainNativeChild" not in source and "_RevokeNativeChild" not in source,
+              "retired private child lifetime must not reenter public cleanup")
 for method in ("hkSetFullscreenState", "hkResizeTarget"):
     before_work(hooks, "HRESULT FGHooks::" + method + "(",
                 "if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;")

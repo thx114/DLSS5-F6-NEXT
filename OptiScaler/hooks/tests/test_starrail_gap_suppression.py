@@ -17,6 +17,9 @@ spec = importlib.util.spec_from_file_location(
 extractor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(extractor)
 source = (ROOT / "OptiScaler/framegen/dlssg/DLSSG_Dx12.cpp").read_text(encoding="utf-8-sig")
+source += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+    next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+         if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
 suppression = extractor.extract(source, "bool DLSSG_Dx12::SuppressStarRailGapForPresent(")
 if args.negative_no_cleanup:
     suppression = extractor.replace_once(suppression,

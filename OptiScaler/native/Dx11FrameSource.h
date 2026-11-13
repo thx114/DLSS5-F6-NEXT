@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // The D3D11 adapter's frame source: the game's picture and the depth finder's copy (resource_tracking/GenericDepth_Dx11.h) are
 // shared across to the D3D12 device the producer runs on (native/SharedFrame.h), and the processed picture is shared back. Uses
@@ -60,7 +60,7 @@ class Dx11FrameSource : public IFrameSource
     } _delivery;
     DWORD _deliveryThread=0;
     uint64_t _deliveryLastSample=0, _deliveryLastReport=0;
-    void BeginDeliveryObservation(bool presented);
+    void BeginDeliveryObservation();
     void StampDelivery(DeliveryObservation::Boundary boundary) noexcept;
     void ReportDeliveryObservation();
 

@@ -1,13 +1,10 @@
-#include <pch.h>
-#include <runtime/F6InputPolicy.h>
+﻿#include <pch.h>
 
 #include "with_dx12.h"
 #include <framegen/FinalOutputEndpoint.h>
 
 #include <proxies/DXGI_Proxy.h>
 #include <proxies/D3D12_Proxy.h>
-#include <inputs/GenshinFsrContract.h>
-#include <native/SharedFrame.h>
 #include <hooks/D3D12_Hooks.h>
 
 HRESULT CreateD3D12DeviceOnAdapter(IDXGIAdapter* adapter, D3D_FEATURE_LEVEL featureLevel, ID3D12Device** device)
@@ -16,16 +13,6 @@ HRESULT CreateD3D12DeviceOnAdapter(IDXGIAdapter* adapter, D3D_FEATURE_LEVEL feat
         return E_POINTER;
 
     *device = nullptr;
-
-    if((F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()))) {
-        Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dred;
-        const auto hr=D3D12GetDebugInterface(IID_PPV_ARGS(&dred));
-        if(SUCCEEDED(hr) && dred) {
-            dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-            dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-            LOG_WARN("R24 Genshin DRED auto-breadcrumbs/page-fault enabled before interop device creation");
-        } else LOG_WARN("R24 Genshin DRED settings unavailable: {:X}",static_cast<UINT>(hr));
-    }
 
     if (D3d12Proxy::Module() == nullptr)
         return D3D12CreateDevice(adapter, featureLevel, IID_PPV_ARGS(device));
@@ -43,127 +30,19 @@ HRESULT TestD3D12DeviceOnAdapter(IDXGIAdapter* adapter, D3D_FEATURE_LEVEL featur
 
 namespace
 {
-bool GenshinConsumerPair()
-{
-    static const bool selected = (F6InputPolicy::FsrBridgeEnabled && GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()));
-    return selected;
+
+
+
 }
 
-bool PublicPairMatches(ID3D12Device* device, ID3D12CommandQueue* queue, D3D12_COMMAND_LIST_TYPE type)
-{
-    if (!device || !queue || type != D3D12_COMMAND_LIST_TYPE_DIRECT || queue->GetDesc().Type != type)
-        return false;
-    Microsoft::WRL::ComPtr<ID3D12Device> owner;
-    Microsoft::WRL::ComPtr<IUnknown> expected, actual;
-    return SUCCEEDED(queue->GetDevice(IID_PPV_ARGS(&owner))) && owner &&
-        SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&expected))) && expected &&
-        SUCCEEDED(owner.As(&actual)) && actual && expected == actual &&
-        SUCCEEDED(device->GetDeviceRemovedReason());
-}
-}
 
-WithDx12::PairReservation::~PairReservation()
-{
-    std::lock_guard lock(_publicationMutex);
-    _constructingPair = false;
-}
 
 bool WithDx12::IsInited()
 {
-    if (!GenshinConsumerPair()) return _d3d12Device && _d3d12CommandQueue;
-    std::lock_guard lock(_publicationMutex);
     return _d3d12Device && _d3d12CommandQueue;
 }
 
-bool WithDx12::PrepareGenshinPair(ID3D11Device* device11, D3D_FEATURE_LEVEL level, IDXGIAdapter* requestedAdapter)
-{
-    ID3D12Device* externalDevice = nullptr;
-    ID3D12CommandQueue* externalQueue = nullptr;
-    {
-        std::lock_guard lock(_publicationMutex);
-        if (_d3d12Device && _d3d12CommandQueue) return true;
-        if (_constructingPair || _d3d12Device || _d3d12CommandQueue) return false;
-        auto& state = State::Instance();
-        if (state.currentD3D12Device || state.currentCommandQueue)
-        {
-            // An existing foreign pair is never an unpublished seed. Adopt its
-            // EXACT supplied queue only after public validation, or leave it alone.
-            if (!state.currentD3D12Device || !state.currentCommandQueue) return false;
-            externalDevice = state.currentD3D12Device;
-            externalQueue = state.currentCommandQueue;
-        }
-        else
-        {
-            _constructingPair = true;
-            _publicationInterrupted = false;
-        }
-    }
-    if (externalDevice)
-    {
-        SetD3D12Objects(externalDevice, externalQueue);
-        return IsInited();
-    }
-    // All COM locals die before this guard clears the reservation. Reentrant
-    // Prepare/Request returns not-ready; Set interrupts, without waiting.
-    PairReservation reservation;
-    ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
-    ScopedSkipVulkanHooks skipVulkanHooks {};
-    Microsoft::WRL::ComPtr<IDXGIAdapter> adapter = requestedAdapter;
-    if (device11)
-    {
-        Microsoft::WRL::ComPtr<IDXGIDevice> dxgi;
-        if (FAILED(device11->QueryInterface(IID_PPV_ARGS(&dxgi))) || !dxgi ||
-            FAILED(dxgi->GetAdapter(adapter.ReleaseAndGetAddressOf())) || !adapter) return false;
-    }
-    else if (!adapter)
-    {
-        Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
-        const auto hr = DxgiProxy::Module() == nullptr
-            ? CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))
-            : DxgiProxy::CreateDxgiFactory2_()(0, __uuidof(IDXGIFactory2), factory.GetAddressOf());
-        if (FAILED(hr) || !factory) return false;
-        GetHardwareAdapter(factory.Get(), adapter.GetAddressOf(), level, true);
-    }
-    Microsoft::WRL::ComPtr<ID3D12Device> seed, device;
-    Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
-    const auto hr = [&] {
-        // The ONLY scope construction site. Covers the actual seed factory
-        // invocation and its synchronous factory nesting, never adapter probes,
-        // public-owner construction, final hooks, or any later consumer work.
-        InternalPairCreationScope internalCreation;
-        return CreateD3D12DeviceOnAdapter(adapter.Get(), level, seed.GetAddressOf());
-    }();
-    if (FAILED(hr) || !seed) return false;
-    std::string diagnostic;
-    const bool ready = native::CreatePublicConsumerDomain(seed.Get(), device, queue, diagnostic);
-    LOG_INFO("Genshin first consumer pair: ready={} seed={} device={} queue={} {}", ready,
-        static_cast<void*>(seed.Get()), static_cast<void*>(device.Get()), static_cast<void*>(queue.Get()), diagnostic);
-    if (!ready) return false;
-    {
-        std::lock_guard lock(_publicationMutex);
-        if (_publicationInterrupted || State::Instance().currentD3D12Device ||
-            State::Instance().currentCommandQueue) return false;
-    }
-    // Setup is outside the mutex and before ANY pair/State publication.
-    // Callbacks and other WithDx12 readers see not-ready and never wait.
-    if (!InitializeInternalPairDevice(device.Get())) return false;
-    {
-        std::lock_guard lock(_publicationMutex);
-        auto& state = State::Instance();
-        // No seed allowance: hooks must have kept State completely empty.
-        // A concurrent foreign publication cancels this transaction.
-        if (_publicationInterrupted || _d3d12Device || _d3d12CommandQueue ||
-            state.currentD3D12Device || state.currentCommandQueue) return false;
-        state.d3d12Devices.push_back(device.Get()); // may allocate; still no pointer/pair published on throw
-        _d3d12Device = device.Detach();
-        _d3d12CommandQueue = queue.Detach();
-        _commandListType = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        // Only WithDx12 readers share this mutex. State's existing raw fields
-        // are compatibility mirrors, not an atomic pair for arbitrary readers.
-        UpdateStateObjects();
-    }
-    return true;
-}
+
 
 void WithDx12::UpdateStateObjects()
 {
@@ -191,43 +70,6 @@ void WithDx12::SetD3D12Objects(ID3D12Device* InDevice, ID3D12CommandQueue* InCom
                                D3D12_COMMAND_LIST_TYPE InCommandListType)
 {
     if (framegen::final_output::CreationScope::Active()) return;
-    if (GenshinConsumerPair())
-    {
-        {
-            std::lock_guard lock(_publicationMutex);
-            if (_d3d12Device || _d3d12CommandQueue)
-                return; // immutable complete pair; FG off/on reuses this exact queue
-            if (_constructingPair)
-            {
-                _publicationInterrupted = true;
-                return; // never wait inside a driver/third-party callback
-            }
-            if (!InDevice || !InCommandQueue) return;
-            auto& state = State::Instance();
-            if ((state.currentD3D12Device && state.currentD3D12Device != InDevice) ||
-                (state.currentCommandQueue && state.currentCommandQueue != InCommandQueue)) return;
-            _constructingPair = true;
-            _publicationInterrupted = false;
-        }
-        PairReservation reservation;
-        Microsoft::WRL::ComPtr<ID3D12Device> device = InDevice;
-        Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue = InCommandQueue;
-        if (!PublicPairMatches(device.Get(), queue.Get(), InCommandListType)) return;
-        {
-            std::lock_guard lock(_publicationMutex);
-            auto& state = State::Instance();
-            if (_publicationInterrupted || _d3d12Device || _d3d12CommandQueue ||
-                (state.currentD3D12Device && state.currentD3D12Device != InDevice) ||
-                (state.currentCommandQueue && state.currentCommandQueue != InCommandQueue)) return;
-            // Preserve an already supplied pair, including its exact queue. No
-            // owner normalization, new queue, or migration of existing resources.
-            _d3d12Device = device.Detach();
-            _d3d12CommandQueue = queue.Detach();
-            _commandListType = InCommandListType;
-            UpdateStateObjects();
-        }
-        return;
-    }
     _d3d12Device = InDevice;
     _d3d12CommandQueue = InCommandQueue;
     _commandListType = InCommandListType;
@@ -239,7 +81,6 @@ void WithDx12::SetD3D12Objects(ID3D12Device* InDevice, ID3D12CommandQueue* InCom
 
 void WithDx12::ForgetD3D12Device(ID3D12Device* device)
 {
-    if (GenshinConsumerPair()) return; // Forget is a Vulkan-only private-domain teardown
     if (device == nullptr || _d3d12Device != device)
         return;
 
@@ -257,7 +98,6 @@ void WithDx12::ForgetD3D12Device(ID3D12Device* device)
 
 bool WithDx12::PrepareD3D12ForD3D11(ID3D11Device* InDx11Device, D3D_FEATURE_LEVEL InFeatureLevel)
 {
-    if (GenshinConsumerPair()) return PrepareGenshinPair(InDx11Device, InFeatureLevel, nullptr);
     if (IsInited())
     {
         UpdateStateObjects();
@@ -368,8 +208,6 @@ void WithDx12::GetHardwareAdapter(IDXGIFactory1* InFactory, IDXGIAdapter** InAda
 
 ID3D12Device* WithDx12::RequestD3D12Device(D3D_FEATURE_LEVEL InFeatureLevel, IDXGIAdapter* adapter)
 {
-    if (GenshinConsumerPair())
-        return PrepareGenshinPair(nullptr, InFeatureLevel, adapter) ? GetD3D12Device() : nullptr;
     if (CreateDx12Device(InFeatureLevel, adapter))
         return _d3d12Device;
 
@@ -383,22 +221,16 @@ ID3D12Device* WithDx12::RequestD3D12Device(D3D_FEATURE_LEVEL InFeatureLevel)
 
 ID3D12Device* WithDx12::GetD3D12Device()
 {
-    if (!GenshinConsumerPair()) return _d3d12Device;
-    std::lock_guard lock(_publicationMutex);
-    return _d3d12Device && _d3d12CommandQueue ? _d3d12Device : nullptr;
+    return _d3d12Device;
 }
 
 ID3D12CommandQueue* WithDx12::GetD3D12CommandQueue()
 {
-    if (!GenshinConsumerPair()) return _d3d12CommandQueue;
-    std::lock_guard lock(_publicationMutex);
-    return _d3d12Device && _d3d12CommandQueue ? _d3d12CommandQueue : nullptr;
+    return _d3d12CommandQueue;
 }
 
 D3D12_COMMAND_LIST_TYPE WithDx12::GetD3D12CommandListType()
 {
-    if (!GenshinConsumerPair()) return _commandListType;
-    std::lock_guard lock(_publicationMutex);
     return _commandListType;
 }
 

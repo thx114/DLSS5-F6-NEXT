@@ -2,7 +2,7 @@
 #include "TrustMask_Dx12.h"
 
 #include <native/F5LowShaderBytecode.h>
-#include <genshin/GenshinDepthShaderCapabilities.h>
+#include <motion/DepthShaderCapabilities.h>
 
 #include <algorithm>
 #include <cstring>
@@ -144,9 +144,9 @@ bool TrustMaskDx12::Init(ID3D12Device* device)
 
     // Optional versioned bytecode. Old embedded shaders cannot silently consume
     // paired validity as raw depth. A missing pair leaves base NR operational.
-    const auto* pairedProxy=GenshinDepthShaders::Find("TrustMaskSceneValidity","DepthProxy");
-    const auto* pairedGuide=GenshinDepthShaders::Find("TrustMaskSceneValidity","GuideDepth");
-    const auto* pairedTrust=GenshinDepthShaders::Find("TrustMaskSceneValidity","Trust");
+    const auto* pairedProxy=DepthShaderCapabilities::Find("TrustMaskSceneValidity","DepthProxy");
+    const auto* pairedGuide=DepthShaderCapabilities::Find("TrustMaskSceneValidity","GuideDepth");
+    const auto* pairedTrust=DepthShaderCapabilities::Find("TrustMaskSceneValidity","Trust");
     if(pairedProxy && pairedGuide && pairedTrust) {
         D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};pso.pRootSignature=_rootSignature;
         pso.CS={pairedProxy->code,pairedProxy->size};

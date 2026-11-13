@@ -1,7 +1,6 @@
 ﻿#include "pch.h"
 #include "FinalOutputEndpoint.h"
 #include <integration/HoYoShade.h>
-#include <with_dx12/GenshinVisibleChild.h>
 #include <array>
 #include <atomic>
 #include <mutex>
@@ -45,11 +44,6 @@ public:
     uint64_t retirementEpoch = 0;
     bool retirementCommit = false;
     unsigned inFlight = 0; // Includes default-OFF/raw Present, preparation, capture and full Resize reservations.
-    bool crossApi = false, copiedScope = false, parentPresented = false, outputFailed = false;
-    uint64_t copyScopeSerial = 0, outputCount = 0;
-    ComPtr<ID3D12CommandQueue> copyQueue;
-    ComPtr<ID3D12Fence> copyFence;
-    uint64_t copyValue = 0;
     DWORD inputThread = 0;
     HoYoShade::PhysicalSource source;
 };
@@ -108,22 +102,13 @@ void BindInput(const std::shared_ptr<Provider>& p, IDXGISwapChain* input) noexce
     if (!p->live || p->retiring) return;
     p->input = identity; p->source = {}; p->prepared = p->active = false;
 }
-uint64_t ProviderIdentity(const std::shared_ptr<Provider>& p) noexcept
-{
-    if(!p)return 0;
-    std::lock_guard lock(p->mutex);
-    return p->live && !p->retiring && p->owner!=UINT64_MAX ? p->owner : 0;
-}
+
 void RetireProvider(std::shared_ptr<Provider>& provider) noexcept
 {
     auto p = std::move(provider);
     if (!p) return;
-    HoYoShade::PhysicalSource source;
-    {
-        std::lock_guard lock(p->mutex);
-        source = p->source; p->live = false; p->source = {}; p->prepared = false;
-    }
-    HoYoShade::ReleasePhysicalSource(source);
+    std::lock_guard lock(p->mutex);
+    p->live = false; p->source = {}; p->prepared = false;
 }
 ProviderRetirement TryRetireProvider(const std::shared_ptr<Provider>& p, IDXGISwapChain* input) noexcept
 {
@@ -137,7 +122,7 @@ ProviderRetirement TryRetireProvider(const std::shared_ptr<Provider>& p, IDXGISw
             r.status = DXGI_ERROR_INVALID_CALL; return r;
         }
         p->retiring = true; // Close new work BEFORE testing existing scopes.
-        if (p->inFlight || p->active || p->copiedScope) { r.status = DXGI_ERROR_WAS_STILL_DRAWING; return r; }
+        if (p->inFlight || p->active) { r.status = DXGI_ERROR_WAS_STILL_DRAWING; return r; }
         if (p->retirementCommit || p->retirementEpoch == UINT64_MAX) {
             r.status = DXGI_ERROR_WAS_STILL_DRAWING; return r;
         }
@@ -153,7 +138,7 @@ HRESULT ProviderRetirement::Commit() noexcept
         std::unique_lock lock(provider->mutex, std::try_to_lock);
         if (!lock.owns_lock()) return DXGI_ERROR_WAS_STILL_DRAWING;
         if (provider->owner != owner || provider->retirementEpoch != epoch || provider->retirementCommit ||
-            !provider->live || !provider->retiring || provider->inFlight || provider->active || provider->copiedScope)
+            !provider->live || !provider->retiring || provider->inFlight || provider->active)
             return DXGI_ERROR_WAS_STILL_DRAWING;
         provider->retirementCommit = true;
     }
@@ -163,17 +148,13 @@ HRESULT ProviderRetirement::Commit() noexcept
     } finish { *provider };
     const auto hr = Endpoint::TryRetire(provider, true);
     if (hr != S_OK) return hr;
-    HoYoShade::PhysicalSource source;
     {
         std::lock_guard lock(provider->mutex);
-        source = provider->source; provider->source = {};
+        provider->source = {};
         provider->prepared = provider->live = false;
-        provider->copyQueue.Reset(); provider->copyFence.Reset(); provider->copyValue = 0;
     }
-    HoYoShade::ReleasePhysicalSource(source);
     // Host/SDK teardown and every captured endpoint have positively drained.
     // This also retires an input scope that never bound any physical raw.
-    GenshinVisibleChild::PresentPermit::PhysicalOutput::ProviderRetired(owner);
     status = E_UNEXPECTED; // One commit; this token cannot certify a later owner.
     return S_OK;
 }
@@ -198,60 +179,6 @@ void PrepareSource(IDXGISwapChain* input, IDXGISwapChain* source, UINT flags,
             p->source = ticket; p->prepared = true; p->inputThread = GetCurrentThreadId(); return;
         }
     }
-    HoYoShade::ReleasePhysicalSource(ticket);
-}
-CopiedSourceScope::CopiedSourceScope(IDXGISwapChain* input, IDXGISwapChain* source, bool copied,
-        ID3D12CommandQueue* queue, ID3D12Fence* fence, uint64_t value,
-        uint64_t owner, uint64_t generation, uint64_t copySerial) noexcept
-{
-    if (!HoYoShade::Selected(HoYoShade::Stage::FinalOutput)) return;
-    auto p = Find(input); if (!p) return;
-    {
-        std::lock_guard lock(p->mutex);
-        if (!p->live || p->retiring || p->active || p->copiedScope || p->copyScopeSerial == UINT64_MAX) return;
-        p->crossApi = true; p->copiedScope = true; serial = ++p->copyScopeSerial;
-        p->prepared = p->parentPresented = p->outputFailed = false; p->outputCount = 0;
-        p->source = {}; provider = p;
-    }
-    ComPtr<ID3D12Device> queueDevice, fenceDevice;
-    if (!copied || !source || !queue || !fence || !owner || !generation || !copySerial ||
-        !value || value == UINT64_MAX || queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT ||
-        FAILED(queue->GetDevice(IID_PPV_ARGS(&queueDevice))) ||
-        FAILED(fence->GetDevice(IID_PPV_ARGS(&fenceDevice))) || Identity(queueDevice.Get()) != Identity(fenceDevice.Get()) ||
-        fence->GetCompletedValue() == UINT64_MAX || FAILED(queueDevice->GetDeviceRemovedReason())) return;
-    auto ticket = HoYoShade::PreparePhysicalSource(source, true);
-    ticket.copyOwner = owner; ticket.copyGeneration = generation; ticket.copySerial = copySerial;
-    std::lock_guard lock(p->mutex);
-    p->source = ticket; p->prepared = bool(ticket); p->inputThread = GetCurrentThreadId();
-    p->copyQueue = queue; p->copyFence = fence; p->copyValue = value;
-}
-CopiedSourceScope::~CopiedSourceScope()
-{
-    if (!provider) return;
-    HoYoShade::PhysicalSource source;
-    {
-        std::lock_guard lock(provider->mutex);
-        if (provider->copyScopeSerial != serial) return;
-        source = provider->source; provider->source = {};
-        provider->prepared = provider->copiedScope = provider->parentPresented = false;
-        provider->copyQueue.Reset(); provider->copyFence.Reset(); provider->copyValue = 0;
-    }
-    HoYoShade::ReleasePhysicalSource(source);
-}
-void CopiedSourceScope::ParentPresented(HRESULT hr) noexcept
-{
-    if (!provider) return;
-    std::lock_guard lock(provider->mutex);
-    provider->parentPresented = provider->live && provider->copiedScope && provider->copyScopeSerial == serial &&
-        provider->inputThread == GetCurrentThreadId() && hr == S_OK;
-}
-bool CopiedSourceScope::Filtered() const noexcept
-{
-    if (!HoYoShade::Selected(HoYoShade::Stage::FinalOutput)) return true;
-    if (!provider) return false;
-    std::lock_guard lock(provider->mutex);
-    return provider->live && provider->copyScopeSerial == serial && provider->parentPresented &&
-        provider->outputCount && !provider->outputFailed;
 }
 InputScope::InputScope(IDXGISwapChain* input, UINT flags, const DXGI_PRESENT_PARAMETERS* params) noexcept
 {
@@ -264,10 +191,6 @@ InputScope::InputScope(IDXGISwapChain* input, UINT flags, const DXGI_PRESENT_PAR
         prepared = p->prepared && p->inputThread == GetCurrentThreadId();
         if (!FullPresent(flags, params)) { p->source = {}; p->prepared = false; return; }
     }
-    {
-        std::lock_guard lock(p->mutex);
-        if (p->crossApi && (!p->copiedScope || !p->parentPresented || !prepared || p->outputFailed)) return;
-    }
     if (!prepared) PrepareSource(input, input, flags, params);
     std::lock_guard lock(p->mutex);
     if (!p->live || p->retiring || p->active || !p->prepared || !p->source || p->inputThread != GetCurrentThreadId()) return;
@@ -278,7 +201,7 @@ InputScope::~InputScope()
     if (!provider) return;
     std::lock_guard lock(provider->mutex);
     provider->active = false;
-    if (!provider->crossApi) provider->source = {};
+    provider->source = {};
 }
 
 struct Endpoint::State
@@ -292,12 +215,7 @@ struct Endpoint::State
     UINT count = 0;
     ComPtr<ID3D12Fence> fence;
     uint64_t value = 0, generation = 1, sequence = 0, stream = 0, tail = 0;
-    uint64_t genshinPhysicalSequence = 0; // admitted physical endpoint attempts, not GPU/pixel authority
-    std::shared_ptr<std::atomic<bool>> genshinOutputLive; // created once per physical buffer lifetime
-    void InvalidateGenshinOutput() noexcept {
-        if(genshinOutputLive)genshinOutputLive->store(false,std::memory_order_release);
-        genshinOutputLive.reset(); // old receipts stay invalid, including failed resize attempts
-    }
+
     DWORD thread = 0;
     bool quarantined = false, resizing = false, retired = false, retryAmbiguous = false;
     HoYoShade::PhysicalContentHold content;
@@ -379,7 +297,6 @@ struct Endpoint::State
         const auto completed = fence->GetCompletedValue();
         if (completed == UINT64_MAX || FAILED(device->GetDeviceRemovedReason())) {
             quarantined = true;
-            InvalidateGenshinOutput();
             for (auto& p : pending) if (p.color)
                 HoYoShade::QuarantineColor(chain.Get(), nullptr, device.Get(), p.color.Get(), generation);
             return false;
@@ -393,7 +310,6 @@ struct Endpoint::State
     }
     void Quarantine(ID3D12CommandQueue* queue, ID3D12Resource* color) noexcept {
         quarantined = true;
-        InvalidateGenshinOutput();
         HoYoShade::QuarantineColor(chain.Get(), queue, device.Get(), color, generation);
     }
 };
@@ -435,7 +351,6 @@ std::unique_ptr<Endpoint> Endpoint::Capture(IDXGISwapChain* raw, IUnknown* creat
             auto retained = old;
             std::unique_lock guard(retained->mutex, std::try_to_lock);
             if (guard.owns_lock() && retained->retired && retained->Collect()) {
-                GenshinVisibleChild::PresentPermit::PhysicalOutput::BuffersRetired(retained->provider->owner,retained->stream,retained->generation);
                 old.reset();
             }
         }
@@ -451,157 +366,45 @@ Endpoint::~Endpoint()
     if (!state) return;
     std::lock_guard lock(state->mutex);
     state->retired = true;
-    state->InvalidateGenshinOutput();
-    {
-        std::lock_guard providerLock(state->provider->mutex);
-        if (state->provider->crossApi && state->provider->copiedScope) {
-            state->provider->prepared = false; state->provider->outputFailed = true;
-        }
-    }
     HoYoShade::RetirePhysicalOutput(state->stream);
-    if(state->Collect())
-        GenshinVisibleChild::PresentPermit::PhysicalOutput::BuffersRetired(state->provider->owner,state->stream,state->generation);
+    state->Collect();
     // Pool retains pending/unknown references after wrapper release.
 }
 HRESULT Endpoint::Present(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
                           const std::function<HRESULT()>& present) noexcept
 {
-    return PresentImpl(flags,params,present,nullptr);
+    return PresentImpl(flags,params,present);
 }
-HRESULT Endpoint::PresentGenshin(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
-                                 const std::function<HRESULT(UINT)>& raw) noexcept
-{
-    UINT rawFlags=flags;
-    return PresentImpl(flags,params,[&]{return raw(rawFlags);},&rawFlags);
-}
+
 HRESULT Endpoint::PresentImpl(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
-                              const std::function<HRESULT()>& present,UINT* genshinRawFlags) noexcept
+                              const std::function<HRESULT()>& present) noexcept
 {
     auto& s = *state;
     ProviderActivity activity(s.provider);
     if (!activity) return DXGI_ERROR_WAS_STILL_DRAWING;
-    bool crossApi = false;
-    { std::lock_guard guard(s.provider->mutex); crossApi = s.provider->crossApi; }
-    bool completedOutput = false;
-    struct CrossResult {
-        Provider& provider; bool enabled; bool& completed;
-        ~CrossResult() { if (enabled) { std::lock_guard guard(provider.mutex);
-            ++provider.outputCount; provider.outputFailed |= !completed; } }
-    } crossResult{*s.provider, crossApi && HoYoShade::Selected(HoYoShade::Stage::FinalOutput), completedOutput};
     // Content denial and true quarantine survive OFF and block all consumers.
     if (HoYoShade::ColorConsumers(s.chain.Get()) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
-    const bool genshin=genshinRawFlags && !(flags & DXGI_PRESENT_TEST);
-    GenshinVisibleChild::PresentPermit::PhysicalOutput physical;
-    ID3D12CommandQueue* physicalQueue=nullptr;
-    ComPtr<ID3D12Resource> physicalColor;
+
     std::unique_lock lock(s.mutex,std::defer_lock);
-    if(genshin) {
-        if(!FullPresent(flags,params)) {
-            GenshinVisibleChild::PresentPermit::PhysicalOutput::Refused("UnsupportedRawPresentParameters",s.chain.Get(),nullptr,nullptr,UINT_MAX,0,0,0,flags);
-            return DXGI_ERROR_WAS_STILL_DRAWING;
-        }
-        if(!lock.try_lock()) {
-            GenshinVisibleChild::PresentPermit::PhysicalOutput::Refused("PhysicalEndpointBusy",s.chain.Get());
-            return DXGI_ERROR_WAS_STILL_DRAWING;
-        }
-        if(s.resizing || s.retired || s.quarantined || s.retryAmbiguous) {
-            GenshinVisibleChild::PresentPermit::PhysicalOutput::Refused("PhysicalEndpointNotLive",s.chain.Get());
-            return DXGI_ERROR_WAS_STILL_DRAWING;
-        }
-        s.Collect();if(s.quarantined)return E_FAIL;
-        const auto physicalIndex=s.chain->GetCurrentBackBufferIndex();
-        if(physicalIndex>=s.count || !s.queues[physicalIndex].queue || s.pending[physicalIndex].color ||
-            s.value>=UINT64_MAX-2 || s.genshinPhysicalSequence==UINT64_MAX ||
-            FAILED(s.chain->GetBuffer(physicalIndex,IID_PPV_ARGS(&physicalColor))))
-            return DXGI_ERROR_WAS_STILL_DRAWING;
-        physicalQueue=s.queues[physicalIndex].queue.Get();
-        // One fence watermark is completion only on an ordered queue. Do not
-        // extend that proof across independent resize1 per-buffer queues.
-        for(UINT i=0;i<s.count;++i)if(s.queues[i].queue.Get()!=physicalQueue) {
-            GenshinVisibleChild::PresentPermit::PhysicalOutput::Refused("IndependentPhysicalQueues",s.chain.Get(),physicalQueue);
-            return DXGI_ERROR_WAS_STILL_DRAWING;
-        }
-        if(!s.fence && FAILED(s.device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&s.fence))))return E_FAIL;
-        if(!physical.Bind(s.chain.Get(),physicalQueue,physicalColor.Get(),physicalIndex,
-                          s.stream,s.generation,s.genshinPhysicalSequence+1,s.provider->owner,s.genshinOutputLive,s.fence.Get(),flags))
-            return DXGI_ERROR_WAS_STILL_DRAWING;
-        ++s.genshinPhysicalSequence;
-        if(physical.HiddenOnly())s.InvalidateGenshinOutput();
-        if(physical.StreamScoped())crossResult.enabled=false;
-        // Authenticated hidden output may request RESTART to skip queued flips.
-        // Keep its actual flags/HRESULT: neither acceptance nor this queue tail
-        // proves a changed latched front buffer or DWM/pixel output. Source-less
-        // hidden bootstrap retains the original raw flags.
-        if(physical.Prime())*genshinRawFlags=flags | DXGI_PRESENT_RESTART;
-    }
-    HRESULT rawResult=E_PENDING;
-    bool rawCalled=false;
-    const auto actualPresent=[&]{
-        if(genshin && !physical.MayPresent()) {
-            GenshinVisibleChild::PresentPermit::PhysicalOutput::Refused("SourceRevokedBeforeRawPresent",s.chain.Get(),physicalQueue);
-            return DXGI_ERROR_WAS_STILL_DRAWING; // admission result, no raw HRESULT exists
-        }
-        if(genshin && !physical.RawEntered())return DXGI_ERROR_WAS_STILL_DRAWING;
-        rawCalled=true;rawResult=present();return rawResult;
-    };
-    const auto finishPhysical=[&](HRESULT hr,bool accepted,bool tailKnown=false) -> HRESULT {
-        if(!genshin)return hr;
-        HRESULT tailResult=S_OK;
-        if(!tailKnown && rawCalled) {
-            const auto value=++s.value;
-            tailResult=physicalQueue->Signal(s.fence.Get(),value);
-            if(SUCCEEDED(tailResult))s.tail=value;
-            else s.Quarantine(physicalQueue,physicalColor.Get());
-        }
-        physical.Submitted(rawCalled,*genshinRawFlags,rawResult,
-                           accepted && SUCCEEDED(tailResult) && !s.quarantined,
-                           SUCCEEDED(tailResult) && !s.quarantined,
-                           s.fence.Get(),tailKnown || rawCalled ? s.tail : 0);
-        return FAILED(tailResult) && hr==S_OK ? E_FAIL : hr;
-    };
-    if(genshin && physical.HiddenOnly()) {
-        // Startup/paused (or source-less worker) raw must advance the real SDK
-        // while its child is acknowledged hidden. It cannot consume a copied
-        // filter source or report successful filtered/visible output. Retain all
-        // endpoint/consumer/quarantine checks and the real queue tail above.
-        crossResult.enabled=false;
-        return finishPhysical(actualPresent(),true);
-    }
-    // Other games retain their default-OFF raw path, without a new signal.
-    if (!HoYoShade::Selected(HoYoShade::Stage::FinalOutput)) return finishPhysical(actualPresent(),true);
+    if (!HoYoShade::Selected(HoYoShade::Stage::FinalOutput)) return present();
     if(!lock.owns_lock() && !lock.try_lock()) return s.writing.load(std::memory_order_acquire)
-        ? DXGI_ERROR_WAS_STILL_DRAWING : (crossApi ? E_FAIL : actualPresent());
+        ? DXGI_ERROR_WAS_STILL_DRAWING : present();
     s.techniques = 0; s.submitted = s.suppressed = false;
     if (s.quarantined) return E_FAIL;
     s.Collect();
     if (s.quarantined) return E_FAIL;
-    // No cross-API refusal may quietly present an unfiltered child. The caller
-    // keeps the independent, normally filtered parent as visible fallback.
-    const auto untouched = [&]() -> HRESULT { return crossApi || genshin ? E_FAIL : finishPhysical(actualPresent(),true); };
+    const auto untouched = [&]() -> HRESULT { return present(); };
     if (s.resizing || s.retired || s.retryAmbiguous || !FullPresent(flags, params)) return untouched();
     HoYoShade::PhysicalSource source;
     bool bound = false;
-    if(genshin && physical.StreamScoped()) {
-        // The output's own runtime exports selection and suppression authority
-        // on THIS worker call. It does not consume any DX11 copied-source ticket.
-        // Missing runtime/selection remains a filtered-parent fallback.
-        source=HoYoShade::PreparePhysicalSource(s.chain.Get());
-        bound=bool(source);
-    } else {
+    {
         std::lock_guard providerLock(s.provider->mutex);
-        // Synchronous copied-source adapter remains exact to its input scope.
+        // The source remains exact to this synchronous input scope.
         bound = s.provider->live && s.provider->active && s.provider->inputThread == GetCurrentThreadId();
         source = s.provider->source;
-        if (crossApi) {
-            ComPtr<ID3D12Device> copyDevice;
-            bound = bound && s.provider->copiedScope && s.provider->parentPresented && !s.provider->outputFailed &&
-                s.provider->copyQueue && s.provider->copyFence && s.provider->copyValue &&
-                SUCCEEDED(s.provider->copyQueue->GetDevice(IID_PPV_ARGS(&copyDevice))) &&
-                Identity(copyDevice.Get()) == Identity(s.device.Get()) &&
-                s.provider->copyFence->GetCompletedValue() != UINT64_MAX;
-        }
+
     }
-    if (!bound || !source || (!(genshin && physical.StreamScoped()) && s.thread && s.thread != GetCurrentThreadId())) return untouched();
+    if (!bound || !source || (s.thread && s.thread != GetCurrentThreadId())) return untouched();
     const auto index = s.chain->GetCurrentBackBufferIndex();
     if (index >= s.count || !s.queues[index].queue) return untouched();
     // An admitted snapshot/restore still owns this slot until its actual tail.
@@ -656,9 +459,7 @@ HRESULT Endpoint::PresentImpl(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
     if (result.Uncertain()) { s.Quarantine(queue, color.Get()); return E_FAIL; }
     // ColorWriteScope ends before overlay and raw consumers. Same exact queue
     // orders effects -> existing overlay -> raw Present -> F5-only tail fence.
-    // Parent remains naturally filtered. Busy/warmup/zero-technique child
-    // cannot replace it: no raw physical Present until real effects submitted.
-    const auto hr = (crossApi || genshin) && !result.EffectsExecuted() ? E_FAIL : actualPresent();
+    const auto hr = present();
     // WAS_STILL_DRAWING means the operation was neither executed nor scheduled
     // (DXGI_ERROR documentation). Only that HRESULT, unchanged physical index
     // and a healthy exact device authorize restoring the pre-filter snapshot.
@@ -668,7 +469,7 @@ HRESULT Endpoint::PresentImpl(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
         ID3D12CommandList* restoreLists[] = {pending.restore.Get()};
         queue->ExecuteCommandLists(1, restoreLists);
         ++s.restores;
-    } else if (hr != S_OK && !((crossApi || genshin) && !result.EffectsExecuted())) {
+    } else if (hr != S_OK) {
         s.retryAmbiguous = true; // content only; the tail below decides GPU certainty
     }
     // The same exact queue orders snapshot -> owned/natural -> raw -> optional
@@ -688,20 +489,12 @@ HRESULT Endpoint::PresentImpl(UINT flags,const DXGI_PRESENT_PARAMETERS* params,
                 color.Get(), s.stream, s.generation, s.fence.Get(), s.tail))
             s.Quarantine(queue, color.Get()); // no bounded denial slot/proof: never admit consumers
     }
-    // A successful raw API is not a successful F5 output transaction. The
-    // tail must ACTUALLY enter this exact queue; unknown lifetime/content can
-    // never grant the caller's child visibility commit.
-    completedOutput = result.EffectsExecuted() && hr == S_OK && SUCCEEDED(tailResult) &&
-        !s.quarantined && !s.retryAmbiguous && !s.content.Active();
     if (s.sequence <= 3 || s.sequence % 600 == 0)
         LOG_INFO("HoYoShade physical_output owner={} generation={} output_sequence={} source_token={} kind=unknownphysical raw_hr=0x{:08x} submission={} techniques={} tail={} retry_ambiguous={}",
             s.stream,s.generation,s.sequence,source.serial,static_cast<unsigned>(hr),
             static_cast<unsigned>(result.attempt.state),result.techniques,s.tail,s.retryAmbiguous);
-    if (crossApi && (s.sequence <= 3 || !completedOutput || s.sequence % 600 == 0))
-        LOG_INFO("HoYoShade cross_api_output copy_owner={} copy_generation={} copy_serial={} source_runtime=0x{:x} source_lifetime={} source_epoch={} source_serial={} physical_queue=0x{:x} parent_suppressed=false child_natural_suppressed={} filtered={} raw_or_refusal_hr=0x{:08x} fallback=natural_parent",
-            source.copyOwner,source.copyGeneration,source.copySerial,source.runtime,source.lifetime,source.epoch,source.serial,
-            Identity(queue),s.suppressed,completedOutput,static_cast<unsigned>(hr));
-    return finishPhysical(hr,completedOutput,true); // a failed tail is never retried/promoted
+
+    return hr; // a failed tail is never retried/promoted
 }
 void Endpoint::SetColorSpace(DXGI_COLOR_SPACE_TYPE space) noexcept
 {
@@ -737,13 +530,6 @@ Endpoint::Resize::Resize(Endpoint* e) noexcept : endpoint(e)
     if (s.generation == UINT64_MAX || (s.content.Active() &&
         !s.content.ReserveDiscard(s.chain.Get(), s.stream, s.generation))) { admitted = false; endpoint = nullptr; return; }
     s.resizing = true;
-    s.InvalidateGenshinOutput(); // before actual raw resize; does not assert GPU completion
-    {
-        std::lock_guard providerLock(s.provider->mutex);
-        if (s.provider->crossApi && s.provider->copiedScope) {
-            s.provider->prepared = false; s.provider->outputFailed = true;
-        }
-    }
     HoYoShade::RetirePhysicalOutput(s.stream);
     // Safe retirement only disables filtering. Known-complete snapshot/list
     // references must also release their target before any real DXGI resize.
@@ -776,7 +562,6 @@ void Endpoint::Resize::Complete(HRESULT hr, UINT count, const UINT* nodes,
             s.generation + 1, hr)) return; // keep denial if exact proof changed during DXGI call
     const auto retiredGeneration=s.generation++;
     s.retryAmbiguous = false; s.thread = 0;
-    GenshinVisibleChild::PresentPermit::PhysicalOutput::BuffersRetired(s.provider->owner,s.stream,retiredGeneration);
     if (s.retired) return; // optional adapter stays disabled; DXGI remains usable
     DXGI_SWAP_CHAIN_DESC desc{};
     if (FAILED(s.chain->GetDesc(&desc)) || !desc.BufferCount || desc.BufferCount > s.queues.size()) {
@@ -813,7 +598,7 @@ HRESULT Endpoint::TryRetire(const std::shared_ptr<Provider>& provider, bool comm
     if (!provider) return DXGI_ERROR_UNSUPPORTED;
     {
         std::unique_lock lock(provider->mutex, std::try_to_lock);
-        if (!lock.owns_lock() || !provider->retiring || provider->inFlight || provider->active || provider->copiedScope)
+        if (!lock.owns_lock() || !provider->retiring || provider->inFlight || provider->active)
             return DXGI_ERROR_WAS_STILL_DRAWING;
     }
     // No provider lock held: normal Endpoint ordering is state -> provider.
@@ -844,8 +629,6 @@ HRESULT Endpoint::TryRetire(const std::shared_ptr<Provider>& provider, bool comm
     if (commit) for (unsigned i = 0; i < count; ++i) {
         auto& s = *states[i];
         s.retired = true;
-        s.InvalidateGenshinOutput();
-        GenshinVisibleChild::PresentPermit::PhysicalOutput::BuffersRetired(s.provider->owner,s.stream,s.generation);
         released[i].stream = s.stream;
         released[i].pending = std::move(s.pending);
         released[i].queues = std::move(s.queues);
@@ -864,7 +647,6 @@ void Endpoint::CollectRetired() noexcept
         auto retained = entry;
         std::unique_lock guard(retained->mutex, std::try_to_lock);
         if (guard.owns_lock() && retained->retired && retained->Collect()) {
-            GenshinVisibleChild::PresentPermit::PhysicalOutput::BuffersRetired(retained->provider->owner,retained->stream,retained->generation);
             entry.reset();
         }
     }

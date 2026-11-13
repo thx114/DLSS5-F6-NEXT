@@ -4,6 +4,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / "DLSSG_Dx12.cpp").read_text(encoding="utf-8-sig")
+SOURCE += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+    next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+         if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
 
 
 def body(signature):
@@ -60,7 +63,7 @@ class PreviewAdmissionTests(unittest.TestCase):
     def test_current_final_colour_and_ready_sdk_tag_are_required(self):
         for check in ("final->source==_upscalerColourSources[slot]", "UpscalerColourCurrent(final->source)",
                       "ready->second", "actual.validity==FG_ResourceValidity::UntilPresent",
-                      "UpscalerColourIdentity(colour)==final->endpoint.colour",
+                      "ComIdentity::Get(colour)==final->endpoint.colour",
                       "actual.width==final->description.Width", "actual.height==final->description.Height"):
             self.assertIn(check, CAPTURE)
         self.assertIn("inputs.colour=colour;inputs.colourState=actual.state", CAPTURE)

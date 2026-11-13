@@ -82,25 +82,26 @@ check("StreamlineHooks::BeginDlssgPacing(" in begin and "executionOwner->PacingL
       "concrete source lifecycle reserves BEFORE requesting the original SDK token")
 check("AcquirePacingLease" not in fg,"no empty base lease silently disables Reflex pacing")
 provider=read("OptiScaler/framegen/dlssg/DLSSG_Dx12.cpp")
+if not args.revision:
+    provider += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+        next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+             if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
 provider_header=read("OptiScaler/framegen/dlssg/DLSSG_Dx12.h")
 check("PacingLifetime() override final" in provider_header and
       "std::shared_ptr<framegen::DlssgPacingLifetime> DLSSG_Dx12::PacingLifetime()" in provider and
       "_pacingLifetime->OpenAdmission()" in provider,
       "real DLSSG provider implements admitted token lifecycle rather than empty default")
-for start,end in (
-    ("void DLSSG_Dx12::Deactivate()","void DLSSG_Dx12::RetryUnretainedProviderOff()"),
-    ("bool DLSSG_Dx12::Shutdown()","bool DLSSG_Dx12::OwnsDepthContract()"),
-    ("bool DLSSG_Dx12::ReleaseObjectsChecked()","void DLSSG_Dx12::CreateObjects(")):
-    body=section(provider,start,end)
+for start in ("void DLSSG_Dx12::Deactivate()", "bool DLSSG_Dx12::Shutdown()",
+              "bool DLSSG_Dx12::ReleaseObjectsChecked()"):
+    body=function(provider,start)
     check("_pacingLifetime->CloseAdmission()" in body,f"SDK lifecycle closes pacing admission: {start}")
-check("_pacingLifetime->Idle()" in section(provider,"bool DLSSG_Dx12::CompletePendingTeardown()",
-      "bool DLSSG_Dx12::CompletePendingTeardownForTermination()"),
+check("_pacingLifetime->Idle()" in function(provider,"bool DLSSG_Dx12::CompletePendingTeardown()"),
       "actual teardown defers SDK free while an original token lease is live")
 check(decision.index("const auto pacingDecision=")<decision.index("presentMutexRelease.Release();")<
       decision.index("presentExecution.Finish();"),"immutable pacing decision precedes FG mutex/execution unlock")
 check(fg.index("physicalInput.reset();")<fg.index("presentExecution.FinishWork();"),
       "actual SDK input/output transaction closes before teardown/unlock")
-after=section(fg,"    if (genshinPacing)\n    {\n        // No provider, raw SDK token","    if(genshinSdkTransaction){\n        // No new state query")
+after=section(fg,"    if (genshinPacing)\n    {\n        // No provider, raw SDK token","    if(collectStarRailPacing)")
 for forbidden in ("fg->","executionOwner->","*localToken","ReflexHooks::","Config::","state."):
     check(forbidden not in after,f"post-unlock pacing has no mutable/raw provider access: {forbidden}")
 check("pacingLease->Sleep()" in after and "pacingDecision.frameLimit" in after,

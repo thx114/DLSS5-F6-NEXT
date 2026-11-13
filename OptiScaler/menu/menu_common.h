@@ -282,7 +282,6 @@ class MenuCommon
 
     static bool RenderMenu();
     static void Init(HWND InHwnd, bool isUWP);
-    static bool RetargetGenshinWindow(HWND hwnd);
     static void Shutdown();
     static void HideMenu();
     static void Present();

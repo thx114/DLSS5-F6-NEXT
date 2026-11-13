@@ -3,7 +3,7 @@
 #include "Config.h"
 #include <mods/gimi/GimiRuntime.h>
 #include <ui_mask/DrawUiMask.h>
-#include <genshin/GenshinHookCpuTiming.h>
+#include <runtime/HookCpuTiming.h>
 #include <dlssnr/LayerLookConfig.h>
 
 #include "Util.h"
@@ -1219,10 +1219,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             EnableXeSSInputs.set_from_config(readBool("Inputs", "EnableXeSSInputs"));
 
             {
-                std::lock_guard<std::recursive_mutex> guard(genshinControlsMutex_);
                 EnableFsr2Inputs.set_from_config(readBool("Inputs", "EnableFsr2Inputs"));
                 UseFsr2Inputs.set_from_config(readBool("Inputs", "UseFsr2Inputs"));
-                SyncGenshinInputControlsLocked();
             }
             UseFsr2Dx11Inputs.set_from_config(readBool("Inputs", "UseFsr2Dx11Inputs"));
             UseFsr2VulkanInputs.set_from_config(readBool("Inputs", "UseFsr2VulkanInputs"));
@@ -1315,7 +1313,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             XeSSDx11Library.set_from_config(readWString("Libraries", "XeSSDx11Path"));
         }
 
-        LoadGenshinControls();
+
 
         // Reading old configs for compatibility reasons
         {
@@ -1333,67 +1331,17 @@ bool Config::Reload(std::filesystem::path iniPath)
     return false;
 }
 
-void Config::SyncGenshinInputControlsLocked() const
-{
-    const bool enable=EnableFsr2Inputs.value_or_default(),use=UseFsr2Inputs.value_or_default();
-    if(genshinControls_.enableFsr2Inputs!=enable || genshinControls_.useFsr2Inputs!=use)
-    {genshinControls_.enableFsr2Inputs=enable;genshinControls_.useFsr2Inputs=use;++genshinControls_.epoch;}
-    genshinControlsRevision_.Publish(genshinControls_.epoch);
-}
-GenshinLegacy::ControlsSnapshot Config::AcquireGenshinControls() const
-{
-    GenshinHookCpuTiming::Scope wait(GenshinHookCpuTiming::Stage::ControlsLock);
-    std::lock_guard<std::recursive_mutex> guard(genshinControlsMutex_);
-    // Scope ends immediately after actual lock acquisition; original mutex stays intact.
-    wait.Finish();
-    GenshinHookCpuTiming::Scope held(GenshinHookCpuTiming::Stage::ControlsLocked);
-    SyncGenshinInputControlsLocked();
-    return genshinControls_;
-}
-void Config::SetGenshinHookCpuTiming(bool enabled)
-{
-    std::lock_guard<std::recursive_mutex> guard(genshinControlsMutex_);
-    genshinControls_.hookCpuTiming=enabled;
-    // AcquireGenshinControls / PublishHookTiming carries this to the sampler at
-    // the next existing Present boundary. Preserve the route/admission epoch.
-}
-void Config::SetUseFsr2Inputs(bool value)
-{
-    std::lock_guard<std::recursive_mutex> guard(genshinControlsMutex_);
-    UseFsr2Inputs=value; // Preserve CustomOptional assignment/persistence semantics.
-    SyncGenshinInputControlsLocked();
-}
-bool Config::ApplyFsr2InputDisableQuirk()
-{
-    std::lock_guard<std::recursive_mutex> guard(genshinControlsMutex_);
+
+
+void Config::SetHookCpuTiming(bool enabled) { hookCpuTiming_.store(enabled,std::memory_order_relaxed); }
+void Config::SetUseFsr2Inputs(bool enabled) { UseFsr2Inputs=enabled; }
+bool Config::ApplyFsr2InputDisableQuirk() {
     if(EnableFsr2Inputs.has_value())return false;
-    EnableFsr2Inputs.set_volatile_value(false);
-    SyncGenshinInputControlsLocked();
-    return true;
-}
-bool Config::EditGenshinControls(uint64_t observedEpoch,const std::function<void(GenshinLegacy::Settings&)>& edit)
-{
-    std::lock_guard<std::recursive_mutex> guard(genshinControlsMutex_);
-    if(!edit || observedEpoch!=AcquireGenshinControls().epoch)return false;
-    auto candidate=genshinControls_.settings;
-    try{edit(candidate);}catch(...){return false;}
-    if(observedEpoch!=AcquireGenshinControls().epoch)return false;
-    if(!GenshinLegacy::ValidSettings(candidate))return false;
-    if(candidate!=genshinControls_.settings){genshinControls_.settings=candidate;++genshinControls_.epoch;
-        genshinControlsRevision_.Publish(genshinControls_.epoch);}
-    return true;
+    EnableFsr2Inputs.set_volatile_value(false);return true;
 }
 
-void Config::LoadGenshinControls()
-{
-    std::lock_guard<std::recursive_mutex> guard(genshinControlsMutex_);
-    genshinControls_.settings=GenshinLegacy::LoadControls(ini);
-    // Detailed diagnostics belong to this process, not the rendering profile.
-    // Reload must also preserve the user's current session toggle. Older INIs
-    // may contain HookCpuTiming=true; leave those files intact but do not resume
-    // heavy diagnostics silently at the next game launch.
-    ++genshinControls_.epoch;genshinControlsRevision_.Publish(genshinControls_.epoch);
-}
+
+
 
 bool Config::LoadFromPath(const wchar_t* InPath)
 {
@@ -1533,7 +1481,7 @@ bool Config::SettingsSample::Finish()
 }
 
 template <typename Sink>
-void Config::WriteSettings(Sink& target, const GenshinLegacy::Settings& genshinSettings)
+void Config::WriteSettings(Sink& target)
 {
     // Upscalers
     {
@@ -2553,7 +2501,6 @@ void Config::WriteSettings(Sink& target, const GenshinLegacy::Settings& genshinS
                      wstring_to_string(this->XeSSDx11Library.value_for_config_or(L"auto")).c_str());
     }
 
-    GenshinLegacy::SaveControls(target, genshinSettings);
     // Hook CPU diagnostics are session-only; do not persist or remove legacy keys.
 
     // Old configs, just delete them
@@ -2564,37 +2511,28 @@ void Config::WriteSettings(Sink& target, const GenshinLegacy::Settings& genshinS
 
 }
 
-GenshinLegacy::Settings Config::SnapshotGenshinSettings() const
-{
-    // Same existing mutex and one short acquisition per snapshot as before.
-    // Never call AcquireGenshinControls here: it may publish an admission epoch.
-    std::lock_guard<std::recursive_mutex> guard(genshinControlsMutex_);
-    return genshinControls_.settings;
-}
 
-void Config::RefreshSettingsSample(const GenshinLegacy::Settings* genshinSnapshot)
+
+void Config::RefreshSettingsSample()
 {
     // Retain the existing controls snapshot/lock boundary. Poll actual persisted
     // values, not an incomplete edit generation or the controls admission epoch.
-    const auto genshinSettings = genshinSnapshot ? *genshinSnapshot : SnapshotGenshinSettings();
     settingsSample_.Begin();
-    WriteSettings(settingsSample_, genshinSettings);
+    WriteSettings(settingsSample_);
     if (settingsSample_.Finish())
         dirtyComparisonKnown_ = false;
 }
 
-std::optional<std::string> Config::SerializeSettings(bool updateLoadedIni,
-    const GenshinLegacy::Settings* genshinSnapshot)
+std::optional<std::string> Config::SerializeSettings(bool updateLoadedIni)
 {
     // Preserve the original serializer API for explicit save/baseline callers.
     // Menu polling uses the owned snapshot directly, without a whole-string copy.
     if (!updateLoadedIni)
     {
-        RefreshSettingsSample(genshinSnapshot);
+        RefreshSettingsSample();
         return settingsSample_.serialized;
     }
-    const auto genshinSettings = genshinSnapshot ? *genshinSnapshot : SnapshotGenshinSettings();
-    WriteSettings(ini, genshinSettings);
+    WriteSettings(ini);
     std::string serialized;
     if (ini.Save(serialized) < 0) return std::nullopt;
     return serialized;
@@ -2637,9 +2575,8 @@ bool Config::PersistSettings(const std::function<bool()>& writer)
 {
     // Keep the native controls lock short, as before: never hold it during
     // whole-schema serialization or file IO. Both save forms use this one copy.
-    const auto genshinSettings = SnapshotGenshinSettings();
-    const auto candidate = SerializeSettings(false, &genshinSettings);
-    if (!candidate || !SerializeSettings(true, &genshinSettings))
+    const auto candidate = SerializeSettings(false);
+    if (!candidate || !SerializeSettings(true))
     {
         lastSaveFailed_ = true;
         dirtySampleKnown_ = false;

@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// Product input policy, independent of persisted profiles and runtime toggles.
-// NR/FG consume the current DLSS upscaler evaluation. Legacy FSR interception,
-// shader discovery and its private Present producer cannot be re-enabled by an
-// old INI, a debug/capture request or a late-loaded FSR module.
+// Input policy does not alter persisted user settings. Genshin enters through
+// the external bridge's ordinary NGX inputs; public FSR APIs remain available
+// to all supported DX11/DX12/Vulkan backends.
 namespace F6InputPolicy
 {
 inline constexpr bool DirectDlssInputs = true;
-inline constexpr bool FsrBridgeEnabled = false;
+inline constexpr bool PublicFsrInputs = true;
 }

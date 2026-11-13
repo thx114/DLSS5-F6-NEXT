@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "DxgiFactory_WrappedCalls.h"
 #include "DxgiFactory_Hooks.h"
 #include "SwapchainCreateRule.h"
@@ -291,7 +291,7 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChain(IDXGIFactory* realFactory, Wrap
                             FGHooks::SetDx12InteropPresentSC(fgSwapChain4, localDesc.OutputWindow);
 
                         *ppSwapChain = new Dx11wDx12SC(realDx11SwapChain, fgSwapChain4, device, localDesc.OutputWindow,
-                                                       localDesc.Flags, {}, false,
+                                                       localDesc.Flags,
                                                        fgSwapChainIsRealFG && sourceFrameLatencyOwner, applicationFlags);
                         State::Instance().currentSwapchain = *ppSwapChain;
                         State::Instance().currentWrappedSwapchain = *ppSwapChain;
@@ -666,7 +666,7 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChainForHwnd(IDXGIFactory2* realFacto
                             FGHooks::SetDx12InteropPresentSC((IDXGISwapChain*) fgSwapChain4, hWnd);
 
                         *ppSwapChain = (IDXGISwapChain1*) new Dx11wDx12SC(realDx11SwapChain1, fgSwapChain4, device,
-                                                                          hWnd, localDesc.Flags, {}, false,
+                                                                          hWnd, localDesc.Flags,
                                                                           fgSwapChainIsRealFG && sourceFrameLatencyOwner, applicationFlags);
                         State::Instance().currentSwapchain = *ppSwapChain;
                         State::Instance().currentWrappedSwapchain = *ppSwapChain;

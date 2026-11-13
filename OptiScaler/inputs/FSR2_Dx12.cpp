@@ -1,13 +1,12 @@
 #include "pch.h"
 #include <runtime/F6InputPolicy.h>
 #include "FSR2_Dx12.h"
-#include "GenshinFsrCreateDiagnostics.h"
 
 #include "Util.h"
 #include "Config.h"
 #include "resource.h"
 #include "NVNGX_Parameter.h"
-#include "GenshinFsrContract.h"
+#include <runtime/GameIdentity.h>
 
 #include <proxies/KernelBase_Proxy.h>
 
@@ -125,40 +124,9 @@ static float qualityRatios[] = { 1.0f, 1.5f, 1.7f, 2.0f, 3.0f };
 
 namespace
 {
-struct FsrCreateArgs
-{
-    ID3D12GraphicsCommandList* commandList;
-    NVSDK_NGX_Parameter* parameters;
-    NVSDK_NGX_Handle** handle;
-};
-unsigned CallFsrCreate(void* value)
-{
-    auto& args=*static_cast<FsrCreateArgs*>(value);
-    return static_cast<unsigned>(NVSDK_NGX_D3D12_CreateFeature(
-        args.commandList,NVSDK_NGX_Feature_SuperSampling,args.parameters,args.handle));
-}
-void LogFsrCreate(const GenshinFsrCreateDiagnostics::Report& r) noexcept
-{
-    try
-    {
-        LOG_INFO("R36 FSR2 DX12 create: event={} pid={} tid={} context={:X} list={:X} params={:X} "
-                 "device_hint={:X} render={}x{} output={}x{} flags={:X} layout_bytes={} result={:X} "
-                 "seh_code={:X} parameters={} operation={} fault={:X} frames={} stack_complete={} "
-                 "coverage=local-create-filter disposition=continue-search cause=UNKNOWN",
-                 static_cast<unsigned>(r.event),r.pid,r.tid,r.attempt.context,r.attempt.commandList,
-                 r.attempt.parameters,r.attempt.device,r.attempt.renderWidth,r.attempt.renderHeight,
-                 r.attempt.outputWidth,r.attempt.outputHeight,r.attempt.flags,r.attempt.layout,r.result,
-                 r.code,r.parameterCount,r.operation,r.faultAddress,r.frameCount,r.stackComplete);
-        for(unsigned i=0;i<r.frameCount;++i)
-            LOG_INFO("R36 FSR2 DX12 exception frame: pid={} tid={} frame={} pc={:X} base={:X} rva={:X} "
-                     "image_timestamp={:X} image_size={} path_complete={} path={}",r.pid,r.tid,i,
-                     r.frames[i].address,r.frames[i].base,r.frames[i].rva,r.frames[i].timestamp,
-                     r.frames[i].size,r.frames[i].pathComplete,r.frames[i].path);
-        // At most 8 create pairs and 2 exception stacks; never on Evaluate/Present.
-        if(auto logger=spdlog::default_logger();logger)logger->flush();
-    }
-    catch(...) {} // Diagnostics cannot replace the provider's result or exception.
-}
+
+
+
 }
 
 static bool CreateDLSSContext(Fsr212::FfxFsr2Context* handle, const Fsr212::FfxFsr2DispatchDescription* pExecParams)
@@ -212,21 +180,7 @@ static bool CreateDLSSContext(Fsr212::FfxFsr2Context* handle, const Fsr212::FfxF
     else
         params->Set(NVSDK_NGX_Parameter_PerfQualityValue, NVSDK_NGX_PerfQuality_Value_DLAA);
 
-    FsrCreateArgs args{commandList,params,&nvHandle};
-    unsigned createResult=0;
-    if(GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring()))
-    {
-        GenshinFsrCreateDiagnostics::Attempt attempt{};
-        attempt.context=reinterpret_cast<uintptr_t>(handle);
-        attempt.commandList=reinterpret_cast<uintptr_t>(commandList);
-        attempt.parameters=reinterpret_cast<uintptr_t>(params);
-        attempt.device=reinterpret_cast<uintptr_t>(_d3d12Device); // Existing selection, not an ownership proof.
-        attempt.renderWidth=pExecParams->renderSize.width;attempt.renderHeight=pExecParams->renderSize.height;
-        attempt.outputWidth=initParams->displaySize.width;attempt.outputHeight=initParams->displaySize.height;
-        attempt.flags=initFlags;attempt.layout=sizeof(*pExecParams);
-        createResult=GenshinFsrCreateDiagnostics::Observe(CallFsrCreate,&args,attempt,LogFsrCreate);
-    }
-    else createResult=CallFsrCreate(&args);
+    const auto createResult = NVSDK_NGX_D3D12_CreateFeature(commandList, NVSDK_NGX_Feature_SuperSampling, params, &nvHandle);
     if (createResult != NVSDK_NGX_Result_Success)
         return false;
 
@@ -1021,7 +975,7 @@ static Fsr212::FfxErrorCode hk_ffxFsr2GetInterfaceDX12(Fsr212::FfxFsr2Interface2
 
 void HookFSR2ExeInputs()
 {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
+
     LOG_INFO("Trying to hook FSR2 methods");
 
     if (KernelBaseProxy::GetProcAddress_()(exeModule, "ffxFsr2GetInterfaceKTGL") != nullptr ||
@@ -1334,7 +1288,7 @@ void HookFSR2ExeInputs()
 
 void HookFSR2Inputs(HMODULE module)
 {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
+
     LOG_INFO("Trying to hook FSR2 methods");
 
     if (module != nullptr)
@@ -1422,7 +1376,7 @@ void HookFSR2Inputs(HMODULE module)
 
 void HookFSR2Dx12Inputs(HMODULE module)
 {
-    if constexpr (!F6InputPolicy::FsrBridgeEnabled) return;
+
     return;
 
     LOG_INFO("Trying to hook FSR2 methods");

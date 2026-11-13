@@ -5,7 +5,7 @@
 #include "DrawUiMask.h"
 #include <resource_tracking/DrawObservation_Dx11.h>
 #include <native/SharedFrame.h>
-#include <inputs/GenshinFsrContract.h>
+#include <runtime/GameIdentity.h>
 #include <SysUtils.h>
 #include <shaders/Shader_Common.h>
 #include <Util.h>
@@ -304,7 +304,7 @@ const obs::Consumer callbacks{Before,After,nullptr,Revoke,Invalidate};
 void Configure(const Settings& settings) noexcept {
     try {
         auto c=std::make_shared<Configuration>();c->settings=settings;c->epoch=++nextConfiguration;
-        const bool game=GenshinFsr::IsGenshinExecutable(Util::ExePath().wstring());
+        const bool game=GameRouting::IsGenshinExecutable(Util::ExePath().wstring());
         const bool active=settings.enabled && (settings.fg || settings.nr || settings.filters) && game && Parse(*c);
         configured.store(std::move(c),std::memory_order_release);enabled.store(active,std::memory_order_release);
         obs::Subscribe(obs::Slot::UiMask,&callbacks,active);

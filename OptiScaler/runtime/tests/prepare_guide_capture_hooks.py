@@ -25,6 +25,9 @@ target = Path(sys.argv[1])
 target.parent.mkdir(parents=True, exist_ok=True)
 target.write_text(pre + '\n' + post + '\n', encoding='utf-8')
 owner = (root / 'OptiScaler/framegen/dlssg/DLSSG_Dx12.cpp').read_text(encoding='utf-8-sig')
+owner += "\n" + "\n".join(p.read_text(encoding="utf-8-sig") for p in sorted(
+    next(a / "OptiScaler/framegen/dlssg" for a in Path(__file__).resolve().parents
+         if (a / "OptiScaler/framegen/dlssg").is_dir()).glob("DLSSG_Dx12_*.cpp")))
 base = (root / 'OptiScaler/framegen/IFGFeature_Dx12.cpp').read_text(encoding='utf-8-sig')
 poll = body('IFGFeature_Dx12::UIAllocatorStatus IFGFeature_Dx12::PollUIAllocator(', base)
 poll = poll.replace('IFGFeature_Dx12::', 'DLSSG_Dx12::')

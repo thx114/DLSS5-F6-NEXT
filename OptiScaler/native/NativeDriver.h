@@ -17,7 +17,6 @@
 #include <memory>
 #include <string>
 
-namespace GenshinBridgeFg { class GenshinFgOffer; using SenderInput=GenshinFgOffer; }
 
 namespace native
 {
@@ -60,7 +59,7 @@ class NativeDriver
 
     // One frame: Acquire on `source` (its SetPresent is done), the producer, Return. `flowPreview` asks the producer
     // for the flow picture the menu shows.
-    RunResult RunFrame(IFrameSource& source, bool flowPreview, const GenshinBridgeFg::SenderInput* fgSender=nullptr);
+    RunResult RunFrame(IFrameSource& source, bool flowPreview);
 
     // ImGui: one line for the mode in effect (waiting/failed, NR or the stabiliser on this picture, or why not).
     void DrawStatus();

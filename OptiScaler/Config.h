@@ -2,11 +2,9 @@
 
 #include "SysUtils.h"
 #include <dlssnr/PassLimits.h>
-#include <dlssnr/PassLimits.h>
 #include "State.h"
 #include "native/NativeLowLatencyRule.h"
 
-#include <genshin/GenshinLegacyControls.h>
 #include <functional>
 #include <atomic>
 #include <mutex>
@@ -15,19 +13,6 @@
 #include <string_view>
 #include <vector>
 #include <runtime/ObservedSetting.h>
-
-namespace GenshinLegacy
-{
-// Publication does not acquire the Config owner from a native draw callback.
-// Epochs are monotonic: disabling and re-enabling cannot revive an old output.
-class ControlsRevision
-{
-    std::atomic<uint64_t> epoch_{1};
-public:
-    void Publish(uint64_t epoch)noexcept{epoch_.store(epoch,std::memory_order_release);}
-    bool Matches(uint64_t epoch)const noexcept{return epoch && epoch_.load(std::memory_order_acquire)==epoch;}
-};
-}
 
 enum HasDefaultValue
 {
@@ -1332,7 +1317,7 @@ class Config
     CustomOptional<bool> EnableDlssInputs { true };
     CustomOptional<bool> EnableXeSSInputs { true };
     // Mutations use SetUseFsr2Inputs / ApplyFsr2InputDisableQuirk or locked Reload.
-    // Each effective input change publishes the existing Genshin controls epoch.
+    // Input settings remain owned by Config.
     CustomOptional<bool> UseFsr2Inputs { true };
     CustomOptional<bool> UseFsr2Dx11Inputs { false };
     CustomOptional<bool> UseFsr2VulkanInputs { false };
@@ -1373,22 +1358,13 @@ class Config
     std::vector<std::string> GetConfigLog();
 
     static Config* Instance();
-    GenshinLegacy::ControlsSnapshot AcquireGenshinControls() const;
-    // Observation only: the existing Present boundary publishes the sampling bit.
-    void SetGenshinHookCpuTiming(bool enabled);
+    void SetHookCpuTiming(bool enabled);
+    bool HookCpuTimingEnabled() const noexcept {return hookCpuTiming_.load(std::memory_order_relaxed);}
     void SetUseFsr2Inputs(bool value);
     bool ApplyFsr2InputDisableQuirk();
-    // Lock-free native admission check; no Config-owner/native-owner lock inversion.
-    bool GenshinControlsCurrent(uint64_t epoch) const noexcept { return genshinControlsRevision_.Matches(epoch); }
-    bool EditGenshinControls(uint64_t observedEpoch, const std::function<void(GenshinLegacy::Settings&)>& edit);
-
   private:
-    mutable std::recursive_mutex genshinControlsMutex_;
-    mutable GenshinLegacy::ControlsSnapshot genshinControls_{};
-    mutable GenshinLegacy::ControlsRevision genshinControlsRevision_;
-    void SyncGenshinInputControlsLocked() const; // Caller holds genshinControlsMutex_.
-    void LoadGenshinControls();
-    GenshinLegacy::Settings SnapshotGenshinSettings() const;
+    std::atomic_bool hookCpuTiming_{false};
+
     // The writer seam lets the owner test real persistence transitions without IO.
     // It remains private; the production caller always uses SimpleIni::SaveFile.
     friend struct ConfigPersistenceTests;
@@ -1397,7 +1373,7 @@ class Config
     bool PersistSettings(const std::function<bool()>& writer);
     // One schema feeds both SimpleIni persistence and the exact sampling sink.
     // This is a per-Config output cache, never an edit/mutation generation.
-    template <typename Sink> void WriteSettings(Sink& target, const GenshinLegacy::Settings& genshinSettings);
+    template <typename Sink> void WriteSettings(Sink& target);
     struct SettingsSample
     {
         enum class Operation { Set, Erase };
@@ -1420,9 +1396,8 @@ class Config
         void Observe(Operation operation, std::string_view section, std::string_view key,
             std::string_view value, bool removeEmpty);
     } settingsSample_;
-    void RefreshSettingsSample(const GenshinLegacy::Settings* genshinSnapshot = nullptr);
-    std::optional<std::string> SerializeSettings(bool updateLoadedIni = false,
-        const GenshinLegacy::Settings* genshinSnapshot = nullptr);
+    void RefreshSettingsSample();
+    std::optional<std::string> SerializeSettings(bool updateLoadedIni = false);
     void CaptureSavedSettings();
     std::optional<std::string> savedSettings_;
     uint64_t dirtySampleTick_ = 0;

@@ -2,7 +2,7 @@
 #include "SysUtils.h"
 #include "Config.h"
 #include "detours/detours.h"
-#include <genshin/GenshinSystemHookTransaction.h>
+#include <hooks/HookTransaction.h>
 
 #include "Hook_Utils.h"
 
@@ -714,7 +714,7 @@ static void hookAdvapi32()
             reinterpret_cast<PFN_RegQueryValueExA>(DetourFindFunction("Advapi32.dll", "RegQueryValueExA"));
     }
 
-    GenshinSystemHooks::Transaction systemTransaction;
+    HookTransactions::Transaction systemTransaction;
 
     if (o_RegOpenKeyExW)
         systemTransaction.Attach(&(PVOID&) o_RegOpenKeyExW, hkRegOpenKeyExW);
@@ -745,7 +745,7 @@ static void hookAdvapi32()
 
 static void unhookAdvapi32()
 {
-    GenshinSystemHooks::Transaction systemTransaction;
+    HookTransactions::Transaction systemTransaction;
 
     if (o_RegOpenKeyExW)
         systemTransaction.Detach(&(PVOID&) o_RegOpenKeyExW, hkRegOpenKeyExW);

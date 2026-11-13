@@ -1,7 +1,7 @@
 ﻿// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <resource_tracking/DrawObservation_Dx11.h>
-#include <inputs/GenshinFsrContract.h>
+#include <runtime/GameIdentity.h>
 #include <d3d11_1.h>
 #include <array>
 #include <atomic>
@@ -69,7 +69,7 @@ namespace detail {
 inline bool IsGenshin() noexcept {
     static const bool yes=[] {
         wchar_t path[32768]{};const auto length=GetModuleFileNameW(nullptr,path,32768);
-        return length && length<32768 && GenshinFsr::IsGenshinExecutable(std::wstring_view(path,length));
+        return length && length<32768 && GameRouting::IsGenshinExecutable(std::wstring_view(path,length));
     }();
     return yes;
 }
