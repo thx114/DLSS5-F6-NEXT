@@ -1,4 +1,5 @@
 #include "GimiRuntime.h"
+#include "GimiCaptureRouting.h"
 #include "GimiUserState.h"
 #include <menu/input/input_system.h>
 #include "GimiFormatText.h"
@@ -37,6 +38,22 @@ constexpr std::size_t CpuBudget = 128u * 1024u * 1024u;
 std::atomic_bool enabled{false}, presentNeeded{false}, mapCaptureLive{false};
 std::atomic<std::uint64_t> nextId{1}, contractRevision{1};
 std::atomic_bool streamCaptureLive{false};
+CaptureRouting captureRouting;
+
+CaptureRoute DeviceEvent(ID3D11Device* device) noexcept
+{
+    return captureRouting.Device(reinterpret_cast<std::uintptr_t>(device));
+}
+CaptureRoute ContextEvent(ID3D11DeviceContext* context) noexcept
+{
+    if (!context) return {};
+    if (const auto route = captureRouting.Context(reinterpret_cast<std::uintptr_t>(context))) return route;
+    // Exact immediate-context events need no COM query. A different context
+    // may still write this device's captured resources or replay opaque work.
+    ComPtr<ID3D11Device> device;
+    context->GetDevice(&device);
+    return DeviceEvent(device.Get());
+}
 
 // XXMI-Libs 065dc746: static Globals construction records steady-clock
 // microseconds; TIME is updated at native non-TEST RunFrameActions PRE and
@@ -237,30 +254,38 @@ template<class T> std::uint64_t Pointer(T* p) noexcept { return reinterpret_cast
 // registry recheck; they NEVER authorize access/lifetime. Process-lifetime keys
 // avoid reset races; fixed capacity exhaustion fails the component closed.
 constexpr std::size_t MapKeyCapacity = 8192;
-std::array<std::atomic<std::uint64_t>, MapKeyCapacity> mapKeys{};
-bool RegisterMapResource(ID3D11Resource* resource) noexcept
+struct MapKey
+{
+    std::atomic<std::uint64_t> key{0}, generation{0};
+};
+std::array<MapKey, MapKeyCapacity> mapKeys{};
+bool RegisterMapResource(ID3D11Resource* resource, std::uint64_t generation) noexcept
 {
     const auto key = Pointer(resource); auto at = Bucket(key, MapKeyCapacity);
     for (unsigned probe = 0; probe < 32; ++probe, at = (at + 1) & (MapKeyCapacity - 1))
     {
-        auto found = mapKeys[at].load(std::memory_order_acquire);
-        if (found == key) return true;
-        if (!found && mapKeys[at].compare_exchange_strong(found, key, std::memory_order_acq_rel)) return true;
-        if (found == key) return true;
+        auto found = mapKeys[at].key.load(std::memory_order_acquire);
+        if (found == key || (!found && mapKeys[at].key.compare_exchange_strong(found, key, std::memory_order_acq_rel)) || found == key)
+        { mapKeys[at].generation.store(generation, std::memory_order_release); return true; }
     }
     return false;
 }
-bool MapResourceRegistered(ID3D11Resource* resource) noexcept
+CaptureRoute ResourceEvent(ID3D11DeviceContext* context, ID3D11Resource* resource) noexcept
 {
-    if (!Enabled() || !mapCaptureLive.load(std::memory_order_acquire) || !resource) return false;
+    if (!Enabled() || !mapCaptureLive.load(std::memory_order_acquire) || !resource) return {};
     const auto key = Pointer(resource); auto at = Bucket(key, MapKeyCapacity);
     for (unsigned probe = 0; probe < 32; ++probe, at = (at + 1) & (MapKeyCapacity - 1))
     {
-        const auto found = mapKeys[at].load(std::memory_order_acquire);
-        if (!found) return false;
-        if (found == key) return true;
+        const auto found = mapKeys[at].key.load(std::memory_order_acquire);
+        if (!found) return {};
+        if (found == key)
+        {
+            const auto generation = mapKeys[at].generation.load(std::memory_order_acquire);
+            const auto route = ContextEvent(context);
+            return route && route.generation == generation ? route : CaptureRoute{};
+        }
     }
-    return false;
+    return {};
 }
 
 // Dedicated GIMI CPU authority: no Genshin payload/lease/hash authorizes it.
@@ -382,6 +407,7 @@ struct Capture
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<ID3D11DeviceContext1> rangeContext;
     std::uint64_t generation = 0, invalidation = 1, vertexReadRevision = 1;
+    unsigned routeSlot = 0;
     bool coverage = false, creations = false, exhausted = false, opaque = false;
     std::uint64_t creationAttempt = 0;
     LONG creationResult = NO_ERROR;
@@ -419,6 +445,7 @@ struct ConstantMap
     void* driver = nullptr;
     const void* cpu = nullptr;
     std::uint64_t revision = 0, contract = 0;
+    unsigned routeSlot = 0;
     DWORD thread = 0;
     bool writeback = false;
 };
@@ -477,10 +504,11 @@ struct State
     std::uint64_t nativePresentTicket = 0; // one serial interpreter; owner lock never spans the original
     std::uint64_t observedRasterTicket = 0; // CPU observation only; owned by the outer original hook
     std::shared_ptr<Capture> capture;
+    std::array<std::shared_ptr<Capture>, CaptureRouting::Capacity> candidates{};
+    bool captureConfirmed = false;
     std::shared_ptr<Session> active;
     std::array<std::shared_ptr<Session>, RetiredCapacity> retired{};
     Observation observation;
-    std::atomic_bool coverageLost{false};
     void Message(const char* text) noexcept { std::snprintf(observation.message, sizeof(observation.message), "%s", text); }
     void DiagnosticMessage(const std::vector<Diagnostic>& diagnostics)
     {
@@ -496,6 +524,29 @@ State& Store()
     // Normal completed batches do release below after an authentic fence value.
     static State* state = new State;
     return *state;
+}
+
+CaptureRoute RouteOf(const Capture& capture) noexcept
+{ return {Pointer(capture.device.Get()), Pointer(capture.context.Get()), capture.generation, capture.routeSlot}; }
+std::shared_ptr<Capture> Captured(State& state, CaptureRoute event) noexcept
+{
+    if (!captureRouting.Current(event)) return {};
+    if (state.capture && state.capture->generation == event.generation) return state.capture;
+    const auto& candidate = state.candidates[event.slot];
+    return candidate && candidate->generation == event.generation ? candidate : nullptr;
+}
+void RefreshCaptureFlags(State& state) noexcept
+{
+    bool maps = false, streams = false;
+    const auto observe = [&](const std::shared_ptr<Capture>& capture) {
+        if (!capture) return;
+        maps |= capture->coverage && capture->creations;
+        for (const auto& target : capture->streamTargets) streams |= static_cast<bool>(target);
+    };
+    observe(state.capture);
+    for (const auto& candidate : state.candidates) observe(candidate);
+    mapCaptureLive.store(Enabled() && maps, std::memory_order_release);
+    streamCaptureLive.store(Enabled() && streams, std::memory_order_release);
 }
 
 struct Session final : Dx11ResourceProvider, Dx11DrawOwner
@@ -746,7 +797,7 @@ struct Session final : Dx11ResourceProvider, Dx11DrawOwner
             GetCurrentThreadId() == thread && e.plan == generation && e.consumer == consumer &&
             e.device == capture->generation && e.context == capture->generation && e.bindings == drawInvalidation &&
             capture->coverage && capture->creations && !capture->opaque && !capture->exhausted &&
-            !root.coverageLost.load(std::memory_order_acquire) &&
+            !captureRouting.Lost(capture->generation, capture->routeSlot) &&
             drawInvalidation == capture->invalidation && drawVertexReadRevision == capture->vertexReadRevision;
     }
     bool StreamsCurrent(const Dx11StreamOutputBinding& streams) const noexcept
@@ -902,7 +953,7 @@ struct Session final : Dx11ResourceProvider, Dx11DrawOwner
     {
         const auto& self = *static_cast<const Session*>(owner);
         if (operand != NativeValue::Time || !self.drawFrameTimeKnown || !self.accepting || self.quarantined ||
-            GetCurrentThreadId() != self.thread || self.root.coverageLost.load(std::memory_order_acquire))
+            GetCurrentThreadId() != self.thread || captureRouting.Lost(self.capture->generation, self.capture->routeSlot))
         {
             self.root.Message("Unsupported: draw TIME requires this Session's authentic native Present PRE snapshot; complete tape rolled back");
             return false;
@@ -919,7 +970,7 @@ struct Session final : Dx11ResourceProvider, Dx11DrawOwner
         };
         if (slot >= D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT || scalar >= ConstantByteLimit / 4 ||
             !self.accepting || self.quarantined || !c.coverage || !c.creations || c.exhausted || c.opaque ||
-            self.root.coverageLost.load(std::memory_order_acquire) || GetCurrentThreadId() != self.thread)
+            captureRouting.Lost(c.generation, c.routeSlot) || GetCurrentThreadId() != self.thread)
             return fail("unknown owner/coverage/epoch");
         ComPtr<ID3D11Buffer> buffer; UINT first = 0, count = 0;
         if (c.rangeContext) c.rangeContext->PSGetConstantBuffers1(slot, 1, &buffer, &first, &count);
@@ -1320,7 +1371,7 @@ struct Session final : Dx11ResourceProvider, Dx11DrawOwner
         out = {};
         if (!accepting || quarantined || GetCurrentThreadId() != thread || !binding.object ||
             binding.generation != capture->generation || capture->opaque || capture->exhausted ||
-            !capture->coverage || !capture->creations || root.coverageLost.load(std::memory_order_acquire)) return false;
+            !capture->coverage || !capture->creations || captureRouting.Lost(capture->generation, capture->routeSlot)) return false;
         const auto end = privateTextureIndex.begin() + privateTextureIndexCount;
         const auto found = std::lower_bound(privateTextureIndex.begin(), end, binding.object,
             [](const auto& entry, std::uint64_t key) { return entry.first < key; });
@@ -2545,9 +2596,9 @@ void CreationCoverageLocked(State& state, Capture& capture, bool complete) noexc
 {
     if (capture.creations == complete) return;
     capture.creations = complete;
-    mapCaptureLive.store(complete && capture.coverage, std::memory_order_release);
+    RefreshCaptureFlags(state);
     if (complete) state.loaded = 0; // a real transition only; never clears lost/opaque history
-    else state.coverageLost.store(true, std::memory_order_release);
+    else captureRouting.Lose(RouteOf(capture));
 }
 } // namespace
 
@@ -2570,7 +2621,7 @@ void Configure(Selection selection, bool reload)
     // Once observation is disabled, a missed Map interval cannot be guessed
     // away on a fast re-enable. Submitted ownership is still retired normally.
     if (!want && mapCaptureLive.exchange(false, std::memory_order_acq_rel))
-        state.coverageLost.store(true, std::memory_order_release);
+        captureRouting.LoseAll();
     // A disabled request still needs one Present to detach/drain the old plan.
     presentNeeded.store(true, std::memory_order_release);
 }
@@ -2589,7 +2640,7 @@ void InputFrame(const OptiInput::KeyboardFrame& frame, bool accepting) noexcept
         // No disk IO or GPU call here, even if a native PRE/POST spans the menu.
         s.active->ConsumeInput();
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(); }
 }
 Selection Selected() { auto& s = Store(); std::lock_guard lock(s.requestMutex); return s.selection; }
 bool Enabled() noexcept { return enabled.load(std::memory_order_acquire); }
@@ -2598,78 +2649,108 @@ void StopAccepting() noexcept
 {
     OptiInput::ReleaseGameCursor();
     enabled.store(false, std::memory_order_release);
-    if (mapCaptureLive.exchange(false, std::memory_order_acq_rel)) Store().coverageLost.store(true, std::memory_order_release);
+    if (mapCaptureLive.exchange(false, std::memory_order_acq_rel)) captureRouting.LoseAll();
     try { auto& s = Store(); std::lock_guard request(s.requestMutex); ++s.revision; }
     catch (...) {}
     presentNeeded.store(true, std::memory_order_release);
 }
 
-void DeviceCreated(ID3D11Device* device, ID3D11DeviceContext* context, HookServices hooks, bool coverage) noexcept
+void DeviceCreated(ID3D11Device* device, ID3D11DeviceContext* context, HookServices hooks, bool coverage, CaptureSource source) noexcept
 {
     if (!Enabled() || !device || !context) return;
     try
     {
         auto& s = Store(); std::lock_guard lock(s.ownerMutex);
-        if (s.capture && s.capture->device.Get() == device && s.capture->context.Get() == context)
+        const auto event = DeviceEvent(device);
+        auto next = Captured(s, event);
+        if (next && next->context.Get() != context) return;
+        if (s.captureConfirmed && source != CaptureSource::PresentOwner && next != s.capture) return;
+        if (!next)
         {
-            if (s.capture->coverage && !coverage) s.coverageLost.store(true, std::memory_order_release);
-            s.capture->coverage = coverage; s.capture->hooks = hooks;
-            mapCaptureLive.store(coverage && s.capture->creations, std::memory_order_release); return;
+            ComPtr<ID3D11Device> actual; context->GetDevice(&actual);
+            if (actual.Get() != device || context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)
+            { s.Message("UNKNOWN: unqualified/proxy device-context identity; MOD not installed"); return; }
+            unsigned slot = 0;
+            for (; slot < CaptureRouting::Capacity; ++slot)
+                if (!s.candidates[slot] && (!s.capture || s.capture->routeSlot != slot)) break;
+            if (slot == CaptureRouting::Capacity)
+            { s.Message("UNKNOWN: provisional device capture capacity exhausted; no creation history invented"); return; }
+            next = std::make_shared<Capture>();
+            next->device = device; next->context = context; next->generation = Ids(); next->routeSlot = slot;
+            next->context.As(&next->rangeContext);
+            s.candidates[slot] = next;
+            captureRouting.Publish(RouteOf(*next));
+            if (!s.capture) { s.capture = next; captureRouting.Nominate(RouteOf(*next)); s.loaded = 0; }
         }
-        ComPtr<ID3D11Device> actual; context->GetDevice(&actual);
-        if (actual.Get() != device || context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)
-        { s.Message("UNKNOWN: unqualified/proxy device-context identity; MOD not installed"); return; }
-        mapCaptureLive.store(false, std::memory_order_release);
-        streamCaptureLive.store(false, std::memory_order_release);
-        // Following a new device must not clear an old lost-coverage latch
-        // before its submitted owner has inherited the opaque/quarantine state.
-        if (s.coverageLost.load(std::memory_order_acquire)) LostCoverage(s);
-        Park(s);
-        if (s.active)
+        if (source == CaptureSource::PresentOwner)
         {
-            if (s.active->userState.Dirty())
-                s.Message("Unsupported: device replacement before F6 state save; old owner retained, new capture refused; restart after safe save");
-            return;
+            if (s.capture != next)
+            {
+                // Only this explicit selected Present may save and detach the
+                // old semantic owner. Creation callbacks never perform disk IO.
+                if (s.active)
+                {
+                    if (s.nativePresentTicket || s.observedRasterTicket ||
+                        GetCurrentThreadId() != s.active->thread || !s.active->commands->CanInitialize()) return;
+                    std::uint64_t revision;
+                    { std::lock_guard request(s.requestMutex); revision = s.revision; }
+                    s.active->ConsumeInput();
+                    if (!s.active->SaveUserState(true, revision)) return;
+                }
+                if (captureRouting.Lost()) LostCoverage(s);
+                Park(s);
+                if (s.active) return; // original native/CPU/packet ownership still blocks replacement
+                s.capture = next; s.loaded = 0;
+            }
+            // Promote the existing creation observations, including their own
+            // write/loss history. Do not reassign their generation or failure slot.
+            captureRouting.Select(RouteOf(*next));
+            s.candidates = {}; s.captureConfirmed = true;
         }
-        s.capture = std::make_shared<Capture>(); auto& c = *s.capture;
-        c.device = device; c.context = context; c.generation = Ids(); c.coverage = coverage; c.hooks = hooks;
-        c.context.As(&c.rangeContext); // off-draw only, optional D3D11.1 CB ranges
-        s.loaded = 0; s.coverageLost.store(false, std::memory_order_release);
+        if (next->coverage && !coverage) captureRouting.Lose(RouteOf(*next));
+        next->coverage = coverage; next->hooks = hooks;
+        RefreshCaptureFlags(s);
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(DeviceEvent(device)); }
 }
 void CreationCoverage(ID3D11Device* device, bool complete) noexcept
 {
     if (!Enabled()) return;
+    const auto event = DeviceEvent(device); if (!event) return;
     auto& s = Store(); std::lock_guard lock(s.ownerMutex);
-    if (s.capture && s.capture->device.Get() == device)
-        CreationCoverageLocked(s, *s.capture, complete);
+    const auto captured = Captured(s, event); if (!captured) return;
+    if (s.capture && captured->device.Get() == device)
+        CreationCoverageLocked(s, *captured, complete);
 }
 CreationHookRequest ClaimCreationHooks(ID3D11Device* device, ID3D11DeviceContext* context) noexcept
 {
     if (!Enabled() || !device || !context) return {};
+    const auto event = DeviceEvent(device); if (!event) return {};
     try
     {
         auto& s = Store(); std::lock_guard owner(s.ownerMutex);
+        const auto captured = Captured(s, event); if (!captured) return {};
         std::lock_guard request(s.requestMutex);
-        if (!Enabled() || !s.selection.enabled || !s.capture || s.capture->device.Get() != device ||
-            s.capture->context.Get() != context || s.capture->creationAttempt == s.revision) return {};
-        auto& c = *s.capture;
+        if (!Enabled() || !s.selection.enabled || captured->device.Get() != device ||
+            captured->context.Get() != context || captured->creationAttempt == s.revision) return {};
+        auto& c = *captured;
         c.creationAttempt = s.revision;
         c.creationResult = ERROR_IO_PENDING; // claim before any install attempt, including a busy refusal
         return {s.revision, c.generation};
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); return {}; }
+    catch (...) { captureRouting.Lose(event); return {}; }
 }
 void CompleteCreationHooks(ID3D11Device* device, ID3D11DeviceContext* context,
                            CreationHookRequest request, LONG result) noexcept
 {
+    const auto event = DeviceEvent(device); if (!event || event.generation != request.generation) return;
     try
     {
         auto& s = Store(); std::lock_guard owner(s.ownerMutex);
-        if (!request.revision || !s.capture || s.capture->device.Get() != device || s.capture->context.Get() != context ||
-            s.capture->generation != request.generation || s.capture->creationAttempt != request.revision) return;
-        auto& c = *s.capture;
+        const auto captured = Captured(s, event); if (!captured) return;
+        if (!request.revision || captured->device.Get() != device || captured->context.Get() != context ||
+            captured->generation != request.generation || captured->creationAttempt != request.revision) return;
+        auto& c = *captured;
         c.creationResult = result;
         CreationCoverageLocked(s, c, result == NO_ERROR);
         if (result != NO_ERROR)
@@ -2678,41 +2759,43 @@ void CompleteCreationHooks(ID3D11Device* device, ID3D11DeviceContext* context,
         // Success observes future creations only. It does not replace the
         // capture, clear coverageLost/opaque, or recover unobserved old resources.
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(event); }
 }
 void StreamOutputCoverage(ID3D11Device* device, ID3D11DeviceContext* context, bool complete) noexcept
 {
     if (!Enabled()) return;
+    const auto event = DeviceEvent(device); if (!event) return;
     auto& state = Store(); std::lock_guard lock(state.ownerMutex);
-    if (!state.capture || state.capture->device.Get() != device || state.capture->context.Get() != context) return;
-    auto& c = *state.capture;
-    if (c.streamCoverage && !complete) state.coverageLost.store(true, std::memory_order_release);
+    const auto captured = Captured(state, event); if (!captured) return;
+    if (captured->device.Get() != device || captured->context.Get() != context) return;
+    auto& c = *captured;
+    if (c.streamCoverage && !complete) captureRouting.Lose(event);
     c.streamCoverage = complete;
 }
 void StreamOutputTargets(ID3D11DeviceContext* context, UINT count, ID3D11Buffer* const* targets, const UINT* offsets) noexcept
 {
     if (!Enabled()) return;
+    const auto event = ContextEvent(context); if (!event) return;
     auto& state = Store(); std::unique_lock lock(state.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { state.coverageLost.store(true, std::memory_order_release); return; }
-    if (!state.capture) return;
-    auto& c = *state.capture;
+    if (!lock.owns_lock()) { captureRouting.Lose(event); return; }
+    const auto captured = Captured(state, event); if (!captured) return;
+    auto& c = *captured;
     if (context != c.context.Get() || (state.active && state.active->thread != GetCurrentThreadId()))
-    { state.coverageLost.store(true, std::memory_order_release); return; }
+    { captureRouting.Lose(event); return; }
     if (c.hooks.internal && c.hooks.internal(context)) return;
     if (c.streamRevision == UINT64_MAX || count > c.streamTargets.size() || (count && !targets))
-    { state.coverageLost.store(true, std::memory_order_release); return; }
+    { captureRouting.Lose(event); return; }
     ++c.streamRevision;
     c.streamTargets = {};
     ID3D11Buffer* actual[D3D11_SO_BUFFER_SLOT_COUNT]{};
     context->SOGetTargets(D3D11_SO_BUFFER_SLOT_COUNT, actual);
-    bool live = false;
     for (UINT slot = 0; slot < c.streamTargets.size(); ++slot)
     {
         auto* target = slot < count ? targets[slot] : nullptr;
-        if (actual[slot] != target) { state.coverageLost.store(true, std::memory_order_release); }
+        if (actual[slot] != target) { captureRouting.Lose(event); }
         if (actual[slot]) actual[slot]->Release();
         if (!target) continue;
-        live = true; const auto game = c.resources.Find(Pointer(target));
+        const auto game = c.resources.Find(Pointer(target));
         if (!game || !game->gpuBuffer || !(game->bufferDesc.BindFlags & D3D11_BIND_STREAM_OUTPUT)) continue;
         c.streamTargets[slot] = game;
         const auto offset = offsets ? offsets[slot] : UINT(-1);
@@ -2723,7 +2806,7 @@ void StreamOutputTargets(ID3D11DeviceContext* context, UINT count, ID3D11Buffer*
         for (UINT earlier = 0; earlier < slot; ++earlier) if (c.streamTargets[earlier] == game)
             game->soCursorKnown = false;
     }
-    streamCaptureLive.store(live, std::memory_order_release);
+    RefreshCaptureFlags(state);
 }
 static void AdvanceStreamOutputs(Capture& c, UINT count, UINT instances, bool known) noexcept
 {
@@ -2758,48 +2841,54 @@ static void AdvanceStreamOutputs(Capture& c, UINT count, UINT instances, bool kn
 void StreamOutputDrawn(ID3D11DeviceContext* context, UINT count, UINT instances) noexcept
 {
     if (!Enabled() || !streamCaptureLive.load(std::memory_order_acquire)) return;
+    const auto event = ContextEvent(context); if (!event) return;
     auto& state = Store(); std::unique_lock lock(state.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { state.coverageLost.store(true, std::memory_order_release); return; }
-    if (!state.capture) return;
-    auto& c = *state.capture;
+    if (!lock.owns_lock()) { captureRouting.Lose(event); return; }
+    const auto captured = Captured(state, event); if (!captured) return;
+    auto& c = *captured;
     if (context != c.context.Get() || (state.active && state.active->thread != GetCurrentThreadId()))
-    { state.coverageLost.store(true, std::memory_order_release); return; }
+    { captureRouting.Lose(event); return; }
     if (c.hooks.internal && c.hooks.internal(context)) return; // executor journals physical calls in its packet
     AdvanceStreamOutputs(c, count, instances, true);
 }
 void StreamOutputUnknownDraw(ID3D11DeviceContext* context) noexcept
 {
     if (!Enabled() || !streamCaptureLive.load(std::memory_order_acquire)) return;
+    const auto event = ContextEvent(context); if (!event) return;
     auto& state = Store(); std::unique_lock lock(state.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { state.coverageLost.store(true, std::memory_order_release); return; }
-    if (!state.capture) return;
-    if (context != state.capture->context.Get() || (state.active && state.active->thread != GetCurrentThreadId()))
-    { state.coverageLost.store(true, std::memory_order_release); return; }
-    if (state.capture->hooks.internal && state.capture->hooks.internal(context)) return;
-    AdvanceStreamOutputs(*state.capture, 0, 0, false);
+    if (!lock.owns_lock()) { captureRouting.Lose(event); return; }
+    const auto captured = Captured(state, event); if (!captured) return;
+    if (context != captured->context.Get() || (state.active && state.active->thread != GetCurrentThreadId()))
+    { captureRouting.Lose(event); return; }
+    if (captured->hooks.internal && captured->hooks.internal(context)) return;
+    AdvanceStreamOutputs(*captured, 0, 0, false);
 }
 void StreamOutputCleared(ID3D11DeviceContext* context) noexcept
 {
     if (!Enabled()) return;
+    const auto event = ContextEvent(context); if (!event) return;
     auto& state = Store(); std::unique_lock lock(state.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { state.coverageLost.store(true, std::memory_order_release); return; }
-    if (!state.capture || context != state.capture->context.Get()) return;
-    if (state.capture->hooks.internal && state.capture->hooks.internal(context)) return;
+    if (!lock.owns_lock()) { captureRouting.Lose(event); return; }
+    const auto captured = Captured(state, event); if (!captured) return;
+    if (!captured || captured->generation != event.generation || context != captured->context.Get()) return;
+    if (captured->hooks.internal && captured->hooks.internal(context)) return;
     if (state.active && state.active->thread != GetCurrentThreadId())
-    { state.coverageLost.store(true, std::memory_order_release); return; }
-    auto& c = *state.capture; c.streamTargets = {};
+    { captureRouting.Lose(event); return; }
+    auto& c = *captured; c.streamTargets = {};
     if (c.streamRevision == UINT64_MAX) c.exhausted = true; else ++c.streamRevision;
-    streamCaptureLive.store(false, std::memory_order_release);
+    RefreshCaptureFlags(state);
 }
 void PrepareBufferCreation(ID3D11Device* device, const D3D11_BUFFER_DESC* desc,
                            const D3D11_SUBRESOURCE_DATA* data, BufferCreationEdit& edit) noexcept
 {
     if (!Enabled() || !device || !desc || !desc->ByteWidth) return;
+    const auto event = DeviceEvent(device); if (!event) return;
     try
     {
         auto& state = Store(); std::lock_guard lock(state.ownerMutex);
-        if (!state.capture || state.capture->device.Get() != device) return;
-        auto& c = *state.capture;
+        const auto captured = Captured(state, event); if (!captured) return;
+        if (captured->device.Get() != device) return;
+        auto& c = *captured;
         if (!c.creations || !c.coverage || c.opaque || c.exhausted || c.resizeRules.empty() ||
             c.resizeRevision != contractRevision.load(std::memory_order_acquire) ||
             (c.hooks.internal && c.hooks.internal(c.context.Get()))) return;
@@ -2827,7 +2916,7 @@ void PrepareBufferCreation(ID3D11Device* device, const D3D11_BUFFER_DESC* desc,
         }
         edit.changed = width != desc->ByteWidth; edit.qualified = true;
     }
-    catch (...) { edit.changed = edit.qualified = false; Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { edit.changed = edit.qualified = false; captureRouting.Lose(event); }
 }
 bool PrepareUnorderedView(ID3D11Device* device, ID3D11Resource* resource,
                           const D3D11_UNORDERED_ACCESS_VIEW_DESC* original,
@@ -2835,11 +2924,13 @@ bool PrepareUnorderedView(ID3D11Device* device, ID3D11Resource* resource,
 {
     changed = false;
     if (!Enabled() || !device || !resource) return true;
+    const auto event = DeviceEvent(device); if (!event) return true;
     try
     {
         auto& state = Store(); std::lock_guard lock(state.ownerMutex);
-        if (!state.capture || state.capture->device.Get() != device) return true;
-        auto& c = *state.capture;
+        const auto captured = Captured(state, event); if (!captured) return true;
+        if (captured->device.Get() != device) return true;
+        auto& c = *captured;
         if (c.hooks.internal && c.hooks.internal(c.context.Get())) return true;
         const auto game = c.resources.Find(Pointer(resource));
         if (!game || !game->resize.byteWidth) return true;
@@ -2887,16 +2978,18 @@ bool PrepareUnorderedView(ID3D11Device* device, ID3D11Resource* resource,
         changed = inferredView || effective.Buffer.NumElements != original->Buffer.NumElements;
         return true;
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); return false; }
+    catch (...) { captureRouting.Lose(event); return false; }
 }
 void UnorderedViewCreated(ID3D11Device* device, ID3D11Resource* resource, ID3D11UnorderedAccessView* view) noexcept
 {
     if (!Enabled() || !device || !resource || !view) return;
+    const auto event = DeviceEvent(device); if (!event) return;
     try
     {
         auto& state = Store(); std::lock_guard lock(state.ownerMutex);
-        if (!state.capture || state.capture->device.Get() != device) return;
-        auto& c = *state.capture;
+        const auto captured = Captured(state, event); if (!captured) return;
+        if (captured->device.Get() != device) return;
+        auto& c = *captured;
         if (c.hooks.internal && c.hooks.internal(c.context.Get())) return;
         const auto game = c.resources.Find(Pointer(resource));
         if (!game || !game->gpuBuffer || c.unorderedViews.Find(Pointer(view))) return;
@@ -2904,17 +2997,19 @@ void UnorderedViewCreated(ID3D11Device* device, ID3D11Resource* resource, ID3D11
         view->GetDesc(&owner->descriptor);
         if (!c.unorderedViews.Add(Pointer(view), owner)) c.exhausted = true;
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(event); }
 }
 void BufferCreated(ID3D11Device* device, ID3D11Buffer* buffer, const D3D11_BUFFER_DESC* desc,
                    const D3D11_SUBRESOURCE_DATA* data, const BufferCreationEdit* edit) noexcept
 {
     if (!Enabled() || !buffer || !desc) return;
+    const auto event = DeviceEvent(device); if (!event) return;
     try
     {
         auto& s = Store(); std::lock_guard lock(s.ownerMutex);
-        if (!s.capture || s.capture->device.Get() != device) return;
-        auto& c = *s.capture;
+        const auto captured = Captured(s, event); if (!captured) return;
+        if (captured->device.Get() != device) return;
+        auto& c = *captured;
         if (c.hooks.internal && c.hooks.internal(c.context.Get())) return;
         if (c.resources.Find(Pointer(buffer))) return;
         const bool immutable = desc->Usage == D3D11_USAGE_IMMUTABLE && !desc->CPUAccessFlags &&
@@ -2984,19 +3079,21 @@ void BufferCreated(ID3D11Device* device, ID3D11Buffer* buffer, const D3D11_BUFFE
         }
         else if (descriptorIndex) lease->record.CreateBufferDescriptor(id, c.generation, *desc);
         if (!c.resources.Add(Pointer(buffer), lease) || ((matchable || gpuBuffer || descriptorIndex) && !c.resourceIds.Add(id, lease)) ||
-            !RegisterMapResource(buffer)) c.exhausted = true;
+            !RegisterMapResource(buffer, c.generation)) c.exhausted = true;
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(event); }
 }
 void TextureCreated(ID3D11Device* device, ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC* desc,
                     const D3D11_SUBRESOURCE_DATA* data) noexcept
 {
     if (!Enabled() || !texture || !desc) return;
+    const auto event = DeviceEvent(device); if (!event) return;
     try
     {
         auto& s = Store(); std::lock_guard lock(s.ownerMutex);
-        if (!s.capture || s.capture->device.Get() != device) return;
-        auto& c = *s.capture;
+        const auto captured = Captured(s, event); if (!captured) return;
+        if (captured->device.Get() != device) return;
+        auto& c = *captured;
         if (c.hooks.internal && c.hooks.internal(c.context.Get())) return;
         if (c.resources.Find(Pointer(texture))) return;
         const bool immutable = desc->Usage == D3D11_USAGE_IMMUTABLE && !desc->CPUAccessFlags && desc->ArraySize == 1 &&
@@ -3029,18 +3126,20 @@ void TextureCreated(ID3D11Device* device, ID3D11Texture2D* texture, const D3D11_
         const auto id = lease->readObject;
         if (lease->capturedInput) lease->record.CreateTexture2D(id, c.generation, *desc, initial, c.hashPolicy);
         if (!c.resources.Add(Pointer(texture), lease) || (lease->capturedInput && !c.resourceIds.Add(id, lease)) ||
-            !RegisterMapResource(texture)) c.exhausted = true;
+            !RegisterMapResource(texture, c.generation)) c.exhausted = true;
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(event); }
 }
 void ViewCreated(ID3D11Device* device, ID3D11Resource* resource, ID3D11ShaderResourceView* view) noexcept
 {
     if (!Enabled() || !resource || !view) return;
+    const auto event = DeviceEvent(device); if (!event) return;
     try
     {
         auto& s = Store(); std::lock_guard lock(s.ownerMutex);
-        if (!s.capture || s.capture->device.Get() != device) return;
-        auto& c = *s.capture;
+        const auto captured = Captured(s, event); if (!captured) return;
+        if (captured->device.Get() != device) return;
+        auto& c = *captured;
         if (c.hooks.internal && c.hooks.internal(c.context.Get())) return;
         if (c.views.Find(Pointer(view))) return;
         auto owner = c.resources.Find(Pointer(resource));
@@ -3051,7 +3150,7 @@ void ViewCreated(ID3D11Device* device, ID3D11Resource* resource, ID3D11ShaderRes
         lease->format = desc.Format;
         if (!c.views.Add(Pointer(view), lease) || !c.viewIds.Add(lease->id, lease)) c.exhausted = true;
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(event); }
 }
 // Slot ownership is determined from complete creation reflection, never from
 // a previously empty binding or a shader name. Original t120 use stays
@@ -3166,11 +3265,13 @@ void GeometryShaderCreated(ID3D11Device* device, ID3D11GeometryShader* shader, c
                            const UINT* strides, UINT strideCount, UINT rasterized, bool withOutput) noexcept
 {
     if (!Enabled() || !device || !shader || !bytes || !size || size > 16u * 1024u * 1024u) return;
+    const auto event = DeviceEvent(device); if (!event) return;
     try
     {
         auto& state = Store(); std::lock_guard lock(state.ownerMutex);
-        if (!state.capture || state.capture->device.Get() != device) return;
-        auto& c = *state.capture;
+        const auto captured = Captured(state, event); if (!captured) return;
+        if (captured->device.Get() != device) return;
+        auto& c = *captured;
         if ((c.hooks.internal && c.hooks.internal(c.context.Get())) || c.shaders.Find(Pointer(shader))) return;
         auto owner = std::make_shared<Shader>(); owner->shader = shader;
         std::uint64_t hash = 0;
@@ -3234,18 +3335,20 @@ void GeometryShaderCreated(ID3D11Device* device, ID3D11GeometryShader* shader, c
         }
         if (!c.shaders.Add(Pointer(shader), owner)) c.exhausted = true;
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(event); }
 }
 
 void ShaderCreated(ID3D11Device* device, ID3D11DeviceChild* shader, const void* bytes, SIZE_T size,
                    bool vertex, bool hasLinkage) noexcept
 {
     if (!Enabled() || !shader || !bytes || !size || size > 16u * 1024u * 1024u) return;
+    const auto event = DeviceEvent(device); if (!event) return;
     try
     {
         auto& s = Store(); std::lock_guard lock(s.ownerMutex);
-        if (!s.capture || s.capture->device.Get() != device) return;
-        auto& c = *s.capture;
+        const auto captured = Captured(s, event); if (!captured) return;
+        if (captured->device.Get() != device) return;
+        auto& c = *captured;
         if (c.hooks.internal && c.hooks.internal(c.context.Get())) return;
         if (c.shaders.Find(Pointer(shader))) return;
         // GIMI d3dx.ini: shader_hash=3dmigoto, unseeded FNV-1. This is
@@ -3280,19 +3383,21 @@ void ShaderCreated(ID3D11Device* device, ID3D11DeviceChild* shader, const void* 
         if (!c.shaders.Add(Pointer(shader), owner)) c.exhausted = true;
         else if (owner->source) c.shaderSourceBytes += owner->source->PayloadBytes();
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(event); }
 }
 ShaderSourceResult AcquireShaderSource(ID3D11Device* device, ID3D11DeviceChild* shader, ShaderIdentity original) noexcept
 {
     if (!Enabled() || !device || !shader || original.knowledge != Knowledge::Known ||
         !original.object || !original.generation || original.object == UINT64_MAX || original.generation == UINT64_MAX)
         return {{}, ShaderSourceStatus::InvalidIdentity};
+    const auto event = DeviceEvent(device); if (!event) return {};
     try
     {
         auto& state = Store(); std::lock_guard lock(state.ownerMutex);
-        if (!state.capture || state.capture->device.Get() != device || state.capture->generation != original.generation)
+        const auto captured = Captured(state, event); if (!captured) return {};
+        if (captured->device.Get() != device || captured->generation != original.generation)
             return {{}, ShaderSourceStatus::InvalidIdentity};
-        const auto owner = state.capture->shaders.Find(Pointer(shader));
+        const auto owner = captured->shaders.Find(Pointer(shader));
         if (!owner || owner->identity.knowledge != Knowledge::Known || owner->identity.object != original.object ||
             owner->identity.generation != original.generation || owner->identity.hash != original.hash)
             return {{}, ShaderSourceStatus::InvalidIdentity};
@@ -3303,11 +3408,13 @@ ShaderSourceResult AcquireShaderSource(ID3D11Device* device, ID3D11DeviceChild* 
 void LayoutCreated(ID3D11Device* device, ID3D11InputLayout* layout, const D3D11_INPUT_ELEMENT_DESC* elements, UINT count) noexcept
 {
     if (!Enabled() || !layout || !elements || !count) return;
+    const auto event = DeviceEvent(device); if (!event) return;
     try
     {
         auto& s = Store(); std::lock_guard lock(s.ownerMutex);
-        if (!s.capture || s.capture->device.Get() != device) return;
-        auto& c = *s.capture;
+        const auto captured = Captured(s, event); if (!captured) return;
+        if (captured->device.Get() != device) return;
+        auto& c = *captured;
         if (c.hooks.internal && c.hooks.internal(c.context.Get())) return;
         if (c.layouts.Find(Pointer(layout))) return;
         auto owner = std::make_shared<Layout>(); owner->layout = layout; owner->id = Ids(); owner->exact = count <= 32;
@@ -3325,7 +3432,7 @@ void LayoutCreated(ID3D11Device* device, ID3D11InputLayout* layout, const D3D11_
         }
         if (!c.layouts.Add(Pointer(layout), owner)) c.exhausted = true;
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(event); }
 }
 static void InvalidateReadWrite(Capture& capture, GameResource& resource, bool constantWrite = true) noexcept
 {
@@ -3352,16 +3459,17 @@ static void InvalidateReadWrite(Capture& capture, GameResource& resource, bool c
 std::uint64_t VertexMapStarting(ID3D11DeviceContext* context, ID3D11Resource* resource,
                                UINT sub, D3D11_MAP type) noexcept
 {
-    if (!MapResourceRegistered(resource)) return 0;
+    const auto event = ResourceEvent(context, resource);
+    if (!event) return 0;
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { s.coverageLost.store(true, std::memory_order_release); return 0; }
-    if (!s.capture) return 0;
-    const auto game = s.capture->resources.Find(Pointer(resource));
+    if (!lock.owns_lock()) { captureRouting.Lose(event); return 0; }
+    const auto captured = Captured(s, event); if (!captured) return 0;
+    const auto game = captured->resources.Find(Pointer(resource));
     if (!game) return 0;
-    if (type != D3D11_MAP_READ) InvalidateReadWrite(*s.capture, *game);
+    if (type != D3D11_MAP_READ) InvalidateReadWrite(*captured, *game);
     if (!game->vertexReadOnly && !game->gpuBuffer && !game->capturedInput) return 0;
-    if (context != s.capture->context.Get() || (s.active && GetCurrentThreadId() != s.active->thread) || sub || game->mapped)
-    { s.coverageLost.store(true, std::memory_order_release); return 0; }
+    if (context != captured->context.Get() || (s.active && GetCurrentThreadId() != s.active->thread) || sub || game->mapped)
+    { captureRouting.Lose(event); return 0; }
     // Latch BEFORE the real API, including its pending interval. Success stays
     // mapped through all CPU writes until the real Unmap returns.
     if (game->constant)
@@ -3375,48 +3483,52 @@ std::uint64_t VertexMapStarting(ID3D11DeviceContext* context, ID3D11Resource* re
 void VertexMapFailed(ID3D11DeviceContext* context, ID3D11Resource* resource,
                      UINT sub, std::uint64_t generation) noexcept
 {
-    if (!generation || !MapResourceRegistered(resource)) return;
+    const auto event = ResourceEvent(context, resource);
+    if (!event || event.generation != generation) return;
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { s.coverageLost.store(true, std::memory_order_release); return; }
-    if (!s.capture || s.capture->generation != generation) return;
-    const auto game = s.capture->resources.Find(Pointer(resource));
+    if (!lock.owns_lock()) { captureRouting.Lose(event); return; }
+    const auto captured = Captured(s, event); if (!captured) return;
+    if (captured->generation != generation) return;
+    const auto game = captured->resources.Find(Pointer(resource));
     if (!game || (!game->vertexReadOnly && !game->gpuBuffer && !game->capturedInput)) return;
-    if (context != s.capture->context.Get() || (s.active && GetCurrentThreadId() != s.active->thread) || sub || !game->mapped)
-    { s.coverageLost.store(true, std::memory_order_release); return; }
+    if (context != captured->context.Get() || (s.active && GetCurrentThreadId() != s.active->thread) || sub || !game->mapped)
+    { captureRouting.Lose(event); return; }
     game->mapped = false;
     if (game->constant) game->constant->Revoke(); // failure never revives the old image
 }
 void VertexUnmapped(ID3D11DeviceContext* context, ID3D11Resource* resource, UINT sub) noexcept
 {
-    if (!MapResourceRegistered(resource)) return;
+    const auto event = ResourceEvent(context, resource);
+    if (!event) return;
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { s.coverageLost.store(true, std::memory_order_release); return; }
-    if (!s.capture) return;
-    const auto game = s.capture->resources.Find(Pointer(resource));
+    if (!lock.owns_lock()) { captureRouting.Lose(event); return; }
+    const auto captured = Captured(s, event); if (!captured) return;
+    const auto game = captured->resources.Find(Pointer(resource));
     if (!game) return;
     // CpuContentSubmission::Unmap has independently revoked/frozen this CB;
     // do not revoke its exact pending return receipt a second time.
-    InvalidateReadWrite(*s.capture, *game, false);
+    InvalidateReadWrite(*captured, *game, false);
     if (!game->vertexReadOnly && !game->gpuBuffer && !game->capturedInput) return;
-    if (context != s.capture->context.Get() || (s.active && GetCurrentThreadId() != s.active->thread) || sub || !game->mapped)
-    { s.coverageLost.store(true, std::memory_order_release); return; }
+    if (context != captured->context.Get() || (s.active && GetCurrentThreadId() != s.active->thread) || sub || !game->mapped)
+    { captureRouting.Lose(event); return; }
     game->mapped = false;
     if (game->constant)
     { auto& cb = *game->constant; cb.mapRevision = cb.mapContract = 0; cb.mapThread = 0; }
 }
 void Written(ID3D11DeviceContext* context, ID3D11Resource* resource) noexcept
 {
-    if (!Enabled() || !resource) return;
+    const auto event = ResourceEvent(context, resource);
+    if (!event) return;
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { s.coverageLost.store(true, std::memory_order_release); return; }
-    if (!s.capture) return;
-    const auto owner = s.capture->resources.Find(Pointer(resource));
+    if (!lock.owns_lock()) { captureRouting.Lose(event); return; }
+    const auto captured = Captured(s, event); if (!captured) return;
+    const auto owner = captured->resources.Find(Pointer(resource));
     if (owner)
     {
-        if ((owner->vertexReadOnly || owner->gpuBuffer || owner->capturedInput) && (context != s.capture->context.Get() ||
+        if ((owner->vertexReadOnly || owner->gpuBuffer || owner->capturedInput) && (context != captured->context.Get() ||
             (s.active && GetCurrentThreadId() != s.active->thread)))
-        { s.coverageLost.store(true, std::memory_order_release); return; }
-        InvalidateReadWrite(*s.capture, *owner);
+        { captureRouting.Lose(event); return; }
+        InvalidateReadWrite(*captured, *owner);
     }
 }
 // Every factory is allocation-free after resource creation. The existing hook
@@ -3435,17 +3547,19 @@ CpuContentSubmission CpuContentSubmission::Update(ID3D11DeviceContext* context, 
     UINT sub, const D3D11_BOX* box, const void* data, UINT flags) noexcept
 {
     CpuContentSubmission out;
-    if (!MapResourceRegistered(resource)) return out;
+    const auto event = ResourceEvent(context, resource);
+    if (!event) return out;
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { s.coverageLost.store(true, std::memory_order_release); return out; }
-    const auto capture = s.capture; if (!capture) return out;
+    if (!lock.owns_lock()) { captureRouting.Lose(event); return out; }
+    const auto captured = Captured(s, event); if (!captured) return out;
+    const auto capture = captured;
     const auto game = capture->resources.Find(Pointer(resource));
     if (!game || !game->constant) return out;
     auto& cb = *game->constant;
     if (sub || box || flags || !data || context != capture->context.Get() ||
         (s.active && GetCurrentThreadId() != s.active->thread) || game->mapped || cb.pending || cb.revision == UINT64_MAX ||
         game->bufferDesc.Usage != D3D11_USAGE_DEFAULT || !capture->coverage || !capture->creations ||
-        s.coverageLost.load(std::memory_order_acquire)) return out;
+        captureRouting.Lost(event)) return out;
     if (!ConstantUnconditional(context) || !CopyConstantCpu(cb.Staging(), data, game->bufferDesc.ByteWidth)) return out;
     cb.pending = true; out.capture_ = capture; out.resource_ = game; out.revision_ = cb.revision;
     out.contract_ = contractRevision.load(std::memory_order_acquire); out.thread_ = GetCurrentThreadId();
@@ -3456,10 +3570,12 @@ CpuContentSubmission CpuContentSubmission::Copy(ID3D11DeviceContext* context, ID
     UINT flags, bool whole) noexcept
 {
     CpuContentSubmission out;
-    if (!MapResourceRegistered(destination) || !source || source == destination) return out;
+    if (!source || source == destination) return out;
+    const auto event = ResourceEvent(context, destination); if (!event) return out;
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { s.coverageLost.store(true, std::memory_order_release); return out; }
-    const auto capture = s.capture; if (!capture) return out;
+    if (!lock.owns_lock()) { captureRouting.Lose(event); return out; }
+    const auto captured = Captured(s, event); if (!captured) return out;
+    const auto capture = captured;
     const auto target = capture->resources.Find(Pointer(destination)), from = capture->resources.Find(Pointer(source));
     if (!target || !from || !target->constant || !from->constant) return out;
     auto& cb = *target->constant; const auto& input = *from->constant;
@@ -3473,7 +3589,7 @@ CpuContentSubmission CpuContentSubmission::Copy(ID3D11DeviceContext* context, ID
         target->bufferDesc.Usage != D3D11_USAGE_DEFAULT || !input.published || input.published != input.revision ||
         input.revision == UINT64_MAX || input.begin >= input.end || input.end > width ||
         input.context != context || input.generation != capture->generation ||
-        !capture->coverage || !capture->creations || s.coverageLost.load(std::memory_order_acquire)) return out;
+        !capture->coverage || !capture->creations || captureRouting.Lost(event)) return out;
     if (!ConstantUnconditional(context) || !CopyConstantCpu(cb.Staging() + input.begin,
         reinterpret_cast<const std::uint8_t*>(input.bytes.data()) + input.begin, input.end - input.begin)) return out;
     cb.pending = true; out.capture_ = capture; out.resource_ = target; out.revision_ = cb.revision;
@@ -3483,10 +3599,13 @@ CpuContentSubmission CpuContentSubmission::Copy(ID3D11DeviceContext* context, ID
 void ConstantMapped(ID3D11DeviceContext* context, ID3D11Resource* resource, UINT sub, D3D11_MAP type, UINT flags,
     D3D11_MAPPED_SUBRESOURCE* mapped, HRESULT result, std::uint64_t generation, bool knownCpuShadow) noexcept
 {
-    if (!generation || FAILED(result) || !mapped || !mapped->pData || !MapResourceRegistered(resource)) return;
+    if (!generation || FAILED(result) || !mapped || !mapped->pData) return;
+    const auto event = ResourceEvent(context, resource);
+    if (!event || event.generation != generation) return;
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { s.coverageLost.store(true, std::memory_order_release); return; }
-    const auto capture = s.capture;
+    if (!lock.owns_lock()) { captureRouting.Lose(event); return; }
+    const auto captured = Captured(s, event); if (!captured) return;
+    const auto capture = captured;
     if (!capture || generation != capture->generation) return;
     const auto game = capture->resources.Find(Pointer(resource));
     if (!game || !game->constant) return;
@@ -3498,7 +3617,7 @@ void ConstantMapped(ID3D11DeviceContext* context, ID3D11Resource* resource, UINT
         game->bufferDesc.Usage != D3D11_USAGE_DYNAMIC || game->bufferDesc.CPUAccessFlags != D3D11_CPU_ACCESS_WRITE ||
         !game->mapped || cb.pending || cb.revision == UINT64_MAX || cb.mapRevision != cb.revision ||
         cb.mapThread != GetCurrentThreadId() || cb.mapContract != contractRevision.load(std::memory_order_acquire) ||
-        s.coverageLost.load(std::memory_order_acquire)) return;
+        captureRouting.Lost(event)) return;
     auto& maps = ConstantMapStore(); std::lock_guard mapLock(maps.mutex);
     ConstantMap* free = nullptr;
     for (auto& map : maps.slots)
@@ -3508,7 +3627,7 @@ void ConstantMapped(ID3D11DeviceContext* context, ID3D11Resource* resource, UINT
     }
     if (!free) return; // leaves the real API pointer untouched, source invalid
     ConstantMap map; map.capture = capture; map.resource = game; map.context = context;
-    map.driver = mapped->pData; map.revision = cb.revision;
+    map.routeSlot = capture->routeSlot; map.driver = mapped->pData; map.revision = cb.revision;
     map.contract = cb.mapContract; map.thread = cb.mapThread;
     map.writeback = !knownCpuShadow;
     if (map.writeback)
@@ -3542,11 +3661,11 @@ CpuContentSubmission CpuContentSubmission::Unmap(ID3D11DeviceContext* context, I
     if (map.writeback) std::memcpy(map.driver, cb.Staging(), width);
     const bool frozen = map.writeback || CopyConstantCpu(cb.Staging(), map.cpu, width);
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { s.coverageLost.store(true, std::memory_order_release); return out; }
+    if (!lock.owns_lock()) { captureRouting.Lose(map.resource->readGeneration, map.routeSlot); return out; }
     const auto capture = map.capture.lock();
-    if (!Enabled() || !capture || s.capture != capture || !frozen || map.thread != GetCurrentThreadId() ||
+    if (!Enabled() || !capture || Captured(s, RouteOf(*capture)) != capture || !frozen || map.thread != GetCurrentThreadId() ||
         map.contract != contractRevision.load(std::memory_order_acquire) || cb.revision != map.revision || !cb.pending ||
-        !map.resource->mapped || cb.mapRevision != map.revision || s.coverageLost.load(std::memory_order_acquire)) { cb.Revoke(); return out; }
+        !map.resource->mapped || cb.mapRevision != map.revision || captureRouting.Lost(RouteOf(*capture))) { cb.Revoke(); return out; }
     out.capture_ = capture; out.resource_ = std::move(map.resource);
     out.revision_ = map.revision; out.contract_ = map.contract; out.thread_ = map.thread; out.end_ = width;
     return out;
@@ -3558,15 +3677,17 @@ void CpuContentSubmission::Returned() noexcept
     const auto source = std::static_pointer_cast<GameResource>(std::move(source_));
     if (!game || !capture || !game->constant) return;
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { s.coverageLost.store(true, std::memory_order_release); return; }
+    if (!lock.owns_lock()) { captureRouting.Lose(RouteOf(*capture)); return; }
     auto& cb = *game->constant;
     if (cb.revision != revision_) return; // newer exact writer owns its own latch
     if (source && (!source->constant || source->mapped || source->constant->pending ||
         source->constant->revision != sourceRevision_ || source->constant->published != sourceRevision_))
     { cb.Revoke(); return; }
-    if (!Enabled() || s.capture != capture || contract_ != contractRevision.load(std::memory_order_acquire) ||
+    // Provisional captures observe real writes before their first Present;
+    // a cleared/replaced route must still reject its retained old receipt.
+    if (!Enabled() || Captured(s, RouteOf(*capture)) != capture || contract_ != contractRevision.load(std::memory_order_acquire) ||
         thread_ != GetCurrentThreadId() || game->mapped || !cb.pending || !capture->coverage || !capture->creations ||
-        capture->exhausted || capture->opaque || s.coverageLost.load(std::memory_order_acquire) ||
+        capture->exhausted || capture->opaque || captureRouting.Lost(RouteOf(*capture)) ||
         begin_ >= end_ || end_ > game->bufferDesc.ByteWidth)
     { cb.Revoke(); return; }
     std::memcpy(cb.Data() + begin_, cb.Staging() + begin_, end_ - begin_);
@@ -3576,7 +3697,9 @@ void CpuContentSubmission::Returned() noexcept
 bool RasterReturnScope::Arm(ID3D11DeviceContext* context, std::uint64_t ticket) noexcept
 {
     if (context_ != context || ticket_ || !ticket) return false;
-    ticket_ = ticket; return true;
+    const auto route = captureRouting.Read();
+    if (!route || route.context != Pointer(context)) return false;
+    generation_ = route.generation; routeSlot_ = route.slot; ticket_ = ticket; return true;
 }
 RasterReturnScope::~RasterReturnScope() { if (ticket_) Complete(false); }
 void RasterReturnScope::Returned() noexcept { if (ticket_) Complete(true); }
@@ -3584,9 +3707,9 @@ void RasterReturnScope::Complete(bool actual) noexcept
 {
     const auto ticket = std::exchange(ticket_, 0);
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) { s.coverageLost.store(true, std::memory_order_release); return; }
+    if (!lock.owns_lock()) { captureRouting.Lose(generation_, routeSlot_); return; }
     auto session = s.active;
-    if (!session || s.observedRasterTicket != ticket || context_ != session->capture->context.Get()) return;
+    if (!session || session->capture->generation != generation_ || s.observedRasterTicket != ticket || context_ != session->capture->context.Get()) return;
     const bool paired = actual && Enabled() && s.capture == session->capture &&
         ticket == session->invocation && s.loaded == session->observedContract &&
         contractRevision.load(std::memory_order_acquire) == session->observedContract &&
@@ -3601,25 +3724,28 @@ void ViewWritten(ID3D11DeviceContext* context, ID3D11View* view) noexcept
     if (!Enabled() || !view) return;
     ComPtr<ID3D11Resource> resource; view->GetResource(&resource); Written(context, resource.Get());
 }
-void OpaqueBoundary(ID3D11DeviceContext*) noexcept
+void OpaqueBoundary(ID3D11DeviceContext* context) noexcept
 {
     if (!Enabled()) return;
-    // Unknown deferred/opaque writes cannot be certified by the immediate
-    // context's resource subset. Whole component becomes Unsupported.
-    Store().coverageLost.store(true, std::memory_order_release);
+    // Same-device opaque/deferred work can write any captured resource. A
+    // foreign device has a separate resource domain and cannot revoke this one.
+    const auto event = ContextEvent(context);
+    if (event) captureRouting.Lose(event);
 }
 bool TryDrawIndexed(ID3D11DeviceContext* c, UINT count, UINT first, INT base, Dx11OriginalDrawIndexed original, RasterReturnScope* returned) noexcept
 {
     if (!Enabled()) return false; // before Store, owner lock, metadata or getters
+    const auto event = captureRouting.Read();
+    if (!event || event.context != Pointer(c)) return false;
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) return false;
-    if (s.coverageLost.load(std::memory_order_acquire)) { LostCoverage(s); return false; }
+    if (!lock.owns_lock() || !captureRouting.Current(event)) return false;
+    if (captureRouting.Lost()) { LostCoverage(s); return false; }
     if (!s.active || !s.capture || s.capture->opaque || s.capture->exhausted) return false;
     if (c == s.capture->context.Get() && GetCurrentThreadId() != s.active->thread)
     {
         // A different real raster issuer revokes the serial immediate-owner
         // assumption. Do not migrate a mutable interpreter between threads.
-        s.coverageLost.store(true, std::memory_order_release); LostCoverage(s); return false;
+        captureRouting.Lose(event); LostCoverage(s); return false;
     }
     if (s.nativePresentTicket || s.observedRasterTicket) return false; // preserve wrong-thread revocation
     return s.active->Raster(c, count, first, base, true, original, nullptr, false, 1, 0, nullptr, returned);
@@ -3628,25 +3754,29 @@ bool TryDrawIndexedInstanced(ID3D11DeviceContext* c, UINT count, UINT instances,
                             UINT firstInstance, Dx11OriginalDrawIndexedInstanced original, RasterReturnScope* returned) noexcept
 {
     if (!Enabled()) return false;
+    const auto event = captureRouting.Read();
+    if (!event || event.context != Pointer(c)) return false;
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) return false;
-    if (s.coverageLost.load(std::memory_order_acquire)) { LostCoverage(s); return false; }
+    if (!lock.owns_lock() || !captureRouting.Current(event)) return false;
+    if (captureRouting.Lost()) { LostCoverage(s); return false; }
     if (!s.active || !s.capture || s.capture->opaque || s.capture->exhausted) return false;
     if (c == s.capture->context.Get() && GetCurrentThreadId() != s.active->thread)
-    { s.coverageLost.store(true, std::memory_order_release); LostCoverage(s); return false; }
+    { captureRouting.Lose(event); LostCoverage(s); return false; }
     if (s.nativePresentTicket || s.observedRasterTicket) return false;
     return s.active->Raster(c, count, first, base, true, nullptr, nullptr, true, instances, firstInstance, original, returned);
 }
 bool TryDraw(ID3D11DeviceContext* c, UINT count, UINT first, Dx11OriginalDraw original, RasterReturnScope* returned) noexcept
 {
     if (!Enabled()) return false; // before Store, lock, getters or plan queries
+    const auto event = captureRouting.Read();
+    if (!event || event.context != Pointer(c)) return false;
     auto& s = Store(); std::unique_lock lock(s.ownerMutex, std::try_to_lock);
-    if (!lock.owns_lock()) return false;
-    if (s.coverageLost.load(std::memory_order_acquire)) { LostCoverage(s); return false; }
+    if (!lock.owns_lock() || !captureRouting.Current(event)) return false;
+    if (captureRouting.Lost()) { LostCoverage(s); return false; }
     if (!s.active || !s.capture || s.capture->opaque || s.capture->exhausted) return false;
     if (c == s.capture->context.Get() && GetCurrentThreadId() != s.active->thread)
     {
-        s.coverageLost.store(true, std::memory_order_release); LostCoverage(s); return false;
+        captureRouting.Lose(event); LostCoverage(s); return false;
     }
     if (s.nativePresentTicket || s.observedRasterTicket) return false; // no concurrent interpreter mutation
     return s.active->Raster(c, count, first, 0, false, nullptr, original, false, 1, 0, nullptr, returned);
@@ -3666,11 +3796,15 @@ void Present(ID3D11Device* device, ID3D11DeviceContext* context, UINT width, UIN
             if (!old->HasPackets()) old.reset();
         }
         if (s.active) s.active->RetireAtPresent();
+        // Any real Present may drain retained packets with their OWN context
+        // and fence. Only the selected capture's Present may advance semantic
+        // state, consume a reload revision or publish a new immutable plan.
+        if (Enabled() && (!s.captureConfirmed || !s.capture || device != s.capture->device.Get() || context != s.capture->context.Get())) return;
         // Overlay preparation can reenter here after global PRE. Retirement is
         // still real, but plan/alias/variable preparation cannot cross its pair.
-        if (s.observedRasterTicket && s.coverageLost.load(std::memory_order_acquire)) LostCoverage(s);
+        if (s.observedRasterTicket && captureRouting.Lost()) LostCoverage(s);
         if (s.nativePresentTicket || s.observedRasterTicket) return;
-        if (s.coverageLost.load(std::memory_order_acquire)) LostCoverage(s);
+        if (captureRouting.Lost()) LostCoverage(s);
         if (Enabled() && s.capture && device == s.capture->device.Get() && context == s.capture->context.Get())
             s.capture->ObserveResolution(width, height);
         Selection choice; std::uint64_t revision;
@@ -3705,7 +3839,7 @@ void Present(ID3D11Device* device, ID3D11DeviceContext* context, UINT width, UIN
         // Dropping this idle root handle cannot drop a submitted packet; it
         // also avoids pinning all creation observations after MOD is disabled.
         if (!Enabled() && !s.active)
-        { mapCaptureLive.store(false, std::memory_order_release); s.capture.reset(); }
+        { mapCaptureLive.store(false, std::memory_order_release); streamCaptureLive.store(false, std::memory_order_release); captureRouting.Clear(); s.capture.reset(); s.candidates = {}; s.captureConfirmed = false; }
         if (s.active && s.active->accepting && Enabled() && device == s.active->capture->device.Get() &&
             context == s.active->capture->context.Get() && GetCurrentThreadId() == s.active->thread)
         { s.active->PrepareDescriptors(); s.active->PrepareWindows(); s.active->PreparePipeline(); }
@@ -3725,12 +3859,13 @@ void Present(ID3D11Device* device, ID3D11DeviceContext* context, UINT width, UIN
         auto& s = Store(); std::lock_guard lock(s.ownerMutex); s.Message(e.what());
         if (s.active) s.active->accepting = false;
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(); }
 }
 void NativePresentScope::Begin(IDXGISwapChain* chain, UINT sync, UINT flags, bool present1) noexcept
 {
     if (session_) { Finish(false, nullptr, 0, 0, false, S_OK); return; }
     if (!Enabled() || !chain || (flags & DXGI_PRESENT_TEST)) return;
+    const auto event = captureRouting.Read(); if (!event) return;
     const auto frameTicks = NativeTicks(); // this real PRE; not a timer advanced at POST
     // COM/creation callbacks are allowed to reenter. This guard only suppresses
     // nested admission while gathering real identities; it never fabricates a
@@ -3745,7 +3880,7 @@ void NativePresentScope::Begin(IDXGISwapChain* chain, UINT sync, UINT flags, boo
     {
         bool retained = false;
         ~CursorAdmission() { if (!retained) OptiInput::ReleaseGameCursor(); }
-    } cursorAdmission;
+    };
     try
     {
         ComPtr<IDXGISwapChain> retainedChain = chain;
@@ -3755,7 +3890,10 @@ void NativePresentScope::Begin(IDXGISwapChain* chain, UINT sync, UINT flags, boo
         if (!context || context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) return;
         ComPtr<ID3D11Device> contextDevice; context->GetDevice(&contextDevice);
         if (contextDevice.Get() != device.Get()) return;
+        if (Pointer(device.Get()) != event.device || Pointer(context.Get()) != event.context) return;
+        CursorAdmission cursorAdmission;
         auto& s = Store(); std::unique_lock lock(s.ownerMutex);
+        if (!captureRouting.Current(event)) return;
         auto session = s.active;
         if (!session || !s.capture || session->capture != s.capture ||
             device.Get() != s.capture->device.Get() || context.Get() != s.capture->context.Get()) return;
@@ -3767,7 +3905,7 @@ void NativePresentScope::Begin(IDXGISwapChain* chain, UINT sync, UINT flags, boo
             s.Message("Unsupported: reentrant/concurrent native Present; global POST refused"); return;
         }
         if (!Enabled() || !session->accepting || session->quarantined || s.capture->opaque || s.capture->exhausted ||
-            !s.capture->coverage || !s.capture->creations || s.coverageLost.load(std::memory_order_acquire) ||
+            !s.capture->coverage || !s.capture->creations || captureRouting.Lost() ||
             GetCurrentThreadId() != session->thread || s.loaded != contractRevision.load(std::memory_order_acquire)) return;
         // XXMI updates TIME at real RunFrameActions PRE, even if no global
         // command consumes it. Keep that SAME native-frame value for draws;
@@ -3821,7 +3959,7 @@ void NativePresentScope::Begin(IDXGISwapChain* chain, UINT sync, UINT flags, boo
         if (!Enabled() || s.active != session || s.capture != session->capture || s.nativePresentTicket || s.observedRasterTicket ||
             !session->accepting || session->quarantined || session->capture->opaque || session->capture->exhausted ||
             !session->capture->coverage || !session->capture->creations ||
-            s.coverageLost.load(std::memory_order_acquire) || s.loaded != revision ||
+            captureRouting.Lost() || s.loaded != revision ||
             contractRevision.load(std::memory_order_acquire) != revision) return;
         if (session->presentCompute)
         {
@@ -3901,7 +4039,7 @@ void NativePresentScope::Begin(IDXGISwapChain* chain, UINT sync, UINT flags, boo
             }
         }
         session_ = session; swapchain_ = std::move(retainedChain); device_ = std::move(device); context_ = std::move(context);
-        ticket_ = ticket; deviceGeneration_ = session->capture->generation; planGeneration_ = session->generation;
+        ticket_ = ticket; deviceGeneration_ = session->capture->generation; routeSlot_ = session->capture->routeSlot; planGeneration_ = session->generation;
         revision_ = revision; thread_ = GetCurrentThreadId();
         window_ = window; windowThread_ = windowThread; preValues_ = values; valueRequirements_ = requirements;
         sync_ = sync; flags_ = flags; present1_ = present1;
@@ -3913,7 +4051,7 @@ void NativePresentScope::Begin(IDXGISwapChain* chain, UINT sync, UINT flags, boo
         o.result = S_OK; // result is explicitly unknown until Returned, never a success receipt
         cursorAdmission.retained = cursor.nativeEpoch != 0;
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(event); }
 }
 void NativePresentScope::Returned(IDXGISwapChain* chain, UINT sync, UINT flags, bool present1, HRESULT result) noexcept
 { Finish(true, chain, sync, flags, present1, result); }
@@ -3960,7 +4098,7 @@ void NativePresentScope::Finish(bool returned, IDXGISwapChain* chain, UINT sync,
         const bool publishPost = paired && realReturn && Enabled() && session->accepting && !session->quarantined &&
             s.active == session && s.capture == session->capture && !session->capture->opaque &&
             !session->capture->exhausted && session->capture->coverage && session->capture->creations &&
-            !s.coverageLost.load(std::memory_order_acquire) &&
+            !captureRouting.Lost() &&
             revision_ == contractRevision.load(std::memory_order_acquire) && s.loaded == revision_;
         // XXMI executes POST after every real original return, including a
         // non-success HRESULT. A clear is a new GPU submission with its own
@@ -3979,7 +4117,7 @@ void NativePresentScope::Finish(bool returned, IDXGISwapChain* chain, UINT sync,
         }
         if (s.nativePresentTicket == ticket_) s.nativePresentTicket = 0;
     }
-    catch (...) { Store().coverageLost.store(true, std::memory_order_release); }
+    catch (...) { captureRouting.Lose(deviceGeneration_, routeSlot_); }
     if (!keepCursor) OptiInput::ReleaseGameCursor(); // outside ownerMutex, including a cancelled POST
     session_.reset(); swapchain_.Reset(); context_.Reset(); device_.Reset(); ticket_ = 0;
     window_ = nullptr; windowThread_ = 0; preValues_ = {}; valueRequirements_ = {};

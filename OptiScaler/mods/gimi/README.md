@@ -2,6 +2,11 @@
 
 This document describes the command core and its resource/executor integration. `GimiRuntime` owns the existing opt-in hook path; source integration and a successful build do not establish MOD rendering. No provider/proxy/second-loader dependency is introduced.
 
+F6 device/context/generation routing and its explicit selected-Present activation
+contract are maintained in [RUNTIME-OWNERSHIP.md](RUNTIME-OWNERSHIP.md). Ordinary
+device callbacks cannot replace an existing capture; same-device unknown writes
+still invalidate it. This is separate from the language coverage recorded below.
+
 The bounded IniParams path creates real immutable `Texture1D<float4>` pages at load/Present. `GimiIniParams.h` defines the numeric page state; `GimiResources` proves its finite closure and creates all GPU pages; `GimiDx11Executor` validates and binds pages in tape order; `GimiRuntime` commits the final state only after a successful transaction and retains pages through the existing real fence/quarantine owner. This is source implementation, not game or visual acceptance.
 
 Current original VS/PS must be creation-reflected **unused at t120**. An original shader already consuming that slot remains Unsupported. R1006 adds a separate authentic PS replacement capability for the exact output-modulation contract below; it never rewrites that original unused-slot fact. Binding an unused slot alone is parameter transport. R990 model-only links and ordered entry scheduling remain; duplicate ShaderOverride merging and complete package dependencies are not silently dropped to load Vodyanitsa.

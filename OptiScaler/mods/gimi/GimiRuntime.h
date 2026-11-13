@@ -92,7 +92,12 @@ struct HookServices
 };
 // Coverage is the existing committed common/write/context-boundary hook set;
 // creation coverage is independently reported by D3D11_Hooks after commit.
-void DeviceCreated(ID3D11Device*, ID3D11DeviceContext*, HookServices, bool coverage) noexcept;
+// Creation registers provisional captures, retaining observations before the
+// first Present. Only the hook owner's selected native game Present confirms
+// the owner or explicitly migrates to another device/context.
+enum class CaptureSource { DeviceCreation, PresentOwner };
+void DeviceCreated(ID3D11Device*, ID3D11DeviceContext*, HookServices, bool coverage,
+                   CaptureSource = CaptureSource::DeviceCreation) noexcept;
 void CreationCoverage(ID3D11Device*, bool complete) noexcept;
 // Initializer/Present only, one attempt per capture generation and Configure revision.
 // Claim/complete release owner/request locks across COM and the owned transaction.
@@ -178,7 +183,8 @@ void OpaqueBoundary(ID3D11DeviceContext*) noexcept;
 class RasterReturnScope final
 {
     ID3D11DeviceContext* context_ = nullptr;
-    std::uint64_t ticket_ = 0;
+    std::uint64_t ticket_ = 0, generation_ = 0;
+    unsigned routeSlot_ = 0;
 public:
     explicit RasterReturnScope(ID3D11DeviceContext* c) noexcept : context_(c) {}
     ~RasterReturnScope();
@@ -220,6 +226,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
     std::uint64_t ticket_ = 0, deviceGeneration_ = 0, planGeneration_ = 0, revision_ = 0;
+    unsigned routeSlot_ = 0;
     DWORD thread_ = 0, windowThread_ = 0;
     HWND window_ = nullptr; // observed identity, never a retained HWND lifetime lease
     NativePresentValues preValues_;
