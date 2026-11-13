@@ -54,6 +54,8 @@ $suites = @(
     @{ Name = 'ResourceFlipWarp'; Source = 'OptiScaler/shaders/resource_flip/tests/RFWarp.cpp'; Libraries = 'd3d12.lib dxgi.lib d3dcompiler.lib' },
     @{ Name = 'F6InputPolicy'; Source = 'OptiScaler/runtime/tests/F6InputPolicyTests.cpp' },
     @{ Name = 'HookOwnership'; Source = 'OptiScaler/runtime/tests/HookOwnershipTests.cpp'; Libraries = ('"{0}"' -f (Join-Path $root 'OptiScaler/library/detours/detours.lib')) },
+    @{ Name = 'HoYoShadeEffectRequirements'; Source = 'OptiScaler/runtime/tests/HoYoShadeEffectRequirementsTests.cpp' },
+    @{ Name = 'MethodHooks'; Source = 'OptiScaler/runtime/tests/MethodHooksTests.cpp'; Libraries = ('"{0}"' -f (Join-Path $root 'OptiScaler/library/detours/detours.lib')) },
     @{ Name = 'SourcePresent'; Source = 'OptiScaler/runtime/tests/SourcePresentTests.cpp' },
     @{ Name = 'FeatureTransition'; Source = 'OptiScaler/upscalers/tests/FeatureTransitionTests.cpp' },
     @{ Name = 'NgxDx12ResourceView'; Source = 'OptiScaler/upscalers/tests/NgxDx12ResourceViewTests.cpp' },
@@ -216,7 +218,7 @@ foreach ($suite in $suites) {
             if ($LASTEXITCODE -ne 0) { throw 'Preview first-use producer replay failed' }
         }
         if ($suite.Name -eq 'FgHandoffWarp') {
-            foreach ($negative in @('--negative-queue', '--negative-guides', '--negative-handback')) {
+            foreach ($negative in @('--negative-queue', '--negative-guides', '--negative-handback', '--negative-input-handback')) {
                 $negativeLog = Join-Path $suiteOutput ($negative.Substring(2) + '.log')
                 & $exe $negative *> $negativeLog
                 $expected = if ($negative -eq '--negative-queue') { 'SDK physical factory cannot overwrite source queue' } else { 'GPU snapshot uses the matching source frame at every pixel' }

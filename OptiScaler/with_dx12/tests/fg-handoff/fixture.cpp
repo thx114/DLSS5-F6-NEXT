@@ -5,6 +5,8 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
+#include <with_dx12/SharedInputRead.h>
+#include <integration/HoYoShadeBridgeDepth.h>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -58,6 +60,7 @@ public:
 };
 class Dx11WithDx12 {
 public:
+    inline static std::recursive_mutex InputReadMutex;
     inline static std::mutex SyncMutex;
     inline static ID3D11DeviceContext4* Dx11DeviceContext=nullptr;
     inline static ID3D11Fence* Dx11FenceTextureCopy=nullptr;
@@ -73,7 +76,7 @@ public:
     static bool EnsureSyncResourcesLocked(){return Dx11DeviceContext && Dx11FenceTextureCopy && Dx12FenceTextureCopy && Dx12CommandQueue;}
     static void ReleaseSyncResourcesLocked(){} // Fault seam; normal cases retain the real fixture fences.
     static ID3D12CommandQueue* GetD3D12CommandQueue(){return Dx12CommandQueue;}
-    static void BlockFgGuideWrites(){FgGuideWritesBlocked.store(true);}
+    static void BlockFgGuideWrites() noexcept {FgGuideWritesBlocked.store(true);}
     static bool SyncDx12ToDx11(ID3D12CommandQueue* completedReaderQueue=nullptr);
     static bool MissingWriterWait(ID3D12CommandQueue* completedReaderQueue=nullptr);
 };
@@ -263,6 +266,57 @@ void Pixels(bool early,bool delayedRead,bool missingWait=false,bool starRail=fal
     Hr(w.gate->Signal(1));Wait(w.uiDone.Get(),1);if(early && !missingWait)Wait(w.ready12.Get(),next);
     w.Expect(1);omitWriterWait=false;
 }
+interop::SharedInputReadRef InputOwner(Warp& w) {
+    auto input=std::make_shared<interop::SharedInputRead>(&Dx11WithDx12::BlockFgGuideWrites);
+    input->color=input->depth=w.input; input->color11=input->depth11=w.shared;
+    input->sourceColor11=input->sourceDepth11=w.shared; input->queue=w.client;
+    input->ready=w.ready12; input->readyValue=1; input->cacheFrame=7;
+    input->stream=8; input->generation=9; input->frame=10;
+    return input;
+}
+void BeforeSrInputOwner(bool missingWait=false) {
+    Warp w;++scenarios;
+    w.Write(1);Hr(w.context4->Signal(w.ready11.Get(),1));w.context->Flush();
+    Hr(w.client->Wait(w.ready12.Get(),1));Hr(w.client->Wait(w.gate.Get(),1));
+    auto input=InputOwner(w);
+    Check(input->Current()&&!input->CanOverwrite(),"new BeforeSR reader reserves shared input contents");
+    auto depth=HoYoShade::Depth::FromBridge(input,Width,Height,true);
+    Check(depth.reader&&depth.reversed&&!depth.yFlipped&&depth.reader->Validate(depth),"bridge depth uses the exact queue/ready/resource/source identity");
+    auto bad=depth;++bad.frame;
+    Check(!depth.reader->Validate(bad),"old bridge frame cannot borrow depth");
+    Check(!HoYoShade::Depth::FromBridge(input,Width+1,Height,true).reader,"padded extent is not a full depth plane");
+    Hr(w.list->Close());ID3D12CommandList* lists[]{w.list.Get()};w.client->ExecuteCommandLists(1,lists);
+    Hr(w.client->Signal(w.uiDone.Get(),1));
+    Check(depth.reader->BindCompletion(w.uiDone.Get(),1)&&input->BindCompletion(w.uiDone.Get(),1),"depth and color share the same actual owned completion");
+    Check(!input->CanOverwrite(),"CPU submission return cannot release blocked reader");
+    Check(!input->BindCompletion(w.uiDone.Get(),2),"a different tail cannot replace the bound completion");
+    Check(missingWait?Dx11WithDx12::MissingWriterWait(w.client.Get()):Dx11WithDx12::SyncDx12ToDx11(w.client.Get()),"actual shared-fence handback succeeds");
+    Check(input->ReturnedAfterGpuWait()&&input->CanOverwrite(),"queued GPU Wait permits ordered writer without a CPU stall");
+    Check(w.uiDone->GetCompletedValue()==0,"permission is ordering, not invented GPU completion");
+    w.Write(2);Hr(w.context4->Signal(w.ready11.Get(),3));w.context->Flush();
+    HANDLE e=CreateEventW(nullptr,FALSE,FALSE,nullptr);Check(e!=nullptr,"create writer event");
+    Hr(w.ready12->SetEventOnCompletion(3,e));
+    if(!missingWait)Check(WaitForSingleObject(e,30)==WAIT_TIMEOUT,"next writer remains blocked by real BeforeSR reader");
+    else Check(WaitForSingleObject(e,5000)==WAIT_OBJECT_0,"negative writer really overtakes missing GPU wait");
+    CloseHandle(e);Hr(w.gate->Signal(1));Wait(w.uiDone.Get(),1);if(!missingWait)Wait(w.ready12.Get(),3);
+    w.Expect(1);
+    Check(!depth.reader->Validate(depth),"returned input cannot be read again under the old epoch");
+}
+void BeforeSrOwnerRefusals() {
+    Warp w;++scenarios;
+    auto untouched=InputOwner(w);untouched->CancelUntouched();
+    Check(untouched->CanOverwrite()&&!untouched->Current(),"untouched warmup/refusal leaves ordinary SR writable");
+    Check(!untouched->BindCompletion(w.uiDone.Get(),1),"cancelled input cannot acquire a consumer tail");
+    auto input=InputOwner(w);
+    Check(!input->BindCompletion(nullptr,1)&&!input->BindCompletion(w.uiDone.Get(),UINT64_MAX),"missing and sentinel tails refuse");
+    Check(!input->ReturnedAfterGpuWait(),"no return without an actual bound tail");
+    input->Quarantine();
+    Check(!input->CanOverwrite()&&Dx11WithDx12::FgGuideWritesBlocked.load(),"uncertain BeforeSR blocks reset/replacement/writes");
+    auto typed=InputOwner(w);auto desc=w.input->GetDesc();desc.Format=DXGI_FORMAT_R16_TYPELESS;
+    D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;
+    Hr(w.device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&desc,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&typed->depth)));
+    Check(!HoYoShade::Depth::FromBridge(typed,Width,Height,true).reader,"R16 typeless has no guessed UNORM/FLOAT interpretation");
+}
 void Failures() {
     for(unsigned fault=0;fault<9;++fault){Warp w;++scenarios;failUiSignal=fault==4;
         if(fault==1)w.fg.active=false;if(fault==2)w.fg._uiCloseFailed[0]=true;
@@ -320,6 +374,7 @@ int main(int argc,char** argv) {
     if(std::strcmp(mode,"--negative-queue")==0)QueueIdentity(true);
     else if(std::strcmp(mode,"--negative-guides")==0)Pixels(false,true);
     else if(std::strcmp(mode,"--negative-handback")==0)Pixels(true,true,true);
-    else {QueueIdentity();Pixels(true,true);Pixels(true,false);Pixels(true,true,false,true);Pixels(true,false,false,true);Pixels(true,true,false,true,true);Failures();SourceValidationAndQueueChange();}
+    else if(std::strcmp(mode,"--negative-input-handback")==0)BeforeSrInputOwner(true);
+    else {QueueIdentity();Pixels(true,true);Pixels(true,false);Pixels(true,true,false,true);Pixels(true,false,false,true);Pixels(true,true,false,true,true);Failures();SourceValidationAndQueueChange();BeforeSrInputOwner();BeforeSrOwnerRefusals();}
     std::printf("PASS %u scenarios, %u checks; actual WARP queue/pixel handoff; SDK/game/FPS untested\n",scenarios,checks);
 }

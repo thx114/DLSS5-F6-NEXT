@@ -106,7 +106,7 @@ enum class CaptureReason {
     TechniquesEmpty, UniformCapacity, UniformHandle, UniformIdentity, UniformDuplicate,
     UniformAnnotation, UniformShape, UniformScalarCapacity, UniformType,
     GraphUnavailable, ValuesUnavailable, OwnedTechniqueMissing, OwnedUniformMismatch,
-    OwnedOrderPending, OwnedStateMismatch, Exception,
+    OwnedOrderPending, OwnedStateMismatch, OwnedDefinitionMismatch, Exception,
     SnapshotNotAttemptedCounterExhausted, OwnerExportPending
 };
 inline const char* Name(CaptureReason reason) noexcept
@@ -150,6 +150,7 @@ inline const char* Name(CaptureReason reason) noexcept
     case CaptureReason::GraphUnavailable: return "required-graph-incomplete";
     case CaptureReason::ValuesUnavailable: return "live-uniform-values-unavailable";
     case CaptureReason::OwnedTechniqueMissing: return "owned-enabled-technique-missing";
+    case CaptureReason::OwnedDefinitionMismatch: return "owned-effect-definition-mismatch";
     case CaptureReason::OwnedUniformMismatch: return "owned-required-uniform-graph-mismatch";
     case CaptureReason::OwnedOrderPending: return "owned-order-unconfirmed";
     case CaptureReason::OwnedStateMismatch: return "owned-technique-state-unconfirmed";
@@ -226,6 +227,7 @@ struct Uniform {
 };
 struct Source {
     bool valid = false, enabled = false, refresh = true;
+    int mxaoLaunchpadNormals = -1; // reflected compile definition, never a uniform
     std::string config, preset;
     std::shared_ptr<Files> files;
     std::vector<Technique> techniques;
@@ -616,6 +618,21 @@ inline bool CacheGraphFailure(CaptureReason reason) noexcept
     default: return false; // enum/capacity/mutation failures retain callback retry cadence
     }
 }
+// Effective explicit MXAO normal-source contract. The shader default is 0;
+// expressions/failed reflection remain unknown rather than disabling requests.
+inline int LaunchpadNormalsDefinition(api::effect_runtime* runtime, const char* effect, const CallBoundary& call) {
+    char definition[32]{}; size_t size=sizeof(definition); bool found=false;
+    if (!call.Invoke([&] { found=runtime->get_preprocessor_definition_for_effect(effect,
+        "MXAO_USE_LAUNCHPAD_NORMALS",definition,&size); })) return -1;
+    if (!found) {
+        size=sizeof(definition);
+        if (!call.Invoke([&] { found=runtime->get_preprocessor_definition(
+            "MXAO_USE_LAUNCHPAD_NORMALS",definition,&size); })) return -1;
+    }
+    return !found ? 0 : size<sizeof(definition) && !std::strcmp(definition,"1") ? 1 :
+        size<sizeof(definition) && !std::strcmp(definition,"0") ? 0 : -1;
+}
+
 inline void Capture(api::effect_runtime* runtime, const CoreApi& core, Source& out, bool reload = false,
                      uint64_t generation = 0, CaptureAccess access = CaptureAccess::ExistingSnapshot) noexcept
 {
@@ -762,6 +779,12 @@ inline void Capture(api::effect_runtime* runtime, const CoreApi& core, Source& o
             out.uniformHandles = std::move(handles); out.uniforms = std::move(uniforms);
             for (auto& effect : out.effects) effect.included = effect.enabled;
             out.graphKnown = out.graphValid = true;
+            out.mxaoLaunchpadNormals = 0;
+            for (const auto& effect : out.effects) {
+                if (!effect.enabled || !std::string_view(effect.key).ends_with("MartysMods_MXAO.fx")) continue;
+                out.mxaoLaunchpadNormals=LaunchpadNormalsDefinition(runtime,effect.key.c_str(),call);
+                if (!call.Current()) return;
+            }
             ++out.graphBuilds;
         } else { facts.uniformsCached = true; facts.graph = out.graphFacts; }
         if (!out.graphValid) { Reject(facts.reason, out.graphFacts.reason); return; }
@@ -874,6 +897,13 @@ inline bool Apply(Source& source, api::effect_runtime* runtime, uint64_t generat
     }
     const bool cacheable = generation && events.revision && events.reloadObserved;
     if (source.mappingDirty || !cacheable) {
+        for (const auto& effect : source.effects) {
+            if (!effect.enabled || !std::string_view(effect.key).ends_with("MartysMods_MXAO.fx")) continue;
+            const auto actual=LaunchpadNormalsDefinition(runtime,effect.key.c_str(),call);
+            if (!call.Current()) return Reject(facts.reason,CaptureReason::BoundaryChanged);
+            if (actual<0 || actual!=source.mxaoLaunchpadNormals)
+                return Reject(facts.reason,CaptureReason::OwnedDefinitionMismatch);
+        }
         std::vector<api::effect_technique> handles;
         if (!EnumerateTechniques(runtime, handles, facts.techniques, facts.reason, call)) return false;
         facts.techniqueEnumComplete = true;

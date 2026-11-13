@@ -1,4 +1,5 @@
 #pragma once
+#include <runtime/LoaderModuleState.h>
 
 #include "SysUtils.h"
 
@@ -218,7 +219,7 @@ inline static HMODULE GetDllNameModule(std::vector<std::string>* namesList)
         auto name = namesList->at(i);
         auto module = KernelBaseProxy::GetModuleHandleA_()(name.c_str());
 
-        if (module != nullptr)
+        if (module != nullptr && LibraryLoading::Initialized(module))
             return module;
     }
 
@@ -232,7 +233,7 @@ inline static HMODULE GetDllNameWModule(std::vector<std::wstring>* namesList)
         auto name = namesList->at(i);
         auto module = KernelBaseProxy::GetModuleHandleW_()(name.c_str());
 
-        if (module != nullptr)
+        if (module != nullptr && LibraryLoading::Initialized(module))
             return module;
     }
 

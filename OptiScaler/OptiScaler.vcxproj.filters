@@ -1919,6 +1919,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="integration\HoYoShade.h"><Filter>Other</Filter></ClInclude>
+    <ClInclude Include="integration\HoYoShade_Bridge.inl"><Filter>Other</Filter></ClInclude>
+    <ClInclude Include="integration\HoYoShadeBridgeDepth.h"><Filter>Other</Filter></ClInclude>
+    <ClInclude Include="with_dx12\SharedInputRead.h"><Filter>Other</Filter></ClInclude>
+    <ClInclude Include="hooks\MethodHooks.h"><Filter>Other</Filter></ClInclude>
+    <ClInclude Include="hooks\RoutedHook.h"><Filter>Other</Filter></ClInclude>
+    <ClInclude Include="runtime\LibraryLoadRequest.h"><Filter>Other</Filter></ClInclude>
     <ClInclude Include="integration\HoYoShadeApi.h"><Filter>Other</Filter></ClInclude>
     <ClInclude Include="integration\HoYoShadeOwnedRuntime.h"><Filter>Other</Filter></ClInclude>
     <ClInclude Include="integration\HoYoShadePolicy.h"><Filter>Other</Filter></ClInclude>
@@ -1957,6 +1963,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="hooks\HookOwnership.h" />
+    <ClInclude Include="mods\gimi\GimiPresentSource.h" />
     <ClInclude Include="hooks\HookTransaction.h" />
     <ClInclude Include="motion\DepthShaderCapabilities.h" />
     <ClInclude Include="runtime\ComIdentity.h" />
@@ -1974,5 +1981,10 @@
   <ItemGroup>
     <ClCompile Include="shaders\dlssnr\NrGpuExecutionLifetime.cpp" />
     <ClInclude Include="shaders\dlssnr\NrGpuExecutionLifetime.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="integration\HoYoShadeEffectRequirements.h" />
+    <ClInclude Include="runtime\LibraryObservation.h" />
+    <ClInclude Include="runtime\LoaderModuleState.h" />
   </ItemGroup>
 </Project>

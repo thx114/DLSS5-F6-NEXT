@@ -148,10 +148,7 @@ bool DLSSG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
         StreamlineProxy::UpgradeInterface()((void**) &factory);
         DxgiFactoryHooks::HookToDLSSGFactory(factory);
     }
-    else
-    {
-        slFactory->Release();
-    }
+    // CheckForRealObject returns a borrowed identity; it already released QI.
 
     StreamlineProxy::SetFeatureLoaded()(sl::kFeatureDLSS_G, true);
 
@@ -284,10 +281,7 @@ bool DLSSG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmd
             StreamlineProxy::UpgradeInterface()((void**) &factory);
             DxgiFactoryHooks::HookToDLSSGFactory(factory);
         }
-        else
-        {
-            slFactory->Release();
-        }
+        // CheckForRealObject returns a borrowed identity; it already released QI.
 
         IDXGIFactory2* factory2 = nullptr;
         if (factory->QueryInterface(IID_PPV_ARGS(&factory2)) != S_OK)

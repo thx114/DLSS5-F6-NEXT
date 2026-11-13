@@ -2,6 +2,7 @@
 
 #include "GimiDx11Executor.h"
 #include "GimiShaderSource.h"
+#include "GimiPresentSource.h"
 #include <string>
 #include <vector>
 
@@ -97,7 +98,7 @@ struct HookServices
 // the owner or explicitly migrates to another device/context.
 enum class CaptureSource { DeviceCreation, PresentOwner };
 void DeviceCreated(ID3D11Device*, ID3D11DeviceContext*, HookServices, bool coverage,
-                   CaptureSource = CaptureSource::DeviceCreation) noexcept;
+                   CaptureSource = CaptureSource::DeviceCreation, const NativePresentSourcePtr& = {}) noexcept;
 void CreationCoverage(ID3D11Device*, bool complete) noexcept;
 // Initializer/Present only, one attempt per capture generation and Configure revision.
 // Claim/complete release owner/request locks across COM and the owned transaction.
@@ -202,7 +203,7 @@ bool TryDrawIndexedInstanced(ID3D11DeviceContext*, UINT count, UINT instances, U
 bool TryDraw(ID3D11DeviceContext*, UINT vertexCount, UINT firstVertex, Dx11OriginalDraw original, RasterReturnScope* = nullptr) noexcept;
 // Call on the authentic existing Present lifecycle even after config off.
 // At most one Signal per owner with actual unsealed MOD packets; never waits.
-void Present(ID3D11Device*, ID3D11DeviceContext*, UINT width, UINT height) noexcept;
+void Present(ID3D11Device*, ID3D11DeviceContext*, UINT width, UINT height, const NativePresentSourcePtr& = {}) noexcept;
 
 // Real native D3D11 Present/Present1 invocation only. The existing outer
 // owner calls Begin before its overlay, then Returned ONLY after its original
@@ -217,11 +218,12 @@ public:
     ~NativePresentScope() noexcept;
     NativePresentScope(const NativePresentScope&) = delete;
     NativePresentScope& operator=(const NativePresentScope&) = delete;
-    void Begin(IDXGISwapChain*, UINT sync, UINT flags, bool present1) noexcept;
+    void Begin(const NativePresentSourcePtr&, IDXGISwapChain*, UINT sync, UINT flags, bool present1) noexcept;
     void Returned(IDXGISwapChain*, UINT sync, UINT flags, bool present1, HRESULT) noexcept;
 private:
     void Finish(bool returned, IDXGISwapChain*, UINT, UINT, bool, HRESULT) noexcept;
     std::shared_ptr<void> session_;
+    NativePresentSourcePtr source_;
     Microsoft::WRL::ComPtr<IDXGISwapChain> swapchain_;
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;

@@ -6,6 +6,7 @@
 #include "HoYoShadeOwnedRuntime.h"
 #include "HoYoShadeDepth.h"
 #include <Windows.h>
+#include <d3d11.h>
 #include <d3d12.h>
 #include <array>
 #include <memory>
@@ -14,6 +15,9 @@
 
 
 namespace DrawUiMask {class Frame;}
+#ifdef HOYOSHADE_STAGE_TEST
+namespace reshade::api {struct effect_runtime;}
+#endif
 
 namespace HoYoShade
 {
@@ -26,6 +30,20 @@ using FactoryOwnerFreeze=bool(*)(void*,const void*,const void*,size_t,const MEMO
 bool ExistingFactoryOwnerIntact(const ExistingFactoryOwnerRef&,const void* terminal,const char* symbol,
                                FactoryOwnerFreeze freeze=nullptr,void* context=nullptr) noexcept;
 namespace NaturalAssociation {class Source;}
+// Real bridge enrollment supplies the source chain; devices alone cannot pick
+// between multiple swapchains. Proofs borrow its current backbuffer per call.
+void RegisterBridgeSource(const void* wrapper, IDXGISwapChain*, ID3D11Device*) noexcept;
+void ForgetBridgeSource(const void* wrapper) noexcept;
+class BridgeSourceResize final {
+    const void* wrapper;
+public:
+    explicit BridgeSourceResize(const void*) noexcept;
+    ~BridgeSourceResize();
+    BridgeSourceResize(const BridgeSourceResize&) = delete;
+    BridgeSourceResize& operator=(const BridgeSourceResize&) = delete;
+};
+void BeginBeforeSrSource(ID3D11DeviceContext*, uint64_t stream) noexcept;
+std::shared_ptr<const NaturalAssociation::Source> CaptureBridgeSource(ID3D11Device*, uint64_t stream) noexcept;
 // Bind the one active acquired source to a unique current callback lifetime /
 // epoch before producer work. A missing/ambiguous/consumed source stays denied.
 void BindNaturalSource(const NaturalAssociation::Source* source) noexcept;
@@ -76,6 +94,9 @@ namespace Testing {
 // and callbacks; no fabricated SDK object or alternate product loader.
 bool ConnectHost(HMODULE self, const char* config, Stage stage) noexcept;
 void EnableHost(bool enabled) noexcept;
+// Supplies pre-Present facts from a real runtime and its live native chain.
+// This tests placement and pixels, not the backend's event dispatch order.
+bool BeforePresent(reshade::api::effect_runtime*, IDXGISwapChain*) noexcept;
 }
 #endif
 bool Selected(Stage stage) noexcept;
@@ -154,10 +175,12 @@ struct ProducerReady
     uint64_t generation = 0, batch = 0;
 };
 enum class NaturalSourceContract : unsigned {
-    TypedBackbuffer, BeforeSrExactDevice, BeforeSrOwnedRuntimeWithSelectionDonor, BeforeSrNativeProducer
+    TypedBackbuffer, BeforeSrExactDevice, BeforeSrOwnedRuntimeWithSelectionDonor, BeforeSrNativeProducer,
+    BeforeSrBridgeInput
 };
 struct ColorEndpoint
 {
+    std::shared_ptr<void> inputOwner; // both API objects for a shared SR input batch
     std::shared_ptr<DrawUiMask::Frame> uiMask;
     Stage stage = Stage::BeforeNr;
     ID3D12Resource* color = nullptr;
@@ -219,6 +242,8 @@ struct StageResult
     OwnedRuntime::Completion completion;
     BeforeSrCopyback beforeSr;
     uint64_t techniques = 0;
+    uint64_t recordedTechniques = 0; // includes a private IPC warmup, never implies copyback
+    bool inputWarmup = false;
     bool depthAvailable = false; // actual owned DEPTH binding reflected by the core
     bool Submitted() const noexcept { return attempt.state == SubmissionState::Submitted; }
     // Execution evidence only. Identity/pass-through techniques need not change pixels.

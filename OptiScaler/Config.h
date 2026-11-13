@@ -1181,8 +1181,8 @@ class Config
     CustomOptional<std::string> GimiHostRoot { std::string{} };
     CustomOptional<std::string> GimiNamespaceRoot { std::string{} };
     CustomOptional<std::string> GimiImportRoot { std::string{} };
-    // HoYoShade observes the already loaded private core; disabled unless requested.
-    FramePipeline::ObservedSetting<CustomOptional<bool>,bool> HoYoShadeEnabled { false };
+    // Preserve explicit false on save: auto may enable a requested BeforeSR placement.
+    FramePipeline::ObservedSetting<CustomOptional<bool, SoftDefault>,bool> HoYoShadeEnabled { false };
     CustomOptional<int> HoYoShadeStage { 2 }; // 1=before SR, 2=before NR, 3=final output
     CustomOptional<bool> LoadCustomAmdxc64OnRdna2 { false };
     CustomOptional<bool> LoadAsiPlugins { false };

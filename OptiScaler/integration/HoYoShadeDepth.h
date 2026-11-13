@@ -95,8 +95,9 @@ inline bool Compatible(const D3D12_RESOURCE_DESC& d, const Access& a) noexcept
             a.typedFormat == DXGI_FORMAT_R32G32_FLOAT || a.typedFormat == DXGI_FORMAT_R32G32B32A32_FLOAT);
 }
 
-// No registry, core, loader or global ownership. The caller must clear DEPTH
-// and prove its preceding GPU batch complete BEFORE replacing/destroying views.
+// The private copy keeps DEPTH stable without retaining a reusable producer
+// texture in a descriptor. The caller proves the preceding batch complete
+// before replacing this cache, owned by the same runtime/color lease.
 // Owned callers embed Cache in an adopted Resource; natural callers put it in
 // their existing domain owner. Destroy is explicit while the SDK device lives.
 struct Cache
@@ -105,7 +106,9 @@ struct Cache
     Cache(const Cache&) = delete;
     Cache& operator=(const Cache&) = delete;
     reshade::api::device* device = nullptr; // borrowed exact SDK owner of srv
-    Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+    reshade::api::resource copy{0};
+    uint32_t width = 0, height = 0;
+    DXGI_FORMAT sourceFormat = DXGI_FORMAT_UNKNOWN;
     reshade::api::resource_view srv{0};
     DXGI_FORMAT typedFormat = DXGI_FORMAT_UNKNOWN;
     bool quarantined = false; // sticky for this caller-owned cache lifetime
@@ -136,7 +139,8 @@ public:
 };
 // May throw for an SDK exception. Resource/reader admission refusal returns
 // null, so ordinary color effects continue with a cleared DEPTH semantic.
-std::shared_ptr<Prepared> Prepare(const Access&, ID3D12Device*, reshade::api::device*, Cache&);
+std::shared_ptr<Prepared> Prepare(const Access&, ID3D12Device*, reshade::api::device*, Cache&, reshade::api::effect_runtime*);
+void ResetReadiness(reshade::api::effect_runtime*);
 void Clear(reshade::api::effect_runtime*); // propagates SDK errors; never renders stale depth
 
 // Owned-stage adapters. A missing real reader leaves the optional input empty.

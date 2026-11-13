@@ -1,6 +1,8 @@
 #include <pch.h>
 #include <native/OpticalFgNrPolicy.h>
 #include <integration/HoYoShade.h>
+#include <integration/HoYoShadeNaturalAssociation.h>
+#include <integration/HoYoShadeBridgeDepth.h>
 #include "IFeature_Dx11wDx12.h"
 #include <runtime/GuideCapture.h>
 #include <runtime/GuideSourceMetadataNgx.h>
@@ -677,6 +679,7 @@ bool IFeature_Dx11wDx12::Init(ID3D11Device* InDevice, ID3D11DeviceContext* InCon
 
 bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Parameter* InParameters)
 {
+    HoYoShade::BeginBeforeSrSource(InDeviceContext, reinterpret_cast<uint64_t>(this));
     const uint64_t nrSourceAttempt = nrSourceAttempts.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto presentSourceAttempt = DlssNr::BeginGenshinPresentSource();
     // Revoke the last successful observation even on the earliest failure.
@@ -882,12 +885,15 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             if (FAILED(producerHr)) {   break; }
             Microsoft::WRL::ComPtr<ID3D11Device> sourceDevice;
             InDeviceContext->GetDevice(&sourceDevice);
+            HoYoShade::NaturalAssociation::Source::Scope naturalSource(
+                HoYoShade::CaptureBridgeSource(sourceDevice.Get(), reinterpret_cast<uint64_t>(this)));
+            HoYoShade::BindNaturalSource(naturalSource.Get());
             HoYoShade::ColorEndpoint endpoint;
             endpoint.stage = HoYoShade::Stage::BeforeSr; endpoint.color = hoyoColor; endpoint.queue = Dx12CommandQueue;
             endpoint.ready = {Dx12CommandQueue, Dx12Fence, producerValue};
             endpoint.stream = reinterpret_cast<uint64_t>(this);
             endpoint.generation = 1;
-            endpoint.frame = _frameCount;
+            endpoint.frame = Dx11WithDx12::GetLastPreparedUpscalerFrameId();
             readBeforeSrRegion(endpoint);
             endpoint.state = D3D12_RESOURCE_STATE_COMMON; endpoint.stateKnown = true;
 
@@ -897,15 +903,32 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
                     State::Instance().outputColorSpace.valid &&
                     State::Instance().outputColorSpace.dxgiColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
 
-            // Source observation only: a natural selection donor may belong
-            // to another API/device. It never lends GPU objects to this stage.
-            endpoint.naturalDevice = reinterpret_cast<uint64_t>(sourceDevice.Get());
-            endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrExactDevice;
+            // The actual source chain proves selection through proxy devices.
+            // Its backbuffer is association evidence, never the low-resolution SR input.
+            endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrBridgeInput;
+            endpoint.naturalSource = naturalSource.Get();
+            if (const auto* proof = naturalSource.Get()) {
+                const auto& observation = proof->Observation();
+                endpoint.naturalDevice = observation.sourceDevice;
+                endpoint.naturalBackbuffer = observation.buffer;
+                endpoint.generation = observation.generation;
+                endpoint.frame = observation.frame;
+            }
+            const auto sharedRead = Dx11WithDx12::AcquireUpscalerInputRead(Dx12CommandQueue, Dx12Fence, producerValue,
+                endpoint.stream, endpoint.generation, endpoint.frame);
+            if (!sharedRead) break;
+            endpoint.inputOwner = sharedRead;
+            unsigned depthX = 0, depthY = 0;
+            InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, &depthX);
+            InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, &depthY);
+            if (beforeSrFlagsKnown && !endpoint.colorX && !endpoint.colorY && !depthX && !depthY)
+                endpoint.depth = HoYoShade::Depth::FromBridge(sharedRead, endpoint.width, endpoint.height,
+                    (beforeSrFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0);
             const auto filtered = HoYoShade::RenderStage(endpoint);
             if (filtered.Uncertain()) {
                 // No SR consumer may read a color with uncertain barriers or
                 // an unsignalled owned batch. Keep this feature's transport.
-                submissionUnfenced = true;  break;
+                sharedRead->Quarantine(); submissionUnfenced = true;  break;
             }
             if (filtered.Submitted()) {
                 // RenderStage submitted and restored THIS input on THIS queue.
@@ -913,20 +936,21 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
                 // CPU return alone is never interpreted as GPU completion.
                 if (!filtered.completion.fence || !filtered.completion.value ||
                     filtered.completion.value == UINT64_MAX ||
-                    filtered.completion.fence->GetCompletedValue() == UINT64_MAX) {
-                    submissionUnfenced = true;  break;
+                    filtered.completion.fence->GetCompletedValue() == UINT64_MAX ||
+                    !sharedRead->BindCompletion(filtered.completion.fence.Get(), filtered.completion.value)) {
+                    sharedRead->Quarantine(); submissionUnfenced = true;  break;
                 }
                 if (
                     (WithDx12::GetD3D12CommandQueue() != Dx12CommandQueue ||
-                     !Dx11WithDx12::SyncDx12ToDx11())) {
+                     !Dx11WithDx12::SyncDx12ToDx11(Dx12CommandQueue)) || !sharedRead->ReturnedAfterGpuWait()) {
                     // Even if provider evaluation later fails, the legacy
                     // D3D11 cache/unknown readers must not race filter copyback.
                     // Failed handoff keeps the actual owners until restart.
-                    submissionUnfenced = true;  break;
+                    sharedRead->Quarantine(); submissionUnfenced = true;  break;
                 }
                 beforeSrFilter = filtered;
                 beforeSrInput = endpoint;
-            }
+            } else sharedRead->CancelUntouched();
         }
         const bool fixedPresentNr = DlssNr::UsesGenshinPresentPipeline();
         const bool bridgeFinishedNr = fixedPresentNr || (Config::Instance()->DlssNrFinishedPicture.value_or_default() &&
@@ -990,8 +1014,8 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             auto actual = beforeSrInput;
             actual.queue = Dx12CommandQueue;
             actual.stream = reinterpret_cast<uint64_t>(this);
-            actual.generation = 1;
-            actual.frame = _frameCount;
+            // Preserve this attempt's frozen source identity. Success counters
+            // do not identify the bridge generation or failed Evaluate attempts.
             actual.color = nullptr;
             if (InParameters->Get(NVSDK_NGX_Parameter_Color, &actual.color) != NVSDK_NGX_Result_Success)
                 InParameters->Get(NVSDK_NGX_Parameter_Color, reinterpret_cast<void**>(&actual.color));
@@ -1199,7 +1223,7 @@ bool IFeature_Dx11wDx12::BaseInit(ID3D11Device* InDevice, ID3D11DeviceContext* I
         return false;
     }
 
-    Dx11WithDx12::Init(Dx11Device, Dx11DeviceContext);
+    if (!Dx11WithDx12::Init(Dx11Device, Dx11DeviceContext)) return false;
 
     return true;
 }

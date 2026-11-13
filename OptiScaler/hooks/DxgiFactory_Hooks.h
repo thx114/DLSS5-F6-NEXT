@@ -1,6 +1,7 @@
 #pragma once
 #include "SysUtils.h"
 #include "FG_Hooks.h"
+#include "RoutedHook.h"
 #include <dxgi1_6.h>
 
 #include "Hook_Utils.h"
@@ -35,18 +36,7 @@ class DxgiFactoryHooks
     using PFN_CreateSwapChainForComposition =
         rewrite_signature<decltype(&IDXGIFactory2::CreateSwapChainForComposition)>::type;
 
-    inline static PFN_EnumAdapterByGpuPreference o_EnumAdapterByGpuPreference = nullptr;
-    inline static PFN_EnumAdapterByLuid o_EnumAdapterByLuid = nullptr;
-    inline static PFN_EnumAdapters1 o_EnumAdapters1 = nullptr;
-    inline static PFN_EnumAdapters o_EnumAdapters = nullptr;
-    inline static PFN_CreateSwapChain o_CreateSwapChain = nullptr;
-    inline static PFN_CreateSwapChainForHwnd o_CreateSwapChainForHwnd = nullptr;
-    inline static PFN_CreateSwapChainForCoreWindow o_CreateSwapChainForCoreWindow = nullptr;
-    inline static PFN_CreateSwapChainForComposition o_CreateSwapChainForComposition = nullptr;
 
-    inline static PFN_CreateSwapChain o_DLSSGCreateSwapChain = nullptr;
-    inline static PFN_CreateSwapChainForHwnd o_DLSSGCreateSwapChainForHwnd = nullptr;
-    inline static PFN_CreateSwapChainForCoreWindow o_DLSSGCreateSwapChainForCoreWindow = nullptr;
 
     static HRESULT CreateSwapChain(IDXGIFactory* realFactory, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                    IDXGISwapChain** ppSwapChain);
@@ -60,20 +50,11 @@ class DxgiFactoryHooks
                                                 const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput,
                                                 IDXGISwapChain1** ppSwapChain);
 
-    static HRESULT DLSSGCreateSwapChain(IDXGIFactory* realFactory, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
-                                        IDXGISwapChain** ppSwapChain);
     static HRESULT CreateSwapChainForComposition(IDXGIFactory2* realFactory, IUnknown* pDevice,
                                                  const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput,
                                                  IDXGISwapChain1** ppSwapChain);
 
-    static HRESULT DLSSGCreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUnknown* pDevice, HWND hWnd,
-                                               const DXGI_SWAP_CHAIN_DESC1* pDesc,
-                                               const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
-                                               IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain);
 
-    static HRESULT DLSSGCreateSwapChainForCoreWindow(IDXGIFactory2* realFactory, IUnknown* pDevice, IUnknown* pWindow,
-                                                     const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput,
-                                                     IDXGISwapChain1** ppSwapChain);
 
     static HRESULT EnumAdapters(IDXGIFactory* realFactory, UINT Adapter, IDXGIAdapter** ppAdapter);
     static HRESULT EnumAdapters1(IDXGIFactory1* realFactory, UINT Adapter, IDXGIAdapter1** ppAdapter);
@@ -90,8 +71,19 @@ class DxgiFactoryHooks
     VALIDATE_MEMBER_HOOK(EnumAdapterByLuid, PFN_EnumAdapterByLuid)
     VALIDATE_MEMBER_HOOK(EnumAdapterByGpuPreference, PFN_EnumAdapterByGpuPreference)
 
+    struct FactoryCreateDomain {};
+    struct FactoryEnumDomain {};
+    inline static HookOwnership::RoutedHook<&EnumAdapterByGpuPreference, 29, FactoryEnumDomain> o_EnumAdapterByGpuPreference;
+    inline static HookOwnership::RoutedHook<&EnumAdapterByLuid, 26, FactoryEnumDomain> o_EnumAdapterByLuid;
+    inline static HookOwnership::RoutedHook<&EnumAdapters1, 12, FactoryEnumDomain> o_EnumAdapters1;
+    inline static HookOwnership::RoutedHook<&EnumAdapters, 7, FactoryEnumDomain> o_EnumAdapters;
+    inline static HookOwnership::RoutedHook<&CreateSwapChain, 10, FactoryCreateDomain> o_CreateSwapChain;
+    inline static HookOwnership::RoutedHook<&CreateSwapChainForHwnd, 15, FactoryCreateDomain> o_CreateSwapChainForHwnd;
+    inline static HookOwnership::RoutedHook<&CreateSwapChainForCoreWindow, 16, FactoryCreateDomain> o_CreateSwapChainForCoreWindow;
+    inline static HookOwnership::RoutedHook<&CreateSwapChainForComposition, 24, FactoryCreateDomain> o_CreateSwapChainForComposition;
+
     // To prevent recursive FG swapchain creation
-    inline static bool _skipFGSwapChainCreation = false;
+    inline static thread_local bool _skipFGSwapChainCreation = false;
 
     class ScopedSkipFGSCCreation
     {

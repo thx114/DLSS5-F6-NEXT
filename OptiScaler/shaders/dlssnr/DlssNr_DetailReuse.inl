@@ -296,14 +296,8 @@ bool SameDevice(ID3D12DeviceChild* a, ID3D12DeviceChild* b)
 {
     if (a == nullptr || b == nullptr) return false;
     Microsoft::WRL::ComPtr<ID3D12Device> da, db;
-    if (FAILED(a->GetDevice(IID_PPV_ARGS(&da))) || FAILED(b->GetDevice(IID_PPV_ARGS(&db)))) return false;
-    ID3D12Device* ra = da.Get(); ID3D12Device* rb = db.Get();
-    ID3D12Device* unwrapped = nullptr;
-    if (Util::CheckForRealObject(__FUNCTION__, ra, (IUnknown**)&unwrapped)) ra = unwrapped;
-    if (Util::CheckForRealObject(__FUNCTION__, rb, (IUnknown**)&unwrapped)) rb = unwrapped;
-    Microsoft::WRL::ComPtr<IUnknown> ia, ib;
-    return SUCCEEDED(ra->QueryInterface(IID_PPV_ARGS(&ia))) &&
-        SUCCEEDED(rb->QueryInterface(IID_PPV_ARGS(&ib))) && ia.Get() == ib.Get();
+    if (a->GetDevice(IID_PPV_ARGS(&da)) != S_OK || b->GetDevice(IID_PPV_ARGS(&db)) != S_OK) return false;
+    return D3D12DeviceIdentity::Same(da.Get(), db.Get());
 }
 ID3D12CommandQueue* ProvenProducerQueue(ID3D12GraphicsCommandList* cmd, ID3D12CommandQueue* hint)
 {

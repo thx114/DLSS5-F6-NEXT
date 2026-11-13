@@ -288,7 +288,9 @@ ID3D12CommandQueue* WithDx12::CreateD3D12CommandQueue(ID3D12Device* dx12Device)
     queueDesc.Type = _commandListType;
 
     ID3D12CommandQueue* commandQueue = nullptr;
+    LOG_INFO("F6 interop queue-create begin: device={:X} type={}", (size_t)dx12Device, (unsigned)queueDesc.Type);
     auto result = dx12Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue));
+    LOG_INFO("F6 interop queue-create returned: hr={:X} queue={:X}", (unsigned)result, (size_t)commandQueue);
     if (FAILED(result) || commandQueue == nullptr)
     {
         LOG_ERROR("CreateD3D12CommandQueue failed: {:X}", (UINT) result);

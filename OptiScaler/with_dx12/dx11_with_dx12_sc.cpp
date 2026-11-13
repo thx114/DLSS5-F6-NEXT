@@ -216,6 +216,8 @@ Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Devi
       _dx11Device(pDevice), _handle(hWnd)
 {
     _id = ++scCount;
+    HoYoShade::RegisterBridgeSource(this, _real, _dx11Device);
+    _modSourceRegistered=GenericDepthDx11::RegisterModPresentSource(_real, _handle);
     _lastFlags = flags;
     // The factory must supply the application's descriptor BEFORE any SDK or
     // factory overrides. The existing flags parameter alone is effective data.
@@ -285,6 +287,7 @@ Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Devi
 
 Dx11wDx12SC::~Dx11wDx12SC()
 {
+    HoYoShade::ForgetBridgeSource(this);
 
         DlssNrFgTrace::EndBridge();
         MenuOverlayDx::CleanupRenderTarget(true,_handle);
@@ -421,6 +424,7 @@ ULONG STDMETHODCALLTYPE Dx11wDx12SC::Release()
             return 1;
         }
 
+        GenericDepthDx11::ForgetModPresentSource(_real);
         if (State::Instance().currentSwapchain == this)
             State::Instance().currentSwapchain = nullptr;
 
@@ -538,6 +542,9 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
         IUnknown* _device;
     } lowLatencyScope(State::Instance().currentD3D11Device);
 
+
+    if (!_modSourceRegistered)
+        _modSourceRegistered=GenericDepthDx11::RegisterModPresentSource(_real,_handle);
 
     if (!_InitInteropObjects())
         return DXGI_ERROR_DEVICE_REMOVED;
@@ -732,6 +739,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc)
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat,
                                                      UINT SwapChainFlags)
 {
+    HoYoShade::BridgeSourceResize sourceResize(this);
     if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     if ((_sourceCopyUncertain.load(std::memory_order_acquire) || native::nrfilter::HasUncertainCopy(_nrCopyAllocatorFenceValues))) return DXGI_ERROR_WAS_STILL_DRAWING;
     if (const auto failure = _fgResizeStatus.RecoveryFailure(Config::Instance()->FGSkipResizeBuffers.value_or_default());
@@ -1037,6 +1045,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
                                                       UINT SwapChainFlags, const UINT* pCreationNodeMask,
                                                       IUnknown* const* ppPresentQueue)
 {
+    HoYoShade::BridgeSourceResize sourceResize(this);
     if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
     if ((_sourceCopyUncertain.load(std::memory_order_acquire) || native::nrfilter::HasUncertainCopy(_nrCopyAllocatorFenceValues))) return DXGI_ERROR_WAS_STILL_DRAWING;
     if (_real3 == nullptr) return ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);

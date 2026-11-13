@@ -64,10 +64,9 @@ void UpscalerInputsDx11wDx12::Init(ID3D11Device* dx11Device, ID3D11DeviceContext
         return;
     }
 
-    _dx12Device = WithDx12::GetD3D12Device();
-    _dx12CommandQueue = WithDx12::GetD3D12CommandQueue();
-
-    Dx11WithDx12::Init(dx11Device, dx11Context);
+    if (!Dx11WithDx12::Init(dx11Device, dx11Context)) return;
+    _dx12Device = Dx11WithDx12::GetD3D12Device();
+    _dx12CommandQueue = Dx11WithDx12::GetD3D12CommandQueue();
 }
 
 void UpscalerInputsDx11wDx12::Reset() {}

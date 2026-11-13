@@ -21,6 +21,12 @@
 #include "Amdxc64_Hooks.h"
 #pragma intrinsic(_ReturnAddress)
 
+static bool LoaderHasFsr4Support() noexcept
+{
+    return IdentifyGpu::getLoaderFsr4Support() != FSR4Support::None;
+}
+
+
 static inline void NormalizePath(std::string& path)
 {
     while (!path.empty() && (path.back() == '\\' || path.back() == '/'))
@@ -53,41 +59,6 @@ static inline bool IsInsideWindowsDirectory(const std::string& path)
     return false;
 }
 
-static inline HMODULE CheckLoad(const std::wstring& name)
-{
-    do
-    {
-        if (State::Instance().isShuttingDown || LibraryLoadHooks::IsApiSetName(name))
-            break;
-
-        if (State::SkipDllChecks())
-        {
-            const std::wstring skip = string_to_wstring(State::SkipDllName());
-
-            if (skip.empty() || LibraryLoadHooks::EndsWithInsensitive(name, std::wstring_view(skip)) ||
-                LibraryLoadHooks::EndsWithInsensitive(name, std::wstring(skip + L".dll")))
-            {
-                LOG_TRACE("Skip checks for: {}", wstring_to_string(name.data()));
-                break;
-            }
-        }
-
-        auto moduleHandle = LibraryLoadHooks::LoadLibraryCheckW(name.data(), name.data());
-
-        // skip loading of dll
-        if (moduleHandle == (HMODULE) 1337)
-            break;
-
-        if (moduleHandle != nullptr)
-        {
-            LOG_TRACE("{}, caller: {}", wstring_to_string(name.data()), Util::WhoIsTheCaller(_ReturnAddress()));
-            return moduleHandle;
-        }
-    } while (false);
-
-    return nullptr;
-}
-
 VALIDATE_HOOK(hk_K32_GetProcAddress, Kernel32Proxy::PFN_GetProcAddress)
 FARPROC WINAPI KernelHooks::hk_K32_GetProcAddress(HMODULE hModule, LPCSTR lpProcName)
 {
@@ -111,7 +82,7 @@ FARPROC WINAPI KernelHooks::hk_K32_GetProcAddress(HMODULE hModule, LPCSTR lpProc
     // Also skip the internal call of amdxc64
     if (lpProcName != nullptr && (hModule == amdxc64Mark || hModule == nullptr) &&
         lstrcmpA(lpProcName, "AmdExtD3DCreateInterface") == 0 &&
-        IdentifyGpu::getPrimaryGpu().fsr4Support != FSR4Support::None &&
+        LoaderHasFsr4Support() &&
         Util::GetCallerModule(_ReturnAddress()) != KernelBaseProxy::GetModuleHandleW_()(L"amdxc64.dll"))
     {
         LOG_TRACE("Giving hkAmdExtD3DCreateInterface");
@@ -150,9 +121,9 @@ HMODULE WINAPI KernelHooks::hk_K32_GetModuleHandleA(LPCSTR lpModuleName)
 
             auto original = o_K32_GetModuleHandleA(lpModuleName);
 
-            auto primaryGpu = IdentifyGpu::getPrimaryGpu();
+            const bool fsr4Supported = LoaderHasFsr4Support();
 
-            if (original == nullptr && primaryGpu.fsr4Support != FSR4Support::None)
+            if (original == nullptr && fsr4Supported)
             {
                 LOG_INFO("giving a fake HMODULE for amdxc64.dll");
                 return amdxc64Mark;
@@ -178,9 +149,9 @@ HMODULE WINAPI KernelHooks::hk_K32_GetModuleHandleW(LPCWSTR lpModuleName)
 
             auto original = o_K32_GetModuleHandleW(lpModuleName);
 
-            auto primaryGpu = IdentifyGpu::getPrimaryGpu();
+            const bool fsr4Supported = LoaderHasFsr4Support();
 
-            if (original == nullptr && primaryGpu.fsr4Support != FSR4Support::None)
+            if (original == nullptr && fsr4Supported)
             {
                 LOG_INFO("giving a fake HMODULE for amdxc64.dll");
                 return amdxc64Mark;
@@ -352,103 +323,66 @@ VOID WINAPI KernelHooks::hk_K32_OutputDebugStringA(LPCSTR lpOutputString)
 VALIDATE_HOOK(hk_K32_LoadLibraryW, Kernel32Proxy::PFN_LoadLibraryW)
 HMODULE KernelHooks::hk_K32_LoadLibraryW(LPCWSTR lpLibFileName)
 {
-    if (lpLibFileName == nullptr)
-        return NULL;
-
-    std::wstring name(lpLibFileName);
-
-#ifdef _DEBUG
-    // LOG_TRACE("{}, caller: {}", wstring_to_string(name.data()), Util::WhoIsTheCaller(_ReturnAddress()));
-#endif
-
-    auto result = CheckLoad(name);
-
-    if (result != nullptr)
-        return result;
-
-    return o_K32_LoadLibraryW(lpLibFileName);
+    if (!lpLibFileName) return o_K32_LoadLibraryW(lpLibFileName);
+    const auto savedError = GetLastError();
+    const std::wstring name = lpLibFileName;
+    SetLastError(savedError);
+    return LibraryLoadHooks::LoadWin32(name, nullptr, 0, [&](LPCWSTR replacement) {
+        if (replacement) return o_K32_LoadLibraryW(replacement);
+        return o_K32_LoadLibraryW(lpLibFileName);
+    });
 }
 
 VALIDATE_HOOK(hk_K32_LoadLibraryA, Kernel32Proxy::PFN_LoadLibraryA)
 HMODULE KernelHooks::hk_K32_LoadLibraryA(LPCSTR lpLibFileName)
 {
-    if (lpLibFileName == nullptr)
-        return NULL;
-
-    std::string nameA(lpLibFileName);
-    std::wstring name = string_to_wstring(nameA);
-
-#ifdef _DEBUG
-    // LOG_TRACE("{}, caller: {}", nameA.data(), Util::WhoIsTheCaller(_ReturnAddress()));
-#endif
-
-    auto result = CheckLoad(name);
-
-    if (result != nullptr)
-        return result;
-
-    return o_K32_LoadLibraryA(lpLibFileName);
+    if (!lpLibFileName) return o_K32_LoadLibraryA(lpLibFileName);
+    const auto savedError = GetLastError();
+    const std::wstring name = LibraryLoading::AnsiName(lpLibFileName);
+    SetLastError(savedError);
+    return LibraryLoadHooks::LoadWin32(name, nullptr, 0, [&](LPCWSTR replacement) {
+        if (replacement) return Kernel32Proxy::LoadLibraryExW_()(replacement, nullptr, 0);
+        return o_K32_LoadLibraryA(lpLibFileName);
+    });
 }
 
 VALIDATE_HOOK(hk_K32_LoadLibraryExW, Kernel32Proxy::PFN_LoadLibraryExW)
 HMODULE KernelHooks::hk_K32_LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags)
 {
-    if (lpLibFileName == nullptr)
-        return NULL;
-
-    std::wstring name(lpLibFileName);
-
-#ifdef _DEBUG
-    // LOG_TRACE("{}, caller: {}", wstring_to_string(name.data()), Util::WhoIsTheCaller(_ReturnAddress()));
-#endif
-
-    auto result = CheckLoad(name);
-
-    if (result != nullptr)
-        return result;
-
-    return o_K32_LoadLibraryExW(lpLibFileName, hFile, dwFlags);
+    if (!lpLibFileName) return o_K32_LoadLibraryExW(lpLibFileName, hFile, dwFlags);
+    const auto savedError = GetLastError();
+    const std::wstring name = lpLibFileName;
+    SetLastError(savedError);
+    return LibraryLoadHooks::LoadWin32(name, hFile, dwFlags, [&](LPCWSTR replacement) {
+        if (replacement) return o_K32_LoadLibraryExW(replacement, hFile, dwFlags);
+        return o_K32_LoadLibraryExW(lpLibFileName, hFile, dwFlags);
+    });
 }
 
 VALIDATE_HOOK(hk_K32_LoadLibraryExA, Kernel32Proxy::PFN_LoadLibraryExA)
 HMODULE KernelHooks::hk_K32_LoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags)
 {
-    if (lpLibFileName == nullptr)
-        return NULL;
-
-    std::string nameA(lpLibFileName);
-    std::wstring name = string_to_wstring(nameA);
-
-#ifdef _DEBUG
-    // LOG_TRACE("{}, caller: {}", nameA.data(), Util::WhoIsTheCaller(_ReturnAddress()));
-#endif
-
-    auto result = CheckLoad(name);
-
-    if (result != nullptr)
-        return result;
-
-    return o_K32_LoadLibraryExA(lpLibFileName, hFile, dwFlags);
+    if (!lpLibFileName) return o_K32_LoadLibraryExA(lpLibFileName, hFile, dwFlags);
+    const auto savedError = GetLastError();
+    const std::wstring name = LibraryLoading::AnsiName(lpLibFileName);
+    SetLastError(savedError);
+    return LibraryLoadHooks::LoadWin32(name, hFile, dwFlags, [&](LPCWSTR replacement) {
+        if (replacement) return Kernel32Proxy::LoadLibraryExW_()(replacement, hFile, dwFlags);
+        return o_K32_LoadLibraryExA(lpLibFileName, hFile, dwFlags);
+    });
 }
 
 VALIDATE_HOOK(hk_KB_LoadLibraryExW, KernelBaseProxy::PFN_LoadLibraryExW)
 HMODULE KernelHooks::hk_KB_LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags)
 {
-    if (lpLibFileName == nullptr)
-        return NULL;
-
-    std::wstring name(lpLibFileName);
-
-#ifdef _DEBUG
-    // LOG_TRACE("{}, caller: {}", wstring_to_string(name.data()), Util::WhoIsTheCaller(_ReturnAddress()));
-#endif
-
-    auto result = CheckLoad(name);
-
-    if (result != nullptr)
-        return result;
-
-    return o_KB_LoadLibraryExW(lpLibFileName, hFile, dwFlags);
+    if (!lpLibFileName) return o_KB_LoadLibraryExW(lpLibFileName, hFile, dwFlags);
+    const auto savedError = GetLastError();
+    const std::wstring name = lpLibFileName;
+    SetLastError(savedError);
+    return LibraryLoadHooks::LoadWin32(name, hFile, dwFlags, [&](LPCWSTR replacement) {
+        if (replacement) return o_KB_LoadLibraryExW(replacement, hFile, dwFlags);
+        return o_KB_LoadLibraryExW(lpLibFileName, hFile, dwFlags);
+    }, LibraryLoading::Layer::KernelBase);
 }
 
 VALIDATE_HOOK(hk_K32_FreeLibrary, Kernel32Proxy::PFN_FreeLibrary)

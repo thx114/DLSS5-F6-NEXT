@@ -153,7 +153,7 @@ ID3D11DeviceContext* g_context = nullptr;
 std::atomic<uint64_t> g_contextId = 0; // g_context, as the core's id for it; read by the hooks on the game's threads
 PVOID g_hookedOMSetRenderTargets = nullptr; // the function hooked, to tell whether a context runs the hooks at all
 // The watched context set render targets since the last present (it is still the one the game draws through).
-std::atomic<bool> g_watchedBound = false;
+std::atomic<uint64_t> g_watchedActivity = 0;
 
 // The device of g_context, and the real device behind it when that is a proxy; a buffer of either can be copied on g_context.
 // Not held (g_context holds its device). Under g_mutex.
@@ -355,7 +355,7 @@ void STDMETHODCALLTYPE hkOMSetRenderTargets(ID3D11DeviceContext* This, UINT NumV
     if(r448Hook.Active())r448Hook.Internal(TrackingInternal());
     if (Watched(This))
     {
-        g_watchedBound.store(true, std::memory_order_relaxed);
+        g_watchedActivity.fetch_add(1, std::memory_order_relaxed);
 
         if (g_core.Active())
             OnBound(This, pDepthStencilView);
@@ -374,7 +374,7 @@ void STDMETHODCALLTYPE hkOMSetRenderTargetsAndUAV(ID3D11DeviceContext* This, UIN
     if(r448Hook.Active())r448Hook.Internal(TrackingInternal());
     if (Watched(This))
     {
-        g_watchedBound.store(true, std::memory_order_relaxed);
+        g_watchedActivity.fetch_add(1, std::memory_order_relaxed);
 
         // KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL changes only the UAVs: the depth buffer bound stays bound.
         if (g_core.Active() && NumRTVs != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
@@ -574,19 +574,22 @@ void STDMETHODCALLTYPE hkClearUavFloat(ID3D11DeviceContext* c,ID3D11UnorderedAcc
     if(gimi::runtime::Enabled() && !TrackingInternal())gimi::runtime::ViewWritten(c,view);
     o_ClearUavFloat(c,view,values);
 }
-void FollowPresentDevice(IDXGISwapChain* swapChain)
+bool FollowPresentDevice(IDXGISwapChain* swapChain)
 {
     static ID3D11Device* presentDevice = nullptr;         // the device presented with last, a reference held
     static ID3D11DeviceContext* presentContext = nullptr; // its immediate context, unwrapped, a reference held
     static int streak = 0;
+    static uint64_t watchedActivity = 0;
 
     ID3D11Device* device = nullptr;
 
     if (FAILED(swapChain->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
-        return;
+        return false;
 
     if (device != presentDevice)
     {
+        streak = 0;
+        watchedActivity = g_watchedActivity.load(std::memory_order_relaxed);
         SAFE_RELEASE(presentContext);
         SAFE_RELEASE(presentDevice);
         presentDevice = device;
@@ -610,16 +613,15 @@ void FollowPresentDevice(IDXGISwapChain* swapChain)
 
     device->Release();
 
-    const bool watchedBusy = g_watchedBound.exchange(false, std::memory_order_relaxed);
+    const auto activity = g_watchedActivity.load(std::memory_order_relaxed);
+    const bool watchedBusy = activity != watchedActivity;
+    watchedActivity = activity;
 
-    if (presentContext == nullptr || presentContext == g_context || watchedBusy)
-    {
-        streak = 0;
-        return;
-    }
+    if (presentContext == g_context && presentContext) { streak = 0; return true; }
+    if (!presentContext || watchedBusy) { streak = 0; return false; }
 
     if (++streak < 3)
-        return;
+        return false;
 
     streak = 0;
 
@@ -635,12 +637,13 @@ void FollowPresentDevice(IDXGISwapChain* swapChain)
                      "functions than the ones hooked; it is not watched");
         }
 
-        return;
+        return false;
     }
 
     LOG_INFO("Depth finder (D3D11): the game presents with another device now and draws nothing through the one watched; "
              "watching the new one's immediate context");
     UseContext(presentContext);
+    return true;
 }
 
 void STDMETHODCALLTYPE hkClearState(ID3D11DeviceContext* c) {
@@ -728,20 +731,31 @@ namespace GenericDepthDx11 {
 bool ModInternal() noexcept {return TrackingInternal();}
 bool Installed() {return g_installed;}
 bool InstallFailed() {return g_installFailed;}
-void BindModRuntime(ID3D11Device* device) noexcept {
-    if(!gimi::runtime::Enabled() || device!=g_contextDevice || !g_context)return;
-    const bool contextCovered=g_installed && EnsureModContextHooks(g_context);
+namespace {
+void BindModRuntimePair(ID3D11Device* device, ID3D11DeviceContext* context,
+                        gimi::runtime::CaptureSource source, const gimi::runtime::NativePresentSourcePtr& nativeSource = {}) noexcept {
+    if (!gimi::runtime::Enabled() || !device || !context) return;
+    const bool contextCovered = g_installed && EnsureModContextHooks(context);
     auto hooks=kModHooks;hooks.draw=o_Draw;hooks.drawIndexed=o_DrawIndexed;hooks.drawIndexedInstanced=o_DrawIndexedInstanced;
-    gimi::runtime::DeviceCreated(device,g_context,hooks,contextCovered);
-    gimi::runtime::StreamOutputCoverage(device,g_context,contextCovered &&
-        ModStreamOutputCovered(*reinterpret_cast<PVOID**>(g_context)));
-}
-void CompleteModCreationHookInstall(ID3D11Device* device) noexcept {
-    if(!gimi::runtime::Enabled() || device!=g_contextDevice || !g_context)return;
-    const auto request=gimi::runtime::ClaimCreationHooks(device,g_context);
-    if(!request.revision)return;
+    gimi::runtime::DeviceCreated(device,context,hooks,contextCovered,source,nativeSource);
+    gimi::runtime::StreamOutputCoverage(device,context,contextCovered &&
+        ModStreamOutputCovered(*reinterpret_cast<PVOID**>(context)));
+    const auto request=gimi::runtime::ClaimCreationHooks(device,context);
+    if (!request.revision) return;
     const auto result=D3D11Hooks::InstallGimiCreationHooks(device);
-    gimi::runtime::CompleteCreationHooks(device,g_context,request,result);
+    gimi::runtime::CompleteCreationHooks(device,context,request,result);
+}
+}
+void BindModRuntime(ID3D11Device* device) noexcept {
+    if (!gimi::runtime::Enabled() || !device) return;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+    device->GetImmediateContext(&context);
+    if (!context) return;
+    ID3D11DeviceContext* real=nullptr;
+    if (Util::CheckForRealObject(__FUNCTION__,context.Get(),(IUnknown**)&real)) context=real;
+    Microsoft::WRL::ComPtr<ID3D11Device> owner;
+    context->GetDevice(&owner);
+    BindModRuntimePair(owner.Get(),context.Get(),gimi::runtime::CaptureSource::DeviceCreation);
 }
 void RevokeModStreamOutputCoverage() noexcept {
     if(gimi::runtime::Enabled() && g_context)gimi::runtime::StreamOutputCoverage(g_contextDevice,g_context,false);
@@ -785,33 +799,55 @@ void Install(ID3D11Device* device)
         g_core.Start([](const std::string& line){LOG_INFO("{}",line);});
 }
 
-void PrepareModPresent(IDXGISwapChain* swapChain) noexcept
-{
-    if (!gimi::runtime::NeedsPresent() || !swapChain) return;
-    try
-    {
-        // Use this exact native chain's owners, never State's backend device or
-        // the previously watched context. OnPresent keeps its existing device
-        // following/depth accounting; it is not called early a second time.
+namespace {
+IDXGISwapChain* NativeChain(IDXGISwapChain* chain) {
+    IDXGISwapChain* native = nullptr;
+    return chain && Util::CheckForRealObject(__FUNCTION__,chain,(IUnknown**)&native) ? native : chain;
+}
+}
+bool RegisterModPresentSource(IDXGISwapChain* chain, HWND window) noexcept {
+    // Registration comes from the game-facing wrapper's creation window, not
+    // whichever device happened to create first. Interop's hidden HWND is never
+    // used to identify the game's source. Provider outputs fail the DX11 query.
+    if (!chain || !window || window != Util::GetProcessWindow()) return false;
+    DWORD pid=0; GetWindowThreadProcessId(window,&pid);
+    if (pid != GetCurrentProcessId()) return false;
+    try {
+        chain=NativeChain(chain);
         Microsoft::WRL::ComPtr<ID3D11Device> device;
         Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
-        DXGI_SWAP_CHAIN_DESC desc{};
-        if (FAILED(swapChain->GetDevice(IID_PPV_ARGS(&device))) || !device ||
-            FAILED(swapChain->GetDesc(&desc))) return;
+        if (FAILED(chain->GetDevice(IID_PPV_ARGS(&device))) || !device) return false;
         device->GetImmediateContext(&context);
-        if (!context || context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) return;
+        if (!context) return false;
         ID3D11DeviceContext* real=nullptr;
-        if(Util::CheckForRealObject(__FUNCTION__,context.Get(),(IUnknown**)&real))context=real;
-        Install(device.Get());
-        if (g_installed.load() && gimi::runtime::Enabled() &&
-            device.Get() == g_contextDevice && context.Get() == g_context)
-        {
-            BindModRuntime(device.Get());
-            CompleteModCreationHookInstall(device.Get());
+        if(Util::CheckForRealObject(__FUNCTION__,context.Get(),(IUnknown**)&real)) context=real;
+        if (context->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE) return false;
+        context->GetDevice(device.ReleaseAndGetAddressOf());
+        return gimi::runtime::SelectPresentSource(chain,device.Get(),context.Get());
+    } catch (...) { gimi::runtime::StopAccepting(); return false; }
+}
+void ForgetModPresentSource(IDXGISwapChain* chain) noexcept {
+    try { gimi::runtime::ForgetPresentSource(NativeChain(chain)); } catch (...) {}
+}
+gimi::runtime::NativePresentSourcePtr PrepareModPresent(IDXGISwapChain* swapChain) noexcept
+{
+    if (!gimi::runtime::NeedsPresent() || !swapChain) return {};
+    try {
+        auto source=gimi::runtime::AcquirePresentSource(NativeChain(swapChain));
+        if (!source || !source->live.load(std::memory_order_acquire)) {
+            gimi::runtime::Present(nullptr,nullptr,0,0,{}); // auxiliary: retirement only
+            return {};
         }
-        gimi::runtime::Present(device.Get(), context.Get(), desc.BufferDesc.Width, desc.BufferDesc.Height);
-    }
-    catch (...) { gimi::runtime::StopAccepting(); }
+        DXGI_SWAP_CHAIN_DESC desc{};
+        if (FAILED(swapChain->GetDesc(&desc))) return {};
+        Install(source->device.Get());
+        if (g_installed.load() && CommonCovered(source->context.Get()) && gimi::runtime::Enabled()) {
+            if (g_context!=source->context.Get()) UseContext(source->context.Get());
+            BindModRuntimePair(source->device.Get(),source->context.Get(),gimi::runtime::CaptureSource::PresentOwner,source);
+        }
+        gimi::runtime::Present(source->device.Get(),source->context.Get(),desc.BufferDesc.Width,desc.BufferDesc.Height,source);
+        return source->live.load(std::memory_order_acquire) ? source : nullptr;
+    } catch (...) { gimi::runtime::StopAccepting(); return {}; }
 }
 
 void OnPresent(IDXGISwapChain* swapChain)
@@ -828,18 +864,13 @@ void OnPresent(IDXGISwapChain* swapChain)
 
     DXGI_SWAP_CHAIN_DESC desc {};
     const bool havePresentDevice=g_installed.load() && swapChain && SUCCEEDED(swapChain->GetDesc(&desc));
-    // Follow first: binding/installing against the previous frame's device
-    // would publish creation coverage for an owner this Present just replaced.
-    if(havePresentDevice)FollowPresentDevice(swapChain);
-    if(gimi::runtime::NeedsPresent()){
-        if(havePresentDevice && gimi::runtime::Enabled() && g_contextDevice && g_context){
-            BindModRuntime(g_contextDevice);
-            CompleteModCreationHookInstall(g_contextDevice);
-        }
-        // Invalid/null Present still retires retained submitted owners, without
-        // loading a plan or installing against a stale watched device.
-        gimi::runtime::Present(havePresentDevice?g_contextDevice:nullptr,havePresentDevice?g_context:nullptr,
-                               desc.BufferDesc.Width,desc.BufferDesc.Height);
+    // MOD owner selection is explicit per source chain; the depth watcher's
+    // device-follow heuristic cannot confirm or discard creation candidates.
+    if(gimi::runtime::NeedsPresent()) {
+        const auto source=PrepareModPresent(swapChain);
+        if (!source && gimi::runtime::Enabled()) return;
+    } else if (havePresentDevice) {
+        FollowPresentDevice(swapChain);
     }
     if (!havePresentDevice)
         return;

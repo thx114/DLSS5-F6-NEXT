@@ -1391,8 +1391,9 @@ PFN_vkDestroySurfaceKHR VulkanHooks::OriginalDestroySurface()
     return o_vkDestroySurfaceKHR != nullptr ? o_vkDestroySurfaceKHR : &vkDestroySurfaceKHR;
 }
 
-void VulkanHooks::Hook(HMODULE vulkan1)
+bool VulkanHooks::Hook(HMODULE vulkan1)
 {
+    if (!vulkan1) return false;
     if (vulkanModule == nullptr)
         vulkanModule = vulkan1;
 
@@ -1400,8 +1401,7 @@ void VulkanHooks::Hook(HMODULE vulkan1)
     VulkanSpoofing::HookForVulkanExtensionSpoofing(vulkan1);
     VulkanSpoofing::HookForVulkanVRAMSpoofing(vulkan1);
 
-    if (o_vkCreateDevice != nullptr)
-        return;
+    if (o_vkCreateDevice != nullptr) return true;
 
     FARPROC address = nullptr;
 
@@ -1472,6 +1472,7 @@ void VulkanHooks::Hook(HMODULE vulkan1)
         o_vkCreateWin32SurfaceKHR = nullptr;
         // o_vkCmdPipelineBarrier = nullptr;
     }
+    return detourResult==NO_ERROR && o_vkCreateDevice && o_vkCreateInstance && o_vkGetInstanceProcAddr && o_vkGetDeviceProcAddr;
 }
 
 void VulkanHooks::Unhook()

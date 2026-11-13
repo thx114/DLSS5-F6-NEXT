@@ -21,7 +21,7 @@ WITH = read('OptiScaler/with_dx12/with_dx12.cpp')
 
 class HandoffWiring(unittest.TestCase):
     def test_all_factory_publications_use_role_guard(self):
-        for path, count in (('OptiScaler/hooks/DxgiFactory_Hooks.cpp', 6),
+        for path, count in (('OptiScaler/hooks/DxgiFactory_Hooks.cpp', 3),
                             ('OptiScaler/hooks/DxgiFactory_WrappedCalls.cpp', 3)):
             source = read(path)
             self.assertEqual(source.count('WithDx12::AdoptSwapchainQueue('), count, path)
@@ -79,6 +79,9 @@ class HandoffWiring(unittest.TestCase):
         body = parser.extract(DX11, 'Dx11WithDx12::PrepareResourcesResult Dx11WithDx12::PrepareUpscalerResources(')
         guard = body.index('GuardExecution(FGExecutionScope::Lifecycle)')
         seal = body.index('guideOwner->SealDx11GuideInputs(true,Dx12CommandQueue)')
+        # Seal/Present also acquire the cache while holding FG execution. A
+        # cache writer must use the same lock order before touching any entry.
+        self.assertLess(guard, body.index('cacheLock(InputReadMutex)'))
         self.assertLess(guard, seal)
         self.assertLess(seal, body.index('cache.frameId = frameId'))
         self.assertLess(seal, body.index('PrepareCachedResource('))
@@ -122,7 +125,7 @@ class HandoffWiring(unittest.TestCase):
     def test_terminal_failure_protects_cache_and_pins(self):
         for signature in ('void Dx11WithDx12::ReleaseSyncResourcesLocked(',
                           'bool Dx11WithDx12::EnsureSyncResourcesLocked(',
-                          'void Dx11WithDx12::ResetUpscalerResourceCache(',
+                          'bool Dx11WithDx12::ResetUpscalerResourceCache(',
                           'void Dx11WithDx12::ReleaseSharedResource(',
                           'bool Dx11WithDx12::CopyTextureFrom11To12('):
             self.assertIn('FgGuideWritesBlocked.load', parser.extract(DX11, signature))

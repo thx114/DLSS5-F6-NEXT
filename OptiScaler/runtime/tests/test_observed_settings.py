@@ -8,6 +8,7 @@ config=(ROOT / 'OptiScaler/Config.h').read_text(encoding='utf-8-sig')
 base=config[config.index('enum HasDefaultValue'):config.index('constexpr inline int UnboundKey')]
 fixture=r'''
 #include "runtime/ObservedSetting.h"
+#include "integration/HoYoShadePolicy.h"
 #include <concepts>
 #include <string>
 #include <cstdio>
@@ -44,6 +45,18 @@ int main(){
     for(unsigned i=0;i<50000;++i){choice=Choice::On;choice.set_volatile_value(Choice::Other);choice.reset();}
     finished.store(true,std::memory_order_release);reader.join();
     Check(valid.load() && !choice.ReadObserved() && choice.ObservedValue()==Choice::Off,"150000 mutations with concurrent snapshot reader preserve valid publications");
+    using FilterSetting=FramePipeline::ObservedSetting<CustomOptional<bool,SoftDefault>,bool>;
+    FilterSetting filter(false);
+    Check(HoYoShade::ResolveEnabled(filter.ReadObserved(),1) && !filter.value_for_config(),"auto BeforeSR enables without changing saved auto");
+    Check(!HoYoShade::ResolveEnabled(filter.ReadObserved(),2) && !HoYoShade::ResolveEnabled(filter.ReadObserved(),3),"other automatic placements retain disabled default");
+    filter=false;
+    Check(!HoYoShade::ResolveEnabled(filter.ReadObserved(),1) && filter.value_for_config()==false,"explicit off overrides BeforeSR and survives save");
+    FilterSetting reloaded(false);reloaded.set_from_config(filter.value_for_config());
+    Check(!HoYoShade::ResolveEnabled(reloaded.ReadObserved(),1),"saved off remains off after reload");
+    filter=true;
+    Check(HoYoShade::ResolveEnabled(filter.ReadObserved(),2) && filter.value_for_config()==true,"explicit on remains enabled at other placements");
+    filter.reset();
+    Check(HoYoShade::ResolveEnabled(filter.ReadObserved(),1) && !filter.value_for_config(),"reset restores automatic placement resolution");
     std::printf("Observed settings CPU: %u checks passed; legacy INI and concurrent observation\n",checks);
 }
 '''.replace('// BASE',base)

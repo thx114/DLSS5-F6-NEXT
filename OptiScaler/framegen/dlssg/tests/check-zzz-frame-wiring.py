@@ -50,7 +50,7 @@ check(evaluate.index("Scope frameScope") < evaluate.index("if (!tokenValid)"), "
 check(evaluate.index("auto result = o_slEvaluateFeature") < evaluate.index("frameScope.Finish(result==sl::Result::eOk)"), "actual upstream result not published")
 check("GetNewFrameToken" not in evaluate, "upstream scope must copy numeric only, not mint SDK token")
 check("mutex" not in evaluate and "lock_guard" not in evaluate, "scope must not hold lock over game/vendor")
-install = body(sl, "void StreamlineHooks::hookInterposer(")
+install = body(sl, "bool StreamlineHooks::hookInterposer(")
 check("slInterposer==State::Instance().optiSlInterposer" in install and "Util::IsSubpath" in install, "independent SDK can be registered as game")
 check("zzz && detourResult==NO_ERROR && o_slEvaluateFeature" in install, "API registration precedes successful hook commit")
 check("gameApi.store(reinterpret_cast<uintptr_t>(slInterposer)" in install, "actual API instance not registered")

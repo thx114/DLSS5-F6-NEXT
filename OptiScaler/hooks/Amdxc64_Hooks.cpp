@@ -88,14 +88,14 @@ struct AmdExtD3DFactory : public IAmdExtD3DFactory
     }
 };
 
-void Amdxc64Hooks::Init()
+void Amdxc64Hooks::Init(HMODULE loaded)
 {
     if (o_AmdExtD3DCreateInterface != nullptr)
         return;
 
     LOG_DEBUG("");
 
-    moduleAmdxc64 = KernelBaseProxy::GetModuleHandleW_()(L"amdxc64.dll");
+    moduleAmdxc64 = loaded ? loaded : KernelBaseProxy::GetModuleHandleW_()(L"amdxc64.dll");
 
     // When LoadCustomAmdxc64OnRdna2 is set, don't blindly load any amdxc64.dll
     // Wait for it to be loaded by d3d12 and at that point we know what GPU is RDNA 2
@@ -108,7 +108,8 @@ void Amdxc64Hooks::Init()
     if (moduleAmdxc64 != nullptr)
     {
         // Pin the dll so that our hooks stay valid, mainly for Linux
-        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, L"amdxc64.dll", &moduleAmdxc64);
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            reinterpret_cast<LPCWSTR>(moduleAmdxc64), &moduleAmdxc64);
 
         LOG_INFO("amdxc64.dll loaded");
         o_AmdExtD3DCreateInterface = (PFN_AmdExtD3DCreateInterface) KernelBaseProxy::GetProcAddress_()(

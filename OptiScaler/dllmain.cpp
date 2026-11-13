@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include <runtime/F6InputPolicy.h>
 #include <runtime/ModuleLifetime.h>
 #include <runtime/AsiPluginStartup.h>
@@ -736,7 +736,7 @@ static void CheckWorkingMode()
         if (Config::Instance()->OverlayMenu.value_or_default() && d3d11Module != nullptr)
         {
             LOG_DEBUG("d3d11.dll already in memory");
-            D3D11Hooks::Hook(d3d11Module);
+            LibraryLoadHooks::ObserveExecutable(d3d11Module);
         }
     };
     if (DxgiProxy::Module() == nullptr)
@@ -749,13 +749,13 @@ static void CheckWorkingMode()
             LOG_DEBUG("dxgi.dll already in memory");
 
             DxgiProxy::Init(dxgiModule);
-            DxgiHooks::Hook();
+            LibraryLoadHooks::ObserveExecutable(DxgiProxy::Module());
         }
     }
     else
     {
         LOG_DEBUG("dxgi.dll already in memory");
-        DxgiHooks::Hook();
+        LibraryLoadHooks::ObserveExecutable(DxgiProxy::Module());
     }
 
     // DirectX 12
@@ -772,27 +772,27 @@ static void CheckWorkingMode()
         {
             LOG_DEBUG("d3d12.dll already in memory");
             D3d12Proxy::Init(d3d12Module);
-            D3D12Hooks::Hook();
+            LibraryLoadHooks::ObserveExecutable(D3d12Proxy::Module());
         }
     }
     else
     {
         LOG_DEBUG("d3d12.dll already in memory");
-        D3D12Hooks::Hook();
+        LibraryLoadHooks::ObserveExecutable(D3d12Proxy::Module());
     }
 
     if (D3d12Proxy::Module() == nullptr && State::Instance().gameQuirks & GameQuirk::LoadD3D12Manually)
     {
         LOG_DEBUG("Loading d3d12.dll manually");
         D3d12Proxy::Init();
-        D3D12Hooks::Hook();
+        LibraryLoadHooks::ObserveExecutable(D3d12Proxy::Module());
     }
 
     d3d12AgilityModule = GetDllNameWModule(&dx12agilityNamesW);
     if (d3d12AgilityModule != nullptr)
     {
         LOG_DEBUG("D3D12Core.dll already in memory");
-        D3D12Hooks::HookAgility(d3d12AgilityModule);
+        LibraryLoadHooks::ObserveExecutable(d3d12AgilityModule);
     }
 
     if (d3d12AgilityModule == nullptr && State::Instance().gameQuirks & GameQuirk::LoadD3D12Manually)
@@ -814,7 +814,7 @@ static void CheckWorkingMode()
         if (d3d12AgilityModule != nullptr)
         {
             LOG_DEBUG("D3D12Core.dll loaded");
-            D3D12Hooks::HookAgility(d3d12AgilityModule);
+            LibraryLoadHooks::ObserveExecutable(d3d12AgilityModule);
         }
     }
 
@@ -832,7 +832,7 @@ static void CheckWorkingMode()
     if (vulkanModule != nullptr)
     {
         LOG_DEBUG("Hooking vulkan-1.dll");
-        VulkanHooks::Hook(vulkanModule);
+        LibraryLoadHooks::ObserveExecutable(vulkanModule);
     }
 
     // NVAPI
@@ -871,7 +871,7 @@ static void CheckWorkingMode()
     if (slModule != nullptr)
     {
         LOG_DEBUG("sl.interposer.dll already in memory");
-        StreamlineHooks::hookInterposer(slModule);
+        LibraryLoadHooks::ObserveExecutable(slModule);
         slInterposerModule = slModule;
     }
 
@@ -881,7 +881,7 @@ static void CheckWorkingMode()
     {
         State::Instance().postCodes |= PostCode::SlPluginsAlreadyInMemory;
         LOG_WARN("sl.dlss.dll already in memory");
-        StreamlineHooks::hookDlss(slDlss);
+        LibraryLoadHooks::ObserveExecutable(slDlss);
     }
 
     HMODULE slDlssg = nullptr;
@@ -890,7 +890,7 @@ static void CheckWorkingMode()
     {
         State::Instance().postCodes |= PostCode::SlPluginsAlreadyInMemory;
         LOG_WARN("sl.dlss_g.dll already in memory");
-        StreamlineHooks::hookDlssg(slDlssg);
+        LibraryLoadHooks::ObserveExecutable(slDlssg);
     }
 
     HMODULE slReflex = nullptr;
@@ -899,7 +899,7 @@ static void CheckWorkingMode()
     {
         State::Instance().postCodes |= PostCode::SlPluginsAlreadyInMemory;
         LOG_WARN("sl.reflex.dll already in memory");
-        StreamlineHooks::hookReflex(slReflex);
+        LibraryLoadHooks::ObserveExecutable(slReflex);
     }
 
     HMODULE slPcl = nullptr;
@@ -908,7 +908,7 @@ static void CheckWorkingMode()
     {
         State::Instance().postCodes |= PostCode::SlPluginsAlreadyInMemory;
         LOG_WARN("sl.pcl.dll already in memory");
-        StreamlineHooks::hookPcl(slPcl);
+        LibraryLoadHooks::ObserveExecutable(slPcl);
     }
 
     HMODULE slCommon = nullptr;
@@ -917,7 +917,7 @@ static void CheckWorkingMode()
     {
         State::Instance().postCodes |= PostCode::SlPluginsAlreadyInMemory;
         LOG_WARN("sl.common.dll already in memory");
-        StreamlineHooks::hookCommon(slCommon);
+        LibraryLoadHooks::ObserveExecutable(slCommon);
     }
 
     // XeSS
@@ -926,7 +926,7 @@ static void CheckWorkingMode()
     if (xessModule != nullptr)
     {
         LOG_DEBUG("libxess.dll already in memory");
-        XeSSProxy::InitXeSS(xessModule);
+        LibraryLoadHooks::ObserveExecutable(xessModule);
     }
 
     HMODULE xessDx11Module = nullptr;
@@ -934,7 +934,7 @@ static void CheckWorkingMode()
     if (xessDx11Module != nullptr)
     {
         LOG_DEBUG("libxess_dx11.dll already in memory");
-        XeSSProxy::InitXeSSDx11(xessDx11Module);
+        LibraryLoadHooks::ObserveExecutable(xessDx11Module);
     }
 
     // NVNGX
@@ -945,7 +945,7 @@ static void CheckWorkingMode()
         LOG_DEBUG("nvngx.dll already in memory");
         // Resolving the whole native table also installs ZZZ's DX12 input
         // router, including entry points already cached by game Streamline.
-        NVNGXProxy::InitNVNGX(nvngxModule);
+        LibraryLoadHooks::ObserveExecutable(nvngxModule);
     }
 
     // FFX Dx12
@@ -954,7 +954,7 @@ static void CheckWorkingMode()
     if (ffxDx12Module != nullptr)
     {
         LOG_DEBUG("amd_fidelityfx_dx12.dll already in memory");
-        FfxApiProxy::InitFfxDx12(ffxDx12Module);
+        LibraryLoadHooks::ObserveExecutable(ffxDx12Module);
     }
 
     HMODULE ffxDx12SRModule = nullptr;
@@ -962,7 +962,7 @@ static void CheckWorkingMode()
     if (ffxDx12SRModule != nullptr)
     {
         LOG_DEBUG("amd_fidelityfx_upscaler_dx12.dll already in memory");
-        FfxApiProxy::InitFfxDx12_SR(ffxDx12SRModule);
+        LibraryLoadHooks::ObserveExecutable(ffxDx12SRModule);
     }
 
     HMODULE ffxDx12FGModule = nullptr;
@@ -970,7 +970,7 @@ static void CheckWorkingMode()
     if (ffxDx12FGModule != nullptr)
     {
         LOG_DEBUG("amd_fidelityfx_framegeneration_dx12.dll already in memory");
-        FfxApiProxy::InitFfxDx12_FG(ffxDx12FGModule);
+        LibraryLoadHooks::ObserveExecutable(ffxDx12FGModule);
     }
 
     HMODULE ffxDx12DenoiserModule = nullptr;
@@ -978,7 +978,7 @@ static void CheckWorkingMode()
     if (ffxDx12DenoiserModule != nullptr)
     {
         LOG_DEBUG("amd_fidelityfx_denoiser_dx12.dll already in memory");
-        FfxApiProxy::InitFfxDx12_Denoiser(ffxDx12DenoiserModule);
+        LibraryLoadHooks::ObserveExecutable(ffxDx12DenoiserModule);
     }
 
     HMODULE ffxDx12RadianceModule = nullptr;
@@ -986,7 +986,7 @@ static void CheckWorkingMode()
     if (ffxDx12RadianceModule != nullptr)
     {
         LOG_DEBUG("amd_fidelityfx_radiancecache_dx12.dll already in memory");
-        FfxApiProxy::InitFfxDx12_Radiance(ffxDx12RadianceModule);
+        LibraryLoadHooks::ObserveExecutable(ffxDx12RadianceModule);
     }
 
     // FFX Vulkan
@@ -995,8 +995,10 @@ static void CheckWorkingMode()
     if (ffxVkModule != nullptr)
     {
         LOG_DEBUG("amd_fidelityfx_vk.dll already in memory");
-        FfxApiProxy::InitFfxVk(ffxVkModule);
+        LibraryLoadHooks::ObserveExecutable(ffxVkModule);
     }
+
+    LibraryLoadHooks::SchedulePending();
 
     // Hook kernel32 methods
     if (!Config::Instance()->EarlyHooking.value_or_default())
@@ -1675,11 +1677,12 @@ void CheckMemoryForProxies()
 
 DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
 {
+    LibraryLoadHooks::ProcessPending();
     startupav::SetPhase(startupav::Phase::WorkerEntry);
     startupav::Prepare(dllModule);
     AsiPluginStartup::Initialize();
-    const bool hoYoEnabled = Config::Instance()->HoYoShadeEnabled.value_or_default();
     const unsigned hoYoStage = static_cast<unsigned>(Config::Instance()->HoYoShadeStage.value_or_default());
+    const bool hoYoEnabled = HoYoShade::ResolveEnabled(Config::Instance()->HoYoShadeEnabled.ReadObserved(), hoYoStage);
     // This existing post-attach worker is outside the loader callout. Prepare
     // provenance before optional core startup can consume a creation factory.
     // Readiness is still required by NativeCall; moving order grants no birth.
@@ -1708,6 +1711,7 @@ DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
     // If DX12 already loaded then grab the full GPU info right away
     if (hModuleVoid)
         IdentifyGpu::updateD3d12Capabilities();
+    LibraryLoadHooks::ProcessPending();
 
     // This existing worker runs after DLL_PROCESS_ATTACH has returned. GPU
     // enumeration and loading another graphics proxy must not run in DllMain.
@@ -2095,11 +2099,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID /*lpRese
         {
             handle = GetDllNameWModule(&fsr3NamesW);
             if (handle != nullptr)
-                HookFSR3Inputs(handle);
+                LibraryLoadHooks::ObserveExecutable(handle);
 
             handle = GetDllNameWModule(&fsr3BENamesW);
             if (handle != nullptr)
-                HookFSR3Dx12Inputs(handle);
+                LibraryLoadHooks::ObserveExecutable(handle);
 
             HookFSR3ExeInputs();
         }

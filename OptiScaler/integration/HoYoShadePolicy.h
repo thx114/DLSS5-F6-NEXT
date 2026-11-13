@@ -3,10 +3,18 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 namespace HoYoShade
 {
 enum class Stage : unsigned { BeforeSr = 1, BeforeNr = 2, FinalOutput = 3 };
+// Selecting BeforeSR is an explicit placement request even when Enabled is
+// auto. Connection still accepts only the existing supported HoYoShade core.
+// Other automatic placements retain their existing disabled default.
+constexpr bool ResolveEnabled(std::optional<bool> enabled, unsigned stage) noexcept
+{
+    return enabled.value_or(stage == static_cast<unsigned>(Stage::BeforeSr));
+}
 enum class Reason : unsigned
 {
     Disabled, InvalidStage, OtherStage, CorePending, CoreMissing, MultipleCores,
@@ -15,7 +23,8 @@ enum class Reason : unsigned
     QueueMismatch, ListUnobserved, AmbiguousRuntime, DuplicateFrame, StaleFrame,
     Capacity, ExecutionUnverified, FinalEndpointUnavailable, UnsupportedFormat, StateUnknown,
     FenceUnavailable, InternalFailure, ProducerUnsubmitted, ColorSpaceUnknown,
-    ExtentMismatch, NaturalUnavailable, NaturalFrameConsumed, GeneratedUnavailable, SelectionUnavailable, SelectionPending, Count
+    ExtentMismatch, NaturalUnavailable, NaturalFrameConsumed, GeneratedUnavailable, SelectionUnavailable, SelectionPending,
+    RequiredDepthUnavailable, EffectOrderInvalid, EffectInputsPending, Count
 };
 inline const char* Text(Reason reason) noexcept
 {
@@ -30,7 +39,8 @@ inline const char* Text(Reason reason) noexcept
         "producer-not-submitted", "color-transfer-unknown-or-hdr", "active-extent-mismatch",
         "natural-runtime-unavailable-or-ambiguous", "natural-frame-already-consumed",
         "generated-output-endpoint-unavailable", "natural-selection-source-unavailable",
-        "selected-effects-not-ready" };
+        "selected-effects-not-ready", "selected-effects-require-current-depth", "launchpad-mxao-order-or-input-invalid",
+        "launchpad-mxao-input-warmup" };
     static_assert(sizeof(names) / sizeof(*names) == static_cast<unsigned>(Reason::Count));
     const auto index = static_cast<unsigned>(reason);
     return index < static_cast<unsigned>(Reason::Count) ? names[index] : "unknown";

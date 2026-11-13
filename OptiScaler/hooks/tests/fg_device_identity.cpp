@@ -513,11 +513,59 @@ void TestIdentityAndCompletion()
     });
 }
 
+// INSERT_PRODUCT_NR_IDENTITY
+
+struct FakeChild final : ComFake<ID3D12DeviceChild>
+{
+    ID3D12Device* device;
+    HRESULT getHr = S_OK;
+    bool getOutput = true;
+    explicit FakeChild(ID3D12Device* value) : device(value) {}
+    HRESULT STDMETHODCALLTYPE GetDevice(REFIID iid, void** output) override {
+        if (getHr != S_OK || !getOutput) return ReturnInterface(nullptr, getHr, output);
+        return device ? device->QueryInterface(iid, output) : E_NOINTERFACE;
+    }
+};
+void TestNrDeviceIdentity()
+{
+    using Proxy = FakeDevice::Proxy;
+    Scenario("NR child resolver handles actual device proxy contracts", [] {
+        FakeDevice native, foreign, sl, reshade, nested, otherWrapper, unknown;
+        sl.proxy = Proxy::Streamline; sl.native = &native;
+        reshade.proxy = Proxy::ReShade; reshade.native = &native;
+        nested.proxy = Proxy::ReShade; nested.native = &sl;
+        otherWrapper.proxy = Proxy::Streamline; otherWrapper.native = &native;
+        unknown.proxy = Proxy::Unknown; unknown.native = &native;
+        FakeChild raw(&native);
+        for (auto* device : {&native, &sl, &reshade, &nested, &otherWrapper}) {
+            FakeChild child(device);
+            Check(DetailReuse::SameDevice(&child, &raw), "NR resolves known proxy to native device");
+            Check(DetailReuse::SameDevice(&raw, &child), "NR device identity is symmetric");
+        }
+        FakeChild left(&reshade), right(&otherWrapper), wrong(&foreign), opaque(&unknown);
+        Check(DetailReuse::SameDevice(&left, &right), "NR accepts distinct wrappers of one native device");
+        Check(&native != &foreign && native.luid.LowPart == foreign.luid.LowPart, "foreign device deliberately shares adapter LUID");
+        Check(!DetailReuse::SameDevice(&left, &wrong), "NR rejects different actual devices despite equal LUID");
+        Check(!DetailReuse::SameDevice(&raw, &opaque), "NR cannot unwrap unknown proxy");
+        Check(!DetailReuse::SameDevice(nullptr, &raw), "NR rejects missing child");
+        for (auto hr : {S_FALSE, E_FAIL}) {
+            wrong.getHr = hr;
+            Check(!DetailReuse::SameDevice(&raw, &wrong), "NR rejects non-S_OK GetDevice");
+        }
+        wrong.getHr = S_OK; wrong.getOutput = false;
+        Check(!DetailReuse::SameDevice(&raw, &wrong), "NR rejects null successful device return");
+        for (auto* device : {&native, &foreign, &sl, &reshade, &nested, &otherWrapper, &unknown})
+            Check(device->refs == 1, "NR device query references balanced");
+        Check(raw.refs == 1 && left.refs == 1 && right.refs == 1, "NR child references unchanged");
+    });
+}
+
 int main()
 {
     try
     {
         TestIdentityAndCompletion();
+        TestNrDeviceIdentity();
         std::printf("PASS FG device identity: %u checks / %u scenarios; real COM/WRL; CPU only\n", checks, scenarios);
         return 0;
     }

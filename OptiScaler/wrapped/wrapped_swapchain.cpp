@@ -536,8 +536,8 @@ static void BeginGimiNativePresent(gimi::runtime::NativePresentScope& scope, IDX
         if (providerOutput || State::Instance().isShuttingDown ||
             State::Instance().swapchainInteropApi != SwapchainInteropApi::None ||
             State::Instance().swapchainApi == Vulkan || IdentifyGpu::getPrimaryGpu().usesDxvk) return;
-        GenericDepthDx11::PrepareModPresent(chain);
-        scope.Begin(chain, sync, flags, present1);
+        const auto source=GenericDepthDx11::PrepareModPresent(chain);
+        scope.Begin(source, chain, sync, flags, present1);
     }
     catch (...) { gimi::runtime::StopAccepting(); } // optional failure cannot suppress the original call
 }
@@ -947,7 +947,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         gimi::runtime::NativePresentScope gimiPresent;
         if (isD3D11)
             BeginGimiNativePresent(gimiPresent, pSwapChain, SyncInterval, Flags,
-                                   pPresentParameters != nullptr, starRailProviderOutput);
+                                   pPresentParameters != nullptr, providerOutput);
         if (willPresent)
         {
             // The captured DLSSG output queue presents every displayed frame, including generated frames.
@@ -1165,6 +1165,7 @@ WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* p
                  (size_t)_real, (size_t)_device);
     if (_starRailProviderOutput) _finalRawCreationQueueInput = reinterpret_cast<std::uintptr_t>(_device);
     _finalOutput = framegen::final_output::Endpoint::Capture(_real, _device);
+    if (!_providerOutput) _modSourceRegistered=GenericDepthDx11::RegisterModPresentSource(_real, _handle);
     HoYoShade::RegisterDirectChain(_real, this); // R061 exact resize coverage, CPU metadata only
 
     LOG_INFO("{} created, real: {:X}, refCount: {}", _id, (UINT64) real, refCount);
@@ -1329,6 +1330,7 @@ ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain4::Release()
                 State::Instance().currentFGSwapchain = nullptr;
         }
 
+        GenericDepthDx11::ForgetModPresentSource(_real);
         auto refCount = _real->Release();
 
         // Disabled for now, cause issues with some games
@@ -1402,8 +1404,10 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
 
     if (_composition && !IsCompositionWindow(_handle))
         _handle = FindCompositionWindow();
+    if (!_modSourceRegistered && !_providerOutput && !(Flags & DXGI_PRESENT_TEST))
+        _modSourceRegistered=GenericDepthDx11::RegisterModPresentSource(_real,_handle);
     if (_composition && _handle == nullptr)
-        return CallGimiNativePresent(_real, SyncInterval, Flags, false, _starRailProviderOutput, [&] {
+        return CallGimiNativePresent(_real, SyncInterval, Flags, false, _providerOutput, [&] {
             return r448Hook.Original([&]{return ObserveStarRailFinalRaw(_starRailProviderOutput ? this : nullptr,_real,_finalRawCreationQueueInput,SyncInterval,Flags,false,[&]{return _real->Present(SyncInterval, Flags);});});
         });
 
@@ -1422,7 +1426,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
     }
     else
     {
-        result = CallGimiNativePresent(_real, SyncInterval, Flags, false, _starRailProviderOutput, [&] {
+        result = CallGimiNativePresent(_real, SyncInterval, Flags, false, _providerOutput, [&] {
             return r448Hook.Original([&]{return ObserveStarRailFinalRaw(_starRailProviderOutput ? this : nullptr,_real,_finalRawCreationQueueInput,SyncInterval,Flags,false,[&]{return _real->Present(SyncInterval, Flags);});});
         });
     }
@@ -1805,8 +1809,10 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
 
     if (_composition && !IsCompositionWindow(_handle))
         _handle = FindCompositionWindow();
+    if (!_modSourceRegistered && !_providerOutput && !(Flags & DXGI_PRESENT_TEST))
+        _modSourceRegistered=GenericDepthDx11::RegisterModPresentSource(_real,_handle);
     if (_composition && _handle == nullptr)
-        return CallGimiNativePresent(_real1, SyncInterval, Flags, true, _starRailProviderOutput, [&] {
+        return CallGimiNativePresent(_real1, SyncInterval, Flags, true, _providerOutput, [&] {
             return r448Hook.Original([&]{return ObserveStarRailFinalRaw(_starRailProviderOutput ? this : nullptr,_real1,_finalRawCreationQueueInput,SyncInterval,Flags,true,[&]{return _real1->Present1(SyncInterval, Flags, pPresentParameters);});});
         });
 
@@ -1825,7 +1831,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
     }
     else
     {
-        result = CallGimiNativePresent(_real1, SyncInterval, Flags, true, _starRailProviderOutput, [&] {
+        result = CallGimiNativePresent(_real1, SyncInterval, Flags, true, _providerOutput, [&] {
             return r448Hook.Original([&]{return ObserveStarRailFinalRaw(_starRailProviderOutput ? this : nullptr,_real1,_finalRawCreationQueueInput,SyncInterval,Flags,true,[&]{return _real1->Present1(SyncInterval, Flags, pPresentParameters);});});
         });
     }

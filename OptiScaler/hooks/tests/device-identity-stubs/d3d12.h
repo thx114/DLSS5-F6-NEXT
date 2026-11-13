@@ -9,6 +9,12 @@
 
 enum D3D12_FENCE_FLAGS { D3D12_FENCE_FLAG_NONE = 0 };
 
+MIDL_INTERFACE("905db94b-a00c-4140-9df5-2b64ca9ea357")
+ID3D12DeviceChild : public IUnknown
+{
+    virtual HRESULT STDMETHODCALLTYPE GetDevice(REFIID riid, void** device) = 0;
+};
+
 MIDL_INTERFACE("0a753dcf-c4d8-4b91-adf6-be5a60d95a76")
 ID3D12Fence : public IUnknown
 {

@@ -17,7 +17,7 @@ struct Result {
 struct Key {
     uintptr_t runtime = 0;
     uint64_t runtimeGeneration = 0, producer = 0, producerGeneration = 0, epoch = 0;
-    uint64_t selectionSnapshot = 0, selectionGraph = 0;
+    uint64_t selectionSnapshot = 0;
     bool valid = false, reversed = false, yFlipped = false;
     bool operator==(const Key&) const = default;
     bool SameRuntime(const Key& b) const noexcept {
@@ -27,7 +27,7 @@ struct Key {
         // Compile inputs only. Producer/frame identity still changes the full
         // key and is authenticated by the caller for every real depth access.
         return SameRuntime(b) && selectionSnapshot == b.selectionSnapshot &&
-            selectionGraph == b.selectionGraph && reversed == b.reversed && yFlipped == b.yFlipped;
+            reversed == b.reversed && yFlipped == b.yFlipped;
     }
 };
 

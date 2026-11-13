@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <nvapi.h>
 #include <proxies/D3D12_Proxy.h>
 #include <device_info/device_info.hpp>
@@ -82,6 +83,11 @@ class IdentifyGpu
     inline static bool hasD3d12Capabilities = false;
     inline static std::mutex mutex {};
     inline static std::vector<GpuInformation> cache {};
+    // Immutable hardware routing facts, published after discovery. Loader
+    // callbacks read this without entering the GPU mutex or DXGI discovery.
+    inline static std::vector<GpuInformation> loaderRouting;
+    inline static std::atomic<const std::vector<GpuInformation>*> publishedRouting {nullptr};
+    inline static std::atomic<FSR4Support> loaderFsr4Support {FSR4Support::None};
 
     static std::vector<GpuInformation> checkGpuInfo();
     static void queryNvapi(GpuInformation& gpuInfo);
@@ -96,6 +102,10 @@ class IdentifyGpu
     // Read the already populated cache without triggering DXGI/NvAPI discovery.
     // An empty result is represented by a default-constructed GpuInformation.
     static GpuInformation getCachedPrimaryGpu();
+    static const std::vector<GpuInformation>* getLoaderRoutingSnapshot() noexcept
+    { return publishedRouting.load(std::memory_order_acquire); }
+    static FSR4Support getLoaderFsr4Support() noexcept
+    { return loaderFsr4Support.load(std::memory_order_acquire); }
     static void updateD3d12Capabilities(D3d12Proxy::PFN_D3D12CreateDevice o_D3D12CreateDevice = nullptr);
     static void updateInt8Support(std::optional<bool>& sdkSupportsInt8, std::optional<bool>& amdxcffx64SupportsInt8);
 };

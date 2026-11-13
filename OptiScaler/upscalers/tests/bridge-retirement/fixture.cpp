@@ -8,6 +8,7 @@
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 #include <shaders/dlssnr/DlssNr_RecordingLifetime.h>
+#include <runtime/D3D12DeviceIdentity.h>
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -28,9 +29,10 @@ DlssNrGpuLifetime::Registry g_nrGpuWork {&faults};
 std::recursive_mutex g_nrMutex;
 void Check(bool ok, const char* why) { ++checks; if (!ok) throw std::runtime_error(why); }
 void Hr(HRESULT hr) { Check(SUCCEEDED(hr), "real WARP operation failed"); }
-#define LOG_ERROR(...) ((void)0)
-#define LOG_WARN(...) ((void)0)
-#define LOG_INFO(...) ((void)0)
+template<class... Args> void DiscardLog(const Args&...) {}
+#define LOG_ERROR(...) DiscardLog(__VA_ARGS__)
+#define LOG_WARN(...) DiscardLog(__VA_ARGS__)
+#define LOG_INFO(...) DiscardLog(__VA_ARGS__)
 #define SAFE_RELEASE(value) do { if (value) { (value)->Release(); (value) = nullptr; } } while (false)
 namespace HookCpuTiming {
 enum class Stage { FenceQueryApi, FenceArmApi, CpuEventWait };

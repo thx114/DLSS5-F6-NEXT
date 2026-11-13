@@ -145,6 +145,6 @@ class Amdxc64Hooks
 
     inline static bool giveGameAl2Proxy = true;
 
-    static void Init();
+    static void Init(HMODULE loaded = nullptr);
     static HRESULT hkAmdExtD3DCreateInterface(IUnknown* pOuter, REFIID riid, void** ppvObject);
 };

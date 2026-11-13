@@ -1059,19 +1059,26 @@ void FinishedPictureResetCommandList(ID3D12CommandList* cmd)
 HRESULT RetireFinishedPictureRecording(ID3D12GraphicsCommandList* cmd, ID3D12CommandAllocator* allocator)
 {
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
-    if (!DlssNrGpuLifetime::SameDevice(cmd, allocator)) return E_INVALIDARG;
+    const auto failure = [&](const char* stage, HRESULT result) {
+        LOG_WARN("NR recording retirement refused stage={} list={} allocator={} hr=0x{:08X}",
+            stage, static_cast<void*>(cmd), static_cast<void*>(allocator), static_cast<UINT>(result));
+        return result;
+    };
+    // ReShade command lists and allocators can expose wrapper/native device
+    // identities. Use the existing public-wrapper resolver for both children.
+    if (!DetailReuse::SameDevice(cmd, allocator)) return failure("device-identity", E_INVALIDARG);
     auto* identity = DetailReuse::RealSubmittedCommands(cmd);
     // The owner's fence drain is necessary but cannot stand in for another
     // actual execution retained by NR. Poll the exact recording, never a view.
-    if (!g_nrGpuWork.CanResetRecording(identity)) return E_PENDING;
+    if (!g_nrGpuWork.CanResetRecording(identity)) return failure("gpu-recording-pending", E_PENDING);
     auto result = allocator->Reset();
-    if (FAILED(result)) return result;
+    if (FAILED(result)) return failure("allocator-reset", result);
     result = cmd->Reset(allocator, nullptr);
-    if (FAILED(result)) return result;
+    if (FAILED(result)) return failure("list-reset", result);
     FinishedPictureResetCommandList(identity); // idempotent with the real Reset hook
-    if (g_nrGpuWork.Watches(identity)) return E_FAIL;
+    if (g_nrGpuWork.Watches(identity)) return failure("reset-notification", E_FAIL);
     result = cmd->Close(); // leave an empty, closed list; never submit it
-    if (FAILED(result)) return result;
+    if (FAILED(result)) return failure("empty-list-close", result);
     TickNrRetired();
     return S_OK;
 }

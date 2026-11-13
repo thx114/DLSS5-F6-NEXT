@@ -499,6 +499,7 @@ struct Session;
 struct State
 {
     std::mutex requestMutex, ownerMutex;
+    PresentSources presentSources;
     Selection selection;
     std::uint64_t revision = 1, loaded = 0;
     std::uint64_t nativePresentTicket = 0; // one serial interpreter; owner lock never spans the original
@@ -2655,12 +2656,29 @@ void StopAccepting() noexcept
     presentNeeded.store(true, std::memory_order_release);
 }
 
-void DeviceCreated(ID3D11Device* device, ID3D11DeviceContext* context, HookServices hooks, bool coverage, CaptureSource source) noexcept
+bool SelectPresentSource(IDXGISwapChain* chain,ID3D11Device* device,ID3D11DeviceContext* context) noexcept {
+    if (!chain || !device || !context) return false;
+    try { auto& s=Store(); std::lock_guard lock(s.ownerMutex); s.presentSources.Select(chain,device,context); return true; }
+    catch (...) { return false; }
+}
+NativePresentSourcePtr AcquirePresentSource(IDXGISwapChain* chain) noexcept {
+    try { auto& s=Store(); std::lock_guard lock(s.ownerMutex); return s.presentSources.Acquire(chain); }
+    catch (...) { return {}; }
+}
+void ForgetPresentSource(IDXGISwapChain* chain) noexcept {
+    try { auto& s=Store(); std::lock_guard lock(s.ownerMutex); s.presentSources.Forget(chain); } catch (...) {}
+}
+void DeviceCreated(ID3D11Device* device, ID3D11DeviceContext* context, HookServices hooks, bool coverage, CaptureSource source, const NativePresentSourcePtr& nativeSource) noexcept
 {
     if (!Enabled() || !device || !context) return;
     try
     {
         auto& s = Store(); std::lock_guard lock(s.ownerMutex);
+        // Select/Forget invalidate the same token under this mutex. No stale
+        // Acquire can confirm an owner and discard the new source's candidates.
+        if (source==CaptureSource::PresentOwner && (!nativeSource || !nativeSource->generation ||
+            !nativeSource->live.load(std::memory_order_acquire) || nativeSource->device.Get()!=device ||
+            nativeSource->context.Get()!=context)) return;
         const auto event = DeviceEvent(device);
         auto next = Captured(s, event);
         if (next && next->context.Get() != context) return;
@@ -3781,12 +3799,16 @@ bool TryDraw(ID3D11DeviceContext* c, UINT count, UINT first, Dx11OriginalDraw or
     if (s.nativePresentTicket || s.observedRasterTicket) return false; // no concurrent interpreter mutation
     return s.active->Raster(c, count, first, 0, false, nullptr, original, false, 1, 0, nullptr, returned);
 }
-void Present(ID3D11Device* device, ID3D11DeviceContext* context, UINT width, UINT height) noexcept
+void Present(ID3D11Device* device, ID3D11DeviceContext* context, UINT width, UINT height, const NativePresentSourcePtr& nativeSource) noexcept
 {
     if (!NeedsPresent()) return;
     try
     {
         auto& s = Store(); std::lock_guard lock(s.ownerMutex);
+        if (device && (!nativeSource || !nativeSource->live.load(std::memory_order_acquire) ||
+            nativeSource->device.Get()!=device || nativeSource->context.Get()!=context)) {
+            device=nullptr;context=nullptr; // revoked source may retire, never prepare semantics
+        }
         // First retire all old plans, independent of current configuration and
         // even of the current Present's device. Each uses its retained original
         // device/context/fence, never a newly selected SR backend's queue.
@@ -3861,10 +3883,10 @@ void Present(ID3D11Device* device, ID3D11DeviceContext* context, UINT width, UIN
     }
     catch (...) { captureRouting.Lose(); }
 }
-void NativePresentScope::Begin(IDXGISwapChain* chain, UINT sync, UINT flags, bool present1) noexcept
+void NativePresentScope::Begin(const NativePresentSourcePtr& source, IDXGISwapChain* chain, UINT sync, UINT flags, bool present1) noexcept
 {
     if (session_) { Finish(false, nullptr, 0, 0, false, S_OK); return; }
-    if (!Enabled() || !chain || (flags & DXGI_PRESENT_TEST)) return;
+    if (!Enabled() || !chain || !source || !source->live.load(std::memory_order_acquire) || (flags & DXGI_PRESENT_TEST)) return;
     const auto event = captureRouting.Read(); if (!event) return;
     const auto frameTicks = NativeTicks(); // this real PRE; not a timer advanced at POST
     // COM/creation callbacks are allowed to reenter. This guard only suppresses
@@ -3884,16 +3906,15 @@ void NativePresentScope::Begin(IDXGISwapChain* chain, UINT sync, UINT flags, boo
     try
     {
         ComPtr<IDXGISwapChain> retainedChain = chain;
-        ComPtr<ID3D11Device> device;
-        if (FAILED(chain->GetDevice(IID_PPV_ARGS(&device))) || !device) return;
-        ComPtr<ID3D11DeviceContext> context; device->GetImmediateContext(&context);
-        if (!context || context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) return;
-        ComPtr<ID3D11Device> contextDevice; context->GetDevice(&contextDevice);
-        if (contextDevice.Get() != device.Get()) return;
+        // The caller resolved the selected source once, including proxy -> native
+        // context ownership. Never gather a second, inconsistent proxy pair.
+        ComPtr<ID3D11Device> device = source->device;
+        ComPtr<ID3D11DeviceContext> context = source->context;
+        if (!device || !context) return;
         if (Pointer(device.Get()) != event.device || Pointer(context.Get()) != event.context) return;
         CursorAdmission cursorAdmission;
         auto& s = Store(); std::unique_lock lock(s.ownerMutex);
-        if (!captureRouting.Current(event)) return;
+        if (!source->live.load(std::memory_order_acquire) || !captureRouting.Current(event)) return;
         auto session = s.active;
         if (!session || !s.capture || session->capture != s.capture ||
             device.Get() != s.capture->device.Get() || context.Get() != s.capture->context.Get()) return;
@@ -3956,7 +3977,7 @@ void NativePresentScope::Begin(IDXGISwapChain* chain, UINT sync, UINT flags, boo
         lock.lock();
         // Config/coverage and the serial owner may change while OS queries run.
         // No phase has committed, and no token has been reserved at this point.
-        if (!Enabled() || s.active != session || s.capture != session->capture || s.nativePresentTicket || s.observedRasterTicket ||
+        if (!source->live.load(std::memory_order_acquire) || !Enabled() || s.active != session || s.capture != session->capture || s.nativePresentTicket || s.observedRasterTicket ||
             !session->accepting || session->quarantined || session->capture->opaque || session->capture->exhausted ||
             !session->capture->coverage || !session->capture->creations ||
             captureRouting.Lost() || s.loaded != revision ||
@@ -4038,7 +4059,7 @@ void NativePresentScope::Begin(IDXGISwapChain* chain, UINT sync, UINT flags, boo
                 s.Message("Unsupported: native PRE/invariant POST variable preflight failed; no phase committed"); return;
             }
         }
-        session_ = session; swapchain_ = std::move(retainedChain); device_ = std::move(device); context_ = std::move(context);
+        session_ = session; source_ = source; swapchain_ = std::move(retainedChain); device_ = std::move(device); context_ = std::move(context);
         ticket_ = ticket; deviceGeneration_ = session->capture->generation; routeSlot_ = session->capture->routeSlot; planGeneration_ = session->generation;
         revision_ = revision; thread_ = GetCurrentThreadId();
         window_ = window; windowThread_ = windowThread; preValues_ = values; valueRequirements_ = requirements;
@@ -4095,7 +4116,7 @@ void NativePresentScope::Finish(bool returned, IDXGISwapChain* chain, UINT sync,
             GetCurrentThreadId() == thread_ && session->thread == thread_ &&
             session->capture->device.Get() == device_.Get() && session->capture->context.Get() == context_.Get() &&
             session->capture->generation == deviceGeneration_ && session->generation == planGeneration_;
-        const bool publishPost = paired && realReturn && Enabled() && session->accepting && !session->quarantined &&
+        const bool publishPost = paired && realReturn && source_ && source_->live.load(std::memory_order_acquire) && Enabled() && session->accepting && !session->quarantined &&
             s.active == session && s.capture == session->capture && !session->capture->opaque &&
             !session->capture->exhausted && session->capture->coverage && session->capture->creations &&
             !captureRouting.Lost() &&

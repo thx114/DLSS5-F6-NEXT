@@ -14,8 +14,8 @@ class D3D12Hooks
     static bool RestoreGraphicsRootState(ID3D12GraphicsCommandList* cmdList);
 
   public:
-    static void Hook();
-    static void HookAgility(HMODULE module);
+    static bool Hook();
+    static bool HookAgility(HMODULE module);
     static void HookDevice(ID3D12Device* device);
     static void Unhook();
     static void SetRootSignatureTracking(bool enable);

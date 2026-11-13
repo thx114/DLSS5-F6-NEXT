@@ -24,6 +24,6 @@ class VulkanHooks
     // vkDestroySurfaceKHR without our hook: the bridge destroys that surface holding its own lock, which the hook takes.
     static PFN_vkDestroySurfaceKHR OriginalDestroySurface();
 
-    static void Hook(HMODULE vulkan1);
+    static bool Hook(HMODULE vulkan1);
     static void Unhook();
 };

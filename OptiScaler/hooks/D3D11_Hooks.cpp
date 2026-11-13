@@ -35,25 +35,48 @@ struct FactoryRecursionScope {
     ~FactoryRecursionScope() { _skipDx11Create = previous; }
 };
 #include <hooks/HookOwnership.h>
+#include <hooks/MethodHooks.h>
+#include <hooks/RoutedHook.h>
 #include <hooks/HookTransaction.h>
 // DirectX
 using PFN_CreateSamplerState = rewrite_signature<decltype(&ID3D11Device::CreateSamplerState)>::type;
 
 using PFN_Release = rewrite_signature<decltype(&IUnknown::Release)>::type;
 
-static PFN_D3D11_CREATE_DEVICE o_D3D11CreateDevice = nullptr;
-static PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN o_D3D11CreateDeviceAndSwapChain = nullptr;
+static HRESULT hkD3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags,
+                                   const D3D_FEATURE_LEVEL* pFeatureLevels, UINT FeatureLevels, UINT SDKVersion,
+                                   ID3D11Device** ppDevice, D3D_FEATURE_LEVEL* pFeatureLevel,
+                                   ID3D11DeviceContext** ppImmediateContext);
+static HRESULT hkD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software,
+                                               UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels, UINT FeatureLevels,
+                                               UINT SDKVersion, const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
+                                               IDXGISwapChain** ppSwapChain, ID3D11Device** ppDevice,
+                                               D3D_FEATURE_LEVEL* pFeatureLevel,
+                                               ID3D11DeviceContext** ppImmediateContext);
+static HRESULT hkD3D11On12CreateDevice(IUnknown* pDevice, UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels,
+                                       UINT FeatureLevels, IUnknown* const* ppCommandQueues, UINT NumQueues,
+                                       UINT NodeMask, ID3D11Device** ppDevice, ID3D11DeviceContext** ppImmediateContext,
+                                       D3D_FEATURE_LEVEL* pChosenFeatureLevel);
+static void HookToDeviceLocal(ID3D11Device* device);
+struct D3D11FactoryDomain {
+    template<class... Args> static void Returned(HRESULT result,Args... args) {
+        if (!gimi::runtime::Enabled() || FAILED(result)) return;
+        const auto arguments=std::tuple<Args...>(args...);
+        constexpr size_t deviceIndex=sizeof...(Args)==12 ? 9 : 7;
+        auto** device=std::get<deviceIndex>(arguments);
+        if (device && *device) HookToDeviceLocal(*device);
+    }
+};
+static HookOwnership::RoutedHook<&hkD3D11CreateDevice, SIZE_MAX, D3D11FactoryDomain> o_D3D11CreateDevice;
+static HookOwnership::RoutedHook<&hkD3D11CreateDeviceAndSwapChain, SIZE_MAX, D3D11FactoryDomain> o_D3D11CreateDeviceAndSwapChain;
+static HookOwnership::RoutedHook<&hkD3D11On12CreateDevice, SIZE_MAX, D3D11FactoryDomain> o_D3D11On12CreateDevice;
 using PFN_CreatePixelShader = rewrite_signature<decltype(&ID3D11Device::CreatePixelShader)>::type;
-static PFN_CreatePixelShader o_CreatePixelShader = nullptr;
-static PVOID pixelShaderHookAddress = nullptr;
 using PFN_CreateVertexShader = rewrite_signature<decltype(&ID3D11Device::CreateVertexShader)>::type;
-static PFN_CreateVertexShader o_VisibleCreateVertexShader = nullptr;
-static PVOID visibleVertexHookAddress = nullptr;
+static HookOwnership::MethodHooks<PFN_CreatePixelShader> pixelHooks;
+static HookOwnership::MethodHooks<PFN_CreateVertexShader> vertexHooks;
 static PFN_CreateSamplerState o_CreateSamplerState = nullptr;
-static PFN_D3D11ON12_CREATE_DEVICE o_D3D11On12CreateDevice = nullptr;
 static PFN_Release o_D3D11DeviceRelease = nullptr;
 static HookOwnership::Own::Slot ownDeviceRelease,ownDeviceSampler;
-static HookOwnership::Own::Slot ownFactory,ownOn12Factory,ownSwapFactory,ownPS,ownVS;
 using PFN_ModCreateBuffer = rewrite_signature<decltype(&ID3D11Device::CreateBuffer)>::type;
 using PFN_ModCreateTexture = rewrite_signature<decltype(&ID3D11Device::CreateTexture2D)>::type;
 using PFN_ModCreateView = rewrite_signature<decltype(&ID3D11Device::CreateShaderResourceView)>::type;
@@ -80,9 +103,7 @@ static bool ModCreationEnabled(ID3D11Device* device)noexcept
     const auto table=*reinterpret_cast<PVOID**>(device);
     const bool complete=modCreationsCommitted.load(std::memory_order_acquire) &&
         modCreationTargets==std::array<PVOID,7>{table[3],table[5],table[7],table[8],table[11],table[13],table[14]} &&
-        pixelShaderHookAddress==table[15] && visibleVertexHookAddress==table[12] &&
-        ownPS.live && ownPS.transaction==(PVOID)o_CreatePixelShader && ownPS.entry==table[15] &&
-        ownVS.live && ownVS.transaction==(PVOID)o_VisibleCreateVertexShader && ownVS.entry==table[12] &&
+        pixelHooks.Covers(table[15]) && vertexHooks.Covers(table[12]) &&
         ownModBuffer.live && ownModBuffer.entry==table[3] && ownModBuffer.transaction==(PVOID)o_ModCreateBuffer &&
         ownModTexture.live && ownModTexture.entry==table[5] && ownModTexture.transaction==(PVOID)o_ModCreateTexture &&
         ownModView.live && ownModView.entry==table[7] && ownModView.transaction==(PVOID)o_ModCreateView &&
@@ -166,7 +187,7 @@ LONG D3D11Hooks::InstallGimiCreationHooks(ID3D11Device* device) noexcept
     const auto table=*reinterpret_cast<PVOID**>(device);
     const auto shaderResult=EnsureShaderHooks(device);
     if(shaderResult!=NO_ERROR)return shaderResult;
-    if(pixelShaderHookAddress!=table[15] || visibleVertexHookAddress!=table[12])return ERROR_NOT_SUPPORTED;
+    if(!pixelHooks.Covers(table[15]) || !vertexHooks.Covers(table[12]))return ERROR_NOT_SUPPORTED;
     const std::array<PVOID,7> targets{table[3],table[5],table[7],table[8],table[11],table[13],table[14]};
     HookOwnership::Own::Batch hooks;
     HookOwnership::AddMethod(hooks,ownModBuffer,&(PVOID&)o_ModCreateBuffer,table,3,(PVOID)hkModCreateBuffer);
@@ -184,22 +205,33 @@ LONG D3D11Hooks::InstallGimiCreationHooks(ID3D11Device* device) noexcept
 static HRESULT hkCreateSamplerState(ID3D11Device* This, const D3D11_SAMPLER_DESC* pSamplerDesc,
                                     ID3D11SamplerState** ppSamplerState);
 
-static HRESULT hkCreatePixelShader(ID3D11Device* device,const void* bytes,SIZE_T size,
+static thread_local unsigned pixelCreationDepth = 0, vertexCreationDepth = 0;
+struct ShaderCreationScope {
+    unsigned& depth;
+    bool outer;
+    explicit ShaderCreationScope(unsigned& value) : depth(value), outer(value++ == 0) {}
+    ~ShaderCreationScope() { --depth; }
+};
+template<size_t Index> static HRESULT hkCreatePixelShader(ID3D11Device* device,const void* bytes,SIZE_T size,
                                   ID3D11ClassLinkage* linkage,ID3D11PixelShader** shader)
 {
-    const auto result=o_CreatePixelShader(device,bytes,size,linkage,shader);
+    ShaderCreationScope scope(pixelCreationDepth);
+    auto call = pixelHooks.Acquire(Index);
+    const auto result=call.Get()(device,bytes,size,linkage,shader);
     if(SUCCEEDED(result) && shader && *shader){
-        DrawObservationDx11::RememberShader(*shader,DrawObservationDx11::ShaderByteHash(bytes,size),size);
+        if(scope.outer) DrawObservationDx11::RememberShader(*shader,DrawObservationDx11::ShaderByteHash(bytes,size),size);
         if(ModCreationEnabled(device))gimi::runtime::ShaderCreated(device,*shader,bytes,size,false,linkage!=nullptr);}
     return result;
 }
 
-static HRESULT hkVisibleCreateVertexShader(ID3D11Device* device,const void* bytes,SIZE_T size,
+template<size_t Index> static HRESULT hkVisibleCreateVertexShader(ID3D11Device* device,const void* bytes,SIZE_T size,
                                            ID3D11ClassLinkage* linkage,ID3D11VertexShader** shader)
 {
-    const auto result=o_VisibleCreateVertexShader(device,bytes,size,linkage,shader);
+    ShaderCreationScope scope(vertexCreationDepth);
+    auto call = vertexHooks.Acquire(Index);
+    const auto result=call.Get()(device,bytes,size,linkage,shader);
     if(SUCCEEDED(result) && shader && *shader){
-        DrawObservationDx11::RememberShader(*shader,DrawObservationDx11::ShaderByteHash(bytes,size),size);
+        if(scope.outer) DrawObservationDx11::RememberShader(*shader,DrawObservationDx11::ShaderByteHash(bytes,size),size);
         if(ModCreationEnabled(device))gimi::runtime::ShaderCreated(device,*shader,bytes,size,true,linkage!=nullptr);}
     return result;
 }
@@ -209,17 +241,19 @@ static LONG EnsureShaderHooks(ID3D11Device* device) noexcept
     std::lock_guard lifecycle(hookLifecycle);
     if (!device) return ERROR_INVALID_PARAMETER;
     auto table = *reinterpret_cast<PVOID**>(device);
-    if ((o_CreatePixelShader && (!ownPS.live || ownPS.entry != table[15] || ownPS.transaction != (PVOID)o_CreatePixelShader)) ||
-        (o_VisibleCreateVertexShader && (!ownVS.live || ownVS.entry != table[12] || ownVS.transaction != (PVOID)o_VisibleCreateVertexShader))) return ERROR_NOT_SUPPORTED;
+    static const auto pixelThunks = []<size_t... I>(std::index_sequence<I...>) {
+        return std::array<PFN_CreatePixelShader, sizeof...(I)>{&hkCreatePixelShader<I>...};
+    }(std::make_index_sequence<decltype(pixelHooks)::capacity>{});
+    static const auto vertexThunks = []<size_t... I>(std::index_sequence<I...>) {
+        return std::array<PFN_CreateVertexShader, sizeof...(I)>{&hkVisibleCreateVertexShader<I>...};
+    }(std::make_index_sequence<decltype(vertexHooks)::capacity>{});
     HookOwnership::Own::Batch hooks;
-    HookOwnership::AddMethod(hooks, ownPS, &(PVOID&)o_CreatePixelShader, table, 15, (PVOID)hkCreatePixelShader);
-    HookOwnership::AddMethod(hooks, ownVS, &(PVOID&)o_VisibleCreateVertexShader, table, 12, (PVOID)hkVisibleCreateVertexShader);
+    const auto pixel = pixelHooks.Add(hooks, table[15], pixelThunks);
+    const auto vertex = pixel == NO_ERROR ? vertexHooks.Add(hooks, table[12], vertexThunks) : pixel;
+    if (vertex != NO_ERROR) return vertex;
     const auto result=hooks.Commit();
-    if (result == NO_ERROR)
-    {
-        pixelShaderHookAddress = table[15];
-        visibleVertexHookAddress = table[12];
-    }
+    if (result != NO_ERROR) LOG_WARN("D3D11 shader hook transaction refused hr=0x{:X} device={} pixel={} vertex={}",
+        result, static_cast<void*>(device), table[15], table[12]);
     return result;
 }
 static ULONG hkD3D11DeviceRelease(IUnknown* device)
@@ -300,7 +334,6 @@ static void HookToDeviceLocal(ID3D11Device* device)
         if (result != NO_ERROR) LOG_ERROR("Failed to hook ID3D11Device: {:X}", result);
     }
     GenericDepthDx11::BindModRuntime(device);
-    GenericDepthDx11::CompleteModCreationHookInstall(device);
 }
 static HRESULT hkD3D11On12CreateDevice(IUnknown* pDevice, UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels,
                                        UINT FeatureLevels, IUnknown* const* ppCommandQueues, UINT NumQueues,
@@ -343,7 +376,7 @@ static HRESULT hkD3D11On12CreateDevice(IUnknown* pDevice, UINT Flags, const D3D_
                                          ppImmediateContext, pChosenFeatureLevel);
     }
 
-    if (result == S_OK && ppDevice && *ppDevice != nullptr && !rtss && State::Instance().currentD3D12Device == nullptr)
+    if (result == S_OK && ppDevice && *ppDevice != nullptr && !rtss && (gimi::runtime::Enabled() || State::Instance().currentD3D12Device == nullptr))
     {
         LOG_INFO("Device captured, D3D11Device: {0:X}", (UINT64) *ppDevice);
         HookToDeviceLocal(*ppDevice);
@@ -445,7 +478,7 @@ static HRESULT hkD3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE Drive
 
 
 
-    if (result == S_OK && ppDevice != nullptr && *ppDevice != nullptr && State::Instance().currentD3D12Device == nullptr)
+    if (result == S_OK && ppDevice != nullptr && *ppDevice != nullptr && (gimi::runtime::Enabled() || State::Instance().currentD3D12Device == nullptr))
     {
         LOG_INFO("Device captured");
         HookToDeviceLocal(*ppDevice);
@@ -586,7 +619,7 @@ static HRESULT hkD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVE
         ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
     }
 
-    if (SUCCEEDED(result) && ppDevice != nullptr && *ppDevice != nullptr && State::Instance().currentD3D12Device == nullptr)
+    if (SUCCEEDED(result) && ppDevice != nullptr && *ppDevice != nullptr && (gimi::runtime::Enabled() || State::Instance().currentD3D12Device == nullptr))
     {
         LOG_INFO("Device captured");
         HookToDeviceLocal(*ppDevice);
@@ -702,19 +735,20 @@ static HRESULT hkCreateSamplerState(ID3D11Device* This, const D3D11_SAMPLER_DESC
 
 void D3D11Hooks::HookToDevice(ID3D11Device* device) { HookToDeviceLocal(device); }
 
-void D3D11Hooks::Hook(HMODULE module)
+bool D3D11Hooks::Hook(HMODULE module)
 {
     std::lock_guard lifecycle(hookLifecycle);
-    if (o_D3D11CreateDevice) return;
+    if (!module) return false;
     const auto factory = (PVOID)KernelBaseProxy::GetProcAddress_()(module, "D3D11CreateDevice");
     const auto combined = (PVOID)KernelBaseProxy::GetProcAddress_()(module, "D3D11CreateDeviceAndSwapChain");
     const auto on12 = (PVOID)KernelBaseProxy::GetProcAddress_()(module, "D3D11On12CreateDevice");
     HookOwnership::Own::Batch hooks;
-    if (factory) hooks.Add(ownFactory, &(PVOID&)o_D3D11CreateDevice, nullptr, factory, (PVOID)hkD3D11CreateDevice);
-    if (combined) hooks.Add(ownSwapFactory, &(PVOID&)o_D3D11CreateDeviceAndSwapChain, nullptr, combined, (PVOID)hkD3D11CreateDeviceAndSwapChain);
-    if (on12) hooks.Add(ownOn12Factory, &(PVOID&)o_D3D11On12CreateDevice, nullptr, on12, (PVOID)hkD3D11On12CreateDevice);
+    if (factory) o_D3D11CreateDevice.Add(hooks, factory);
+    if (combined) o_D3D11CreateDeviceAndSwapChain.Add(hooks, combined);
+    if (on12) o_D3D11On12CreateDevice.Add(hooks, on12);
     const auto result = hooks.Commit();
     if (result != NO_ERROR) LOG_ERROR("Failed to hook D3D11 factories: {:X}", result);
+    return result == NO_ERROR;
 }
 
 void D3D11Hooks::Unhook()
@@ -722,22 +756,22 @@ void D3D11Hooks::Unhook()
     std::lock_guard lifecycle(hookLifecycle);
     GenericDepthDx11::RevokeModStreamOutputCoverage();
     gimi::runtime::StopAccepting();
-    const auto result = HookOwnership::Own::DetachAll({
-        &ownFactory, &ownOn12Factory, &ownSwapFactory, &ownDeviceRelease, &ownDeviceSampler,
-        &ownPS, &ownVS, &ownModBuffer, &ownModTexture, &ownModView, &ownModLayout,
-        &ownModUnordered, &ownModGeometry, &ownModGeometrySO});
+    std::vector<HookOwnership::Own::Slot*> slots{
+        &ownDeviceRelease, &ownDeviceSampler,
+        &ownModBuffer, &ownModTexture, &ownModView, &ownModLayout,
+        &ownModUnordered, &ownModGeometry, &ownModGeometrySO};
+    o_D3D11CreateDevice.AppendSlots(slots);
+    o_D3D11CreateDeviceAndSwapChain.AppendSlots(slots);
+    o_D3D11On12CreateDevice.AppendSlots(slots);
+    pixelHooks.AppendSlots(slots); vertexHooks.AppendSlots(slots);
+    const auto result = HookOwnership::Own::DetachAll(std::span<HookOwnership::Own::Slot* const>(slots));
     if (result != NO_ERROR)
     {
         LOG_ERROR("Failed to detach D3D11 hooks: {:X}", result);
         return;
     }
-    o_D3D11CreateDevice = nullptr;
-    o_D3D11CreateDeviceAndSwapChain = nullptr;
-    o_D3D11On12CreateDevice = nullptr;
     o_D3D11DeviceRelease = nullptr;
     o_CreateSamplerState = nullptr;
-    o_CreatePixelShader = nullptr;
-    o_VisibleCreateVertexShader = nullptr;
     o_ModCreateBuffer = nullptr;
     o_ModCreateTexture = nullptr;
     o_ModCreateView = nullptr;
@@ -747,7 +781,6 @@ void D3D11Hooks::Unhook()
     o_ModCreateGeometrySO = nullptr;
     modCreationsCommitted = false;
     modCreationTargets = {};
-    pixelShaderHookAddress = visibleVertexHookAddress = nullptr;
 }
 
 static_assert(std::is_same_v<decltype(&hkModCreateBuffer), PFN_ModCreateBuffer>);
@@ -757,8 +790,8 @@ static_assert(std::is_same_v<decltype(&hkModCreateLayout), PFN_ModCreateLayout>)
 static_assert(std::is_same_v<decltype(&hkModCreateUnordered), PFN_ModCreateUnordered>);
 static_assert(std::is_same_v<decltype(&hkModCreateGeometry), PFN_ModCreateGeometry>);
 static_assert(std::is_same_v<decltype(&hkModCreateGeometrySO), PFN_ModCreateGeometrySO>);
-static_assert(std::is_same_v<decltype(&hkCreatePixelShader), PFN_CreatePixelShader>);
-static_assert(std::is_same_v<decltype(&hkVisibleCreateVertexShader), PFN_CreateVertexShader>);
+static_assert(std::is_same_v<decltype(&hkCreatePixelShader<0>), PFN_CreatePixelShader>);
+static_assert(std::is_same_v<decltype(&hkVisibleCreateVertexShader<0>), PFN_CreateVertexShader>);
 static_assert(std::is_same_v<decltype(&hkD3D11On12CreateDevice), PFN_D3D11ON12_CREATE_DEVICE>);
 static_assert(std::is_same_v<decltype(&hkD3D11CreateDevice), PFN_D3D11_CREATE_DEVICE>);
 static_assert(std::is_same_v<decltype(&hkD3D11CreateDeviceAndSwapChain), PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN>);

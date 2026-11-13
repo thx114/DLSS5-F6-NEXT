@@ -6,6 +6,9 @@
 #include <cstring>
 #include <filesystem>
 #include <stdexcept>
+#ifdef HOYOSHADE_STAGE_TEST
+#include <cstdio>
+#endif
 
 namespace HoYoShade::Depth::Semantics
 {
@@ -23,7 +26,10 @@ struct Port {
         // Caller supplies exclusive idle authority; this checks target identity.
         // Initial Create/Acquire need not expose the private preset yet. False
         // is a nonsticky Pending guard: no setters, keep advancing real core.
-        if (!runtime || !source.valid || !source.files || source.config.empty() || !counter) return false;
+        if (!runtime || !source.valid || !source.files || source.config.empty() || !counter || !ReloadSerial()) return false;
+        // A readable preset path precedes its first load. ReShade's macro
+        // setters serialize the current in-memory table; calling them before
+        // the first real reload would overwrite the copied user's definitions.
         const auto expected = source.files->directory / L"preset.ini";
         const auto config = source.files->directory / L"ReShade.ini";
         if (std::filesystem::u8path(source.config).lexically_normal() != config.lexically_normal()) return false;
@@ -92,7 +98,10 @@ Result Project(State& state, reshade::api::effect_runtime* runtime, uint64_t gen
 {
     Key key;
     key.runtime = reinterpret_cast<uintptr_t>(runtime); key.runtimeGeneration = generation;
-    key.selectionSnapshot = source.snapshots; key.selectionGraph = source.graphBuilds;
+    // The immutable snapshot already identifies selected effect files and
+    // definitions. Reflection rebuild counters may change every uncached
+    // owner callback without changing any compile input.
+    key.selectionSnapshot = source.snapshots;
     try {
         if (input && input->resource && input->reader && input->directionKnown && input->owner &&
             input->generation && input->epoch && Compatible(input->resource->GetDesc(), *input) &&
@@ -101,7 +110,14 @@ Result Project(State& state, reshade::api::effect_runtime* runtime, uint64_t gen
             key.epoch = input->epoch; key.reversed = input->reversed; key.yFlipped = input->yFlipped;
         }
         Port port{runtime, source, counter};
-        return state.controller.Update(port, key);
+        const auto result = state.controller.Update(port, key);
+#ifdef HOYOSHADE_STAGE_TEST
+        static unsigned reports = 0;
+        if (++reports <= 12) std::printf("depth semantics runtime=%p gen=%llu producer=%llu gen=%llu epoch=%llu snapshot=%llu valid=%d serial=%llu outcome=%u invalidate=%d\n",
+            runtime, generation, key.producer, key.producerGeneration, key.epoch, key.selectionSnapshot,
+            key.valid, port.ReloadSerial(), static_cast<unsigned>(result.outcome), result.invalidateSelection);
+#endif
+        return result;
     } catch (...) { return {Outcome::ColorOnly, true}; }
 }
 }

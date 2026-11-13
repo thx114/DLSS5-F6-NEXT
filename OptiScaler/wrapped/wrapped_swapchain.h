@@ -108,6 +108,7 @@ class DECLSPEC_UUID("3af622a3-82d0-49cd-994f-cce05122c222") WrappedIDXGISwapChai
     int _id = 0;
     bool _uwp = false;
     bool _composition = false;
+    bool _modSourceRegistered = false;
     LONG _refcount;
     // The final Release is running (misc/REFrameworkCompat.h: a nested one returns at once)
     std::atomic_bool _finalReleaseInProgress { false };

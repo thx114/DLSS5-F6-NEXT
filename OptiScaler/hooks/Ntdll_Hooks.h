@@ -44,116 +44,17 @@ class NtdllHooks
     static NTSTATUS NTAPI hkLdrLoadDll(PWSTR PathToFile, PULONG Flags, PUNICODE_STRING ModuleFileName,
                                        PHANDLE ModuleHandle)
     {
-        if (ModuleHandle == nullptr)
-            return STATUS_INVALID_PARAMETER;
-
-        if (ModuleFileName == nullptr || ModuleFileName->Length == 0)
-            return o_LdrLoadDll(PathToFile, Flags, ModuleFileName, ModuleHandle);
-
-        std::wstring_view name(ModuleFileName->Buffer, ModuleFileName->Length / sizeof(wchar_t));
-
-#ifdef _DEBUG
-        // LOG_DEBUG("{}, caller: {}", wstring_to_string(name.data()), Util::WhoIsTheCaller(_ReturnAddress()));
-#endif
-
-        if (State::Instance().isShuttingDown)
-            return o_LdrLoadDll(PathToFile, Flags, ModuleFileName, ModuleHandle);
-
-        if (LibraryLoadHooks::IsApiSetName(name))
-            return o_LdrLoadDll(PathToFile, Flags, ModuleFileName, ModuleHandle);
-
-        if (State::SkipDllChecks())
-        {
-            const std::wstring skip = string_to_wstring(State::SkipDllName());
-
-            if (skip.empty() || LibraryLoadHooks::EndsWithInsensitive(name, std::wstring_view(skip)) ||
-                LibraryLoadHooks::EndsWithInsensitive(name, std::wstring(skip + L".dll")))
-            {
-                LOG_TRACE("Skip checks for: {}", wstring_to_string(name.data()));
-                return o_LdrLoadDll(PathToFile, Flags, ModuleFileName, ModuleHandle);
-            }
-        }
-
-        // if (originalModule != Util::GetCallerModule(_ReturnAddress()))
-        {
-            auto moduleHandle = LibraryLoadHooks::LoadLibraryCheckW(name.data(), name.data());
-
-            // skip loading of dll
-            if (moduleHandle == (HMODULE) 1337)
-            {
-                return STATUS_DLL_NOT_FOUND;
-            }
-
-            if (moduleHandle != nullptr)
-            {
-                LOG_TRACE("{}, caller: {}", wstring_to_string(name.data()), Util::WhoIsTheCaller(_ReturnAddress()));
-                *ModuleHandle = (HANDLE) moduleHandle;
-                return (NTSTATUS) 0x00000000L;
-            }
-        }
-
-        return o_LdrLoadDll(PathToFile, Flags, ModuleFileName, ModuleHandle);
+        return LibraryLoadHooks::LoadNative(Flags, ModuleFileName, ModuleHandle, [&](PUNICODE_STRING replacement) {
+            return o_LdrLoadDll(PathToFile, Flags, replacement ? replacement : ModuleFileName, ModuleHandle);
+        });
     }
 
     static NTSTATUS NTAPI hkNtLoadDll(PUNICODE_STRING PathToFile, PULONG Flags, PUNICODE_STRING ModuleFileName,
-                                      PHANDLE ModuleHandle)
+                                       PHANDLE ModuleHandle)
     {
-        if (ModuleHandle == nullptr)
-            return STATUS_INVALID_PARAMETER;
-
-        if (ModuleFileName == nullptr || ModuleFileName->Length == 0)
-            return o_NtLoadDll(PathToFile, Flags, ModuleFileName, ModuleHandle);
-
-        std::wstring_view name(ModuleFileName->Buffer, ModuleFileName->Length / sizeof(wchar_t));
-
-#ifdef _DEBUG
-        // LOG_DEBUG("{}, caller: {}", wstring_to_string(name.data()), Util::WhoIsTheCaller(_ReturnAddress()));
-#endif
-
-        if (State::Instance().isShuttingDown)
-            return o_NtLoadDll(PathToFile, Flags, ModuleFileName, ModuleHandle);
-
-        if (LibraryLoadHooks::IsApiSetName(name))
-            return o_NtLoadDll(PathToFile, Flags, ModuleFileName, ModuleHandle);
-
-        std::wstring_view path;
-        if (PathToFile == nullptr || PathToFile->Length == 0)
-            path = name;
-        else
-            path = std::wstring_view(PathToFile->Buffer, PathToFile->Length / sizeof(wchar_t));
-
-        if (State::SkipDllChecks())
-        {
-            const std::wstring skip = string_to_wstring(State::SkipDllName());
-
-            if (skip.empty() || LibraryLoadHooks::EndsWithInsensitive(name, std::wstring_view(skip)) ||
-                LibraryLoadHooks::EndsWithInsensitive(name, std::wstring(skip + L".dll")))
-            {
-                LOG_TRACE("Skip checks for: {}", wstring_to_string(name.data()));
-                return o_NtLoadDll(PathToFile, Flags, ModuleFileName, ModuleHandle);
-            }
-        }
-
-        // Do not interfere with original modules calls
-        if (originalModule != Util::GetCallerModule(_ReturnAddress()))
-        {
-            auto moduleHandle = LibraryLoadHooks::LoadLibraryCheckW(name.data(), path.data());
-
-            // skip loading of dll
-            if (moduleHandle == (HMODULE) 1337)
-            {
-                return STATUS_DLL_NOT_FOUND;
-            }
-
-            if (moduleHandle != nullptr)
-            {
-                LOG_TRACE("{}, caller: {}", wstring_to_string(name.data()), Util::WhoIsTheCaller(_ReturnAddress()));
-                *ModuleHandle = (HANDLE) moduleHandle;
-                return (NTSTATUS) 0x00000000L;
-            }
-        }
-
-        return o_NtLoadDll(PathToFile, Flags, ModuleFileName, ModuleHandle);
+        return LibraryLoadHooks::LoadNative(Flags, ModuleFileName, ModuleHandle, [&](PUNICODE_STRING replacement) {
+            return o_NtLoadDll(PathToFile, Flags, replacement ? replacement : ModuleFileName, ModuleHandle);
+        });
     }
 
     static NTSTATUS NTAPI hkLdrUnloadDll(PVOID lpLibrary)

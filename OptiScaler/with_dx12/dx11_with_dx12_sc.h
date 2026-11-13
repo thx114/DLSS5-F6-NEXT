@@ -172,6 +172,7 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
 
     int _id = 0;
     LONG _refcount = 1;
+    bool _modSourceRegistered = false;
     UINT _lastFlags = 0;
 
     IFGFeature_Dx12* _fg = nullptr;

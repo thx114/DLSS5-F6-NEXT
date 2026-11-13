@@ -7,6 +7,7 @@
 #include <runtime/NrPresentationSource.h>
 #include <runtime/NrPresentationOutput.h>
 #include <runtime/F6InputPolicy.h>
+#include <runtime/D3D12DeviceIdentity.h>
 #include "DlssNr_HistoryDebug.h"
 #include <upscalers/GameRoutePolicy.h>
 

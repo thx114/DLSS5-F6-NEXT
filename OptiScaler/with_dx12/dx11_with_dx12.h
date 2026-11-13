@@ -13,6 +13,7 @@
 
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_defs.h>
+#include "SharedInputRead.h"
 
 #define DX11_WITH_DX12_CACHED_FRAMES 2
 
@@ -33,6 +34,11 @@ class Dx11WithDx12
     inline static UINT64 TextureCopyFenceValue = 1;
     // A failed borrowed-guide submission cannot allow another shared upload.
     inline static std::atomic<bool> FgGuideWritesBlocked { false };
+    // All cache mutations and reader acquisition share this lock. Nested
+    // prepare/copy/reset helpers use the same operation, before SyncMutex.
+    inline static std::recursive_mutex InputReadMutex;
+    inline static interop::SharedInputReadRef InputRead;
+    static bool CanWriteUpscalerInputs() noexcept;
 
     // Sync objects are tied to the current D3D11 device, D3D12 device and D3D12 queue.
     // Backend switching can reset resource caches while FG input is still using the bridge,
@@ -147,7 +153,9 @@ class Dx11WithDx12
     static void ResetUpscalerFrameId();
 
     static void ReleaseSharedResource(D3D11_TEXTURE2D_RESOURCE_C* resource);
-    static void ResetUpscalerResourceCache(bool releaseSyncResources = false);
+    static bool ResetUpscalerResourceCache(bool releaseSyncResources = false);
+    static interop::SharedInputReadRef AcquireUpscalerInputRead(ID3D12CommandQueue*, ID3D12Fence*, uint64_t ready,
+        uint64_t stream, uint64_t generation, uint64_t frame) noexcept;
 
     static bool SyncDx11ToDx12();
     static bool SyncDx12ToDx11(ID3D12CommandQueue* completedReaderQueue = nullptr);
@@ -171,8 +179,8 @@ class Dx11WithDx12
     static ID3D12Device* GetD3D12Device();
     static ID3D12CommandQueue* GetD3D12CommandQueue();
 
-    static void Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Context);
-    static void Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Context, ID3D12Device* dx12Device,
+    static bool Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Context);
+    static bool Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Context, ID3D12Device* dx12Device,
                      ID3D12CommandQueue* dx12CommandQueue);
 };
 

@@ -14,10 +14,12 @@ spec = importlib.util.spec_from_file_location('nr_extract', parser_path)
 parser = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(parser)
 paths = [ROOT / 'OptiScaler/upscalers/IFeature_Dx11wDx12.cpp',
-         ROOT / 'OptiScaler/shaders/dlssnr/DlssNr_Late.inl']
+         ROOT / 'OptiScaler/shaders/dlssnr/DlssNr_Late.inl',
+         ROOT / 'OptiScaler/shaders/dlssnr/DlssNr_DetailReuse.inl']
 sources = [p.read_text(encoding='utf-8-sig') for p in paths]
 release = parser.extract(sources[0], 'bool IFeature_Dx11wDx12::ReleaseSharedResources(')
 close = parser.extract(sources[1], 'HRESULT RetireFinishedPictureRecording(')
+same_device = parser.extract(sources[2], 'bool SameDevice(ID3D12DeviceChild* a, ID3D12DeviceChild* b)')
 for old, new in [('allocator->Reset()', 'ResetAllocator(allocator)'),
                  ('cmd->Reset(allocator, nullptr)', 'ResetList(cmd, allocator)'),
                  ('cmd->Close()', 'CloseList(cmd)')]:
@@ -32,6 +34,6 @@ header = '\n'.join('// ' + p.relative_to(ROOT).as_posix() + ' SHA256 ' + hashlib
 out = ROOT / 'build/common-core-tests/BridgeRetirementProduction.inl'
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text('// GENERATED actual production bodies; three explicit HRESULT fault seams.\n' + header +
-               '\nnamespace DlssNr {\n' + close + '\n}\n' + release + '\n' + baseline + '\n',
+               '\nnamespace DetailReuse {\n' + same_device + '\n}\nnamespace DlssNr {\n' + close + '\n}\n' + release + '\n' + baseline + '\n',
                encoding='utf-8', newline='\n')
 print('PASS current bridge release and NR closure extracted; baseline mutation generated')

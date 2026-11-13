@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <span>
 
 #include <Windows.h>
 #include <detours/detours.h>
@@ -12,6 +13,7 @@
 #include <cstring>
 #include <source_location>
 #include <initializer_list>
+#include <mutex>
 
 namespace HookOwnership
 {
@@ -133,12 +135,14 @@ inline bool FinalizeOwnPatch(Patch& p) noexcept
 
 namespace Own
 {
+inline std::recursive_mutex PublicationMutex;
 struct Slot final
 {
     PVOID transaction = nullptr, entry = nullptr, hook = nullptr;
     PVOID* executed = nullptr;
     PVOID* mirror = nullptr;
     bool live = false, detachReady = false;
+    unsigned readers = 0; // guarded by PublicationMutex; detachment never waits
     detail::Patch detachReceipt {};
     constexpr Slot() noexcept = default;
     Slot(const Slot&) = delete;
@@ -153,6 +157,7 @@ template <class Function> inline Function& Original(Slot& slot) noexcept
 
 class Batch final
 {
+    std::unique_lock<std::recursive_mutex> publication_{PublicationMutex};
     struct Item
     {
         Slot* slot = nullptr;
@@ -200,6 +205,12 @@ class Batch final
 
     Batch(const Batch&) = delete;
     Batch& operator=(const Batch&) = delete;
+
+    LONG Fail(LONG error) noexcept
+    {
+        if (error_ == NO_ERROR) error_ = error;
+        return error_;
+    }
 
     LONG Add(Slot& slot, PVOID* executed, PVOID* mirror, PVOID entry, PVOID hook,
              HMODULE = nullptr, const char* = nullptr, bool = true,
@@ -294,6 +305,8 @@ inline LONG Install(Slot& slot, PVOID* mirror, PVOID entry, PVOID hook,
 
 inline LONG Detach(Slot& slot) noexcept
 {
+    std::lock_guard publication(PublicationMutex);
+    if (slot.readers) return ERROR_BUSY;
     if (!slot.live)
         return NO_ERROR;
     if (!slot.detachReady || !detail::PatchIntact(slot.detachReceipt))
@@ -327,8 +340,10 @@ inline LONG Detach(Slot& slot) noexcept
     return NO_ERROR;
 }
 
-inline LONG DetachAll(std::initializer_list<Slot*> slots) noexcept
+inline LONG DetachAll(std::span<Slot* const> slots) noexcept
 {
+    std::lock_guard publication(PublicationMutex);
+    for (const auto* slot : slots) if (slot->readers) return ERROR_BUSY;
     for (const auto* slot : slots)
         if (slot->live && (!slot->detachReady || !detail::PatchIntact(slot->detachReceipt)))
             return ERROR_INVALID_OPERATION;
@@ -353,6 +368,8 @@ inline LONG DetachAll(std::initializer_list<Slot*> slots) noexcept
     }
     return NO_ERROR;
 }
+inline LONG DetachAll(std::initializer_list<Slot*> slots) noexcept
+{ return DetachAll(std::span<Slot* const>(slots.begin(), slots.size())); }
 } // namespace Own
 inline LONG AddMethod(HookOwnership::Own::Batch& hooks, HookOwnership::Own::Slot& slot,
                       PVOID* original, void** table, unsigned index, PVOID hook,

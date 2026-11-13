@@ -1124,6 +1124,15 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
       <PreprocessorDefinitions>HOYOSHADE_OWNED_RUNTIME_STANDALONE;HOYOSHADE_OWNED_RUNTIME_PRODUCT_LOGGING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClInclude Include="integration\HoYoShade.h" />
+    <ClInclude Include="integration\HoYoShade_Bridge.inl" />
+    <ClInclude Include="integration\HoYoShadeBridgeDepth.h" />
+    <ClInclude Include="with_dx12\SharedInputRead.h" />
+    <ClInclude Include="hooks\MethodHooks.h" />
+    <ClInclude Include="hooks\RoutedHook.h" />
+    <ClInclude Include="runtime\LibraryLoadRequest.h" />
+    <ClInclude Include="runtime\LoaderModuleState.h" />
+    <ClInclude Include="runtime\LibraryObservation.h" />
+    <ClInclude Include="integration\HoYoShadeEffectRequirements.h" />
     <ClInclude Include="integration\HoYoShadeApi.h" />
     <ClInclude Include="integration\HoYoShadeOwnedRuntime.h" />
     <ClInclude Include="integration\HoYoShadePolicy.h" />
@@ -1409,6 +1418,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="mods\gimi\GimiDx11Executor.h" />
     <ClInclude Include="mods\gimi\GimiFormatText.h" />
     <ClInclude Include="mods\gimi\GimiRuntime.h" />
+    <ClInclude Include="mods\gimi\GimiPresentSource.h" />
     <ClInclude Include="mods\gimi\GimiShaderSource.h" />
   </ItemGroup>
   <ItemGroup>

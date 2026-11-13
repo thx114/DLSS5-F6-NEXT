@@ -79,9 +79,35 @@ ID3D12Device* Dx11WithDx12::GetD3D12Device() { return Dx12Device; }
 
 ID3D12CommandQueue* Dx11WithDx12::GetD3D12CommandQueue() { return Dx12CommandQueue; }
 
+bool Dx11WithDx12::CanWriteUpscalerInputs() noexcept
+{
+    std::lock_guard lock(InputReadMutex);
+    return !InputRead || InputRead->CanOverwrite();
+}
+interop::SharedInputReadRef Dx11WithDx12::AcquireUpscalerInputRead(ID3D12CommandQueue* queue, ID3D12Fence* fence,
+    uint64_t ready, uint64_t stream, uint64_t generation, uint64_t frame) noexcept
+{
+    try {
+        std::lock_guard lock(InputReadMutex);
+        if (FgGuideWritesBlocked.load(std::memory_order_acquire) || (InputRead && !InputRead->CanOverwrite()) ||
+            !queue || queue != Dx12CommandQueue || !fence || !ready || ready == UINT64_MAX ||
+            !stream || !generation || !frame || !LastPreparedUpscalerFrameId ||
+            LastPreparedUpscalerFrameId != UpscalerResourceCache.frameId ||
+            !UpscalerResourceCache.Color.Dx12Resource || !UpscalerResourceCache.Depth.Dx12Resource) return {};
+        auto input = std::make_shared<interop::SharedInputRead>(&BlockFgGuideWrites);
+        input->color = UpscalerResourceCache.Color.Dx12Resource; input->depth = UpscalerResourceCache.Depth.Dx12Resource;
+        input->color11 = UpscalerResourceCache.Color.SharedTexture; input->depth11 = UpscalerResourceCache.Depth.SharedTexture;
+        input->sourceColor11 = UpscalerResourceCache.Color.SourceTexture; input->sourceDepth11 = UpscalerResourceCache.Depth.SourceTexture;
+        input->queue = queue; input->ready = fence; input->readyValue = ready;
+        input->cacheFrame = LastPreparedUpscalerFrameId; input->stream = stream; input->generation = generation; input->frame = frame;
+        InputRead = input; return input;
+    } catch (...) { return {}; }
+}
+
 void Dx11WithDx12::ReleaseSharedResource(D3D11_TEXTURE2D_RESOURCE_C* resource)
 {
-    if (FgGuideWritesBlocked.load(std::memory_order_acquire) || resource == nullptr)
+    std::lock_guard cacheLock(InputReadMutex);
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire) || !CanWriteUpscalerInputs() || resource == nullptr)
         return;
 
     SAFE_RELEASE(resource->Dx12Resource);
@@ -109,7 +135,7 @@ void Dx11WithDx12::ReleaseSharedResource(D3D11_TEXTURE2D_RESOURCE_C* resource)
 
 void Dx11WithDx12::ReleaseSyncResourcesLocked()
 {
-    if (FgGuideWritesBlocked.load(std::memory_order_acquire)) return;
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire) || !CanWriteUpscalerInputs()) return;
     SAFE_RELEASE(Dx11FenceTextureCopy);
     SAFE_RELEASE(Dx12FenceTextureCopy);
 
@@ -127,6 +153,7 @@ void Dx11WithDx12::ReleaseSyncResourcesLocked()
 
 void Dx11WithDx12::ReleaseSyncResources()
 {
+    std::lock_guard cacheLock(InputReadMutex);
     std::lock_guard<std::mutex> lock(SyncMutex);
     ReleaseSyncResourcesLocked();
 }
@@ -214,6 +241,7 @@ bool Dx11WithDx12::EnsureSyncResourcesLocked()
 
 bool Dx11WithDx12::SyncDx11ToDx12()
 {
+    std::lock_guard cacheLock(InputReadMutex);
     // Fence lifetime is protected by SyncMutex; do not sample it before acquiring the lock.
     CallerCpuTrace::Scope mutexCpu(CallerCpuTrace::Op::SrSyncMutex, Dx11DeviceContext, 0,
                                    UpscalerResourceCache.frameId);
@@ -259,6 +287,7 @@ bool Dx11WithDx12::SyncDx11ToDx12()
 
 bool Dx11WithDx12::SyncDx12ToDx11(ID3D12CommandQueue* completedReaderQueue)
 {
+    std::lock_guard cacheLock(InputReadMutex);
     std::lock_guard<std::mutex> lock(SyncMutex);
     if (FgGuideWritesBlocked.load(std::memory_order_acquire) ||
         !TextureCopyFenceValue || TextureCopyFenceValue >= UINT64_MAX-1) return false;
@@ -300,9 +329,10 @@ bool Dx11WithDx12::SyncDx12ToDx11(ID3D12CommandQueue* completedReaderQueue)
     return true;
 }
 
-void Dx11WithDx12::ResetUpscalerResourceCache(bool releaseSyncResources)
+bool Dx11WithDx12::ResetUpscalerResourceCache(bool releaseSyncResources)
 {
-    if (FgGuideWritesBlocked.load(std::memory_order_acquire)) return;
+    std::lock_guard cacheLock(InputReadMutex);
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire) || !CanWriteUpscalerInputs()) return false;
     ReleaseSharedResource(&UpscalerResourceCache.Color);
     ReleaseSharedResource(&UpscalerResourceCache.Mv);
     ReleaseSharedResource(&UpscalerResourceCache.Depth);
@@ -322,26 +352,32 @@ void Dx11WithDx12::ResetUpscalerResourceCache(bool releaseSyncResources)
 
     ClearLastPreparedUpscalerFrameState();
     ResetUpscalerFrameId();
+    InputRead.reset();
+    return true;
 }
 
-void Dx11WithDx12::Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Context)
+bool Dx11WithDx12::Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Context)
 {
+    std::lock_guard cacheLock(InputReadMutex);
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire) || !CanWriteUpscalerInputs()) return false;
     if (!WithDx12::PrepareD3D12ForD3D11(dx11Device, D3D_FEATURE_LEVEL_11_0))
     {
         LOG_ERROR("Dx11WithDx12::Init failed to resolve D3D12 device/queue");
-        return;
+        return false;
     }
 
-    Init(dx11Device, dx11Context, WithDx12::GetD3D12Device(), WithDx12::GetD3D12CommandQueue());
+    return Init(dx11Device, dx11Context, WithDx12::GetD3D12Device(), WithDx12::GetD3D12CommandQueue());
 }
 
-void Dx11WithDx12::Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Context, ID3D12Device* dx12Device,
+bool Dx11WithDx12::Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Context, ID3D12Device* dx12Device,
                         ID3D12CommandQueue* dx12CommandQueue)
 {
+    std::lock_guard cacheLock(InputReadMutex);
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire) || !CanWriteUpscalerInputs()) return false;
     if (dx11Context == nullptr)
     {
         LOG_ERROR("Dx11WithDx12::Init called with null D3D11 context");
-        return;
+        return false;
     }
 
     if (dx12Device == nullptr || dx12CommandQueue == nullptr)
@@ -349,7 +385,7 @@ void Dx11WithDx12::Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Conte
         if (!WithDx12::PrepareD3D12ForD3D11(dx11Device, D3D_FEATURE_LEVEL_11_0))
         {
             LOG_ERROR("Dx11WithDx12::Init called without resolved D3D12 device/queue");
-            return;
+            return false;
         }
 
         dx12Device = WithDx12::GetD3D12Device();
@@ -363,17 +399,15 @@ void Dx11WithDx12::Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Conte
     if (contextResult != S_OK || newDx11Context == nullptr)
     {
         LOG_ERROR("QueryInterface ID3D11DeviceContext4 result: {0:x}", contextResult);
-        return;
+        return false;
     }
-
-    newDx11Context->Release();
 
     if (dx11Device == nullptr)
     {
         newDx11Context->GetDevice(&dx11Device);
 
-        if (dx11Device != nullptr)
-            dx11Device->Release();
+        if (!dx11Device) { newDx11Context->Release(); return false; }
+        dx11Device->Release();
     }
 
     auto dx11DeviceResult = dx11Device->QueryInterface(IID_PPV_ARGS(&newDx11Device));
@@ -381,17 +415,18 @@ void Dx11WithDx12::Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Conte
     {
         LOG_ERROR("QueryInterface ID3D11Device5 result: {0:x}", dx11DeviceResult);
         newDx11Context->Release();
-        return;
+        return false;
     }
 
     newDx11Device->Release();
+    newDx11Context->Release();
 
     const bool dx11Changed = newDx11Device != Dx11Device || newDx11Context != Dx11DeviceContext;
     const bool dx12Changed = dx12Device != Dx12Device || dx12CommandQueue != Dx12CommandQueue;
 
     if (dx11Changed || dx12Changed)
     {
-        ResetUpscalerResourceCache(true);
+        if (!ResetUpscalerResourceCache(true)) return false;
 
         if (DT != nullptr || DT.get() != nullptr)
             DT.reset();
@@ -406,12 +441,14 @@ void Dx11WithDx12::Init(ID3D11Device* dx11Device, ID3D11DeviceContext* dx11Conte
     Dx11Device = newDx11Device;
     Dx12Device = dx12Device;
     Dx12CommandQueue = dx12CommandQueue;
+    return true;
 }
 
 bool Dx11WithDx12::CopyTextureFrom11To12(ID3D11Resource* InResource, D3D11_TEXTURE2D_RESOURCE_C* OutResource,
                                          bool InCopy, bool InDepth, bool InDontUseNTShared)
 {
-    if (FgGuideWritesBlocked.load(std::memory_order_acquire) ||
+    std::lock_guard cacheLock(InputReadMutex);
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire) || !CanWriteUpscalerInputs() ||
         InResource == nullptr || OutResource == nullptr || Dx11Device == nullptr || Dx11DeviceContext == nullptr)
         return false;
 
@@ -470,10 +507,9 @@ bool Dx11WithDx12::CopyTextureFrom11To12(ID3D11Resource* InResource, D3D11_TEXTU
                 return false;
             }
 
-            DWORD access = DXGI_SHARED_RESOURCE_READ;
-
-            if (!InCopy)
-                access |= DXGI_SHARED_RESOURCE_WRITE;
+            // Input colors may be written back by the owned BeforeSR stage;
+            // copy direction does not determine shared-handle access rights.
+            DWORD access = DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE;
 
             result = resource->CreateSharedHandle(NULL, access, NULL, &OutResource->Dx11Handle);
             resource->Release();
@@ -642,10 +678,7 @@ bool Dx11WithDx12::CopyTextureFrom11To12(ID3D11Resource* InResource, D3D11_TEXTU
 
             if (sourceHasNTShared)
             {
-                DWORD access = DXGI_SHARED_RESOURCE_READ;
-
-                if (!InCopy)
-                    access |= DXGI_SHARED_RESOURCE_WRITE;
+                DWORD access = DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE;
 
                 result = resource->CreateSharedHandle(NULL, access, NULL, &OutResource->Dx11Handle);
                 OutResource->UsesNTHandle = true;
@@ -682,6 +715,8 @@ bool Dx11WithDx12::PrepareTextureFrom11To12(const std::string& name, ID3D12Devic
                                             D3D11_TEXTURE2D_RESOURCE_C* shared, bool copy, bool depth,
                                             bool dontUseNTShared, UINT64 frameId)
 {
+    std::lock_guard cacheLock(InputReadMutex);
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire) || !CanWriteUpscalerInputs()) return false;
     if (resource == nullptr || shared == nullptr || dx12Device == nullptr)
         return false;
 
@@ -735,6 +770,8 @@ bool Dx11WithDx12::PrepareTextureFrom11To12(const std::string& name, ID3D12Devic
 bool Dx11WithDx12::OpenHandle(std::string name, ID3D12Device* dx12Device, ID3D11Resource* resource,
                               D3D11_TEXTURE2D_RESOURCE_C* shared)
 {
+    std::lock_guard cacheLock(InputReadMutex);
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire) || !CanWriteUpscalerInputs()) return false;
     if (resource == nullptr || shared == nullptr || dx12Device == nullptr)
         return false;
 
@@ -891,8 +928,14 @@ Dx11WithDx12::PrepareResourcesResult Dx11WithDx12::PrepareUpscalerResources(cons
                                                                             bool syncAfterPrepare)
 {
     PrepareResourcesResult result = {};
+    // FG owns the outer execution interval everywhere it can call shared-input
+    // synchronization. Keep that same FG -> cache -> sync order for writers.
+    auto* guideOwner=dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG);
+    if (guideOwner && !guideOwner->OwnsUpscalerDepthContract()) guideOwner=nullptr;
+    auto readerGuard=guideOwner ? guideOwner->GuardExecution(FGExecutionScope::Lifecycle) : FGExecutionGuard{};
+    std::lock_guard cacheLock(InputReadMutex);
 
-    if (FgGuideWritesBlocked.load(std::memory_order_acquire)) return result;
+    if (FgGuideWritesBlocked.load(std::memory_order_acquire) || !CanWriteUpscalerInputs()) return result;
     if (parameters == nullptr)
     {
         LOG_ERROR("PrepareUpscalerResources called with null parameters");
@@ -915,9 +958,6 @@ Dx11WithDx12::PrepareResourcesResult Dx11WithDx12::PrepareUpscalerResources(cons
     // actual FG reads before any shared cache entry is replaced or written.
     // Lifecycle locks serialization only; Inputs would advance StarRail's
     // admission before the old borrowed recording has been handed back.
-    auto* guideOwner=dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG);
-    if (guideOwner && !guideOwner->OwnsUpscalerDepthContract()) guideOwner=nullptr;
-    auto readerGuard=guideOwner ? guideOwner->GuardExecution(FGExecutionScope::Lifecycle) : FGExecutionGuard{};
     if (guideOwner && !guideOwner->SealDx11GuideInputs(true,Dx12CommandQueue)) return result;
 
     auto& cache = GetUpscalerResourceCache();
@@ -1003,6 +1043,7 @@ Dx11WithDx12::PrepareResourcesResult Dx11WithDx12::PrepareUpscalerResources(cons
 
 bool Dx11WithDx12::CopyUpscalerOutputToDx11(UINT frameIndex)
 {
+    std::lock_guard cacheLock(InputReadMutex);
     if (Dx11DeviceContext == nullptr)
     {
         LOG_ERROR("CopyUpscalerOutputToDx11 called without resolved D3D11 context");

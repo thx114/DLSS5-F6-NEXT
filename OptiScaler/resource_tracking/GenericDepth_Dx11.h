@@ -3,6 +3,7 @@
 #include "pch.h"
 
 #include "GenericDepth_Select.h"
+#include <mods/gimi/GimiPresentSource.h>
 
 // Finds the scene's depth buffer in a Direct3D 11 game by watching how the game uses its depth-stencil views, with no ReShade
 // and no help from an upscaler call: the D3D11 adapter of the native input producer (see docs/NATIVE-INPUT-ADAPTERS.md), built on
@@ -28,7 +29,9 @@ void OnPresent(IDXGISwapChain* swapChain);
 // only existing MOD installation/preparation/retirement; no depth-frame close,
 // new hook, draw, POST or original Present. The real native chain must expose
 // the exact captured device/context; D3D12/provider/generated routes refuse.
-void PrepareModPresent(IDXGISwapChain* swapChain) noexcept;
+bool RegisterModPresentSource(IDXGISwapChain*, HWND sourceWindow) noexcept;
+void ForgetModPresentSource(IDXGISwapChain*) noexcept;
+gimi::runtime::NativePresentSourcePtr PrepareModPresent(IDXGISwapChain* swapChain) noexcept;
 
 GenericDepthSelect::Pick CurrentPick();
 
@@ -55,7 +58,6 @@ bool ModInternal() noexcept;
 void BindModRuntime(ID3D11Device* device) noexcept;
 // Preserve early creation observation after the initializer's shader hooks;
 // Present uses the same per-request claim after following its actual device.
-void CompleteModCreationHookInstall(ID3D11Device* device) noexcept;
 // Existing D3D11 hook owner calls before StopAccepting/native revocation.
 // Revokes MOD admission; common process-lifetime context hooks stay installed.
 void RevokeModStreamOutputCoverage() noexcept;

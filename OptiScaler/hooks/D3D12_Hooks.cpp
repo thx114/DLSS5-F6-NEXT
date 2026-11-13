@@ -2421,7 +2421,7 @@ static void UnhookDevice()
     ResTrack_Dx12::ReleaseDeviceHooks();
 }
 
-void D3D12Hooks::Hook()
+bool D3D12Hooks::Hook()
 {
     std::lock_guard<std::mutex> lock(hookMutex);
 
@@ -2436,14 +2436,15 @@ void D3D12Hooks::Hook()
     if (o_D3D12SerializeVersionedRootSignature == nullptr)
         o_D3D12SerializeVersionedRootSignature =
             D3d12Proxy::Hook_D3D12SerializeVersionedRootSignature(hkD3D12SerializeVersionedRootSignature);
+    return o_D3D12CreateDevice && o_D3D12SerializeRootSignature && o_D3D12SerializeVersionedRootSignature;
 }
 
-void D3D12Hooks::HookAgility(HMODULE module)
+bool D3D12Hooks::HookAgility(HMODULE module)
 {
     std::lock_guard<std::mutex> lock(agilityMutex);
 
-    if (module == nullptr || o_D3D12GetInterface != nullptr)
-        return;
+    if (o_D3D12GetInterface != nullptr) return true;
+    if (!module) return false;
 
     LOG_DEBUG("Hooking D3D12GetInterface from D3D12 Agility SDK");
 
@@ -2461,6 +2462,7 @@ void D3D12Hooks::HookAgility(HMODULE module)
             o_D3D12GetInterface = nullptr;
         }
     }
+    return o_D3D12GetInterface != nullptr;
 }
 
 void D3D12Hooks::Unhook()

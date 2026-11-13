@@ -1,4 +1,5 @@
 #include <mods/gimi/GimiCaptureRouting.h>
+#include <mods/gimi/GimiPresentSource.h>
 #include <d3d11_4.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
@@ -152,6 +153,9 @@ std::shared_ptr<Session> Load(State& s, const Selection&)
 { ++s.loads; auto session = std::make_shared<Session>(); session->capture = s.capture; return session; }
 unsigned advances = 0;
 void AdvanceStreamOutputs(Capture&, UINT, UINT, bool) noexcept { ++advances; }
+NativePresentSourcePtr OwnerToken(ID3D11Device* device,ID3D11DeviceContext* context) {
+    auto token=std::make_shared<NativePresentSource>(); token->device=device;token->context=context;token->generation=Ids();return token;
+}
 // PRODUCTION: CaptureRoute RouteOf(
 // PRODUCTION: std::shared_ptr<Capture> Captured(
 // PRODUCTION: void RefreshCaptureFlags(
@@ -198,9 +202,9 @@ void Fresh(Device& device)
     s.loaded = 0; s.revision = contractRevision.fetch_add(1) + 1;
     s.parks = s.loads = 0; s.nativePresentTicket = s.observedRasterTicket = 0;
     s.selection.enabled = true; enabled = presentNeeded = true;
-    DeviceCreated(device.device.Get(), device.context.Get(), {}, true, CaptureSource::DeviceCreation);
+    DeviceCreated(device.device.Get(), device.context.Get(), {}, true, CaptureSource::DeviceCreation,{});
     CreationCoverage(device.device.Get(), true);
-    DeviceCreated(device.device.Get(), device.context.Get(), {}, true, CaptureSource::PresentOwner);
+    DeviceCreated(device.device.Get(), device.context.Get(), {}, true, CaptureSource::PresentOwner,OwnerToken(device.device.Get(), device.context.Get()));
     Check(s.capture && captureRouting.Read().generation == s.capture->generation && !captureRouting.Lost(), "fresh generation");
 }
 std::shared_ptr<GameResource> Resource(Device& device, const std::shared_ptr<Capture>& capture = Store().capture,
@@ -226,41 +230,48 @@ template<class F> void Busy(F&& call)
 }
 void DeviceAndPresent(Device& main, Device& auxiliary)
 {
+    Fresh(main);
+    const auto retained=Store().capture;
+    auto revoked=std::const_pointer_cast<NativePresentSource>(OwnerToken(auxiliary.device.Get(),auxiliary.context.Get()));
+    revoked->live.store(false);
+    DeviceCreated(auxiliary.device.Get(),auxiliary.context.Get(),{},true,CaptureSource::PresentOwner,revoked);
+    Check(Store().capture==retained,"revoked acquired source cannot confirm/discard newer capture");
+
     Fresh(main); auto& s = Store(); auto capture = s.capture;
     s.active = Load(s, s.selection); s.loaded = s.revision;
     auto active = s.active; const auto parks = s.parks;
-    DeviceCreated(auxiliary.device.Get(), auxiliary.context.Get(), {}, true, CaptureSource::DeviceCreation);
+    DeviceCreated(auxiliary.device.Get(), auxiliary.context.Get(), {}, true, CaptureSource::DeviceCreation,{});
     Check(s.capture == capture && s.active == active && s.parks == parks && active->accepting, "auxiliary creation cannot park/replace owner");
     Check(!DeviceEvent(auxiliary.device.Get()), "confirmed owner does not register auxiliary candidates");
     const auto oldRevision = s.loaded; ++s.revision; contractRevision = s.revision;
-    Present(auxiliary.device.Get(), auxiliary.context.Get(), 16, 16);
+    Present(auxiliary.device.Get(), auxiliary.context.Get(), 16, 16, OwnerToken(auxiliary.device.Get(),auxiliary.context.Get()));
     Check(s.loaded == oldRevision && s.loads == 1 && s.parks == parks && s.active == active, "foreign Present cannot consume reload");
     Check(active->retireCalls == 1 && !active->saves && !active->input, "foreign Present only polls retained packet owner");
-    Present(main.device.Get(), main.context.Get(), 16, 16);
+    Present(main.device.Get(), main.context.Get(), 16, 16, OwnerToken(main.device.Get(),main.context.Get()));
     Check(s.loaded == s.revision && s.loads == 2 && s.active != active, "primary Present loads pending revision");
     Check(s.active->preparations == 3, "primary Present prepares its actual plan");
     auto migrating = s.active;
     migrating->userState.dirty = true;
     s.nativePresentTicket = 31;
-    DeviceCreated(auxiliary.device.Get(), auxiliary.context.Get(), {}, true, CaptureSource::PresentOwner);
+    DeviceCreated(auxiliary.device.Get(), auxiliary.context.Get(), {}, true, CaptureSource::PresentOwner,OwnerToken(auxiliary.device.Get(), auxiliary.context.Get()));
     Check(s.capture == capture && s.active == migrating && !migrating->saves && mapCaptureLive, "open native pair blocks migration before save/observation changes");
     s.nativePresentTicket = 0;
     Busy([&] {}); // establish ordinary contention without migrating on it
     std::thread other([&] {
-        DeviceCreated(auxiliary.device.Get(), auxiliary.context.Get(), {}, true, CaptureSource::PresentOwner);
+        DeviceCreated(auxiliary.device.Get(), auxiliary.context.Get(), {}, true, CaptureSource::PresentOwner,OwnerToken(auxiliary.device.Get(), auxiliary.context.Get()));
     }); other.join();
     Check(s.capture == capture && !migrating->saves && mapCaptureLive, "wrong serial thread cannot save/migrate interpreter");
     migrating->saveSucceeds = false;
-    DeviceCreated(auxiliary.device.Get(), auxiliary.context.Get(), {}, true, CaptureSource::PresentOwner);
+    DeviceCreated(auxiliary.device.Get(), auxiliary.context.Get(), {}, true, CaptureSource::PresentOwner,OwnerToken(auxiliary.device.Get(), auxiliary.context.Get()));
     Check(s.capture == capture && s.active == migrating && migrating->userState.Dirty() && mapCaptureLive, "failed state save retains old capture and observation");
     migrating->saveSucceeds = true;
-    DeviceCreated(auxiliary.device.Get(), auxiliary.context.Get(), {}, true, CaptureSource::PresentOwner);
+    DeviceCreated(auxiliary.device.Get(), auxiliary.context.Get(), {}, true, CaptureSource::PresentOwner,OwnerToken(auxiliary.device.Get(), auxiliary.context.Get()));
     Check(s.capture != capture && s.capture->device.Get() == auxiliary.device.Get() && !s.loaded, "explicit selected Present can migrate owner");
     Check(migrating->saves == 2 && !migrating->userState.Dirty(), "selected Present saves dirty semantic owner before migration");
     captureRouting.Lose(RouteOf(*capture));
     Check(!captureRouting.Lost(), "old owner failure cannot poison migrated capture");
     const auto current = s.capture;
-    DeviceCreated(auxiliary.device.Get(), main.context.Get(), {}, true, CaptureSource::PresentOwner);
+    DeviceCreated(auxiliary.device.Get(), main.context.Get(), {}, true, CaptureSource::PresentOwner,OwnerToken(auxiliary.device.Get(), main.context.Get()));
     Check(s.capture == current, "mismatched activation device/context refused");
 }
 void Events(Device& main, Device& auxiliary)
@@ -297,10 +308,10 @@ void ProvisionalOrder(Device& main, Device& auxiliary)
 {
     Fresh(main);
     auto& s = Store(); s.capture.reset(); s.candidates = {}; s.captureConfirmed = false; captureRouting.Clear();
-    DeviceCreated(auxiliary.device.Get(), auxiliary.context.Get(), {}, true, CaptureSource::DeviceCreation);
+    DeviceCreated(auxiliary.device.Get(), auxiliary.context.Get(), {}, true, CaptureSource::DeviceCreation,{});
     CreationCoverage(auxiliary.device.Get(), true);
     const auto first = s.capture;
-    DeviceCreated(main.device.Get(), main.context.Get(), {}, true, CaptureSource::DeviceCreation);
+    DeviceCreated(main.device.Get(), main.context.Get(), {}, true, CaptureSource::DeviceCreation,{});
     CreationCoverage(main.device.Get(), true);
     const auto route = DeviceEvent(main.device.Get());
     auto provisional = Captured(s, route);
@@ -354,9 +365,9 @@ void ProvisionalOrder(Device& main, Device& auxiliary)
           !std::memcmp(dynamic->constant->Data(), input.data(), input.size()), "non-first provisional Unmap publishes authentic return");
     OpaqueBoundary(auxiliary.context.Get());
     Check(captureRouting.Lost(RouteOf(*first)) && !captureRouting.Lost(route), "provisional failures belong to their own slot");
-    Present(auxiliary.device.Get(), auxiliary.context.Get(), 16, 16);
+    Present(auxiliary.device.Get(), auxiliary.context.Get(), 16, 16, OwnerToken(auxiliary.device.Get(),auxiliary.context.Get()));
     Check(!s.loads && !s.captureConfirmed, "unconfirmed auxiliary Present cannot load interpreter");
-    DeviceCreated(main.device.Get(), main.context.Get(), {}, true, CaptureSource::PresentOwner);
+    DeviceCreated(main.device.Get(), main.context.Get(), {}, true, CaptureSource::PresentOwner,OwnerToken(main.device.Get(), main.context.Get()));
     Check(s.capture == provisional && s.capture->generation == generation && s.captureConfirmed, "selected Present promotes existing creation history without a new generation");
     Check(s.capture->resources.Find(Pointer(game->resource.Get())) == game && game->record.writes == 1, "promotion preserves resource identity and actual write history");
     Check(s.capture->layouts.Find(Pointer(layout.Get())) == layoutOwner, "promotion retains actual creation observer's layout owner");

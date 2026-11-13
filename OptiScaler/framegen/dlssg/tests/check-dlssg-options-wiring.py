@@ -16,7 +16,13 @@ residency = (root / "OptiScaler/runtime/StarRailResidencyPolicy.h").read_text(en
 menu = (root / "OptiScaler/menu/menu_common.cpp").read_text(encoding="utf-8-sig")
 nvapi = (root / "OptiScaler/nvapi/NvApiHooks.cpp").read_text(encoding="utf-8-sig")
 config = (root / "OptiScaler/Config.cpp").read_text(encoding="utf-8-sig")
-baseline = subprocess.check_output(["git", "show", f"HEAD:{relative}"], cwd=root).decode("utf-8-sig").replace("\r\n", "\n")
+baseline_paths = subprocess.check_output(
+    ["git", "ls-tree", "-r", "--name-only", "HEAD", "--", str(Path(relative).parent).replace("\\", "/")],
+    cwd=root, text=True).splitlines()
+baseline = "\n".join(subprocess.check_output(["git", "show", f"HEAD:{path}"], cwd=root)
+    .decode("utf-8-sig").replace("\r\n", "\n") for path in baseline_paths
+    if Path(path).name == "DLSSG_Dx12.cpp" or
+       (Path(path).name.startswith("DLSSG_Dx12_") and path.endswith(".cpp")))
 checks = 0
 
 

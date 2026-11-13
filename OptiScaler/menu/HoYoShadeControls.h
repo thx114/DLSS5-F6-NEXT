@@ -100,8 +100,9 @@ inline void Render(ConfigType* config, bool vulkan, bool dx11Bridge)
     MenuText::TextWrapped("%s", tr("使用 HoYoShade 当前选择的滤镜。滤镜与参数在 HoYoShade 中调整。",
                                   "Uses the effects selected in HoYoShade. Edit effects and parameters there."));
     MenuText::SeparatorText(tr("实时设置", "Live settings"));
-    bool enabled = config->HoYoShadeEnabled.value_or_default();
     unsigned requestedStage = static_cast<unsigned>(config->HoYoShadeStage.value_or_default());
+    const auto enabledSetting = config->HoYoShadeEnabled.ReadObserved();
+    bool enabled = HoYoShade::ResolveEnabled(enabledSetting, requestedStage);
     bool stageChanged = false;
     ImGui::BeginDisabled(vulkan);
     const bool enabledChanged = MenuText::Checkbox(tr("由 F6 安排滤镜位置###enabled", "Let F6 place effects###enabled"), &enabled);
@@ -114,6 +115,7 @@ inline void Render(ConfigType* config, bool vulkan, bool dx11Bridge)
     static bool requestRejected = false;
     if (enabledChanged || stageChanged)
     {
+        if (!enabledChanged) enabled = HoYoShade::ResolveEnabled(enabledSetting, requestedStage);
         requestRejected = !HoYoShade::Reconfigure(enabled, requestedStage);
         if (!requestRejected)
         {
@@ -125,7 +127,7 @@ inline void Render(ConfigType* config, bool vulkan, bool dx11Bridge)
     if (requestRejected)
         MenuText::TextWrapped("%s", tr("实时请求未接受；设置未写入。", "Live request was rejected; settings were not changed."));
     if (!config->HoYoShadeEnabled.has_value())
-        MenuText::TextWrapped("%s", tr("开关：自动（默认关闭）。", "Enable: automatic (off by default)."));
+        MenuText::TextWrapped("%s", tr("开关：自动（选择超分之前时开启，连接已有兼容核心）。", "Enable: automatic (on before super resolution, using an existing compatible core)."));
     if (!config->HoYoShadeStage.has_value())
         MenuText::TextWrapped("%s", tr("位置：自动（默认 NR 之前）。", "Placement: automatic (before neural rendering by default)."));
     if (vulkan)

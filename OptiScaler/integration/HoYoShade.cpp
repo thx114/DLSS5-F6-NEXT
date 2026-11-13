@@ -19,6 +19,7 @@
 #include "HoYoShadeNaturalAssociation.h"
 #include <cstdio>
 #include "HoYoShadeSelection.h"
+#include "HoYoShadeEffectRequirements.h"
 #include "HoYoShadeDepthSemantics.h"
 #include <bcrypt.h>
 #include <psapi.h>
@@ -427,6 +428,11 @@ struct DirectChain
     uint64_t epoch = 1; // executionMutex only
     bool draining = false;
 };
+// DXGI object metadata survives ResizeBuffers without retaining a backbuffer.
+// The Present callback reads only its own live native object, never a pointer
+// from another wrapper's enrollment or a potentially missed resize sample.
+constexpr GUID DirectChainMarkerGuid{0x3ddf1899,0x8812,0x4d7b,{0x92,0x86,0x35,0x68,0x6a,0x8c,0x72,0xc1}};
+struct DirectChainMarker { uint64_t wrapper = 0, lifetime = 0; };
 struct State
 {
     std::mutex mutex;
@@ -468,6 +474,11 @@ struct State
     std::array<DirectEntry, OwnedRuntime::Capacity> directEntries;
     std::array<DirectChain, 32> directChains;
     uint64_t nextDirectLifetime = 0;
+    struct EffectPreparation {
+        uint64_t runtime = 0, stream = 0, generation = 0, snapshot = 0, reload = 0;
+        int normalsMode = -1;
+        OwnedRuntime::Completion completion;
+    } effectPreparation;
     Depth::Semantics::State depthSemantics; // idle private-runtime projection only
     Registry registry;
     // Sticky observation loss, not a render gate. Never infer a unique source
@@ -531,6 +542,7 @@ struct State
         reshade::api::command_list* sdkList = nullptr;
         reshade::api::resource_view rtv = { 0 }, rtvSrgb = { 0 };
         std::shared_ptr<OwnedRuntime::Resource> rtvOwner;
+        std::shared_ptr<void> inputOwner;
         OwnedRuntime::Completion completion;
         uint32_t inFlight = 0;
         bool reserved = false, recorded = false, signalPending = false, submitted = false, signalFailed = false, orphaned = false;
@@ -583,7 +595,8 @@ struct OwnedRtvBundle final : OwnedRuntime::Resource
                 // direct view destroy MUST retain the real resource and pool
                 // object. Never SDK-destroy an external swapchain resource.
                 if (depth.srv.handle) { device->destroy_resource_view(depth.srv); depth.srv = {0}; }
-                depth.resource.Reset(); depth.device = nullptr; depth.typedFormat = DXGI_FORMAT_UNKNOWN;
+                if (depth.copy.handle) { device->destroy_resource(depth.copy); depth.copy = {0}; }
+                depth.device = nullptr; depth.typedFormat = DXGI_FORMAT_UNKNOWN;
                 if (linear.handle) { device->destroy_resource_view(linear); linear = {0}; }
                 if (srgb.handle) { device->destroy_resource_view(srgb); srgb = {0}; }
                 externalColor.Reset(); color = {0};
@@ -611,6 +624,7 @@ void ClearTransaction(State::Transaction& transaction) noexcept
     transaction.sdkQueue = nullptr; transaction.sdkList = nullptr;
     transaction.rtv = { 0 }; transaction.rtvSrgb = { 0 }; transaction.completion = {};
     transaction.rtvOwner.reset();
+    transaction.inputOwner.reset();
     transaction.inFlight = 0;
     transaction.reserved = transaction.recorded = transaction.signalPending = transaction.submitted =
         transaction.signalFailed = transaction.orphaned = false;
@@ -645,6 +659,8 @@ bool OwnedStageRequested() noexcept
         (Selected(Stage::BeforeSr) || (Selected(Stage::BeforeNr) &&
          config.DlssNrEnabled.value_or_default() && config.DlssNrFinishedPicture.value_or_default() &&
          !config.DlssNrRunBeforeSr.value_or_default() && !config.DlssNrDeferredDlss.value_or_default()));
+#elif defined(HOYOSHADE_TEST_OWNED_STAGE)
+    return Selected(Stage::BeforeSr); // real owned pipeline in the standalone GPU host
 #else
     return false; // existing standalone hosts retain their legacy path
 #endif
@@ -1473,17 +1489,27 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
     // the natural token unchanged. Drain an idle owned lease via its real
     // Submit/update path instead of abandoning it into permanent quarantine.
     // This records no source-color command and never suppresses the donor.
+    State::Transaction* transaction = nullptr;
+    uint64_t transactionToken = 0;
     const auto finishUnrecorded = [&](OwnedRuntime::Lease& idle, Reason pending) noexcept {
         // NativeProducer BeforeSR and the other source contracts need the
         // same drain as a selection donor. Abandoning an idle lease after an
         // owned init/reload/order event permanently quarantines its runtime.
         OwnedRuntime::Completion warmup;
         const auto status = idle.Submit(warmup, &ownedDetail);
-        return status == OwnedRuntime::Status::Ready && warmup.fence && warmup.value && warmup.value != UINT64_MAX &&
-            warmup.fence->GetCompletedValue() != UINT64_MAX ? pending : Reason::FenceUnavailable;
+        const bool submitted = status == OwnedRuntime::Status::Ready && warmup.fence && warmup.value &&
+            warmup.value != UINT64_MAX && warmup.fence->GetCompletedValue() != UINT64_MAX;
+        if (transaction) {
+            std::lock_guard lock(Get().mutex);
+            transaction->completion = warmup;
+            transaction->reserved = false; transaction->inFlight = 0;
+            transaction->recorded = transaction->submitted = submitted;
+            transaction->orphaned = !submitted;
+        }
+        return submitted ? pending : Reason::FenceUnavailable;
     };
     // The owned runtime must never inherit the previous frame's depth, including warmup.
-    try { Depth::Clear(runtime); } catch (...) { return Reason::InternalFailure; }
+    try { Depth::ResetReadiness(runtime); } catch (...) { return Reason::InternalFailure; }
     // AcquireForRender has proved the preceding GPU batch complete and holds
     // this exact private runtime exclusively. No effects are recorded yet.
     const auto& depthInput = endpoint.depth;
@@ -1524,6 +1550,21 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         return finishUnrecorded(lease, Reason::SelectionPending);
     }
 
+    const auto requirements = EffectRequirements::Inspect(natural.selection);
+    if (requirements.status != EffectRequirements::Status::Ready)
+        return finishUnrecorded(lease, Reason::EffectOrderInvalid);
+    if (requirements.depth && (!depthEndpointMatches || !depthSemanticsReady))
+        return finishUnrecorded(lease, Reason::RequiredDepthUnavailable);
+    const auto& preparedEffects = Get().effectPreparation;
+    const bool effectWarmup = requirements.launchpadNormals &&
+        (preparedEffects.runtime != lease.Generation() || preparedEffects.stream != endpoint.stream ||
+         preparedEffects.generation != endpoint.generation || preparedEffects.snapshot != natural.selection.snapshots ||
+         preparedEffects.reload != OwnedDepthReloadSerial(runtime) ||
+         preparedEffects.normalsMode != requirements.normalsMode ||
+         !preparedEffects.completion.fence || !preparedEffects.completion.value ||
+         preparedEffects.completion.fence->GetCompletedValue() == UINT64_MAX ||
+         preparedEffects.completion.fence->GetCompletedValue() < preparedEffects.completion.value);
+
     decision.owned = true;
     decision.executionAllowed = true;
     decision.matched = false;
@@ -1543,8 +1584,6 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         return Reason::DeviceMismatch;
 
     const auto resource = reshade::api::resource{ reinterpret_cast<uint64_t>(color) };
-    State::Transaction *transaction = nullptr;
-    uint64_t transactionToken = 0;
     bool transitioned = false;
     try {
         const auto sdkDesc = sdkDevice->get_resource_desc(resource);
@@ -1575,6 +1614,7 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
                     candidate.sdkQueue = sdkQueue;
                     candidate.sdkList = sdkList;
                     candidate.poolEntry = lease.Receipt();
+                    candidate.inputOwner = endpoint.inputOwner;
                     candidate.lease = std::move(lease);
                     transaction = &candidate;
                     transactionToken = candidate.token;
@@ -1736,7 +1776,8 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
             }
         }
         const bool direct = directSlot && !directSlot->failed && !directSlot->revoked &&
-            directSlot->owner && directRecording.Current();
+            directSlot->owner && directRecording.Current() && !effectWarmup &&
+            !(depthEndpointMatches && depthInput.resource && depthInput.reader);
         if (!direct) {
             if (Get().scratchGeneration != transaction->runtimeGeneration || Get().scratchRuntime != runtime) {
                 Get().scratch.reset();
@@ -1777,8 +1818,10 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         // payload owns the producer lease, not merely a COM resource reference.
         std::shared_ptr<Depth::Prepared> depthRead;
         if (depthSemanticsReady && depthEndpointMatches)
-            depthRead = Depth::Prepare(depthInput, nativeDevice.Get(), sdkDevice, target->depth);
+            depthRead = Depth::Prepare(depthInput, nativeDevice.Get(), sdkDevice, target->depth, runtime);
         if (depthRead && !transaction->lease.KeepAlive(depthRead)) depthRead.reset();
+        if (requirements.depth && !depthRead)
+            return finishUnrecorded(transaction->lease, Reason::RequiredDepthUnavailable);
 
         const auto recordingRevoked = [&] {
             return !selectionBoundary.Current() || !sourceCurrent() || transaction->orphaned ||
@@ -1840,20 +1883,21 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         // Begin records exact native subresource barriers and reflects the
         // binding before publishing bufready_depth. End clears and restores.
         result.depthAvailable = depthRead && depthRead->Begin(runtime, sdkList, transaction->lease.NativeList());
+        const bool effectInputsReady = !requirements.depth || result.depthAvailable;
+        if (!depthRead) Depth::Clear(runtime);
         if (recordingRevoked()) return retainRevokedRecording();
         // Native BeforeNR 29->28 copies retain encoded values. The existing
         // API20 view pair still follows preset SRGBTexture/SRGBWriteEnabled;
         // source format alone never forces a view or an adapter conversion.
         std::optional<Selection::RenderScope> selectedRender;
-        if (endpoint.stage == Stage::BeforeSr) {
+        if (effectInputsReady && endpoint.stage == Stage::BeforeSr) {
             selectedRender.emplace(natural.selection, runtime, transaction->runtimeGeneration,
                 sdkList, target->linear, target->srgb);
             if (selectedRender->Ready()) runtime->render_effects(sdkList, target->linear, target->srgb);
             result.techniques = selectedRender->RecordedTechniques();
-        } else runtime->render_effects(sdkList, target->linear, target->srgb);
+        } else if (effectInputsReady) runtime->render_effects(sdkList, target->linear, target->srgb);
         if (recordingRevoked()) return retainRevokedRecording();
         if (depthRead) depthRead->End(runtime, sdkList, transaction->lease.NativeList());
-        else Depth::Clear(runtime);
         if (recordingRevoked()) return retainRevokedRecording();
         if (endpoint.stage != Stage::BeforeSr) {
             std::lock_guard lock(Get().mutex);
@@ -1865,6 +1909,10 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         // copyback boundary; only allocation descriptors/COM owners are reused.
         if (!AdmitColor(endpoint, result, immutable)) return retainRevokedRecording();
         if (selectedRender) result.techniques = selectedRender->RecordedTechniques();
+        result.recordedTechniques = result.techniques;
+        result.inputWarmup = effectWarmup;
+        const bool inputWarmupRecorded = effectWarmup && effectInputsReady && result.techniques != 0;
+        if (effectWarmup || !effectInputsReady) result.techniques = 0;
         const bool effectsRecorded = result.techniques != 0 && sourceCurrent();
         if (direct) {
             if (!effectsRecorded) result.techniques = 0;
@@ -1971,6 +2019,10 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
             LOG_WARN("HoYoShade stage owned render became stale token={} resources=retained", transactionToken);
             return Reason::InternalFailure;
         }
+        if (inputWarmupRecorded) {
+            Get().effectPreparation = {transaction->runtimeGeneration, endpoint.stream, endpoint.generation,
+                natural.selection.snapshots, OwnedDepthReloadSerial(runtime), requirements.normalsMode, result.completion};
+        }
         if (result.techniques) {
             // A lifecycle change after recording is uncertain output, not a
             // successful application against a replacement natural runtime.
@@ -1992,7 +2044,8 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
             report.count, transaction->runtimeGeneration, static_cast<unsigned>(nativeDesc.Format),
             static_cast<unsigned>(knownState), result.techniques, transaction->completion.value,
             result.EffectsExecuted(), result.attempt.naturalSuppressed);
-        return result.techniques ? Reason::ExecutionUnverified : Reason::SelectionPending;
+        return result.techniques ? Reason::ExecutionUnverified : !effectInputsReady ? Reason::RequiredDepthUnavailable :
+            effectWarmup ? Reason::EffectInputsPending : Reason::SelectionPending;
     } catch (...) {
         ++Get().overflow;
         (void)transitioned; // original state is uncertain; retain the whole batch
@@ -2329,7 +2382,7 @@ void ObserveRuntime(reshade::api::effect_runtime* runtime, RuntimeEvent event)
             if (event == RuntimeEvent::Init || !natural->runtime) {
 
                 *natural = {}; natural->runtime = runtime; natural->id = id; natural->live = true;
-                natural->thread = GetCurrentThreadId();
+                natural->thread = 0; // creation thread does not own future render epochs
                 if (Get().nextNaturalLifetime == UINT64_MAX) {
                     natural->live = false; natural->frame.Invalidate(); Get().naturalStatusIncomplete = true; return;
                 }
@@ -2416,7 +2469,10 @@ void ObserveRuntime(reshade::api::effect_runtime* runtime, RuntimeEvent event)
             }
 #endif
             if (event == RuntimeEvent::Present) {
-                if (natural->thread != GetCurrentThreadId()) { natural->frame.Invalidate(); return; }
+                // Callback delivery is serialized by executionMutex. The real
+                // core Present establishes the next owner epoch, including a
+                // legitimate move from a creation thread to the render thread.
+                natural->thread = GetCurrentThreadId();
                 natural->frame.Presented();
                 if (natural->frame.epoch != UINT64_MAX) {
                     const auto count = runtime->get_back_buffer_count();
@@ -2524,6 +2580,8 @@ void OnInit(reshade::api::effect_runtime* runtime) noexcept
 { try { CallbackGuard guard; SelectionEvent(runtime, Selection::CacheEvent::Init); if (guard.entered) ObserveRuntime(runtime, RuntimeEvent::Init); } catch (...) { ++Get().overflow; } }
 void OnPresent(reshade::api::effect_runtime* runtime) noexcept
 { try { CallbackGuard guard; BeforeSrDonorCall::Observe(runtime, RuntimeEvent::Present); if (guard.entered) ObserveRuntime(runtime, RuntimeEvent::Present); } catch (...) { ++Get().overflow; } }
+void OnBeforeNaturalPresent(reshade::api::command_queue*, reshade::api::swapchain*,
+    const reshade::api::rect*, const reshade::api::rect*, uint32_t, const reshade::api::rect*) noexcept;
 void OnReload(reshade::api::effect_runtime* runtime) noexcept
 { try { CallbackGuard guard; SelectionEvent(runtime, Selection::CacheEvent::Reload); if (guard.entered) ObserveRuntime(runtime, RuntimeEvent::Reload); } catch (...) { ++Get().overflow; } }
 void OnPreset(reshade::api::effect_runtime* runtime, const char*) noexcept
@@ -2704,6 +2762,7 @@ Reason Connect(HMODULE self)
     api.Subscribe<E::init_command_list>(OnList); api.Subscribe<E::destroy_command_list>(OnDestroyList);
     api.Subscribe<E::destroy_command_queue>(OnDestroyQueue); api.Subscribe<E::destroy_device>(OnDestroyDevice);
     api.Subscribe<E::init_swapchain>(OnSwapchainInit); api.Subscribe<E::destroy_swapchain>(OnSwapchainDestroy);
+    api.Subscribe<E::present>(OnBeforeNaturalPresent);
     api.Subscribe<E::reshade_present>(OnPresent); api.Subscribe<E::reshade_begin_effects>(OnBegin);
     api.Subscribe<E::reshade_finish_effects>(OnFinish); api.Subscribe<E::reshade_render_technique>(OnTechnique);
     api.Subscribe<E::reshade_reloaded_effects>(OnReload);
@@ -2714,10 +2773,12 @@ Reason Connect(HMODULE self)
     api.Subscribe<E::reshade_reorder_techniques>(OnReorder);
     api.Subscribe<E::init_resource_view>(OnDomainView);
     Get().domainSubscriptionRequested.store(true,std::memory_order_release);
-    LOG_INFO("HoYoShade API20 registration accepted core_path={} disk_sha256=0cee63f9c9f13f3ac909c5b4903f4dbb4b719a7ab3b4f13b0deaf83c814b94f7 loaded_image_sha=UNKNOWN subscriptions_requested=19 callback_delivery=UNCONFIRMED stage_execution=false", diskPath.string());
+    LOG_INFO("HoYoShade API20 registration accepted core_path={} disk_sha256=0cee63f9c9f13f3ac909c5b4903f4dbb4b719a7ab3b4f13b0deaf83c814b94f7 loaded_image_sha=UNKNOWN subscriptions_requested=20 callback_delivery=UNCONFIRMED stage_execution=false", diskPath.string());
     return Reason::ExecutionUnverified;
 }
 }
+
+#include "HoYoShade_Bridge.inl"
 
 namespace {
 void StartConnectionIfNeeded() noexcept
@@ -2803,11 +2864,12 @@ RenderOwnerScope::~RenderOwnerScope()
 bool ObservationDemand::Current() const noexcept
 {
     if (!publication || publication == UINT64_MAX) return false;
+    auto& state = Get();
 #ifndef HOYOSHADE_STAGE_TEST
     const auto& option = Config::Instance()->HoYoShadeEnabled;
-    if (option.value_or_default() != enabledIdle) return false;
+    if (ResolveEnabled(option.ReadObserved(), SettingsStage(state.desiredSettings.load(std::memory_order_acquire))) != enabledIdle)
+        return false;
 #endif
-    auto& state = Get();
     if (state.observationPublication.load(std::memory_order_acquire) != publication ||
         state.connecting.load(std::memory_order_acquire) ||
         state.enabled.load(std::memory_order_acquire) != enabledIdle) return false;
@@ -2938,6 +3000,11 @@ void Testing::EnableHost(bool enabled) noexcept {
     Get().enabled.store(enabled, std::memory_order_release);
     const auto settings = (Get().desiredSettings.load() & ~EnabledBit) | (enabled ? EnabledBit : 0);
     Get().desiredSettings.store(settings); Get().appliedSettings.store(settings);
+}
+bool Testing::BeforePresent(reshade::api::effect_runtime* runtime, IDXGISwapChain* chain) noexcept
+{
+    return runtime && chain && BeforeSrNaturalPresent(runtime->get_command_queue(), runtime->get_device(),
+        Key(chain), runtime->get_current_back_buffer().handle);
 }
 bool Testing::ConnectHost(HMODULE self, const char* config, Stage stage) noexcept
 {
@@ -3616,6 +3683,8 @@ void RegisterDirectChain(IDXGISwapChain* chain, const void* wrapper) noexcept
         slot->epoch = 1; slot->draining = false;
         slot->wrapper.store(Key(wrapper), std::memory_order_release);
         slot->chain.store(Key(chain), std::memory_order_release);
+        const DirectChainMarker marker{Key(wrapper), slot->lifetime.load(std::memory_order_acquire)};
+        chain->SetPrivateData(DirectChainMarkerGuid, sizeof(marker), &marker);
         slot->access.store(0, std::memory_order_release);
     } catch (...) {} // enrollment never changes wrapper creation success
 }
@@ -3702,7 +3771,7 @@ HRESULT DirectResizeScope::Result() const noexcept
 }
 void DirectResizeScope::Complete(HRESULT result) noexcept
 {
-    if (!resourceOnly_ || state_ != OwnedRuntime::Retirement::Ready || chainSlot_ >= Get().directChains.size()) return;
+    if (state_ != OwnedRuntime::Retirement::Ready || chainSlot_ >= Get().directChains.size()) return;
     auto& c = Get().directChains[chainSlot_];
     if (result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET) {
         c.access.fetch_or(DirectClosed, std::memory_order_acq_rel); return;
@@ -3784,7 +3853,8 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
         // rectangle. Native Genshin/picture/output contracts remain exact.
         const bool srRegion = endpoint.stage == Stage::BeforeSr &&
             endpoint.colorMode == ColorMode::TransferQualified &&
-            endpoint.naturalContract == NaturalSourceContract::BeforeSrExactDevice;
+            (endpoint.naturalContract == NaturalSourceContract::BeforeSrExactDevice ||
+             endpoint.naturalContract == NaturalSourceContract::BeforeSrBridgeInput);
         const bool fullColor = !endpoint.colorX && !endpoint.colorY &&
             desc.Width == endpoint.width && desc.Height == endpoint.height;
         const bool boundedColor = endpoint.colorX <= desc.Width && endpoint.colorY <= desc.Height &&
@@ -3920,7 +3990,7 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
                 observation.associationExit = suppress != natural ? 3 : 4;
                 result.reason = Reason::NaturalUnavailable; return result;
             }
-        } else suppress = natural;
+        } else if (endpoint.naturalContract != NaturalSourceContract::BeforeSrBridgeInput) suppress = natural;
         // Natural association above identifies the exact runtime/lifetime.
         // Shared source and suppression runtimes protect the same picture
         // across differing Evaluate/Present endpoint stream identities.

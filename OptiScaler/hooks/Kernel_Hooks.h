@@ -123,11 +123,11 @@ class KernelHooks
             Kernel32Proxy::Hook_OutputDebugStringA(hk_K32_OutputDebugStringA);
 #endif
 
-        if (!Config::Instance()->UseNtdllHooks.value_or_default())
-        {
-            if (o_K32_FreeLibrary == nullptr)
-                Kernel32Proxy::Hook_FreeLibrary(hk_K32_FreeLibrary);
+        if (!Config::Instance()->UseNtdllHooks.value_or_default() && o_K32_FreeLibrary == nullptr)
+            Kernel32Proxy::Hook_FreeLibrary(hk_K32_FreeLibrary);
 
+        // Keep Win32 request metadata even when native interception is enabled.
+        {
             if (o_K32_LoadLibraryA == nullptr)
                 Kernel32Proxy::Hook_LoadLibraryA(hk_K32_LoadLibraryA);
 
@@ -151,7 +151,6 @@ class KernelHooks
         if (o_KB_GetProcAddress == nullptr)
             KernelBaseProxy::Hook_GetProcAddress(hk_KB_GetProcAddress);
 
-        if (!Config::Instance()->UseNtdllHooks.value_or_default())
         {
             if (o_KB_LoadLibraryExW == nullptr)
                 KernelBaseProxy::Hook_LoadLibraryExW(hk_KB_LoadLibraryExW);

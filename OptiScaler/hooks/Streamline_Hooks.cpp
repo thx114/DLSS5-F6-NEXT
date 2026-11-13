@@ -1,4 +1,4 @@
-#include <pch.h>
+﻿#include <pch.h>
 
 #include "Streamline_Hooks.h"
 #include "LibraryLoad_Hooks.h"
@@ -246,17 +246,17 @@ void StreamlineHooks::ReportFrameLatencyAccess(const void* receiver, const frame
         sdkLoaded, static_cast<unsigned>(caller), static_cast<unsigned>(target));
 }
 
-HMODULE StreamlineHooks::LoadIsolatedGamePlugin(LPCWSTR requestedPath)
+std::wstring StreamlineHooks::IsolatedGamePluginPath(LPCWSTR requestedPath)
 {
     if (!gamePluginPreferences)
-        return nullptr;
+        return {};
     const auto& state = State::Instance();
     if (state.activeFgOutput != FGOutput::DLSSG || !StreamlineProxy::IsD3D12Inited())
-        return nullptr;
+        return {};
 
     const auto shared = GetModuleHandleW(requestedPath);
     if (!shared)
-        return nullptr;
+        return {};
     const wchar_t* name = shared == state.optiSlCommon   ? L"sl.common.dll"
                           : shared == state.optiSlReflex ? L"sl.reflex.dll"
                           : shared == state.optiSlPCL    ? L"sl.pcl.dll"
@@ -267,7 +267,7 @@ HMODULE StreamlineHooks::LoadIsolatedGamePlugin(LPCWSTR requestedPath)
     if (!name && path.find(L"\\sl_common_") != std::wstring::npos && path.find(L"\\versions\\") != std::wstring::npos)
         name = L"sl.common.dll";
     if (!name)
-        return nullptr;
+        return {};
 
     // Two interposers cannot own the same plugin's globals. Prefer the game's own copy when
     // NVIDIA's override selection points it at an already active OptiScaler plugin.
@@ -283,9 +283,9 @@ HMODULE StreamlineHooks::LoadIsolatedGamePlugin(LPCWSTR requestedPath)
             continue;
         LOG_INFO("Keeping game Streamline plugin separate from DLSSG output: {}",
                  wstring_to_string(candidate.wstring()));
-        return LibraryLoadHooks::LoadLibraryCheckW(candidate.wstring(), candidate.c_str());
+        return candidate.wstring();
     }
-    return nullptr;
+    return {};
 }
 
 // ABI defense for callers that pass a null address for a FrameToken reference.
@@ -2308,19 +2308,19 @@ void StreamlineHooks::unhookInterposer(bool tokenDomainHeld)
 }
 
 // Call it just after sl.interposer's load or if sl.interposer is already loaded
-void StreamlineHooks::hookInterposer(HMODULE slInterposer)
+bool StreamlineHooks::hookInterposer(HMODULE slInterposer)
 {
     if (State::Instance().externalFrameGeneration)
-        return;
+        return false;
     LOG_FUNC();
 
     if (!slInterposer)
     {
         LOG_WARN("Streamline module in NULL");
-        return;
+        return false;
     }
     auto tokenChange=PacingTokenDomain().TryChangeApi();
-    if (!tokenChange.owns_lock()) return;
+    if (!tokenChange.owns_lock()) return false;
 
     // The independently loaded SDK must never become the game-origin API.
     const bool zzz=dlssg::depth_contract::Game()==GameRouting::Identity::ZenlessZoneZero;
@@ -2330,16 +2330,15 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
         const auto length=GetModuleFileNameW(slInterposer,path,static_cast<DWORD>(std::size(path)));
         const auto local=std::filesystem::path(Config::Instance()->MainDllPath.value())/L"streamline";
         if (slInterposer==State::Instance().optiSlInterposer || !length || length==std::size(path) ||
-            Util::IsSubpath(std::filesystem::path(path).lexically_normal(),local.lexically_normal())) return;
+            Util::IsSubpath(std::filesystem::path(path).lexically_normal(),local.lexically_normal())) return false;
     }
 
     // Interposer needs this or it might end in an infinite loop calling itself
     static HMODULE last_slInterposer = nullptr;
 
-    if (last_slInterposer == slInterposer)
-        return;
+    if (last_slInterposer == slInterposer && isInterposerHooked())
+        return true;
 
-    last_slInterposer = slInterposer;
 
     // Looks like when reading DLL version load methods are called
     // To prevent loops disabling checks for sl.interposer.dll
@@ -2530,6 +2529,9 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
     }
 
     State::EnableChecks(owner);
+    const bool installed = isInterposerHooked();
+    if (installed) last_slInterposer = slInterposer;
+    return installed;
 }
 
 // SL DLSS
@@ -2556,16 +2558,16 @@ void StreamlineHooks::unhookDlss()
     }
 }
 
-void StreamlineHooks::hookDlss(HMODULE slDlss)
+bool StreamlineHooks::hookDlss(HMODULE slDlss)
 {
     if (State::Instance().externalFrameGeneration)
-        return;
+        return false;
     LOG_FUNC();
 
     if (!slDlss)
     {
         LOG_WARN("Dlss module in NULL");
-        return;
+        return false;
     }
 
     if (o_dlss_slGetPluginFunction)
@@ -2590,6 +2592,7 @@ void StreamlineHooks::hookDlss(HMODULE slDlss)
             o_dlss_slGetPluginFunction = nullptr;
         }
     }
+    return isDlssHooked();
 }
 
 // SL DLSSG
@@ -2613,16 +2616,16 @@ void StreamlineHooks::unhookDlssg()
     }
 }
 
-void StreamlineHooks::hookDlssg(HMODULE slDlssg)
+bool StreamlineHooks::hookDlssg(HMODULE slDlssg)
 {
     if (State::Instance().externalFrameGeneration)
-        return;
+        return false;
     LOG_FUNC();
 
     if (!slDlssg)
     {
         LOG_WARN("Dlssg module in NULL");
-        return;
+        return false;
     }
 
     if (o_dlssg_slGetPluginFunction)
@@ -2647,6 +2650,7 @@ void StreamlineHooks::hookDlssg(HMODULE slDlssg)
             o_dlssg_slGetPluginFunction = nullptr;
         }
     }
+    return isDlssgHooked();
 }
 
 // Local SL DLSSG
@@ -2668,16 +2672,16 @@ void StreamlineHooks::unhookLocalDlssg()
     DetourTransactionCommit();
 }
 
-void StreamlineHooks::hookLocalDlssg(HMODULE slDlssg)
+bool StreamlineHooks::hookLocalDlssg(HMODULE slDlssg)
 {
     if (State::Instance().externalFrameGeneration)
-        return;
+        return false;
     LOG_FUNC();
 
     if (!slDlssg)
     {
         LOG_WARN("Dlssg module in NULL");
-        return;
+        return false;
     }
 
     if (o_local_dlssg_slGetPluginFunction)
@@ -2695,8 +2699,14 @@ void StreamlineHooks::hookLocalDlssg(HMODULE slDlssg)
 
         DetourAttach(&(PVOID&) o_local_dlssg_slGetPluginFunction, hklocal_dlssg_slGetPluginFunction);
 
-        DetourTransactionCommit();
+        const auto result=DetourTransactionCommit();
+        if (result!=NO_ERROR) {
+            o_local_dlssg_slGetPluginFunction=nullptr;
+            LOG_ERROR("Failed to hook local DLSSG: {:X}",result);
+            return false;
+        }
     }
+    return isLocalDlssgHooked();
 }
 
 // SL REFLEX
@@ -2723,16 +2733,16 @@ void StreamlineHooks::unhookReflex()
     }
 }
 
-void StreamlineHooks::hookReflex(HMODULE slReflex)
+bool StreamlineHooks::hookReflex(HMODULE slReflex)
 {
     if (State::Instance().externalFrameGeneration)
-        return;
+        return false;
     LOG_FUNC();
 
     if (!slReflex)
     {
         LOG_WARN("Reflex module in NULL");
-        return;
+        return false;
     }
 
     if (o_reflex_slGetPluginFunction)
@@ -2757,6 +2767,7 @@ void StreamlineHooks::hookReflex(HMODULE slReflex)
             o_reflex_slGetPluginFunction = nullptr;
         }
     }
+    return isReflexHooked();
 }
 
 // SL PCL
@@ -2783,16 +2794,16 @@ void StreamlineHooks::unhookPcl()
     }
 }
 
-void StreamlineHooks::hookPcl(HMODULE slPcl)
+bool StreamlineHooks::hookPcl(HMODULE slPcl)
 {
     if (State::Instance().externalFrameGeneration)
-        return;
+        return false;
     LOG_FUNC();
 
     if (!slPcl)
     {
         LOG_WARN("Pcl module in NULL");
-        return;
+        return false;
     }
 
     if (o_pcl_slGetPluginFunction)
@@ -2817,6 +2828,7 @@ void StreamlineHooks::hookPcl(HMODULE slPcl)
             o_pcl_slGetPluginFunction = nullptr;
         }
     }
+    return isPclHooked();
 }
 
 // SL COMMON
@@ -2845,16 +2857,16 @@ void StreamlineHooks::unhookCommon()
     }
 }
 
-void StreamlineHooks::hookCommon(HMODULE slCommon)
+bool StreamlineHooks::hookCommon(HMODULE slCommon)
 {
     if (State::Instance().externalFrameGeneration)
-        return;
+        return false;
     LOG_FUNC();
 
     if (!slCommon)
     {
         LOG_WARN("Common module in NULL");
-        return;
+        return false;
     }
 
     if (o_common_slGetPluginFunction)
@@ -2879,6 +2891,7 @@ void StreamlineHooks::hookCommon(HMODULE slCommon)
             o_common_slGetPluginFunction = nullptr;
         }
     }
+    return isCommonHooked();
 }
 
 bool StreamlineHooks::isInterposerHooked() { return o_slInit != nullptr || o_slInit_sl1 != nullptr; }

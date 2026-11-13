@@ -97,6 +97,10 @@ public:
 }
 
 
+void ResetReadiness(reshade::api::effect_runtime* runtime)
+{
+    if (runtime) Uniforms(runtime, false, nullptr);
+}
 void Clear(reshade::api::effect_runtime* runtime)
 {
     if (!runtime) return;
@@ -108,7 +112,8 @@ void Cache::Destroy(reshade::api::device* device) noexcept
 {
     if (srv.handle && this->device != device) return; // never destroy a foreign SDK view
     try { if (device && srv.handle) device->destroy_resource_view(srv); } catch (...) {}
-    srv = {0}; resource.Reset(); typedFormat = DXGI_FORMAT_UNKNOWN; this->device = nullptr;
+    try { if (device && copy.handle) device->destroy_resource(copy); } catch (...) {}
+    srv = {0}; copy = {0}; width = height = 0; sourceFormat = typedFormat = DXGI_FORMAT_UNKNOWN; this->device = nullptr;
 }
 Prepared::Prepared(const Access& input, reshade::api::device* device, reshade::api::resource_view view, Cache& cache)
     : input_(input), device_(device), srv_(view), cache_(&cache), lifetime_(input.reader) {}
@@ -118,19 +123,19 @@ Prepared::~Prepared()
 }
 void Prepared::Transition(ID3D12GraphicsCommandList* list, bool restore)
 {
-    if (input_.entryState == ShaderRead) return;
+    if (input_.entryState == D3D12_RESOURCE_STATE_COPY_SOURCE) return;
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = input_.resource;
     barrier.Transition.Subresource = input_.subresource;
-    barrier.Transition.StateBefore = restore ? ShaderRead : input_.entryState;
-    barrier.Transition.StateAfter = restore ? input_.entryState : ShaderRead;
+    barrier.Transition.StateBefore = restore ? D3D12_RESOURCE_STATE_COPY_SOURCE : input_.entryState;
+    barrier.Transition.StateAfter = restore ? input_.entryState : D3D12_RESOURCE_STATE_COPY_SOURCE;
     list->ResourceBarrier(1, &barrier);
 }
 bool Prepared::Begin(reshade::api::effect_runtime* runtime, reshade::api::command_list* sdkList,
                      ID3D12GraphicsCommandList* nativeList)
 {
-    Clear(runtime);
+    ResetReadiness(runtime);
     if (cache_->quarantined || lifetime_.Began() || !runtime || runtime->get_device() != device_ || !sdkList || sdkList->get_device() != device_ ||
         !runtime->get_command_queue() || runtime->get_command_queue()->get_native() != reinterpret_cast<uint64_t>(input_.queue) ||
         !nativeList || sdkList->get_native() != reinterpret_cast<uint64_t>(nativeList) ||
@@ -140,17 +145,28 @@ bool Prepared::Begin(reshade::api::effect_runtime* runtime, reshade::api::comman
         FAILED(input_.queue->GetDevice(IID_PPV_ARGS(&queueOwner))) || !Same(listOwner.Get(), queueOwner.Get())) return false;
     runtime_ = runtime; list_ = sdkList; nativeList_ = nativeList;
     if (!lifetime_.Begin()) return false; // BEFORE any potentially recorded GPU work
+    // Copy only while holding the real producer reader. DEPTH references an
+    // owned stable texture, so it can stay bound after the input is returned.
     Transition(nativeList, false);
-    runtime->update_texture_bindings("DEPTH", srv_, srv_); // depth has no sRGB interpretation
-    bool bound = false;
-    runtime->enumerate_texture_variables(nullptr, [&](auto* r, auto variable) {
-        reshade::api::resource_view linear{0}, srgb{0};
-        r->get_texture_binding(variable, &linear, &srgb);
-        if (linear.handle == srv_.handle && srgb.handle == srv_.handle) bound = true;
-    });
-    // update_texture_bindings is void. Only actual texture binding reflection,
-    // never an SDK declaration, descriptor, UI or preview, publishes availability.
-    if (!bound) runtime->update_texture_bindings("DEPTH", {0}, {0});
+    sdkList->barrier(cache_->copy, reshade::api::resource_usage::shader_resource, reshade::api::resource_usage::copy_dest);
+    sdkList->copy_resource({reinterpret_cast<uint64_t>(input_.resource)}, cache_->copy);
+    sdkList->barrier(cache_->copy, reshade::api::resource_usage::copy_dest, reshade::api::resource_usage::shader_resource);
+    Transition(nativeList, true);
+    restored_ = true; lifetime_.Restored();
+    const auto reflected = [&] {
+        bool bound = false;
+        runtime->enumerate_texture_variables(nullptr, [&](auto* r, auto variable) {
+            reshade::api::resource_view linear{0}, srgb{0};
+            r->get_texture_binding(variable, &linear, &srgb);
+            if (linear.handle == srv_.handle && srgb.handle == srv_.handle) bound = true;
+        });
+        return bound;
+    };
+    bool bound = reflected();
+    if (!bound) {
+        runtime->update_texture_bindings("DEPTH", srv_, srv_);
+        bound = reflected();
+    }
     Uniforms(runtime, bound, &input_);
     return bound;
 }
@@ -158,15 +174,12 @@ void Prepared::End(reshade::api::effect_runtime* runtime, reshade::api::command_
                    ID3D12GraphicsCommandList* nativeList)
 {
     if (!lifetime_.Began()) { Clear(runtime); return; }
-    if (restored_ || runtime != runtime_ || sdkList != list_ || nativeList != nativeList_ ||
+    if (!restored_ || runtime != runtime_ || sdkList != list_ || nativeList != nativeList_ ||
         !sdkList || sdkList->get_device() != device_ || !nativeList ||
         sdkList->get_native() != reinterpret_cast<uint64_t>(nativeList)) {
         cache_->quarantined = true; lifetime_.Quarantine(); throw std::logic_error("HoYoShade depth reader list changed");
     }
-    Clear(runtime);
-    Transition(nativeList, true);
-    restored_ = true;
-    lifetime_.Restored();
+    ResetReadiness(runtime);
 }
 bool Prepared::Complete(ID3D12Fence* fence, uint64_t value) noexcept
 {
@@ -175,7 +188,7 @@ bool Prepared::Complete(ID3D12Fence* fence, uint64_t value) noexcept
     return completed;
 }
 std::shared_ptr<Prepared> Prepare(const Access& a, ID3D12Device* nativeDevice,
-                                 reshade::api::device* sdkDevice, Cache& cache)
+                                 reshade::api::device* sdkDevice, Cache& cache, reshade::api::effect_runtime* runtime)
 {
     if (cache.quarantined || !a.resource || !a.reader || !nativeDevice || !sdkDevice || !a.owner || !a.generation || !a.epoch ||
         !a.queue || a.queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT ||
@@ -192,18 +205,26 @@ std::shared_ptr<Prepared> Prepare(const Access& a, ID3D12Device* nativeDevice,
         desc.texture.height != a.height || desc.texture.depth_or_layers != 1 || desc.texture.levels != 1 ||
         desc.texture.samples != 1 || static_cast<DXGI_FORMAT>(desc.texture.format) != a.resource->GetDesc().Format) return {};
     if (cache.srv.handle && cache.device != sdkDevice) return {};
-    if (!cache.srv.handle || cache.resource.Get() != a.resource || cache.typedFormat != a.typedFormat) {
-        cache.Destroy(sdkDevice); // caller has cleared the semantic and fenced the previous use
-        reshade::api::resource_view view{0};
+    const auto sourceFormat = a.resource->GetDesc().Format;
+    if (!cache.srv.handle || cache.width != a.width || cache.height != a.height ||
+        cache.sourceFormat != sourceFormat || cache.typedFormat != a.typedFormat) {
+        // This exact runtime is idle. Detach its old descriptor before freeing
+        // the old view, including a format/extent change after effects reload.
+        if (cache.srv.handle) Clear(runtime);
+        cache.Destroy(sdkDevice);
+        reshade::api::resource_desc copyDesc(a.width, a.height, 1, 1,
+            static_cast<reshade::api::format>(sourceFormat), 1, reshade::api::memory_heap::default_,
+            reshade::api::resource_usage::shader_resource | reshade::api::resource_usage::copy_dest);
         const reshade::api::resource_view_desc viewDesc(static_cast<reshade::api::format>(a.typedFormat), 0, 1, 0, 1);
-        if (!sdkDevice->create_resource_view(resource, reshade::api::resource_usage::shader_resource, viewDesc, &view)) {
-            if (view.handle) sdkDevice->destroy_resource_view(view);
-            return {};
+        cache.device = sdkDevice;
+        if (!sdkDevice->create_resource(copyDesc, nullptr, reshade::api::resource_usage::shader_resource, &cache.copy) ||
+            !sdkDevice->create_resource_view(cache.copy, reshade::api::resource_usage::shader_resource, viewDesc, &cache.srv)) {
+            cache.Destroy(sdkDevice); return {};
         }
-        cache.device = sdkDevice; cache.srv = view; cache.resource = a.resource; cache.typedFormat = a.typedFormat;
+        cache.width = a.width; cache.height = a.height; cache.sourceFormat = sourceFormat; cache.typedFormat = a.typedFormat;
     }
     const auto viewDesc = sdkDevice->get_resource_view_desc(cache.srv);
-    if (sdkDevice->get_resource_from_view(cache.srv).handle != resource.handle ||
+    if (sdkDevice->get_resource_from_view(cache.srv).handle != cache.copy.handle ||
         viewDesc.type != reshade::api::resource_view_type::texture_2d ||
         static_cast<DXGI_FORMAT>(viewDesc.format) != a.typedFormat || viewDesc.texture.first_level != 0 ||
         (viewDesc.texture.levels != 1 && viewDesc.texture.levels != UINT32_MAX) || viewDesc.texture.first_layer != 0 ||

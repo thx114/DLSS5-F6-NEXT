@@ -370,6 +370,13 @@ std::vector<GpuInformation> IdentifyGpu::getAllGpus()
     is_fetching = true;
     cache = checkGpuInfo();
     is_fetching = false;
+    if (!publishedRouting.load(std::memory_order_relaxed) && !cache.empty() &&
+        cache.front().vendorId != VendorId::Invalid)
+    {
+        loaderRouting = cache;
+        publishedRouting.store(&loaderRouting, std::memory_order_release);
+        loaderFsr4Support.store(cache.front().fsr4Support, std::memory_order_release);
+    }
 
     // TODO: try to reactivate DxgiSpoofing if was auto on Nvidia cards without DLSS
     return cache;
@@ -628,6 +635,10 @@ void IdentifyGpu::updateD3d12Capabilities(D3d12Proxy::PFN_D3D12CreateDevice o_D3
         }
     }
 
+    {
+        std::scoped_lock lock(mutex);
+        loaderFsr4Support.store(cache.empty() ? FSR4Support::None : cache.front().fsr4Support, std::memory_order_release);
+    }
     auto detectedGpus = IdentifyGpu::getAllGpus();
     std::string gpus = "Detected GPUs:\n";
 
@@ -668,6 +679,7 @@ void IdentifyGpu::updateD3d12Capabilities(D3d12Proxy::PFN_D3D12CreateDevice o_D3
             gpuInfo.fsr4Support = FSR4Support::None;
             gpuInfo.fsr4ForcedSupport = false;
         }
+        loaderFsr4Support.store(FSR4Support::None, std::memory_order_release);
     }
 
     // This means that the user didn't want to force support but we decided that we want to force it
@@ -698,5 +710,6 @@ void IdentifyGpu::updateInt8Support(std::optional<bool>& sdkSupportsInt8, std::o
             gpuInfo.fsr4Support = FSR4Support::None;
             gpuInfo.fsr4ForcedSupport = false;
         }
+        loaderFsr4Support.store(FSR4Support::None, std::memory_order_release);
     }
 }

@@ -175,26 +175,26 @@ class StreamlineHooks
         framegen::latency::Caller caller, bool sdkLoaded, framegen::latency::Target target);
 
     static void unhookInterposer(bool tokenDomainHeld = false);
-    static HMODULE LoadIsolatedGamePlugin(LPCWSTR requestedPath);
-    static void hookInterposer(HMODULE slInterposer);
+    static std::wstring IsolatedGamePluginPath(LPCWSTR requestedPath);
+    static bool hookInterposer(HMODULE slInterposer);
 
     static void unhookDlss();
-    static void hookDlss(HMODULE slDlss);
+    static bool hookDlss(HMODULE slDlss);
 
     static void unhookDlssg();
-    static void hookDlssg(HMODULE slDlssg);
+    static bool hookDlssg(HMODULE slDlssg);
 
     static void unhookLocalDlssg();
-    static void hookLocalDlssg(HMODULE slDlssg);
+    static bool hookLocalDlssg(HMODULE slDlssg);
 
     static void unhookReflex();
-    static void hookReflex(HMODULE slReflex);
+    static bool hookReflex(HMODULE slReflex);
 
     static void unhookPcl();
-    static void hookPcl(HMODULE slPcl);
+    static bool hookPcl(HMODULE slPcl);
 
     static void unhookCommon();
-    static void hookCommon(HMODULE slCommon);
+    static bool hookCommon(HMODULE slCommon);
 
     static bool isInterposerHooked();
     static bool isDlssHooked();

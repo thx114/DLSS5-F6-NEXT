@@ -4,6 +4,7 @@
 
 #include <detours/detours.h>
 #include <hooks/HookOwnership.h>
+#include <runtime/LibraryLoadRequest.h>
 
 #include <winternl.h>
 
@@ -20,60 +21,12 @@ class NtdllProxy
 
     typedef NTSTATUS(NTAPI* PFN_RtlGetVersion)(PRTL_OSVERSIONINFOW lpVersionInformation);
 
-    // It's a partial implementation
+    // Internal loads use the real Win32 loader, preserving dependency search,
+    // resource mapping and errors. The name remains for existing callers.
     static HMODULE LoadLibraryExW_Ldr(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags)
     {
-        // LdrLoadDll wants a ULONG*, remove unsupported flags
-        ULONG ldrFlags = dwFlags & ~(LOAD_WITH_ALTERED_SEARCH_PATH | LOAD_LIBRARY_SEARCH_APPLICATION_DIR |
-                                     LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS |
-                                     LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
-
-        // This will receive the module handle:
-        HANDLE hModule = nullptr;
-
-        NTSTATUS status;
-        if (dwFlags & LOAD_LIBRARY_SEARCH_SYSTEM32)
-        {
-            static std::filesystem::path sysDir = []
-            {
-                wchar_t buffer[MAX_PATH];
-                GetSystemDirectoryW(buffer, MAX_PATH);
-                return std::filesystem::path(buffer);
-            }();
-
-            std::filesystem::path sysPath = sysDir / lpLibFileName;
-
-            UNICODE_STRING uName;
-            o_RtlInitUnicodeString(&uName, sysPath.c_str());
-
-            status = o_LdrLoadDll(nullptr,                        // null is default search order
-                                  ldrFlags ? &ldrFlags : nullptr, // optional flags
-                                  &uName,                         // the name of the DLL
-                                  &hModule                        // out: module handle
-            );
-        }
-        else
-        {
-            UNICODE_STRING uName;
-            o_RtlInitUnicodeString(&uName, lpLibFileName);
-
-            status = o_LdrLoadDll(nullptr,                        // null is default search order
-                                  ldrFlags ? &ldrFlags : nullptr, // optional flags
-                                  &uName,                         // the name of the DLL
-                                  &hModule                        // out: module handle
-            );
-        }
-
-        if (NT_SUCCESS(status))
-        {
-            return static_cast<HMODULE>(hModule);
-        }
-        else
-        {
-            // translate NTSTATUS to a Win32 error code:
-            SetLastError(o_RtlNtStatusToDosError(status));
-            return nullptr;
-        }
+        LibraryLoading::InternalLoad internal(lpLibFileName ? lpLibFileName : L"", hFile, dwFlags);
+        return ::LoadLibraryExW(lpLibFileName, hFile, dwFlags);
     }
 
     static NTSTATUS FreeLibrary_Ldr(PVOID handle) { return o_LdrUnloadDll(handle); }
