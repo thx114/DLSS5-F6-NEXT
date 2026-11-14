@@ -1,5 +1,16 @@
 # F6 当前状态
 
+更新：**2026-11-14T11:00Z**。当前产品保存点 **`0e599810c053801451d323b047ed91a2d1b57b2e`**，包含下述细节稳定、深度复用与 SDK 观察修复，并让同格式 SDR passthrough 的原图与代理图共享编码输出。Release x64 exit 0，72 秒；DLL **32,572,416 B / SHA256 `9504586CDD1657DE018678AE00F437DAA2BF35F2CD4F7E210074CCAD649337EA`**，嵌入标记 `0e59981`，mtime UTC `2026-11-14T10:59:01.6915523Z`。10:59Z 已原位部署既有 `local/F6-ASI`，原 FileId、6 条硬链接和核对的 6 份配置哈希保持，无 `.next`；别名包括三游戏 cache。本节覆盖下方旧部署身份。
+
+- 只在 passthrough、目标支持 UAV、两张实际存储格式相同时共享；校准和 resolve 读取同一只读编码原图。HDR、不同格式和非 UAV copy-back 保留双输出。调用方 mode 0 与历史编码 contract 不变，仅上传副本选 mode 15；未使用的 keep 槽绑定 typed null UAV。没有减少资源预算、扩大槽、改变队列或放松退休条件。
+- 793 项实际 HLSL/WARP 检查通过：UNORM8 / RGB10A2 / FP16 / FP32、舍入边界、alpha、变化源、生产 null UAV 与共享 SRV resolve；输出逐位等价。旧 encoded-domain 负控的 24 项预期失败单列，不算正向失败。颜色事务通过 8 路由、16 成功/失败和 4 个同一组纹理成功→失败→新源恢复场景；28 个历史生命周期场景、Look 控件 80 和输出 WARP 1596 检查通过。完整 shared 未重跑。DXIL / SPIR-V 与嵌入头已同步生成，Vulkan 实卡未验收；只读 Sol high 复核无具体阻断，已关闭回收。
+- 同宿主完整生产 DXIL、2144×1344 FP16 平坦合成输入，单写 / 旧双写 / 单写各 80 个样本，GPU P50 **0.098816 / 0.111104 / 0.099328 ms**，本夹具收益约 **0.012 ms**；实际存储逐位一致，debug errors=0，GPU-based validation 关闭，包含转为可读的屏障。不是游戏 FPS 或整体 Reflex 改善，不能解释几十毫秒差距。
+- 活动日志仍停在 UTC08:06:43 / 60,804,125 B。**当前候选的加载、细节稳定与整体 Reflex ≤60 ms 仍未验收，用户约110 ms反馈保持未达标。** 下一局先核对 `0e59981`；游戏启动、进入、操作和退出由用户手动完成。生产/呈现队列仍未拆分，后续须按 SDK 实际输入完成与真实 buffer 代次闭合依赖。
+
+本轮证据：`build/genshin-reshade-20261114/detail-feedback-20261114-140355/shared-encode/`，包含 `pixels.log`、`runtime.log`、`transaction-recovery.log`、`output-regression.log`、`benchmark-*.log`、`benchmark-identity.json`、`build.json`、`deployment.json`、`installed-identity.json`、`protected-{before,after}.json`；shader receipt 在 `build/shaders/evidence/shared-encode-20261114/`。
+
+## 历史：SDK 观察部署
+
 更新：**2026-11-14T10:13Z**。产品保存点 **`8390a8735ca6880c3626fdc5c77f897ec600167d`**，保留下述细节稳定修复，增加现有 SDK 查询的输入完成字段观测，并修复异常路径的 LastError。Release x64 exit 0，62 秒；DLL **32,570,368 B / SHA256 `07B80733D1741A5F35400CB641479AE942397810918697A2819CAED7CABCE900`**，mtime UTC `2026-11-14T10:11:57.8610540Z`。10:12Z 原位部署既有 `local/F6-ASI`，原 FileId、6条硬链接和核对的6份配置哈希保持，无 `.next`；别名仍包括原神与崩铁 cache。本节覆盖下方旧部署身份。
 
 - `F6 SDK input completion observation` 每线程最多5秒一条，记录实际查询的线程、序号/时段、调用前后ABI、原始fence地址/目标数字及当时provider身份。不新增SDK/COM/fence调用，不改变排队或等待。调用前后均为已知v3/v4结构才读新增尾字段；其它可选字段同样受调用前版本限制。异常在SDK边界保存LastError，观察后恢复并原样重抛。
