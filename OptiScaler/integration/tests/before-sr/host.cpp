@@ -260,10 +260,20 @@ struct Host {
 };
 Host* observedHost = nullptr;
 void Finished(api::effect_runtime* runtime,api::command_list*,api::resource_view rtv,api::resource_view) { if(observedHost) observedHost->ObserveTextures(runtime,rtv); }
+enum class OrderPolicy { Allow, VetoOwned, RewriteOwned };
+OrderPolicy orderPolicy = OrderPolicy::Allow;
+unsigned vetoedOrders = 0, rewrittenOrders = 0;
+bool ChangeOrder(api::effect_runtime* runtime, size_t count, api::effect_technique* techniques) {
+    if (!observedHost || runtime == observedHost->natural || count != 2) return false;
+    if (orderPolicy == OrderPolicy::VetoOwned) { ++vetoedOrders; return true; }
+    if (orderPolicy == OrderPolicy::RewriteOwned) { ++rewrittenOrders; std::swap(techniques[0], techniques[1]); }
+    return false;
+}
 int main(int argc, char** argv) {
     try {
         Check(argc == 2 || argc == 3, "sandbox path argument");
         const bool depthMode = argc == 3 && std::string_view(argv[2]) == "depth";
+        const bool cacheMode = argc == 3 && std::string_view(argv[2]) == "selection-cache";
         const bool launchpadMode = argc == 3 && std::string_view(argv[2]) == "launchpad"; const auto root = std::filesystem::absolute(argv[1]);
         SetEnvironmentVariableW(L"RESHADE_DISABLE_GRAPHICS_HOOK", L"1");
         SetEnvironmentVariableW(L"RESHADE_DISABLE_LOADING_CHECK", L"1");
@@ -274,9 +284,15 @@ int main(int argc, char** argv) {
         Check(core != nullptr, "load sandbox pinned core");
         Check(HoYoShade::Testing::ConnectHost(GetModuleHandleW(nullptr), (root / "natural.ini").string().c_str(), HoYoShade::Stage::BeforeSr), "real API20 identity handshake");
         Host host(core, root / "natural.ini", depthMode || launchpadMode);
+        if (cacheMode) {
+            const auto initialized = HoYoShade::Testing::ReadSelectionCache(host.natural);
+            Check(initialized.available && initialized.revision && initialized.topology,
+                "real init callback publishes its selection lifetime before any reload");
+        }
         observedHost=&host;
         auto registerEvent=Export<HoYoShade::CoreApi::RegisterEvent>(core,"ReShadeRegisterEvent");
         registerEvent(reshade::addon_event::reshade_finish_effects,reinterpret_cast<void*>(Finished));
+        if (cacheMode) registerEvent(reshade::addon_event::reshade_reorder_techniques,reinterpret_cast<void*>(ChangeOrder));
         bool executed = false;
         bool warmupObserved = false;
         for (unsigned frame = 1; frame <= 600; ++frame) {
@@ -290,12 +306,131 @@ int main(int argc, char** argv) {
             if (result.EffectsExecuted()) {
                 if (launchpadMode) { Check(warmupObserved,"LP/MXAO applied only after real warmup fence"); host.CheckMxaoPixels(); executed=true; break; }
                 if (depthMode) { host.CheckDepthPixels(); executed = true; break; }
-                const auto red = host.Read(); std::printf("filtered input red=%u expected=64\n", red);
-                Check(red == 64, "one real ReShade effect copied back before SR"); executed = true; break;
+                const auto expected = cacheMode ? 128u : 64u;
+                const auto red = host.Read(); std::printf("filtered input red=%u expected=%u\n", red, expected);
+                Check(red == expected, "real ReShade effects copied back before SR"); executed = true; break;
             }
             Sleep(10);
         }
         Check(executed, "owned BeforeSR effect executed");
+        if (cacheMode) {
+            const auto loaded = HoYoShade::Testing::ReadSelectionCache(host.natural);
+            Check(loaded.available && loaded.reloadObserved && loaded.graphBuilds,
+                "real effect reload publishes cache authority and a complete selection graph");
+            uint64_t nextFrame = 1000;
+            const auto frame = [&] {
+                host.update(host.natural); host.Upload();
+                const auto result = host.Filter(nextFrame++);
+                Check(!result.Uncertain(), "selection changes retain a known GPU transaction");
+                return result;
+            };
+            const auto settle = [&](unsigned expected) {
+                bool applied = false;
+                for (unsigned n = 0; n < 300; ++n) {
+                    if (frame().EffectsExecuted()) { applied = true; break; }
+                    Check(host.Read() == 32, "unconfirmed owned mapping never writes filtered input");
+                    Sleep(10);
+                }
+                Check(applied && host.Read() == expected, "owned mapping recovers the actual live order and values");
+            };
+            const auto stable = [&](unsigned expected) {
+                const auto before = HoYoShade::Testing::ReadSelectionCache(host.natural);
+                for (unsigned n = 0; n < 16; ++n)
+                    Check(frame().EffectsExecuted(), "stable owned stage continues to execute every frame");
+                const auto after = HoYoShade::Testing::ReadSelectionCache(host.natural);
+                Check(after.available && after.revision == before.revision && after.topology == before.topology,
+                    "ordinary real Present callbacks retain the same selection lifetime");
+                Check(after.graphBuilds == before.graphBuilds && after.snapshots == before.snapshots,
+                    "stable selection performs no repeated graph build or private snapshot IO");
+                Check(after.topologyCached && after.uniformsCached,
+                    "production Capture reuses complete topology and uniform reflection");
+                Check(after.uniforms == 1 && after.ownedRevision && after.ownedReloadObserved &&
+                    after.mappingComplete && after.mappingCached,
+                    "owned reentrant lifecycle authorizes a cached nonempty uniform mapping");
+                Check(host.Read() == expected, "cached owned execution retains correct pixels");
+                return after;
+            };
+            stable(128);
+            const auto techniquesInOrder = [&] {
+                std::vector<api::effect_technique> techniques;
+                host.natural->enumerate_techniques("CacheProbe.fx", [&](auto*, auto technique) { techniques.push_back(technique); });
+                Check(techniques.size() == 2, "private probe has two order-sensitive techniques");
+                return techniques;
+            };
+            auto techniques = techniquesInOrder();
+            host.natural->set_technique_state(techniques.front(), false);
+            settle(64);
+            const auto disabled = HoYoShade::ReadStatus();
+            Check(disabled.natural.countsKnown && disabled.natural.enabledTechniques == 1,
+                "cached reflection still observes the live technique disable");
+            stable(64);
+            host.natural->set_technique_state(techniques.front(), true);
+            settle(128);
+            const auto enabled = HoYoShade::ReadStatus();
+            Check(enabled.natural.countsKnown && enabled.natural.enabledTechniques == 2,
+                "cached reflection still observes the live technique enable");
+
+            const auto beforeUniform = stable(128);
+            const auto uniform = host.natural->find_uniform_variable("CacheProbe.fx", "AddRed");
+            Check(uniform.handle != 0, "probe reflects an actual static float uniform");
+            const float value = 16.0f / 255;
+            host.natural->set_uniform_value_float(uniform, &value, 1);
+            settle(96);
+            const auto afterUniform = stable(96);
+            Check(afterUniform.graphBuilds == beforeUniform.graphBuilds && afterUniform.snapshots == beforeUniform.snapshots,
+                "cached static uniform values stay live without reflection or preset IO");
+
+            const auto beforeOrder = afterUniform;
+            std::reverse(techniques.begin(), techniques.end());
+            orderPolicy = OrderPolicy::VetoOwned;
+            host.natural->reorder_techniques(techniques.size(), techniques.data());
+            const auto requestedOrder = HoYoShade::Testing::ReadSelectionCache(host.natural);
+            Check(requestedOrder.revision > beforeOrder.revision && requestedOrder.topology == beforeOrder.topology,
+                "real order request advances selection revision without claiming new topology");
+            Check(techniquesInOrder() == techniques, "real natural techniques actually changed order");
+            for (unsigned n = 0; n < 3; ++n)
+                Check(!frame().EffectsExecuted() && host.Read() == 32, "vetoed owned BEFORE request grants no rendering authority");
+            Check(vetoedOrders != 0, "another real addon vetoed the owned reorder request");
+            orderPolicy = OrderPolicy::Allow;
+            settle(80);
+            const auto reordered = stable(80);
+            Check(reordered.graphBuilds == beforeOrder.graphBuilds + 1,
+                "order invalidation rebuilds exactly once before returning to cached reflection");
+            std::reverse(techniques.begin(), techniques.end());
+            orderPolicy = OrderPolicy::RewriteOwned;
+            host.natural->reorder_techniques(techniques.size(), techniques.data());
+            for (unsigned n = 0; n < 3; ++n)
+                Check(!frame().EffectsExecuted() && host.Read() == 32, "rewritten owned BEFORE request grants no rendering authority");
+            Check(rewrittenOrders != 0, "another real addon rewrote the owned reorder request");
+            orderPolicy = OrderPolicy::Allow;
+            settle(96);
+            const auto restored = stable(96);
+            host.natural->reload_effect_next_frame("CacheProbe.fx");
+            bool reloaded = false;
+            for (unsigned n = 0; n < 300; ++n) {
+                frame();
+                const auto current = HoYoShade::Testing::ReadSelectionCache(host.natural);
+                if (current.topology > restored.topology && HoYoShade::ReadStatus().natural.captureReady) {
+                    reloaded = true; break;
+                }
+                Sleep(10);
+            }
+            Check(reloaded, "a second real reload revokes the old topology and captures the new graph");
+            // Re-query the post-reload handle and continue owned rendering.
+            const auto reloadedUniform = host.natural->find_uniform_variable("CacheProbe.fx", "AddRed");
+            Check(reloadedUniform.handle != 0, "reload publishes a fresh real uniform handle");
+            host.natural->set_uniform_value_float(reloadedUniform, &value, 1);
+            settle(96);
+            const auto finalCache = stable(96);
+            auto* destroyed = host.natural;
+            host.destroy(host.natural); host.natural = nullptr;
+            const auto retired = HoYoShade::Testing::ReadSelectionCache(destroyed);
+            Check(!retired.available && !retired.revision && !retired.topology,
+                "real destroy callback removes both natural selection and event lifetime");
+            std::printf("PASS real-core selection cache: %u checks, graph_builds=%llu snapshots=%llu; no game/performance acceptance\n",
+                checks, finalCache.graphBuilds, finalCache.snapshots);
+            return 0;
+        }
         if (launchpadMode) {
             const auto first=host.ReadNormals(); host.pattern=1; host.update(host.natural); host.Upload();
             const auto result=host.Filter(701); Check(result.EffectsExecuted() && result.depthAvailable,"LP/MXAO next frame current input");

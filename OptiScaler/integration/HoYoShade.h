@@ -90,6 +90,14 @@ public:
 };
 #ifdef HOYOSHADE_STAGE_TEST
 namespace Testing {
+struct SelectionCacheStatus {
+    bool available = false, reloadObserved = false;
+    bool topologyCached = false, uniformsCached = false;
+    bool ownedReloadObserved = false, mappingComplete = false, mappingCached = false;
+    uint64_t revision = 0, topology = 0, graphBuilds = 0, snapshots = 0;
+    uint64_t ownedRevision = 0, uniforms = 0;
+};
+SelectionCacheStatus ReadSelectionCache(reshade::api::effect_runtime*) noexcept;
 // Standalone host only. Reuses the exact loaded-core identity/API20 handshake
 // and callbacks; no fabricated SDK object or alternate product loader.
 bool ConnectHost(HMODULE self, const char* config, Stage stage) noexcept;

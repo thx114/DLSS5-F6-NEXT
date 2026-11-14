@@ -2562,11 +2562,6 @@ void ObserveRuntime(reshade::api::effect_runtime* runtime, RuntimeEvent event)
 void SelectionEvent(reshade::api::effect_runtime* runtime, Selection::CacheEvent event) noexcept
 {
     ObservationSelectionRequested(); // Existing executionMutex, before lifecycle/preset/order mutation.
-    if (event != Selection::CacheEvent::Order) {
-        const char* name = event == Selection::CacheEvent::Init ? "init" :
-            event == Selection::CacheEvent::Reload ? "reload" : event == Selection::CacheEvent::Preset ? "preset-request" : "destroy";
-
-    }
     if (event == Selection::CacheEvent::Init || event == Selection::CacheEvent::Reload ||
         event == Selection::CacheEvent::Destroy) {
         // One precise lifecycle invalidation per enrolled chain, never per frame.
@@ -2580,8 +2575,8 @@ void SelectionEvent(reshade::api::effect_runtime* runtime, Selection::CacheEvent
             if (related) { if (c.epoch != UINT64_MAX) ++c.epoch; InvalidateDirect(key); }
         }
     }
-    if (!ownedOperation && event == Selection::CacheEvent::Destroy)
-
+    // Publish every lifecycle/request revision, including callbacks nested in
+    // owned work, before invalidating any borrowed reflection handles.
     Selection::Observe(runtime, event);
     for (auto& entry : Get().natural) Selection::Invalidate(entry.selection, runtime, event);
 }
@@ -3004,6 +2999,32 @@ void Initialize(HMODULE self, bool enabled, unsigned stage) noexcept
     } catch (...) { Get().core.store(Reason::InternalFailure); }
 }
 #else
+Testing::SelectionCacheStatus Testing::ReadSelectionCache(reshade::api::effect_runtime* runtime) noexcept
+{
+    SelectionCacheStatus result;
+    try {
+        std::lock_guard lifetime(Get().executionMutex);
+        const auto event = Selection::Watch(runtime).Read();
+        result.revision = event.revision; result.topology = event.topology;
+        result.reloadObserved = event.reloadObserved;
+        for (const auto& natural : Get().natural) {
+            if (natural.runtime != runtime || !natural.live) continue;
+            result.available = true;
+            result.graphBuilds = natural.selection.graphBuilds;
+            result.snapshots = natural.selection.snapshots;
+            result.topologyCached = natural.selection.capture.topologyCached;
+            result.uniformsCached = natural.selection.capture.uniformsCached;
+            result.uniforms = natural.selection.capture.graph.uniforms;
+            const auto owned = Selection::Watch(natural.selection.boundRuntime).Read();
+            result.ownedRevision = owned.revision;
+            result.ownedReloadObserved = owned.reloadObserved;
+            result.mappingComplete = natural.selection.applied.mappingComplete;
+            result.mappingCached = natural.selection.applied.cached;
+            break;
+        }
+    } catch (...) { return {}; }
+    return result;
+}
 void Testing::EnableHost(bool enabled) noexcept {
     RevokeObservationDemand();
     Get().enabled.store(enabled, std::memory_order_release);

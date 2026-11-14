@@ -3,7 +3,7 @@
 param(
     [string]$CorePath = 'D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/HoYoShade/ReShade64.dll',
     [string]$OutputDirectory = 'build/genshin-reshade-20261114/real-core-test',
-    [ValidateSet('color','depth','launchpad','nr-color','nr-depth','nr-launchpad','nr-uncertain')][string]$Mode = 'color'
+    [ValidateSet('color','depth','launchpad','selection-cache','nr-color','nr-depth','nr-launchpad','nr-uncertain')][string]$Mode = 'color'
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -16,6 +16,10 @@ if ((Get-FileHash -LiteralPath $CorePath -Algorithm SHA256).Hash -ne $expected) 
 Copy-Item -LiteralPath $CorePath -Destination (Join-Path $output 'HoYoShade/ReShade64.dll') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Probe.fx') -Destination (Join-Path $output 'Probe.fx') -Force
 $preset = "Techniques=Probe@Probe.fx`nTechniqueSorting=Probe@Probe.fx`n"
+if ($Mode -eq 'selection-cache') {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'CacheProbe.fx') -Destination (Join-Path $output 'CacheProbe.fx') -Force
+    $preset = "Techniques=Add@CacheProbe.fx,Scale@CacheProbe.fx`nTechniqueSorting=Add@CacheProbe.fx,Scale@CacheProbe.fx`n"
+}
 if ($Mode -in @('depth','nr-depth')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'DepthProbe.fx') -Destination (Join-Path $output 'DepthProbe.fx') -Force
     $preset = "Techniques=DepthProbe@DepthProbe.fx`nTechniqueSorting=DepthProbe@DepthProbe.fx`n"
