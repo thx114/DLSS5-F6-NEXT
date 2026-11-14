@@ -1,5 +1,17 @@
 # F6 当前状态
 
+更新：**2026-11-14T12:15Z**。当前产品保存点 **`54b422fabacbf4dbae0680707893523c1d5e3a02`**，保留下述细节稳定、深度复用及 SDR 单写优化，并在真实 SDK Present 返回后、teardown 前取得有独立引用的输入完成 fence 样本。Release x64 exit0，75秒；DLL **32,585,216 B / SHA256 `830DCD2B4E4AD17CC5F7739F546A443387B1588617A15768E6A28CCEF51AFBB8`**，嵌入标记 `54b422f`，mtime UTC `2026-11-14T12:10:43.2617223Z`。12:13Z 已原位部署既有 `local/F6-ASI`；原 FileId `0x000000000000000000020000001b42ff`、6 条硬链接与核对的 6 份配置/内容哈希保持，无 `.next`。本节覆盖以下旧部署身份。
+
+- 每5秒最多一次，在 provider 的既有 Present execution guard 内，将实际原缓冲、独立 buffer/input/SDK 代次、线程、API 和查询序号关联；SDK 正常推进 index 后仍认证之前的实际输入，不查询下一张缓冲来替代。QI 只在实际 GetState gate 内对 SDK 借出对象取得独立 fence 引用，旧 ABI 不访问尾部，普通查询保持数字观察。
+- Present↔Present1 的一次 SDK forwarding 使用线程内票据；重复、同入口或查询阶段重入撤销外层关联。跳过标志改为 thread_local 并在异常展开恢复；原始 Present 的 HRESULT/LastError 在 COM Release、日志和异常路径保持。实际 create/resize 尝试在调用 SDK 前推进缓冲代次，失败也不继承旧代次。成功的附加查询计数仍进入统一观察和 presented-interval telemetry。
+- **生产队列尚未拆分，没有新 GPU Wait，也未授予复用/退休权限。** 日志 `F6 SDK input Present observation` 明示 `queue_separated=false` / `receipt_usable_for_retirement=false`。样本随当前调用释放，不影响既有 host/SDK 生命周期。后续完整拆分还须按实际颜色 writer、SDK reader、星铁 UntilPresent 转换纹理及各 queue 的退休闭合；原神 ValidNow 快照的早期 DX11 handback 保留。
+- 实际生产查询与 provider 方法抽取夹具：**1471 检查 / 90 次脚本化 SDK 调用通过**，含真实 WARP fence、两真实 queue 的最终 writer→SDK reader→下一 producer 读回、D3D12 debug 无 error/corruption；GBV 关闭。5 项新增负控准确检出入口 LastError、owning ABI 越界、缺 reader Wait、查询期 forwarding 及异常 LastError 丢失。相关 SDK timer 49+57、源调度1065/延迟适配780、pacing323、telemetry53、options9204 检查通过。完整 shared 未重跑，未执行实际 SDK DLL/游戏或 Vulkan GPU。
+- 本轮只读 Sol high 审计发现的部分验证异常成功标记残留、资源析构污染异常错误码和查询阶段重入三项已修并加入生产抽取回归/负控；相关智能体已关闭。活动原神日志仍停在 UTC08:06:43 / 60,804,125 B，**当前加载、细节稳定与整体 Reflex ≤60 ms 均未验收，用户约110 ms仍不及格。** 用户手动操作游戏；已请求用户方便时同场景新局反馈，AI继续独立工作，不自行启停或改选项。
+
+证据：`build/genshin-reshade-20261114/detail-feedback-20261114-140355/owning-input-fence/`，含 `final-validation.log`、5项 `negative-*.log`、`sdk-timing.log`、`source-scheduling.log`、`common-targeted.log`、`build.json`、`deployment.json`、`installed-identity.json` 和 `protected-{before,after}.json`。新采样不构成性能收益；不得以准备接口或离线夹具冒称已解决110ms。
+
+## 历史：共享 SDR 编码部署
+
 更新：**2026-11-14T11:00Z**。当前产品保存点 **`0e599810c053801451d323b047ed91a2d1b57b2e`**，包含下述细节稳定、深度复用与 SDK 观察修复，并让同格式 SDR passthrough 的原图与代理图共享编码输出。Release x64 exit 0，72 秒；DLL **32,572,416 B / SHA256 `9504586CDD1657DE018678AE00F437DAA2BF35F2CD4F7E210074CCAD649337EA`**，嵌入标记 `0e59981`，mtime UTC `2026-11-14T10:59:01.6915523Z`。10:59Z 已原位部署既有 `local/F6-ASI`，原 FileId、6 条硬链接和核对的 6 份配置哈希保持，无 `.next`；别名包括三游戏 cache。本节覆盖下方旧部署身份。
 
 - 只在 passthrough、目标支持 UAV、两张实际存储格式相同时共享；校准和 resolve 读取同一只读编码原图。HDR、不同格式和非 UAV copy-back 保留双输出。调用方 mode 0 与历史编码 contract 不变，仅上传副本选 mode 15；未使用的 keep 槽绑定 typed null UAV。没有减少资源预算、扩大槽、改变队列或放松退休条件。

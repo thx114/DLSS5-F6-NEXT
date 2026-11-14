@@ -1,6 +1,18 @@
 # F6 项目交接
 
-## 0. 当前续接（2026-11-14T11:00Z）
+## 0. 当前续接（2026-11-14T12:15Z）
+
+当前部署产品 **`54b422fabacbf4dbae0680707893523c1d5e3a02`** / `54b422f`，DLL **32,585,216 B / SHA256 `830DCD2B4E4AD17CC5F7739F546A443387B1588617A15768E6A28CCEF51AFBB8`**，mtime UTC `2026-11-14T12:10:43.2617223Z`；Release exit0 /75秒。12:13Z原位覆盖既有`local/F6-ASI`，原FileId和6硬链接、核对的6配置/内容哈希保持，无`.next`；保留此前细节稳定/深度复用/SDR单写。详情优先读CURRENT-STATE顶部。
+
+新增实际SDK Present返回后、teardown之前的owning输入完成采样，每5秒一次，绑定当次原buffer、buffer/input/SDK代次、线程、API和查询序号。SDK索引推进不改变原buffer身份；独立QI引用在查询gate内取得，未知/旧ABI保持拒绝。Present↔Present1一次forward的TLS票据覆盖整个Present+query，只有原始Present阶段能消费票据；COM释放/异常不丢HRESULT或LastError，create/resize实际尝试前推进独立buffer代次。
+
+**没有拆分生产/呈现queue，没有生产Wait或退休权限。** 下一步需先从用户新局查看 `F6 SDK input Present observation` 是否实际返回可用fence和目标，再完成实际buffer颜色writer、SDK reader、星铁UntilPresent纹理及多queue退休。SDK数字地址不能变回引用；copy槽不是SDK index；原神ValidNow早期shared Signal→DX11 Wait已经闭合，不要追加整帧SDK等待。完成样本只短暂持有本调用，不存在新的跨帧资源释放路线。
+
+1471项生产抽取检查/90脚本化SDK调用（实际WARP双queue依赖/读回、debug无错误），5项新增负控、相关SDK timer/源调度/延迟适配以及options9204/pacing323/telemetry53通过；shared未全量重跑，未执行真实SDK DLL/游戏/Vulkan GPU。审计发现的三项异常/重入问题已修并覆盖，智能体均关闭。证据在总目录`owning-input-fence/`，不重跑已通过的构建和部署。
+
+当前原神日志仍停在UTC08:06:43/60,804,125 B，**本候选实际加载、细节稳定及完整Reflex≤60ms仍待用户新局；约110ms保持未达标。** 已通过异步问题请求用户方便时手动进入原场景反馈；AI不操作游戏、不改启动器或profiles。不能把本次完成凭据接线当性能改善。ReShade前置滤镜和其它未闭环项保留下方记录；桥推送已完成，无需重复。
+
+### 历史：共享SDR部署（2026-11-14T11:00Z）
 
 当前产品保存点 **`0e599810c053801451d323b047ed91a2d1b57b2e`**，嵌入标记 `0e59981`，包含原有细节稳定、深度复用和 SDK 观察修复。Release x64 exit0，72秒；DLL **32,572,416 B / SHA256 `9504586CDD1657DE018678AE00F437DAA2BF35F2CD4F7E210074CCAD649337EA`**，mtime UTC `2026-11-14T10:59:01.6915523Z`。10:59Z 原位部署 `local/F6-ASI`，原 FileId、6 条硬链接及核对的 6 配置哈希保持，无 `.next`；别名含三游戏 cache。
 
