@@ -19,13 +19,6 @@ def guard(needle):
 for name, needle in [('encode', 'if (!DispatchPass(cmdList, encodeParams'),
                      ('resize', 'if (!DispatchPass(cmdList, down, modelInput')]:
     (out / f'colour-{name}.inl').write_text(guard(needle), encoding='utf-8')
-start = source.index('const bool shareEncodedOriginal=')
-end = source.index('\n    TransitionTarget(', start)
-(out / 'colour-original-routing.inl').write_text(
-    source[start:end].replace('ID3D12Resource*', 'Texture*'), encoding='utf-8')
-start = source.index('auto dispatchConstants=InConstants;')
-end = source.index('    if (!UploadNrConstants(', start)
-(out / 'colour-dispatch-constants.inl').write_text(source[start:end], encoding='utf-8')
 start = source.index('composed = DispatchPass(cmdList, resolveParams')
 end = source.index('if (composed && CalibrationActive())', start)
 (out / 'colour-resolve.inl').write_text(source[start:end], encoding='utf-8')

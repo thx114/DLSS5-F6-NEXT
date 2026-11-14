@@ -158,13 +158,6 @@ bool DhCurrentMotionField(uint2 p, float2 centreMotion)
     return DhMotionField(centreMotion, neighbourMotion, motionJump, confidence);
 }
 
-float DhStructureLimit(float3 current, float3 previous)
-{
-    const float noise = DhFinite(sigmaFloor) ? clamp(sigmaFloor, 1.0 / 1024.0, 0.1) : 0.01;
-    return clipGamma > 0.0 && DhFinite(clipGamma) ? max(clipGamma, 2.0 * noise) :
-        max(2.0 * noise, 0.015) + 0.05 * max(DhPeak(abs(current)), DhPeak(abs(previous)));
-}
-
 // Match each raw-proxy point at ITS OWN actual correspondence. Camera rotation,
 // perspective and articulated motion do not translate a whole patch rigidly.
 // Neighbours validate structure only; the centre's residual/geometry never use
@@ -224,7 +217,9 @@ bool DhStructure(uint2 p, float2 previousUv, float2 centreMotion,
     }
     // A bounded noise floor and centre signal scale, NOT local variance: a thin
     // fence cannot enlarge its own acceptance box enough to admit a shifted edge.
-    const float limit = DhStructureLimit(currentCentre, previousCentre);
+    const float noise = DhFinite(sigmaFloor) ? clamp(sigmaFloor, 1.0 / 1024.0, 0.1) : 0.01;
+    const float limit = clipGamma > 0.0 && DhFinite(clipGamma) ? max(clipGamma, 2.0 * noise) :
+        max(2.0 * noise, 0.015) + 0.05 * max(DhPeak(abs(currentCentre)), DhPeak(abs(previousCentre)));
     // Filtering must not hide opposite silhouettes behind their average. A
     // fractional edge may have up to twice the CURRENT filtered cross contrast;
     // an old alternating edge over a flat current patch has no such support.
@@ -298,7 +293,6 @@ struct DhResult
     float weight;
     uint reason;
     bool motionVerified;
-    float3 rawCrossContrast; // current source only; reusable after successful structure validation
 };
 
 DhResult DhEvaluateDetail(uint2 p)
@@ -349,7 +343,6 @@ DhResult DhEvaluateDetail(uint2 p)
     float3 amplitude, rawCrossContrast;
     if (!DhStructure(p, previousUv, mv, colourConfidence, amplitude, rawCrossContrast, motionConfidence, result.reason)) return result;
     result.motionVerified = true;
-    result.rawCrossContrast = rawCrossContrast;
     // Only the displayed contribution fades. The original residual AND its
     // original fingerprint travel together; comparing with last frame's raw
     // colour instead would allow gradual drift to keep an unrelated old edit.
@@ -424,13 +417,11 @@ DhResult DhEvaluate(uint2 p)
         feedbackDeltaSeconds >= feedbackStabilitySeconds ||
         !DhFinite(feedbackStabilityFloor) || !DhFinite(feedbackStabilityClamp) || feedbackStabilityClamp <= 0.0 ||
         !DhFinite2(float2(feedbackRasterOffsetUvX, feedbackRasterOffsetUvY))) return result;
-    if (!DhWorkTexture(t6) || !DhWorkTexture(t3) || !DhWorkTexture(t7)) return result;
+    if (!DhWorkTexture(t6) || !DhWorkTexture(t3)) return result;
     if (result.reason == 5u) return result;
     if (!DhFinite(depthTolerance) || depthTolerance < 0.0) return result;
-    // Detail evaluation already validated this source's canonical depth and
-    // stores it independently of the residual's birth colour on every path.
-    const float z = result.context.a;
-    if (z < 0.0) { result.reason = 3u; return result; }
+    float z;
+    if (!DhDepth(t5, WorkUv(p), z)) { result.reason = 3u; return result; }
     float2 mv;
     if (!DhMotion(WorkUv(p), mv)) { result.reason = 5u; return result; }
     const float2 previousUv = WorkUv(p) + mv + float2(feedbackRasterOffsetUvX, feedbackRasterOffsetUvY);
@@ -441,7 +432,6 @@ DhResult DhEvaluate(uint2 p)
     int2 base; float2 fraction;
     DhFootprint(previousUv, base, fraction);
     float3 old = 0.0, oldRaw = 0.0;
-    float3 adjacentMin = 3.402823466e+38, adjacentMax = -3.402823466e+38;
     float oldLag = 0.0, depthTrust = 1.0;
     const float tolerance = max(depthTolerance, 1e-6);
     // Every contributing tap must independently name this surface. Reject
@@ -455,9 +445,7 @@ DhResult DhEvaluate(uint2 p)
         if (!DhInside(q)) { result.reason = 6u; return result; }
         const float4 saved = t6.Load(int3(q, 0));
         const float4 context = t3.Load(int3(q, 0));
-        const float4 adjacent = t7.Load(int3(q, 0));
-        if (!DhFinite4(saved) || saved.a < 0.0 || !DhFinite4(context) || context.a < 0.0 || context.a > 1.0 ||
-            !DhFinite4(adjacent) || adjacent.a < 0.0)
+        if (!DhFinite4(saved) || saved.a < 0.0 || !DhFinite4(context) || context.a < 0.0 || context.a > 1.0)
             { result.reason = 7u; return result; }
         const float relative = abs(z - context.a) / max(max(z, context.a), 1e-6);
         if (depthTolerance < 1.0)
@@ -466,11 +454,7 @@ DhResult DhEvaluate(uint2 p)
             depthTrust = min(depthTrust, 1.0 - smoothstep(0.5 * tolerance, tolerance, relative));
         }
         old += w * saved.rgb;
-        // context.rgb is the possibly much older long-detail birth fingerprint.
-        // The short stabilizer validates appearance against this adjacent source.
-        oldRaw += w * adjacent.rgb;
-        adjacentMin = min(adjacentMin, adjacent.rgb);
-        adjacentMax = max(adjacentMax, adjacent.rgb);
+        oldRaw += w * context.rgb;
         oldLag = max(oldLag, saved.a);
     }
     if (!DhFinite3(old) || !DhFinite3(oldRaw) || !DhFinite(oldLag + feedbackDeltaSeconds)) return result;
@@ -478,50 +462,7 @@ DhResult DhEvaluate(uint2 p)
     // current-appearance gate limits silhouettes/cuts. The floor controls soft
     // confidence only within the motion/depth correspondence admitted above.
     const float appearanceLimit = max(0.03, 2.0 * feedbackStabilityClamp);
-    const float structureLimit = DhStructureLimit(raw.rgb, oldRaw);
-    float3 rawCrossContrast = result.rawCrossContrast;
-    if (!result.motionVerified && DhPeak(adjacentMax - adjacentMin) > 0.25 * structureLimit)
-    {
-        // Reuse long detail's current-source loads when available. Otherwise
-        // only a real adjacent edge needs four extra current-source loads;
-        // a flat/subthreshold footprint already has full structure confidence.
-        [unroll] for (uint i = 1u; i < 5u; ++i)
-        {
-            const int2 q = clamp(int2(p) + DhCross(i), int2(0, 0), int2(workWidth, workHeight) - 1);
-            const float4 neighbour = t0.Load(int3(q, 0));
-            if (!DhFinite4(neighbour)) return result;
-            rawCrossContrast = max(rawCrossContrast, abs(neighbour.rgb - raw.rgb));
-        }
-    }
-    // Opposite old silhouettes can have exactly the current bilinear mean.
-    // Require CURRENT edge support before the floor can admit their residual.
-    // These ranges use t7 (adjacent source), never the long history's birth RGB.
-    float3 currentSupport = 2.0 * rawCrossContrast;
-    if (DhPeak(max(adjacentMax - adjacentMin - currentSupport, 0.0)) > 0.25 * structureLimit)
-    {
-        // A cross alone misses a correctly reprojected corner or isolated point.
-        // Bilinear sampling attenuates those features by the strongest tap of
-        // this footprint. Use the current 3x3 range with that actual attenuation
-        // only when the cheaper cross would reject; a vanished flat patch still
-        // supplies zero support. No old residual can enlarge this range.
-        float3 currentMin = raw.rgb, currentMax = raw.rgb;
-        [unroll] for (int y = -1; y <= 1; ++y)
-        [unroll] for (int x = -1; x <= 1; ++x)
-        {
-            if (x == 0 && y == 0) continue;
-            const int2 q = clamp(int2(p) + int2(x, y), int2(0, 0), int2(workWidth, workHeight) - 1);
-            const float4 neighbour = t0.Load(int3(q, 0));
-            if (!DhFinite4(neighbour)) return result;
-            currentMin = min(currentMin, neighbour.rgb);
-            currentMax = max(currentMax, neighbour.rgb);
-        }
-        const float strongestTap = max(fraction.x, 1.0 - fraction.x) * max(fraction.y, 1.0 - fraction.y);
-        currentSupport = max(currentSupport, (currentMax - currentMin) / strongestTap);
-    }
-    const float unsupportedSpread = DhPeak(max(adjacentMax - adjacentMin - currentSupport, 0.0));
-    const float structure = 1.0 - smoothstep(0.25 * structureLimit, structureLimit, unsupportedSpread);
-    const float appearance = structure *
-        (1.0 - smoothstep(0.5 * appearanceLimit, appearanceLimit, DhPeak(abs(raw.rgb - oldRaw))));
+    const float appearance = 1.0 - smoothstep(0.5 * appearanceLimit, appearanceLimit, DhPeak(abs(raw.rgb - oldRaw)));
     const bool reliable = result.reason != 5u && result.reason != 10u && depthTrust > 0.0;
     const float guideTrust = reliable ? depthTrust : 0.0;
     const float trust = lerp(saturate(feedbackStabilityFloor), 1.0, guideTrust);
@@ -547,12 +488,7 @@ void DetailHistoryResolve(uint2 p)
     u0[p] = result.answer;
     u1[p] = result.detail;
     u2[p] = result.context;
-    if (feedbackStabilitySeconds > 0.0)
-    {
-        u3[p] = result.stabilized;
-        const float4 raw = t0.Load(int3(p, 0));
-        u4[p] = DhFinite4(raw) ? float4(raw.rgb, 1.0) : float4(0.0, 0.0, 0.0, -1.0);
-    }
+    if (feedbackStabilitySeconds > 0.0) u3[p] = result.stabilized;
 }
 
 float3 DhReasonColour(uint reason)

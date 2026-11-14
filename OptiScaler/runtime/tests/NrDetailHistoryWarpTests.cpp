@@ -17,12 +17,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <limits>
-#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -57,7 +55,7 @@ struct Image
     const Pixel& At(UINT x, UINT y) const { return pixels.at(static_cast<size_t>(y) * width + x); }
     const Pixel& Probe() const { return At(kProbeX, kProbeY); }
 };
-using Inputs = std::array<Image, 8>;
+using Inputs = std::array<Image, 7>;
 
 bool Near(float a, float b)
 {
@@ -136,17 +134,12 @@ struct DispatchResult
     Image secondary;
     Image birthContext;
     Image stability;
-    Image stabilityContext;
-    // Actual GPU storage, tightly packed without implementation row padding.
-    // Keep half/float bits intact, including signed zero and invalid payloads.
-    std::array<std::vector<uint8_t>, 5> storage;
 };
 
 class Fixture
 {
 public:
-    explicit Fixture(const std::filesystem::path& overrideShader = {},
-                     const std::filesystem::path& referenceShader = {})
+    explicit Fixture(const std::filesystem::path& overrideShader = {})
     {
         D3D_FEATURE_LEVEL level {};
         RequireHr(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
@@ -194,14 +187,13 @@ public:
         desc.AddressU = desc.AddressV = desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         desc.MaxLOD = D3D11_FLOAT32_MAX;
         RequireHr(device->CreateSamplerState(&desc, &sampler), "Create linear clamp sampler");
-        if (!referenceShader.empty()) reference = std::make_unique<Fixture>(referenceShader);
     }
 
     DispatchResult Run(const Inputs& inputs, const Constants& constants, bool productionFormats=false)
     {
-        std::array<ComPtr<ID3D11Texture2D>, 8> textures;
-        std::array<ComPtr<ID3D11ShaderResourceView>, 8> views;
-        std::array<ID3D11ShaderResourceView*, 8> rawViews {};
+        std::array<ComPtr<ID3D11Texture2D>, 7> textures;
+        std::array<ComPtr<ID3D11ShaderResourceView>, 7> views;
+        std::array<ID3D11ShaderResourceView*, 7> rawViews {};
         for (size_t i = 0; i < inputs.size(); ++i)
         {
             const auto& input = inputs[i];
@@ -218,9 +210,9 @@ public:
 
         auto desc = TextureDesc(constants.WorkWidth, constants.WorkHeight);
         desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
-        std::array<ComPtr<ID3D11Texture2D>, 5> outputs;
-        std::array<ComPtr<ID3D11UnorderedAccessView>, 5> uavs;
-        std::array<ID3D11UnorderedAccessView*, 5> rawUavs {};
+        std::array<ComPtr<ID3D11Texture2D>, 4> outputs;
+        std::array<ComPtr<ID3D11UnorderedAccessView>, 4> uavs;
+        std::array<ID3D11UnorderedAccessView*, 4> rawUavs {};
         const float clear[4] {};
         for (size_t i = 0; i < outputs.size(); ++i)
         {
@@ -249,38 +241,11 @@ public:
         context->ClearState();
 
         DispatchResult result;
-        result.primary = Readback(outputs[0].Get(), result.storage[0]);
-        result.secondary = Readback(outputs[1].Get(), result.storage[1]);
-        result.birthContext = Readback(outputs[2].Get(), result.storage[2]);
-        result.stability = Readback(outputs[3].Get(), result.storage[3]);
-        result.stabilityContext = Readback(outputs[4].Get(), result.storage[4]);
-        if (reference)
-        {
-            const auto expected = reference->Run(inputs, constants, productionFormats);
-            for (size_t i = 0; i < result.storage.size(); ++i)
-            {
-                if (result.storage[i] != expected.storage[i])
-                {
-                    const auto mismatch = std::mismatch(result.storage[i].begin(), result.storage[i].end(),
-                                                        expected.storage[i].begin(), expected.storage[i].end());
-                    throw std::runtime_error("BITWISE MISMATCH dispatch=" + std::to_string(comparedDispatches + 1) +
-                        " u" + std::to_string(i) + " byte=" +
-                        std::to_string(mismatch.first - result.storage[i].begin()) +
-                        " mode=" + std::to_string(constants.Mode) +
-                        " production_formats=" + std::to_string(productionFormats));
-                }
-                comparedBytes += result.storage[i].size();
-            }
-            ++comparedDispatches;
-        }
+        result.primary = Readback(outputs[0].Get());
+        result.secondary = Readback(outputs[1].Get());
+        result.birthContext = Readback(outputs[2].Get());
+        result.stability = Readback(outputs[3].Get());
         return result;
-    }
-
-    void ReportComparison() const
-    {
-        if (reference)
-            std::cout << "BITWISE PASS: " << comparedDispatches << " dispatches, " << comparedBytes
-                      << " GPU storage bytes, all u0..u4 outputs" << std::endl;
     }
 
 private:
@@ -295,7 +260,7 @@ private:
         return desc;
     }
 
-    Image Readback(ID3D11Texture2D* output, std::vector<uint8_t>& storage)
+    Image Readback(ID3D11Texture2D* output)
     {
         D3D11_TEXTURE2D_DESC desc {};
         output->GetDesc(&desc);
@@ -309,13 +274,9 @@ private:
         // Blocking Map observes real WARP output rather than a CPU reference.
         RequireHr(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Map WARP output");
         Image result({}, desc.Width, desc.Height);
-        const size_t rowBytes = static_cast<size_t>(desc.Width) *
-            (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ? 4 * sizeof(uint16_t) : sizeof(Pixel));
-        storage.resize(rowBytes * desc.Height);
         for (UINT y = 0; y < desc.Height; ++y)
         {
             const auto* row=static_cast<const char*>(mapped.pData)+static_cast<size_t>(y)*mapped.RowPitch;
-            std::memcpy(storage.data() + static_cast<size_t>(y) * rowBytes, row, rowBytes);
             if(desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT)
             {
                 const auto* values=reinterpret_cast<const uint16_t*>(row);
@@ -346,8 +307,6 @@ private:
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<ID3D11ComputeShader> shader;
     ComPtr<ID3D11SamplerState> sampler;
-    std::unique_ptr<Fixture> reference;
-    size_t comparedDispatches = 0, comparedBytes = 0;
 };
 
 Constants FeedbackConstants()
@@ -373,7 +332,7 @@ Inputs FlatInputs()
 {
     return {Image({0.4f,0.5f,0.6f,1}), Image({0.42f,0.52f,0.62f,0.73f}),
             Image({0.035f,0.01f,-0.015f,0.2f}), Image({0.4f,0.5f,0.6f,0.4f}),
-            Image({0,0,0,0}), Image({0.4f,0,0,0}), Image({},0,0), Image({.4f,.5f,.6f,1})};
+            Image({0,0,0,0}), Image({0.4f,0,0,0}), Image({},0,0)};
 }
 
 void Fill(Image& image, Pixel value) { std::fill(image.pixels.begin(), image.pixels.end(), value); }
@@ -1388,26 +1347,12 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
     c.FeedbackStabilitySeconds=0;
     checks.ImageEquals(gpu.Run(fallback,c).primary,fallback[1],"stability zero is exactly fresh with long carry disabled");
     c.FeedbackStabilitySeconds=.2f;c.FeedbackHistoryValid=0;
-    for(unsigned slot=2;slot<fallback.size();++slot)fallback[slot]=Image({},0,0);
+    for(unsigned slot=2;slot<7;++slot)fallback[slot]=Image({},0,0);
     checks.ImageEquals(gpu.Run(fallback,c).primary,fallback[1],"first frame never samples unbound stability or guide resources");
     fallback=inputs;c.FeedbackHistoryValid=1;c.FeedbackDeltaSeconds=.2f;
     checks.ImageEquals(gpu.Run(fallback,c).primary,fallback[1],"expired source time does not reuse stabilization");
     c.FeedbackDeltaSeconds=.05f;Fill(fallback[6],{nan,0,0,0});
     checks.ImageEquals(gpu.Run(fallback,c).primary,fallback[1],"nonfinite filtered history cannot contaminate current NR");
-    for(unsigned invalid=0;invalid<5;++invalid)
-    {
-        fallback=inputs;
-        switch(invalid)
-        {
-        case 0: fallback[7]=Image({},0,0);break;
-        case 1: fallback[7]=Image({},kWidth-1,kHeight);break;
-        case 2: Fill(fallback[7],{nan,0,0,1});break;
-        case 3: Fill(fallback[7],{.4f,.5f,.6f,-1});break;
-        case 4: Fill(fallback[7],{.4f,.5f,.6f,std::numeric_limits<float>::infinity()});break;
-        }
-        checks.ImageEquals(gpu.Run(fallback,c).primary,fallback[1],
-                          "invalid adjacent appearance never authorizes short stabilization "+std::to_string(invalid));
-    }
     fallback=inputs;c.FeedbackStabilityFloor=1;c.FeedbackStabilityClamp=.05f;
     Fill(fallback[6],{10000,-10000,10000,0});
     const auto bounded=gpu.Run(fallback,c).primary.Probe();
@@ -1432,7 +1377,7 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
         c.FeedbackHistoryValid=n!=0;
         const auto result=gpu.Run(fallback,c,true);
         if(n>15){inputEnergy+=residual*residual;const double d=result.primary.Probe().r-.4;outputEnergy+=d*d;}
-        fallback[2]=result.secondary;fallback[3]=result.birthContext;fallback[6]=result.stability;fallback[7]=result.stabilityContext;
+        fallback[2]=result.secondary;fallback[3]=result.birthContext;fallback[6]=result.stability;
         checks.Expect(result.stability.Probe().a<=c.FeedbackStabilitySeconds+.001f,
                       "long noise sequence has bounded lag without periodic full-screen resets");
     }
@@ -1441,153 +1386,6 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
     const auto inspected=gpu.Run(fallback,c);
     checks.Expect(inspected.primary.Probe().r>.1f,"stability weight inspector uses the same production evaluator");
     checks.ImageEquals(inspected.stability,Image{},"inspector never writes filtered history");
-    checks.ImageEquals(inspected.stabilityContext,Image{},"inspector never writes adjacent-appearance history");
-}
-
-void TestStabilizerIndependentAppearance(Fixture& gpu, Checks& checks)
-{
-    auto inputs=FlatInputs();
-    auto c=FeedbackConstants();
-    c.FeedbackDeltaSeconds=.05f;
-    c.FeedbackDurationSeconds=.153f;c.FeedbackMaxAgeSeconds=.697f;c.FeedbackStrength=.95f;
-    c.DepthTolerance=.122f;c.ClipGamma=.128f;c.MotionReject=9.55f;
-    c.FeedbackStabilitySeconds=.199f;c.FeedbackStabilityFloor=.41f;c.FeedbackStabilityClamp=.049f;
-    // A stationary surface changes illumination smoothly while the model's
-    // positive edit alternates. Long-detail birth colours may be much older
-    // than the immediately preceding source used by the short stabilizer.
-    for(unsigned n=0;n<48;++n)
-    {
-        const float raw=.1f+.013f*n;
-        const float residual=n==0?.08f:(n%2?.024f:.012f);
-        Fill(inputs[0],{raw,raw,raw,1});
-        Fill(inputs[1],{raw+residual,raw+residual,raw+residual,.73f});
-        c.FeedbackHistoryValid=n!=0;
-        const auto result=gpu.Run(inputs,c,true);
-        if(n>3)
-            checks.Expect(result.stability.Probe().a>.02f,
-                "short stabilizer follows adjacent appearance independently of long-detail birth at source "+std::to_string(n));
-        checks.Expect(result.stability.Probe().a<=c.FeedbackStabilitySeconds+.001f,
-                      "smooth illumination never removes the short stabilizer lag bound");
-        inputs[2]=result.secondary;inputs[3]=result.birthContext;inputs[6]=result.stability;inputs[7]=result.stabilityContext;
-    }
-}
-
-void TestStabilizerSilhouette(Fixture& gpu, Checks& checks)
-{
-    for (const bool fp16 : {false, true})
-        for (const bool longDetail : {false, true})
-            for (const float floor : {0.0f, 0.65f, 1.0f})
-                for (unsigned axis = 0; axis < 3; ++axis)
-                {
-                    auto c = FeedbackConstants();
-                    c.FeedbackStabilitySeconds = .2f;
-                    c.FeedbackStabilityFloor = floor;
-                    c.FeedbackStabilityClamp = .08f;
-                    if (!longDetail) c.FeedbackDurationSeconds = c.FeedbackStrength = 0;
-                    auto inputs = FlatInputs();
-                    for (UINT y=0; y<kHeight; ++y)
-                        for (UINT x=0; x<kWidth; ++x)
-                        {
-                            const float v=((axis==1 ? y : x)&1u) ? .2f : .6f;
-                            inputs[0].At(x,y)={v,.5f,.6f,1};
-                            inputs[1].At(x,y)={v+.06f,.5f,.6f,.73f};
-                        }
-                    c.FeedbackHistoryValid = 0;
-                    const auto seed = gpu.Run(inputs,c,fp16);
-                    inputs[2]=seed.secondary; inputs[3]=seed.birthContext;
-                    inputs[6]=seed.stability; inputs[7]=seed.stabilityContext;
-                    // Bilinear means match exactly; only source structure reveals
-                    // the vanished silhouette. This is real adjacent-frame history.
-                    Fill(inputs[0],{.4f,.5f,.6f,1});
-                    Fill(inputs[1],{.4f,.5f,.6f,.73f});
-                    Motion(inputs,axis==1 ? 0.0f : .5f,axis==0 ? 0.0f : .5f);
-                    c.FeedbackHistoryValid = 1;
-                    const auto result = gpu.Run(inputs,c,fp16);
-                    const std::string name="short stabilizer rejects vanished fractional silhouette"+
-                        std::string(fp16 ? " FP16" : " FP32")+" long="+std::to_string(longDetail)+
-                        " floor="+std::to_string(floor)+" axis="+std::to_string(axis);
-                    checks.Expect(std::abs(result.primary.Probe().r-inputs[1].Probe().r)<.0003f,name);
-                    checks.Expect(result.stability.Probe().a==0,name+" starts fresh lag");
-
-                    // A genuine correctly reprojected edge must still carry the
-                    // short residual, including with long-detail birth rejected.
-                    for (UINT y=0; y<kHeight; ++y)
-                        for (UINT x=0; x<kWidth; ++x)
-                        {
-                            const float coordinate=axis==0 ? float(x)-kProbeX : axis==1 ? float(y)-kProbeY :
-                                .5f*(float(x)-kProbeX+float(y)-kProbeY);
-                            const float old=std::clamp(.4f+.1f*coordinate,.1f,.8f);
-                            const float next=std::clamp(.4f+.1f*(coordinate+1),.1f,.8f);
-                            inputs[7].At(x,y)={old,.5f,.6f,1};
-                            inputs[0].At(x,y)={.5f*(old+next),.5f,.6f,1};
-                            inputs[1].At(x,y)={.5f*(old+next),.5f,.6f,.73f};
-                        }
-                    Motion(inputs,axis==1 ? 0.0f : .5f,axis==0 ? 0.0f : .5f);
-                    Fill(inputs[3],{.9f,.5f,.6f,.4f}); // Unrelated long birth is NOT short appearance.
-                    if (longDetail && floor==0)
-                    {
-                        inputs[3]=inputs[7];
-                        for (auto& pixel:inputs[3].pixels) pixel.a=.4f;
-                    }
-                    const auto edge=gpu.Run(inputs,c,fp16);
-                    checks.Expect(edge.primary.Probe().r>inputs[1].Probe().r+.01f,
-                        "short stabilizer preserves supported fractional edge independently of long birth");
-                    checks.Expect(edge.stability.Probe().a>0,"supported short edge carries real lag");
-                }
-
-    // Valid bilinear reprojection also includes 2D corners and single pixels,
-    // whose contrast is attenuated on both axes. Seed actual adjacent history
-    // and resample the source independently on the CPU, rather than hand-pick
-    // a centre colour that can hide an incorrect spatial gate.
-    const std::array<std::pair<float,float>,8> motions {{
-        {.25f,0.0f}, {0.0f,.75f}, {.5f,.5f}, {.25f,.75f}, {.75f,.25f},
-        {-.25f,-.75f}, {-.5f,.5f}, {.4f,.4f}
-    }};
-    for (const bool fp16 : {false,true})
-        for (const float floor : {0.0f,.65f,1.0f})
-            for (const bool point : {false,true})
-                for (const auto [dx,dy] : motions)
-                {
-                    auto c=FeedbackConstants();
-                    c.FeedbackDurationSeconds=c.FeedbackStrength=0;
-                    c.FeedbackStabilitySeconds=.2f;
-                    c.FeedbackStabilityFloor=floor;c.FeedbackStabilityClamp=.08f;
-                    auto inputs=FlatInputs();
-                    const int anchorX=int(kProbeX)+(dx>0 ? 1 : 0);
-                    const int anchorY=int(kProbeY)+(dy>0 ? 1 : 0);
-                    const auto source=[&](int x,int y) {
-                        const bool high=point ? x==anchorX && y==anchorY :
-                            (dx<0 ? x<=anchorX : x>=anchorX) && (dy<0 ? y<=anchorY : y>=anchorY);
-                        return high ? .6f : .2f;
-                    };
-                    for(UINT y=0;y<kHeight;++y)for(UINT x=0;x<kWidth;++x)
-                    {
-                        const auto value=source(int(x),int(y));
-                        inputs[0].At(x,y)={value,.5f,.6f,1};
-                        inputs[1].At(x,y)={value+.06f,.5f,.6f,.73f};
-                    }
-                    c.FeedbackHistoryValid=0;
-                    const auto seed=gpu.Run(inputs,c,fp16);
-                    inputs[2]=seed.secondary;inputs[3]=seed.birthContext;
-                    inputs[6]=seed.stability;inputs[7]=seed.stabilityContext;
-                    for(UINT y=0;y<kHeight;++y)for(UINT x=0;x<kWidth;++x)
-                    {
-                        const float px=float(x)+dx,py=float(y)+dy;
-                        const int ix=int(std::floor(px)),iy=int(std::floor(py));
-                        const float fx=px-ix,fy=py-iy;
-                        const float value=(1-fy)*((1-fx)*source(ix,iy)+fx*source(ix+1,iy))+
-                            fy*((1-fx)*source(ix,iy+1)+fx*source(ix+1,iy+1));
-                        inputs[0].At(x,y)={value,.5f,.6f,1};
-                        inputs[1].At(x,y)={value,.5f,.6f,.73f};
-                    }
-                    Motion(inputs,dx,dy);c.FeedbackHistoryValid=1;
-                    const auto result=gpu.Run(inputs,c,fp16);
-                    const std::string name="short stabilizer preserves correctly reprojected "+
-                        std::string(point?"point":"corner")+" motion="+std::to_string(dx)+","+std::to_string(dy)+
-                        " floor="+std::to_string(floor)+(fp16?" FP16":" FP32");
-                    checks.Expect(result.primary.Probe().r>inputs[1].Probe().r+.01f,name);
-                    checks.Expect(result.stability.Probe().a>0,name+" carries adjacent lag");
-                }
 }
 
 void TestStabilizerSurfaceAdmission(Fixture& gpu, Checks& checks)
@@ -1691,30 +1489,8 @@ int main(int argc, char** argv)
 {
     try
     {
-        std::filesystem::path shaderPath, referenceShaderPath;
-        bool appearanceOnly = false, silhouetteOnly = false;
-        for (int i = 1; i < argc; ++i)
-        {
-            const std::string arg = argv[i];
-            if (arg == "--shader" && i + 1 < argc) shaderPath = argv[++i];
-            else if (arg == "--reference-shader" && i + 1 < argc) referenceShaderPath = argv[++i];
-            else if (arg == "--stability-appearance-only") appearanceOnly = true;
-            else if (arg == "--stability-silhouette-only") silhouetteOnly = true;
-            else throw std::runtime_error("Unknown or incomplete test argument: " + arg);
-        }
-        Fixture gpu(shaderPath, referenceShaderPath);
+        Fixture gpu(argc==3 && std::string(argv[1])=="--shader" ? std::filesystem::path(argv[2]) : std::filesystem::path{});
         Checks checks;
-        if (silhouetteOnly)
-        {
-            TestStabilizerSilhouette(gpu,checks);
-            return checks.Finish();
-        }
-        if (appearanceOnly)
-        {
-            TestStabilizerIndependentAppearance(gpu,checks);
-            gpu.ReportComparison();
-            return checks.Finish();
-        }
         TestWeightsAndLanding(gpu,checks);
         TestFirstFrameAndInvalidValues(gpu,checks);
         TestStrictFootprintAndDepth(gpu,checks);
@@ -1734,10 +1510,7 @@ int main(int argc, char** argv)
         TestInspectorMatchesActualEvaluation(gpu,checks);
         TestTunableThresholds(gpu,checks);
         TestIndependentStabilizer(gpu,checks);
-        TestStabilizerIndependentAppearance(gpu,checks);
-        TestStabilizerSilhouette(gpu,checks);
         TestStabilizerSurfaceAdmission(gpu,checks);
-        gpu.ReportComparison();
         return checks.Finish();
     }
     catch (const std::exception& error)

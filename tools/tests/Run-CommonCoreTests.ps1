@@ -114,7 +114,7 @@ if ('NrReconfiguration' -in $suites.Name) {
     & $Python -B (Join-Path $root 'OptiScaler/dlssnr/tests/nr-reconfiguration/prepare.py') --emit
     if ($LASTEXITCODE -ne 0) { throw 'Cannot extract current NR reconfiguration implementation' }
 }
-if ('NrColourTransaction' -in $suites.Name -or 'NrLayerLookWarp' -in $suites.Name -or 'NrDetailHistoryRuntime' -in $suites.Name) {
+if ('NrColourTransaction' -in $suites.Name -or 'NrLayerLookWarp' -in $suites.Name) {
     & $Python -B (Join-Path $root 'OptiScaler/shaders/dlssnr/tests/colour-transaction/prepare.py')
     if ($LASTEXITCODE -ne 0) { throw 'Cannot extract current colour transaction implementation' }
 }
@@ -217,61 +217,6 @@ foreach ($suite in $suites) {
                 throw "History birth-reference negative did not detect the original defect; inspect $negativeLog"
             }
             Write-Output 'NR history rolling-reference mutation: original drift defect detected as expected'
-            # Independently restore the short stabilizer's old, long-birth
-            # appearance read. Keep its new resource ABI and every other gate.
-            $appearanceRoot = Join-Path $suiteOutput 'stability-appearance-negative'
-            $null = [IO.Directory]::CreateDirectory($appearanceRoot)
-            foreach ($file in @('dlssnr_detail_reuse.hlsl','dlssnr_detail_history.hlsli','dlssnr_replace_curve.hlsli')) {
-                Copy-Item -LiteralPath (Join-Path $shaderRoot $file) -Destination (Join-Path $appearanceRoot $file) -Force
-            }
-            $appearanceHistoryPath = Join-Path $appearanceRoot 'dlssnr_detail_history.hlsli'
-            $historySource = [IO.File]::ReadAllText($appearanceHistoryPath)
-            $appearanceRead = 'oldRaw += w * adjacent.rgb;'
-            if (!$historySource.Contains($appearanceRead)) { throw 'Stabilizer appearance negative no longer matches production' }
-            [IO.File]::WriteAllText($appearanceHistoryPath,$historySource.Replace($appearanceRead,'oldRaw += w * context.rgb;'))
-            $appearanceLog = Join-Path $appearanceRoot 'result.log'
-            & $exe --shader (Join-Path $appearanceRoot 'dlssnr_detail_reuse.hlsl') --stability-appearance-only *> $appearanceLog
-            if ($LASTEXITCODE -ne 1 -or
-                !(Select-String -LiteralPath $appearanceLog -SimpleMatch 'FAIL: short stabilizer follows adjacent appearance independently of long-detail birth' -Quiet)) {
-                throw "Short-stabilizer appearance negative escaped or failed for an unrelated reason; inspect $appearanceLog"
-            }
-            Write-Output 'NR short-stabilizer appearance mutation: long-birth contamination detected as expected'
-            $silhouetteRoot = Join-Path $suiteOutput 'stability-silhouette-negative'
-            $null = [IO.Directory]::CreateDirectory($silhouetteRoot)
-            foreach ($file in @('dlssnr_detail_reuse.hlsl','dlssnr_detail_history.hlsli','dlssnr_replace_curve.hlsli')) {
-                Copy-Item -LiteralPath (Join-Path $shaderRoot $file) -Destination (Join-Path $silhouetteRoot $file) -Force
-            }
-            $silhouetteHistoryPath = Join-Path $silhouetteRoot 'dlssnr_detail_history.hlsli'
-            $historySource = [IO.File]::ReadAllText($silhouetteHistoryPath)
-            $structure = 'const float structure = 1.0 - smoothstep(0.25 * structureLimit, structureLimit, unsupportedSpread);'
-            if (!$historySource.Contains($structure)) { throw 'Stabilizer silhouette negative no longer matches production' }
-            [IO.File]::WriteAllText($silhouetteHistoryPath,$historySource.Replace($structure,'const float structure = 1.0;'))
-            $silhouetteLog = Join-Path $silhouetteRoot 'result.log'
-            & $exe --shader (Join-Path $silhouetteRoot 'dlssnr_detail_reuse.hlsl') --stability-silhouette-only *> $silhouetteLog
-            if ($LASTEXITCODE -ne 1 -or
-                !(Select-String -LiteralPath $silhouetteLog -SimpleMatch 'FAIL: short stabilizer rejects vanished fractional silhouette' -Quiet)) {
-                throw "Short-stabilizer silhouette negative escaped or failed for an unrelated reason; inspect $silhouetteLog"
-            }
-            Write-Output 'NR short-stabilizer silhouette mutation: bilinear contamination detected as expected'
-            # The cheap cross alone falsely rejects a valid bilinear 2D corner
-            # or point. These positive cases must also detect that regression.
-            $cornerRoot = Join-Path $suiteOutput 'stability-corner-negative'
-            $null = [IO.Directory]::CreateDirectory($cornerRoot)
-            foreach ($file in @('dlssnr_detail_reuse.hlsl','dlssnr_detail_history.hlsli','dlssnr_replace_curve.hlsli')) {
-                Copy-Item -LiteralPath (Join-Path $shaderRoot $file) -Destination (Join-Path $cornerRoot $file) -Force
-            }
-            $cornerHistoryPath = Join-Path $cornerRoot 'dlssnr_detail_history.hlsli'
-            $historySource = [IO.File]::ReadAllText($cornerHistoryPath)
-            $support = 'currentSupport = max(currentSupport, (currentMax - currentMin) / strongestTap);'
-            if (!$historySource.Contains($support)) { throw 'Stabilizer corner negative no longer matches production' }
-            [IO.File]::WriteAllText($cornerHistoryPath,$historySource.Replace($support,'currentSupport = currentSupport;'))
-            $cornerLog = Join-Path $cornerRoot 'result.log'
-            & $exe --shader (Join-Path $cornerRoot 'dlssnr_detail_reuse.hlsl') --stability-silhouette-only *> $cornerLog
-            if ($LASTEXITCODE -ne 1 -or
-                !(Select-String -LiteralPath $cornerLog -SimpleMatch 'FAIL: short stabilizer preserves correctly reprojected' -Quiet)) {
-                throw "Short-stabilizer corner negative escaped or failed for an unrelated reason; inspect $cornerLog"
-            }
-            Write-Output 'NR short-stabilizer corner mutation: valid bilinear feature rejection detected as expected'
         }
         if ($suite.Name -eq 'GuidePreviewWarp') {
             & $exe --producer-replay

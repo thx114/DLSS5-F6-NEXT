@@ -134,8 +134,6 @@ DR_BINDING(7) DR_ANY_FORMAT RWTexture2D<float4> u1 : register(u1);
 RWTexture2D<float4> u2 : register(u2);
 Texture2D<float4> t6 : register(t6); // independent filtered NR residual / mean lag
 RWTexture2D<float4> u3 : register(u3);
-Texture2D<float4> t7 : register(t7); // previous source raw proxy, independent of long-detail birth
-RWTexture2D<float4> u4 : register(u4); // current source raw proxy / validity
 #endif
 DR_BINDING(8) SamplerState gLinear : register(s0);
 

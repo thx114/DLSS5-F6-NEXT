@@ -107,49 +107,6 @@ public:
         slot = {};
         return true;
     }
-    // Recording space and adjacent-history permission are separate contracts.
-    // A newer current record can close before an older idle generation, or one
-    // refused source can break adjacency. Completed executable owners must stay
-    // pinned, but must not prevent a controlled producer from recording again.
-    // This grants no history, publication, Reset or resource-retirement authority.
-    bool ResumeCompleted(bool authenticated, ID3D12CommandList* nextList, ID3D12CommandQueue* nextQueue,
-                         const Key& nextContract, UINT64 nextOrdinal)
-    {
-        if (!authenticated || !nextList || !nextQueue || !nextOrdinal || nextOrdinal == UINT64_MAX ||
-            !SameDevice(nextList, nextQueue) || nextList->GetType() != nextQueue->GetDesc().Type)
-            return false;
-        bool pending = false, valid = true;
-        Each([&](const Record& slot)
-        {
-            if (!slot.pending)
-            {
-                if (slot.resourceUse && !slot.resourceUse->Complete()) valid = false;
-                return;
-            }
-            pending = true;
-            if (!slot.ordered || !slot.submitted || !slot.retirementProven || !Healthy(slot) ||
-                !slot.fence || !slot.value || slot.value == UINT64_MAX ||
-                slot.queue != nextQueue || slot.retirementQueue.Get() != nextQueue ||
-                slot.commands == nextList || !SameDevice(slot.commandOwner.Get(), nextQueue) ||
-                slot.commandOwner->GetType() != nextList->GetType() ||
-                !(slot.contract == nextContract) || !slot.ordinal || slot.ordinal >= nextOrdinal)
-            { valid = false; return; }
-            const auto completed = slot.fence->GetCompletedValue();
-            if (completed == UINT64_MAX || completed < slot.value ||
-                slot.resourceUse->DeviceLost() || !slot.resourceUse->GpuComplete()) valid = false;
-        });
-        if (!valid || !pending) return false;
-        if (current.pending)
-        {
-            Record* free = nullptr;
-            for (auto& slot : retained)
-                if (!slot.pending) { free = &slot; break; }
-            if (!free) return false;
-            *free = std::move(current);
-            current = {};
-        }
-        return true;
-    }
     template <class Publish, class Discard> void Reset(ID3D12CommandList* list,
                                                       Publish&& publish, Discard&& discard)
     {

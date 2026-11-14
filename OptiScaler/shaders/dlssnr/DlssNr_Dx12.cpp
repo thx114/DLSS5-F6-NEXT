@@ -2230,8 +2230,7 @@ void ReportSkipOnce(const char* reason)
 // The shared preview owns immutable completed copies and renderer read leases.
 void CaptureHistoryDebug(const DetailReuse::Frame& f, const DlssNrDetailReuseConstants& params,
                          const DetailHistory::Recording& recording, ID3D12Resource* fresh,
-                         ID3D12Resource* oldResidual, ID3D12Resource* oldContext, ID3D12Resource* oldStability,
-                         ID3D12Resource* oldStabilityContext)
+                         ID3D12Resource* oldResidual, ID3D12Resource* oldContext, ID3D12Resource* oldStability)
 {
     auto*& scratch=g_nr.historyDebug;
     auto*& queue=g_nr.historyDebugQueue;
@@ -2260,7 +2259,7 @@ void CaptureHistoryDebug(const DetailReuse::Frame& f, const DlssNrDetailReuseCon
     device=f.device;queue=f.temporalQueue;
     auto inspect=params;inspect.Mode=DlssNrDetailReuse_FeedbackInspect;inspect.DebugView=view;
     if(!f.pass->DispatchDetailReuse(f.cmdList,inspect,f.workWidth,f.workHeight,
-        f.modelInput,fresh,oldResidual,oldContext,f.motion,scratch,nullptr,f.depth,nullptr,oldStability,nullptr,oldStabilityContext))
+        f.modelInput,fresh,oldResidual,oldContext,f.motion,scratch,nullptr,f.depth,nullptr,oldStability,nullptr))
     {GuideCapture::PreviewUnavailable("History inspector shader dispatch unavailable");return;}
     Barrier(f.cmdList,scratch,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     GuideCapture::Inputs input;input.independentRecording=true;input.historyDiagnostic=true;input.historyView=view;
@@ -2412,30 +2411,14 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
 
     ID3D12Resource* const uavs[kUavCount] = {
         OutTarget,
-        OutKeep,
+        OutKeep != nullptr ? OutKeep : OutTarget,
         OutTarget,
     };
 
     for (uint32_t i = 0; i < kUavCount; ++i)
-    {
-        if (uavs[i]) CreateUnorderedAccessView(_device, uavs[i], currentHeap.GetUavCPU(i), 0);
-        else
-        {
-            // The kept-original slot is optional. A typed null view avoids
-            // binding a second writable view of the actual output.
-            D3D12_UNORDERED_ACCESS_VIEW_DESC view {};
-            view.Format=TranslateTypelessFormats(OutTarget->GetDesc().Format);
-            view.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;
-            _device->CreateUnorderedAccessView(nullptr,nullptr,&view,currentHeap.GetUavCPU(i));
-        }
-    }
+        CreateUnorderedAccessView(_device, uavs[i] ? uavs[i] : uavs[0], currentHeap.GetUavCPU(i), 0);
 
-    // Keep the caller's encoding contract unchanged; this mode only removes
-    // the unused physical write when no independent original is requested.
-    auto dispatchConstants=InConstants;
-    if (InConstants.Mode==DlssNrMode_Encode && InConstants.Passthrough!=0 && OutKeep==nullptr)
-        dispatchConstants.Mode=DlssNrMode_EncodeProxyOnly;
-    if (!UploadNrConstants(_device, _constantBuffers[slot], dispatchConstants))
+    if (!UploadNrConstants(_device, _constantBuffers[slot], InConstants))
     {
         LOG_ERROR("[{0}] Failed to create a constants buffer", _name);
         return false;
@@ -2950,8 +2933,7 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
                                       ID3D12Resource* In2, ID3D12Resource* In3, ID3D12Resource* In4,
                                       ID3D12Resource* OutTarget, ID3D12Resource* OutSecond,
                                       ID3D12Resource* InHistoryDistrust, ID3D12Resource* OutContext,
-                                      ID3D12Resource* InStability, ID3D12Resource* OutStability,
-                                      ID3D12Resource* InStabilityContext, ID3D12Resource* OutStabilityContext)
+                                      ID3D12Resource* InStability, ID3D12Resource* OutStability)
 {
     if (!DetailReuseReady() || InCmdList == nullptr || _device == nullptr || In0 == nullptr ||
         OutTarget == nullptr || Width == 0 || Height == 0)
@@ -2961,11 +2943,8 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
         return false;
 
     if (InConstants.Mode == DlssNrDetailReuse_FeedbackResolve && InConstants.FeedbackStabilitySeconds > 0 &&
-        (!InStability || !OutStability || !InStabilityContext || !OutStabilityContext ||
-         InStability == OutStability || InStabilityContext == OutStabilityContext ||
-         OutStability == OutTarget || OutStability == OutSecond || OutStability == OutContext ||
-         OutStabilityContext == OutTarget || OutStabilityContext == OutSecond ||
-         OutStabilityContext == OutContext || OutStabilityContext == OutStability)) return false;
+        (!InStability || !OutStability || InStability == OutStability ||
+         OutStability == OutTarget || OutStability == OutSecond || OutStability == OutContext)) return false;
 
     const bool inspect = InConstants.Mode == DlssNrDetailReuse_FeedbackInspect;
     if (inspect && !HistoryInspectReady()) return false;
@@ -2987,7 +2966,6 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
         In4 != nullptr ? In4 : In0,
         InHistoryDistrust != nullptr ? InHistoryDistrust : In0,
         InStability != nullptr ? InStability : In0,
-        InStabilityContext != nullptr ? InStabilityContext : In0,
     };
 
     for (uint32_t i = 0; i < kSrvCount; ++i)
@@ -2996,8 +2974,7 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
     ID3D12Resource* const uavs[kUavCount] = {
         OutTarget, OutSecond != nullptr ? OutSecond : OutTarget,
         OutContext != nullptr ? OutContext : OutTarget,
-        OutStability != nullptr ? OutStability : OutTarget,
-        OutStabilityContext != nullptr ? OutStabilityContext : OutTarget };
+        OutStability != nullptr ? OutStability : OutTarget };
 
     for (uint32_t i = 0; i < kUavCount; ++i)
         CreateUnorderedAccessView(_device, uavs[i] ? uavs[i] : uavs[0], currentHeap.GetUavCPU(i), 0);
@@ -3010,8 +2987,7 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
 
     if (!DlssNrGpuLifetime::Retain(use, { currentHeap.GetHeapCSU(), constants,
             _rootSignature, _detailReusePipelineState, In0, In1, In2, In3, In4,
-            OutTarget, OutSecond, InHistoryDistrust, OutContext, InStability, OutStability,
-            InStabilityContext, OutStabilityContext })) return false;
+            OutTarget, OutSecond, InHistoryDistrust, OutContext, InStability, OutStability })) return false;
 
     ID3D12DescriptorHeap* heaps[] = { currentHeap.GetHeapCSU() };
     InCmdList->SetDescriptorHeaps(_countof(heaps), heaps);
@@ -4761,16 +4737,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     encodeParams.Width = width;
     encodeParams.Height = height;
 
-    // Passthrough writes identical values to proxy and kept original. Share
-    // only identical storage; decoded HDR and non-UAV copy-back keep their
-    // separate formats and destination. colorCopy stays read-only until reset.
-    const bool shareEncodedOriginal=encodeParams.Passthrough!=0 && targetSupportsUav &&
-        g_nr.colorCopy->GetDesc().Format==g_nr.hdrCopy->GetDesc().Format;
-    ID3D12Resource* const encodedOriginal=shareEncodedOriginal?g_nr.colorCopy:g_nr.hdrCopy;
-    const auto TransitionKeptOriginal=[&](D3D12_RESOURCE_STATES before,D3D12_RESOURCE_STATES after) {
-        if (!shareEncodedOriginal) Barrier(cmdList,g_nr.hdrCopy,before,after);
-    };
-
     TransitionTarget(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     if(frame.IndependentCommands) {
         GuideCapture::SampleToken token;
@@ -4788,7 +4754,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     }
     if (g_gpuTime) g_gpuTime->Mark(cmdList, DlssNrGpuTime::Point::EncodeBegin);
     if (!DispatchPass(cmdList, encodeParams, target, nullptr, nullptr, nullptr, exposureTex,
-                      g_nr.colorCopy, shareEncodedOriginal?nullptr:g_nr.hdrCopy))
+                      g_nr.colorCopy, g_nr.hdrCopy))
     {
         // Busy descriptors/upload failure recorded no current proxy. Never run
         // the model on the previous source left in persistent scratch textures.
@@ -4825,9 +4791,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // (Calibration pass removed: it produced only a menu suggestion nothing consumed, at the cost
     // of a 4096-thread dispatch, a readback and an nth_element every frame.)
 
-    TransitionKeptOriginal(D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    CalibrationCopyInput(cmdList, device, encodedOriginal);
+    Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    CalibrationCopyInput(cmdList, device, g_nr.hdrCopy);
 
     // Frame statistics diagnostic: on the frame it queued a sample, meter the proxy the encode just wrote (an
     // sRGB-encoded picture, so the tile means are of encoded luma) and queue that readback too. What the model
@@ -4913,7 +4879,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             {
                 Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                TransitionKeptOriginal(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 FinishColor(false);
                 g_nr.reset = true;
                 ReportSkipOnce("the current model input resize could not be recorded");
@@ -4990,7 +4957,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             // Never fall back to the wrong coordinate contract after a requested correction fails.
             ReportSkipOnce("guide coordinate normalization unavailable; leaving this picture unchanged");
             RestoreGuideInputs();
-            TransitionKeptOriginal(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             if (reduced && (!spatial || replaceCorrection) && g_nr.colorSmall)
@@ -5155,7 +5123,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             // The frame is given up, not NR: put everything back as the next frame finds it, and run it ordinary.
             EdgeCompression::TurnOff(DlssNr::Spatial::Status::TurnedOffDispatch);
             g_nr.reset = true;
-            TransitionKeptOriginal(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
@@ -5229,7 +5198,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         }
 
         RestoreGuideInputs();
-        TransitionKeptOriginal(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         if (reduced && g_nr.colorSmall)
@@ -5716,7 +5686,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // Keep BeforeModel/AfterModel's existing pending-fence lifecycle intact.
         reusePlan = DetailReuse::BeforeModel(reuseFrame);
     }
-    const auto feedbackPlan = DetailHistory::Before(reuseFrame);
+    DetailHistory::Before(reuseFrame);
     ID3D12Resource* const actualModelMotion = spatial || sceneModelMotionCanonical ? modelMotion : reusePlan.motion;
     const unsigned actualModelMotionBaseX = spatial || sceneModelMotionCanonical ? 0u : reusePlan.motionBaseX;
     const unsigned actualModelMotionBaseY = spatial || sceneModelMotionCanonical ? 0u : reusePlan.motionBaseY;
@@ -5744,15 +5714,13 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 "previousPhaseVerifiedEpoch={} serialDelta={} phaseAuthority={} phaseReason={} modelReset={} realignReset={} "
                 "coordinateKey={} depthRowsFlip={} motionRowsFlip={} vectorYNegated={} normalized={} "
                 "jitterKnown={} mvJitterKnown={} mvJittered={} lowres={} jitter=({}, {}) phase=({}, {}) "
-                "legacyHistoryUsable={} legacyCaptureHistory={} feedbackActive={} feedbackHistoryUsable={}",
-                frame.SourceCaptureSerial, frame.SourceCaptureEpoch,
+                "historyUsable={} captureHistory={}", frame.SourceCaptureSerial, frame.SourceCaptureEpoch,
                 frame.SubmissionEpoch, previousPhaseVerifiedSerial, previousPhaseVerifiedEpoch, delta, nativePhase.verified,
                 nativePhase.reason, reuseFrame.modelReset, reusePlan.resetModel, coordinateKey, depthTextureFlipY,
                 motionTextureFlipY, invertMotionY, coordinateGuidesReadable, frame.NativeCurrentJitterKnown,
                 frame.NativeMotionJitterKnown, frame.NativeMotionVectorsJittered, frame.MotionVectorsLowResolution,
                 frame.NativeJitterX, frame.NativeJitterY, nativePhase.motionX, nativePhase.motionY,
-                DetailReuse::decision.historyUsable, DetailReuse::decision.captureHistory,
-                feedbackPlan.active, feedbackPlan.historyUsable);
+                DetailReuse::decision.historyUsable, DetailReuse::decision.captureHistory);
             lastPhaseLogEpoch=frame.SubmissionEpoch; lastPhaseKey=coordinateKey; lastPhaseReason=nativePhase.reason;
         }
         if (nativePhase.verified)
@@ -6544,7 +6512,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         // Pre-SR Color is not guaranteed to have UAV support. Write directly when legal; otherwise
         // resolve into hdrCopy while the original Color remains readable, then copy the result back.
-        ID3D12Resource* resolveOriginal = targetSupportsUav ? encodedOriginal : target;
+        ID3D12Resource* resolveOriginal = targetSupportsUav ? g_nr.hdrCopy : target;
         resolveParams.OriginalIsGameColour = targetSupportsUav ? 0u : 1u;
         ID3D12Resource* resolveTarget = targetSupportsUav ? target : g_nr.hdrCopy;
 
@@ -6554,7 +6522,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         }
         else
         {
-            TransitionKeptOriginal(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
 
         composed = DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer, resolveOriginal, motionIn,
@@ -6669,7 +6638,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     DetailReuse::AfterResolve(cmdList);
     DetailHistory::AfterResolve(cmdList);
 
-    TransitionKeptOriginal(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     if (spatial)
     {
@@ -6809,9 +6779,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 const auto& reuse = DetailReuse::reuseEvidence;
                 const auto feedback = DetailHistory::Status();
                 LOG_INFO("DLSS-NR cadence recorded owner=0x{:x} config={} picture={} dispatch={} queue=0x{:x} list=0x{:x} listGen={} modelCalls={} modelFailures={} reuseFull={} reuseAccepted={} reuseRefused={} requested={} intervalUsed={} cacheReason={} sourceOrdinal={} sourceFenceTarget={} sourceFenceCompleted={} sourceQueueOrdered={} pendingRecordings={} targetFence={} slotInFlight={} bytesUpperBound={} exposureUnknown={} fenceUnknown={} slotBusy={} byteCap={} gpuCompletionSamples={} colourSize={}x{} workSize={}x{} motionRect={},{}+{}x{} modelMvScale={},{} reuseMvScale={},{} coordinateKey={} motionIsPictureFlow={} nativePhaseVerified={} historyReadSlot={} historyWriteSlot={} captureRecorded={} sourceOrdinal_scope=nr_reuse_source nativeSrJoin={} srGeneration={} srSourceFrame={} srPictureSerial={} "
-                    "detailFeedbackRequested={} detailFeedbackActive={} detailFeedbackHistoryUsable={} detailFeedbackRecorded={} detailFeedbackPublished={} detailFeedbackQueueOrdered={} detailFeedbackSource={} detailFeedbackReason={} detailFeedbackPending={} detailFeedbackBytes={} detailFeedbackRecordedCount={} detailFeedbackBusyCount={} detailFeedbackRecoveryCount={} "
+                    "detailFeedbackRequested={} detailFeedbackActive={} detailFeedbackHistoryUsable={} detailFeedbackRecorded={} detailFeedbackPublished={} detailFeedbackQueueOrdered={} detailFeedbackSource={} detailFeedbackReason={} detailFeedbackPending={} detailFeedbackBytes={} "
                     "historyReadiness={} recordingReadiness={} sourceFenceObject=0x{:x} orderedNativeQueue={} producerNativeGuideContract={} "
-                    "feedbackRequested={} feedbackMode={} guideGate={} producerDepthGuides={} producerFlowGuides={} feedbackActive={} feedbackHistoryUsable={} feedbackFusionRecorded={} feedbackDurationMs={} feedbackMaxAgeMs={} feedbackStrengthLimit={} feedbackReset={} feedbackDepth={} completedRetirementsOnly={} "
+                    "feedbackRequested={} feedbackMode={} guideGate={} producerDepthGuides={} producerFlowGuides={} feedbackActive={} feedbackHistoryUsable={} feedbackFusionRecorded={} feedbackDurationMs={} feedbackCoeff={} feedbackMaxAgeMs={} feedbackStrengthLimit={} feedbackReset={} feedbackDepth={} completedRetirementsOnly={} "
                     "sceneModelGuides={} sceneModelMotion={} conditionalSceneGeometry={} sceneSource={} sceneGuideGate={} guideMappingVersion=1 "
                     "modelMode={} modelDispatch={} modelCallsThisDispatch={} modelFailuresThisDispatch={} "
                     "modelLastPass={} modelLastResult={} modelOutcome={} modelPassesCompleted={} modelPassesPlanned={} historyAnswerComplete={} modelDepth=0x{:x} modelMV=0x{:x} "
@@ -6843,7 +6813,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     feedback.requested, feedback.active, feedback.historyUsable,
                     feedback.recorded, feedback.published, feedback.queueOrdered,
                     feedback.historySource, feedback.reason, feedback.pending, feedback.bytes,
-                    feedback.recordedCount, feedback.busyCount, feedback.recoveryCount,
                     DetailReuse::historyReadiness, DetailReuse::recordingReadiness,
                     DetailReuse::sourceFenceIdentity,
                     reuseFrame.orderedNativeQueue, frame.NativeGuideContractVerified,
@@ -6868,6 +6837,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     reuseFrame.independentFeedbackRequested ? feedback.recorded && feedback.historyUsable :
                         DetailReuse::temporalFusionRecorded,
                     std::min(cfg.DlssNrPresentedTemporalDurationMs.value_or_default(), Config::kPresentedTemporalDurationMaxMs),
+                    DetailReuse::params.TemporalHistoryWeight,
                     cfg.DlssNrPresentedTemporalMaxAgeMs.value_or_default(),
                     cfg.DlssNrPresentedTemporalStrength.value_or_default(), reuseFrame.modelReset, reuseFrame.depth != nullptr,
                     reuse.completedRetirementsOnly,

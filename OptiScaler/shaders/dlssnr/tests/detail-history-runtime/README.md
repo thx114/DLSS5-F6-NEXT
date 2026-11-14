@@ -1,11 +1,9 @@
 # DetailHistory production runtime lifecycle fixture
 
-The common test runner compiles and runs **28 isolated WARP lifecycle cases** with
-`-SuiteName NrDetailHistoryRuntime`. Three optional hardware cases run embedded
-production DXIL and FP16 history through the same real module: 40 sources of
-detail carry, 40 sources of signed noise, and 48 sources of changing appearance
-with long detail and short stabilization enabled together. Neither path executes
-NGX/model layers or validates game output.
+The common test runner compiles and runs **17 isolated WARP lifecycle cases** with
+`-SuiteName NrDetailHistoryRuntime`. An additional explicit hardware test runs the
+embedded production DXIL and FP16 history through the same real module for 40
+adjacent sources. Neither path executes NGX/model layers or validates game output.
 
 `fixture.cpp` directly includes the entire current `DlssNr_DetailHistory.inl`,
 not an extracted or copied implementation. It also directly includes production
@@ -80,7 +78,7 @@ Scope and limitations:
 - The surrounding `DetailReuse::Frame`, scalar Config access, ledger and
   identity-unwrapping adapters are minimal test seams. Frame info, constants,
   encoding byte count, policy and all history/recording state machines are real.
-- The 28 WARP lifecycle cases use a named dispatch seam observing bindings and
+- The 17 WARP lifecycle cases use a named dispatch seam observing bindings and
   constants. `finished-native-dxil` instead uses a physical D3D12 adapter, the
   exact embedded shader header used by the DLL, real FP16/FP32 texture formats,
   upload/copy barriers, production history selection/publication and pixel
@@ -93,26 +91,6 @@ Scope and limitations:
   supplied previous deployed shader. Exit 1 with the continuous-contribution
   assertion is the expected negative result. The current shader must pass first;
   a device/pipeline creation failure is not an accepted negative result.
-- `stability-appearance-native-dxil` seeds one strong detail, then supplies weaker
-  alternating edits while raw illumination changes. The short filter must keep
-  its bounded lag without consulting the older long-detail birth RGB. A fixture
-  that continually replaces the birth cannot detect this defect. The matching
-  `--old-appearance-negative PATH.cso` accepts a shader with only the old appearance
-  read restored; require failure at the adjacent-appearance assertion, not an
-  unrelated device/compile error. The common HLSL/WARP suite also runs this
-  mutation and the independent rolling-birth mutation.
-- `--benchmark-history current` or `--benchmark-history PATH.cso` measures only
-  the history dispatch/barriers at 2144x1344 with 1536x960 guides. It uses the
-  actual DIRECT queue's timestamp frequency, 20 warmup sources and 80 samples;
-  upload, CPU drain and readback are outside the interval. Flat synthetic inputs
-  and no model/SR/FG make it a stage comparison, never a game FPS or total Reflex
-  result. Both versions retain the same inputs, resources and history settings.
-  Normal history-expiry branches remain included, and ordered source samples are
-  printed alongside the distribution. The CPU debug layer checks every run;
-  GPU-based validation is disabled. `tools/tests/Measure-NrHistoryStage.ps1`
-  runs current/old/current and binds each log to executable and CSO SHA256 values,
-  checked before and after execution. Earlier ad-hoc measurements using a CPU
-  clear descriptor from a shader-visible heap are invalid and must be discarded.
 - Parking copies the host's snapshot/ownership-transfer adapter; actual
   completion and retirement decisions are production `CollectRetired`/tokens.
   The private-native retirement helper is an explicit no-op: this fixture owns
