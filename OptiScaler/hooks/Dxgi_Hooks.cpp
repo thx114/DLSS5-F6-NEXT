@@ -2,6 +2,8 @@
 #include "Dxgi_Hooks.h"
 
 #include "DxgiFactory_Hooks.h"
+#include "D3D11On12FactoryRoutes.h"
+#include <integration/HoYoShade.h>
 
 #include <proxies/Dxgi_Proxy.h>
 #include <proxies/D3D12_Proxy.h>
@@ -211,6 +213,12 @@ inline static HRESULT hkCreateDXGIFactory2(UINT Flags, REFIID riid, IDXGIFactory
     auto caller = Util::WhoIsTheCaller(_ReturnAddress());
     LOG_DEBUG("Caller: {}", caller);
 
+    if (D3D11On12FactoryBoundary::Internal(Flags))
+    {
+        const auto result = o_CreateDXGIFactory2(Flags, riid, ppFactory);
+        return D3D11On12FactoryBoundary::Returned(result, Flags, riid, reinterpret_cast<void**>(ppFactory));
+    }
+
     if (creatingD3D12DeviceForLuma)
     {
         LOG_DEBUG("Bypassing hooking/wrapping during Luma D3D12 device creation");
@@ -263,6 +271,35 @@ inline static HRESULT hkCreateDXGIFactory2(UINT Flags, REFIID riid, IDXGIFactory
     CheckLumaAndReShade(*ppFactory);
 
     return result;
+}
+
+bool DxgiHooks::PrepareD3D11On12Boundary()
+{
+    // ReShade may wrap a factory after the system DXGI hook returns. Its own
+    // export therefore needs a separate, exact original and a return boundary.
+    // This runs at device creation, never at Evaluate/Present or in DllMain.
+    const auto core = GetModuleHandleW(L"ReShade64.dll");
+    if (!core) return true;
+    std::lock_guard lock(hookMutex);
+    static HoYoShade::ExistingFactoryOwnerRef retainedOwner;
+    constexpr auto symbol = "CreateDXGIFactory2";
+    const auto entry = KernelBaseProxy::GetProcAddress_()(core, symbol);
+    if (retainedOwner && D3D11On12FactoryRoutes::routes.Covers(reinterpret_cast<PVOID>(entry))) return true;
+    auto owner = HoYoShade::AcquireExistingFactoryOwner(reinterpret_cast<const void*>(entry), symbol);
+    if (!owner)
+    {
+        LOG_ERROR("D3D11On12 internal factory boundary refused: ReShade export owner unavailable");
+        return false;
+    }
+    const auto result = D3D11On12FactoryRoutes::Install(reinterpret_cast<PVOID>(entry));
+    if (result != NO_ERROR)
+    {
+        LOG_ERROR("D3D11On12 internal factory boundary installation failed: {:X}", result);
+        return false;
+    }
+    retainedOwner = std::move(owner);
+    LOG_INFO("D3D11On12 internal factory return boundary installed for ReShade; public factories unchanged");
+    return true;
 }
 
 void DxgiHooks::Hook()

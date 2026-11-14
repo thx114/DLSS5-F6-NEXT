@@ -4,6 +4,7 @@
 #include <wrl/client.h>
 #include <array>
 #include <utility>
+#include "NativeObjectContracts.h"
 
 // Device identity only. These queries grant no queue ordering, GPU completion,
 // resource ownership or permission to replace an existing queue/fence epoch.
@@ -11,11 +12,9 @@ namespace D3D12DeviceIdentity
 {
 // Explicit native-object contracts used by HoYoShade/ReShade and Streamline.
 // Unknown wrappers remain distinct; adapter LUIDs never identify a device.
-inline constexpr GUID ReShadeNativeObject =
-    { 0x7f2c9a11, 0x3b4e, 0x4d6a, { 0x81, 0x2f, 0x5e, 0x9c, 0xd3, 0x7a, 0x1b, 0x42 } };
-inline constexpr GUID StreamlineNativeObject =
-    { 0xadec44e2, 0x61f0, 0x45c3, { 0xad, 0x9f, 0x1b, 0x37, 0x37, 0x92, 0x84, 0xff } };
-inline constexpr size_t MaxProxyDepth = 8;
+inline constexpr GUID ReShadeNativeObject = NativeObjectContracts::ReShade;
+inline constexpr GUID StreamlineNativeObject = NativeObjectContracts::Streamline;
+inline constexpr size_t MaxProxyDepth = NativeObjectContracts::MaxDepth;
 
 inline Microsoft::WRL::ComPtr<IUnknown> ComIdentity(IUnknown* object) noexcept
 {

@@ -128,6 +128,14 @@ bool ExistingCoreExports(HMODULE module,const void* terminal,const char* symbol,
             auto value=read.template operator()<uint64_t>(image.data()+target);
             value+=reinterpret_cast<uintptr_t>(module)-opt.ImageBase;std::memcpy(image.data()+target,&value,8);}
         at+=block.SizeOfBlock;}
+    // The Windows loader can publish the relocated ImageBase in the loaded NT
+    // header. Accept only the exact mapped module address (or the original
+    // preferred base); every other header field and all code remain byte-exact.
+    constexpr size_t baseOffset=offsetof(IMAGE_NT_HEADERS64,OptionalHeader)+offsetof(IMAGE_OPTIONAL_HEADER64,ImageBase);
+    uint64_t loadedBase=0;
+    if(!OwnerRead(reinterpret_cast<const unsigned char*>(module)+dos.e_lfanew+baseOffset,&loadedBase,sizeof(loadedBase)))return false;
+    if(loadedBase==reinterpret_cast<uintptr_t>(module))
+        std::memcpy(image.data()+dos.e_lfanew+baseOffset,&loadedBase,sizeof(loadedBase));
     result.module=module;result.terminal=reinterpret_cast<uintptr_t>(terminal);
     if(!OwnerRange(result,image.data(),image.size(),0,sizeof(dos)) ||
        !OwnerRange(result,image.data(),image.size(),dos.e_lfanew,sizeof(nt)))return false;
@@ -174,7 +182,8 @@ bool ExistingCoreExports(HMODULE module,const void* terminal,const char* symbol,
 ExistingFactoryOwnerRef AcquireExistingFactoryOwner(const void* terminal,const char* symbol) noexcept
 {
     if(!terminal || !symbol || (std::strcmp(symbol,"D3D11CreateDevice") &&
-       std::strcmp(symbol,"D3D11CreateDeviceAndSwapChain") && std::strcmp(symbol,"D3D11On12CreateDevice")))return {};
+       std::strcmp(symbol,"D3D11CreateDeviceAndSwapChain") && std::strcmp(symbol,"D3D11On12CreateDevice") &&
+       std::strcmp(symbol,"CreateDXGIFactory2")))return {};
     // Loader reference precedes all reads. Temporary release occurs here at the
     // installer boundary; retained receipts never invoke unload callbacks.
     HMODULE owner=nullptr;

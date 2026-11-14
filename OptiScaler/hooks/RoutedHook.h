@@ -22,7 +22,7 @@ class RoutedHook<Callback, MethodIndex, Domain, Result(*)(Args...)> final {
         const void* object;
     };
     inline static thread_local Frame* active = nullptr;
-    static const void* Object(Args... args) noexcept {
+    static const void* Object([[maybe_unused]] Args... args) noexcept {
         if constexpr (MethodIndex == SIZE_MAX) return nullptr;
         else return std::get<0>(std::tuple<Args...>(args...));
     }

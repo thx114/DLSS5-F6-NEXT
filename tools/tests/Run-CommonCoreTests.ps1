@@ -56,6 +56,7 @@ $suites = @(
     @{ Name = 'HookOwnership'; Source = 'OptiScaler/runtime/tests/HookOwnershipTests.cpp'; Libraries = ('"{0}"' -f (Join-Path $root 'OptiScaler/library/detours/detours.lib')) },
     @{ Name = 'HoYoShadeEffectRequirements'; Source = 'OptiScaler/runtime/tests/HoYoShadeEffectRequirementsTests.cpp' },
     @{ Name = 'MethodHooks'; Source = 'OptiScaler/runtime/tests/MethodHooksTests.cpp'; Libraries = ('"{0}"' -f (Join-Path $root 'OptiScaler/library/detours/detours.lib')) },
+    @{ Name = 'D3D11On12FactoryBoundary'; Source = 'OptiScaler/runtime/tests/D3D11On12FactoryBoundaryTests.cpp'; Libraries = ('"{0}"' -f (Join-Path $root 'OptiScaler/library/detours/detours.lib')) },
     @{ Name = 'SourcePresent'; Source = 'OptiScaler/runtime/tests/SourcePresentTests.cpp' },
     @{ Name = 'FeatureTransition'; Source = 'OptiScaler/upscalers/tests/FeatureTransitionTests.cpp' },
     @{ Name = 'NgxDx12ResourceView'; Source = 'OptiScaler/upscalers/tests/NgxDx12ResourceViewTests.cpp' },

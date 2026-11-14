@@ -313,6 +313,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
   <ItemGroup>
     <ClInclude Include="runtime\F6InputPolicy.h" />
     <ClInclude Include="runtime\D3D12DeviceIdentity.h" />
+    <ClInclude Include="runtime\NativeObjectContracts.h" />
+    <ClInclude Include="hooks\D3D11On12FactoryBoundary.h" />
+    <ClInclude Include="hooks\D3D11On12FactoryRoutes.h" />
     <ClInclude Include="runtime\NrPresentationSource.h" />
     <ClInclude Include="runtime\NrPresentationOutput.h" />
     <ClInclude Include="shaders\dlssnr\DlssNr_GenshinPresentation.inl" />

@@ -33,6 +33,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="runtime\D3D12DeviceIdentity.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="runtime\NativeObjectContracts.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="hooks\D3D11On12FactoryBoundary.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="hooks\D3D11On12FactoryRoutes.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="runtime\GuideDiagnostics.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="runtime\NrPresentationSource.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="runtime\NrPresentationOutput.h"><Filter>Header Files</Filter></ClInclude>

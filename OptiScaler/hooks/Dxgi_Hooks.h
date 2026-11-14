@@ -8,4 +8,5 @@ class DxgiHooks
 
   public:
     static void Hook();
+    static bool PrepareD3D11On12Boundary();
 };

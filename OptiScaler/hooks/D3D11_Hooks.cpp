@@ -1,5 +1,7 @@
 ﻿#include "pch.h"
 #include "D3D11_Hooks.h"
+#include "Dxgi_Hooks.h"
+#include "D3D11On12FactoryRoutes.h"
 #include "SwapchainCreateRule.h"
 
 #include <Util.h>
@@ -69,7 +71,8 @@ struct D3D11FactoryDomain {
 };
 static HookOwnership::RoutedHook<&hkD3D11CreateDevice, SIZE_MAX, D3D11FactoryDomain> o_D3D11CreateDevice;
 static HookOwnership::RoutedHook<&hkD3D11CreateDeviceAndSwapChain, SIZE_MAX, D3D11FactoryDomain> o_D3D11CreateDeviceAndSwapChain;
-static HookOwnership::RoutedHook<&hkD3D11On12CreateDevice, SIZE_MAX, D3D11FactoryDomain> o_D3D11On12CreateDevice;
+using D3D11On12FactoryDomain = D3D11On12FactoryBoundary::Domain<D3D11FactoryDomain>;
+static HookOwnership::RoutedHook<&hkD3D11On12CreateDevice, SIZE_MAX, D3D11On12FactoryDomain> o_D3D11On12CreateDevice;
 using PFN_CreatePixelShader = rewrite_signature<decltype(&ID3D11Device::CreatePixelShader)>::type;
 using PFN_CreateVertexShader = rewrite_signature<decltype(&ID3D11Device::CreateVertexShader)>::type;
 static HookOwnership::MethodHooks<PFN_CreatePixelShader> pixelHooks;
@@ -342,6 +345,13 @@ static HRESULT hkD3D11On12CreateDevice(IUnknown* pDevice, UINT Flags, const D3D_
 {
     LOG_DEBUG("Caller: {}, Device: {:X}", Util::WhoIsTheCaller(_ReturnAddress()), (UINT64) pDevice);
 
+    if (!DxgiHooks::PrepareD3D11On12Boundary())
+    {
+        if (ppDevice) *ppDevice = nullptr;
+        if (ppImmediateContext) *ppImmediateContext = nullptr;
+        return E_FAIL;
+    }
+
 #ifdef ENABLE_DEBUG_LAYER_DX11
     Flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
@@ -371,6 +381,7 @@ static HRESULT hkD3D11On12CreateDevice(IUnknown* pDevice, UINT Flags, const D3D_
     HRESULT result = E_FAIL;
     {
         ScopedCreatingD3DDevice skipCreatingD3DDevice {};
+        D3D11On12FactoryBoundary::Scope internalFactories;
         result = o_D3D11On12CreateDevice(pDevice, Flags, pFeatureLevels, FeatureLevels, rtss ? copyCommandQueues.data() : ppCommandQueues,
                                          rtss ? static_cast<UINT>(copyCommandQueues.size()) : NumQueues, NodeMask, ppDevice,
                                          ppImmediateContext, pChosenFeatureLevel);
@@ -763,6 +774,7 @@ void D3D11Hooks::Unhook()
     o_D3D11CreateDevice.AppendSlots(slots);
     o_D3D11CreateDeviceAndSwapChain.AppendSlots(slots);
     o_D3D11On12CreateDevice.AppendSlots(slots);
+    D3D11On12FactoryRoutes::routes.AppendSlots(slots);
     pixelHooks.AppendSlots(slots); vertexHooks.AppendSlots(slots);
     const auto result = HookOwnership::Own::DetachAll(std::span<HookOwnership::Own::Slot* const>(slots));
     if (result != NO_ERROR)

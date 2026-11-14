@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+#include <guiddef.h>
+#include <cstddef>
+
+namespace NativeObjectContracts
+{
+inline constexpr GUID ReShade =
+    { 0x7f2c9a11, 0x3b4e, 0x4d6a, { 0x81, 0x2f, 0x5e, 0x9c, 0xd3, 0x7a, 0x1b, 0x42 } };
+inline constexpr GUID Streamline =
+    { 0xadec44e2, 0x61f0, 0x45c3, { 0xad, 0x9f, 0x1b, 0x37, 0x37, 0x92, 0x84, 0xff } };
+inline constexpr size_t MaxDepth = 8;
+}
