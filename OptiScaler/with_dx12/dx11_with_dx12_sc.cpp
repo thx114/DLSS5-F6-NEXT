@@ -1020,10 +1020,15 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookCheckColorSpaceSupport(DXGI_COLOR_SPA
 
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookSetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace)
 {
-    if (_fgSwapChain != nullptr)
-        return _fgSwapChain->SetColorSpace1(ColorSpace);
-
-    return _real3 != nullptr ? _real3->SetColorSpace1(ColorSpace) : DXGI_ERROR_DEVICE_REMOVED;
+    auto* presenter = _fgSwapChain != nullptr ? static_cast<IDXGISwapChain3*>(_fgSwapChain) : _real3;
+    const auto result = presenter != nullptr ? presenter->SetColorSpace1(ColorSpace) : DXGI_ERROR_DEVICE_REMOVED;
+    const auto error = GetLastError();
+    // GetBuffer exposes _real's game-authored pixels. A successful declaration
+    // through this wrapper therefore belongs to that source, even when only
+    // the DX12 child is presented. Do not infer it from the child's metadata.
+    if (SUCCEEDED(result)) SwapchainColorSpace::Write(_real, ColorSpace);
+    SetLastError(error);
+    return result;
 }
 
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format,

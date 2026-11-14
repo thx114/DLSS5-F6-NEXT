@@ -69,7 +69,7 @@ inline bool ComposeOnGameFg()
 std::string status = "Waiting for a finished picture.";
 bool reset = true;
 std::atomic<bool> tracking { false };
-inline constexpr GUID colorSpaceKey = { 0x34a31e7b, 0x84c5, 0x44ef, { 0xa7, 0x4d, 0x6b, 0xd3, 0x60, 0x8c, 0xe5, 0x22 } };
+inline constexpr GUID colorSpaceKey = SwapchainColorSpace::Key;
 
 void Say(const char* message)
 {
@@ -1378,7 +1378,7 @@ void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12Comma
 
 void FinishedPictureColorSpace(IDXGISwapChain* swapchain, DXGI_COLOR_SPACE_TYPE colorSpace)
 {
-    swapchain->SetPrivateData(Late::colorSpaceKey, sizeof(colorSpace), &colorSpace);
+    SwapchainColorSpace::Write(swapchain, colorSpace);
 }
 
 #include "DlssNr_GenshinPresentation.inl"
@@ -1714,7 +1714,7 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
         // Only full FinishedPicture NR consumes this color; residual mode
         // already evaluated NR elsewhere and keeps its previous contract.
         (!diagnosticOnly && !slot.residualOnly && !slot.nrFilter.BeforeNr(swapchain, queue, color.Get(),
-            screenSdr, epoch, dx11Bridge, orderedProducerQueue,
+            epoch, dx11Bridge, orderedProducerQueue,
             Late::FilterDepthCapture(slot, !freshColorFallback))) ||
         FAILED(slot.allocator->Reset()) ||
         FAILED(slot.commands->Reset(slot.allocator.Get(), nullptr)))

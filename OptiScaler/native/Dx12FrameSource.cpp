@@ -1,6 +1,7 @@
 #include "pch.h"
 #include <integration/HoYoShade.h>
 #include <integration/HoYoShadeNaturalAssociation.h>
+#include <runtime/SwapchainColorSpace.h>
 #include <atomic>
 
 #include "Dx12FrameSource.h"
@@ -114,19 +115,7 @@ AcquireStatus Dx12FrameSource::Acquire(FrameInput& input)
     input.pictureFormat = ViewFormat(desc.Format);
     input.pictureState = D3D12_RESOURCE_STATE_PRESENT;
     input.colorSpace = ToColorSpace(DlssNr::NativeInputColourSpace(_swapChain, desc.Format));
-    input.colorTransferKnown = State::Instance().outputColorSpace.valid;
-    if (virtualBeforeSr)
-    {
-        // Existing FinishedPictureColorSpace metadata, written on this exact
-        // chain by the real color-space call. NativeInputColourSpace's default
-        // and another chain's global valid bit cannot authorize BeforeSR SDR.
-        constexpr GUID colorSpaceKey = {0x34a31e7b, 0x84c5, 0x44ef, {0xa7, 0x4d, 0x6b, 0xd3, 0x60, 0x8c, 0xe5, 0x22}};
-        DXGI_COLOR_SPACE_TYPE space = DXGI_COLOR_SPACE_CUSTOM;
-        UINT bytes = sizeof(space);
-        input.colorTransferKnown = SUCCEEDED(_swapChain->GetPrivateData(colorSpaceKey, &bytes, &space)) &&
-            bytes == sizeof(space) && space == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-        if (input.colorTransferKnown) input.colorSpace = ColorSpace::Srgb;
-    }
+    input.filterSdrAllowed = SwapchainColorSpace::ExplicitSdr(_swapChain);
     input.width = (uint32_t) desc.Width;
     input.height = desc.Height;
 

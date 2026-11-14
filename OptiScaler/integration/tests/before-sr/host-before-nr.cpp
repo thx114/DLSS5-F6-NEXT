@@ -8,7 +8,13 @@
 // Standalone transport seam: the product wrapper alone constructs BridgeScope.
 // The fixture supplies actual chain/buffer, upload Execute/Signal and queue Wait.
 class Dx11wDx12SC {
+    IDXGISwapChain* _real;
+    IDXGISwapChain3* _real3;
+    IDXGISwapChain4* _fgSwapChain;
 public:
+    Dx11wDx12SC(IDXGISwapChain* original,IDXGISwapChain3* original3,IDXGISwapChain4* child)
+        :_real(original),_real3(original3),_fgSwapChain(child) {}
+    HRESULT STDMETHODCALLTYPE HookSetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace);
     static bool Filter(native::nrfilter::PresentTransaction& transaction, Host& host,
         IDXGISwapChain* presenter, ID3D12Resource* color, uint64_t epoch,
         const native::nrfilter::depth::Capture& depth) {
@@ -17,10 +23,11 @@ public:
             source->GetCurrentBackBufferIndex(), presenter, host.queue.Get(), host.queue.Get(), epoch,
             host.queue.Get(), host.done.Get(), host.serial);
         Hr(host.queue->Wait(host.done.Get(), host.serial));
-        return transaction.BeforeNr(presenter, host.queue.Get(), color, true, epoch,
+        return transaction.BeforeNr(presenter, host.queue.Get(), color, epoch,
                                     true, host.queue.Get(), depth);
     }
 };
+#include <Dx11wDx12ColorSpace.inl>
 
 struct NrHost : Host {
     ComPtr<IDXGISwapChain3> presenter;
@@ -42,6 +49,9 @@ struct NrHost : Host {
         Hr(factory->CreateSwapChainForHwnd(queue.Get(), outputWindow, &desc, nullptr, nullptr, &chain12));
         Hr(chain12.As(&presenter));
         HoYoShade::RegisterDirectChain(presenter.Get(), this);
+        // A positive case must declare the transfer on the real copied source.
+        // The child's RGBA8 format alone is deliberately insufficient.
+        Hr(SwapchainColorSpace::Write(chain.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709));
     }
     ~NrHost() {
         if (physical) destroy(physical);
@@ -75,7 +85,8 @@ struct NrHost : Host {
         Transition(list.Get(),input.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_PRESENT);
         Submit();
     }
-    bool FilterNr(uint64_t frame, bool provideDepth=true, bool mismatch=false) {
+    bool FilterNr(uint64_t frame, bool provideDepth=true, bool mismatch=false,
+                  bool bridge=true) {
         CopyToPresenter();
         native::nrfilter::depth::Capture capture{};
         if (useDepth && provideDepth) {
@@ -84,7 +95,8 @@ struct NrHost : Host {
                 mismatch ? frame+1 : frame,{0,0,Width,Height,true},true,false};
         }
         auto buffer=Buffer();
-        const auto safe=Dx11wDx12SC::Filter(transaction,*this,presenter.Get(),buffer.Get(),frame,capture);
+        const auto safe=bridge ? Dx11wDx12SC::Filter(transaction,*this,presenter.Get(),buffer.Get(),frame,capture) :
+            transaction.BeforeNr(presenter.Get(),queue.Get(),buffer.Get(),frame,false,nullptr,capture);
         if (safe) Consume(); // failed/uncertain output is never consumed
         if (useDepth && provideDepth && transaction.DepthSourceFinished()) {
             Begin(); Transition(list.Get(),depth[pattern&1].Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COMMON); Submit();
@@ -104,8 +116,62 @@ struct NrHost : Host {
 };
 
 HRESULT FailSignal(ID3D12CommandQueue*,ID3D12Fence*,uint64_t) { return E_FAIL; }
+
+// Exercise COM failure and exact returned size, including an implementation
+// which writes an SDR value before reporting failure. The production reader
+// must never turn that partial observation into filter authorization.
+struct ColorMetadata final : IDXGIObject {
+    HRESULT result=S_OK;
+    UINT returnedSize=sizeof(DXGI_COLOR_SPACE_TYPE);
+    DXGI_COLOR_SPACE_TYPE value=DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID,void**) override { return E_NOINTERFACE; }
+    ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID,UINT,const void*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID,const IUnknown*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID,UINT* bytes,void* data) override {
+        std::memcpy(data,&value,sizeof(value)); *bytes=returnedSize; return result;
+    }
+    HRESULT STDMETHODCALLTYPE GetParent(REFIID,void**) override { return E_NOINTERFACE; }
+};
+void ColorMetadataChecks() {
+    Check(!SwapchainColorSpace::Read(nullptr),"null metadata is unknown");
+    ColorMetadata object;
+    Check(SwapchainColorSpace::ExplicitSdr(&object),"successful exact SDR declaration");
+    object.result=E_FAIL;
+    Check(!SwapchainColorSpace::Read(&object),"failed query cannot authorize written SDR output");
+    object.result=S_OK;
+    for(auto size:{0u,1u,3u,5u,8u}) {
+        object.returnedSize=size;
+        Check(!SwapchainColorSpace::Read(&object),"nonexact successful metadata is unknown");
+    }
+    object.returnedSize=sizeof(object.value);
+    for(auto value:{DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709,DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020,
+                   DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020,DXGI_COLOR_SPACE_CUSTOM}) {
+        object.value=value;
+        Check(!SwapchainColorSpace::ExplicitSdr(&object),"non-SDR declaration cannot authorize filter");
+    }
+}
+void WrapperDeclarationChecks(NrHost& host) {
+    ComPtr<IDXGISwapChain3> original; Hr(host.chain.As(&original));
+    ComPtr<IDXGISwapChain4> child; Hr(host.presenter.As(&child));
+    Hr(host.chain->SetPrivateData(SwapchainColorSpace::Key,0,nullptr));
+    Dx11wDx12SC wrapper(host.chain.Get(),original.Get(),child.Get());
+    Hr(wrapper.HookSetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709));
+    Check(SwapchainColorSpace::ExplicitSdr(host.chain.Get()),"successful child declaration recorded on actual copied source");
+    Dx11wDx12SC absent(host.chain.Get(),nullptr,nullptr);
+    SetLastError(0x7391);
+    Check(absent.HookSetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)==DXGI_ERROR_DEVICE_REMOVED,
+          "missing presenter retains forwarding failure");
+    Check(GetLastError()==0x7391,"declaration forwarding retains native LastError");
+    Check(SwapchainColorSpace::ExplicitSdr(host.chain.Get()),"failed declaration does not change source metadata");
+    Dx11wDx12SC fallback(host.chain.Get(),original.Get(),nullptr);
+    Hr(fallback.HookSetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709));
+    Check(SwapchainColorSpace::ExplicitSdr(host.chain.Get()),"native fallback declaration recorded on source");
+}
 int main(int argc,char** argv) {
     try {
+        ColorMetadataChecks();
         Check(argc==3,"BeforeNR fixture arguments");
         const std::string_view mode(argv[2]); const auto root=std::filesystem::absolute(argv[1]);
         const bool depthMode=mode=="nr-depth", lp=mode=="nr-launchpad", fault=mode=="nr-uncertain";
@@ -113,6 +179,7 @@ int main(int argc,char** argv) {
         auto core=LoadLibraryW((root/"HoYoShade/ReShade64.dll").c_str()); Check(core!=nullptr,"pinned core load");
         Check(HoYoShade::Testing::ConnectHost(GetModuleHandleW(nullptr),(root/"natural.ini").string().c_str(),HoYoShade::Stage::BeforeNr),"real BeforeNR handshake");
         NrHost host(core,root/"natural.ini",depthMode||lp); observedHost=&host;
+        WrapperDeclarationChecks(host);
         Export<HoYoShade::CoreApi::RegisterEvent>(core,"ReShadeRegisterEvent")(
             reshade::addon_event::reshade_finish_effects,reinterpret_cast<void*>(Finished));
         bool executed=false,warmed=false;
@@ -134,6 +201,31 @@ int main(int argc,char** argv) {
             Sleep(10);
         }
         Check(executed,"real BeforeNR transaction executed");
+        if(mode=="nr-color") {
+            uint64_t frame=800;
+            const auto refuse=[&] {
+                host.update(host.natural); host.Upload();
+                Check(host.FilterNr(frame++),"unknown transfer preserves safe NR continuation");
+                Check(host.Read()==32,"rejected transfer leaves actual NR input pixels unchanged");
+            };
+            // The unrelated presenter may explicitly claim SDR; it still has
+            // no authority over the actual DX11 source of this copy.
+            Hr(SwapchainColorSpace::Write(host.presenter.Get(),DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709));
+            Hr(host.chain->SetPrivateData(SwapchainColorSpace::Key,0,nullptr)); refuse();
+            const unsigned char shortValue=0;
+            Hr(host.chain->SetPrivateData(SwapchainColorSpace::Key,sizeof(shortValue),&shortValue)); refuse();
+            const uint64_t oversized=0;
+            Hr(host.chain->SetPrivateData(SwapchainColorSpace::Key,sizeof(oversized),&oversized)); refuse();
+            for(auto space:{DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709,DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020,
+                            DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020,DXGI_COLOR_SPACE_CUSTOM}) {
+                Hr(SwapchainColorSpace::Write(host.chain.Get(),space)); refuse();
+            }
+            Hr(SwapchainColorSpace::Write(host.chain.Get(),DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709));
+            Hr(SwapchainColorSpace::Write(host.presenter.Get(),DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020));
+            host.update(host.natural); host.Upload();
+            Check(host.FilterNr(frame++),"actual source declaration overrides child SDR inference");
+            Check(host.Read()==64,"filter reads actual source transfer and writes exact consumer color");
+        }
         if(fault) {
             host.update(host.natural); host.Upload();
             HoYoShade::OwnedRuntime::Testing::Hooks hooks{}; hooks.signal=FailSignal;
@@ -166,6 +258,35 @@ int main(int argc,char** argv) {
         Check(create(api::device_api::d3d12,host.device.Get(),host.queue.Get(),host.presenter.Get(),
             (root/"natural.ini").string().c_str(),&host.physical)&&host.physical,"real physical runtime");
         for(unsigned i=0;i<100;++i) { host.update(host.physical); Sleep(10); }
+        // This route uses the actual DX12 chain as the source of the picture,
+        // without BridgeScope. Keep the independently declared DX11 source SDR
+        // throughout: it must not authorize an unknown native DX12 input.
+        Hr(SwapchainColorSpace::Write(host.presenter.Get(),DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709));
+        bool nativeExecuted=false;
+        for(uint64_t frame=900;frame<1200;++frame) {
+            host.update(host.physical); host.Upload();
+            Check(host.FilterNr(frame,false,false,false),"native BeforeNR consumer safe");
+            const auto status=HoYoShade::ReadStatus();
+            if(status.latest.known && status.latest.frame==frame &&
+               status.latest.submission==HoYoShade::SubmissionState::Submitted && status.latest.techniques) {
+                Check(host.Read()==64,"native filter writes the real downstream consumer input"); nativeExecuted=true; break;
+            }
+            Sleep(10);
+        }
+        Check(nativeExecuted,"real native DX12 BeforeNR transaction executed");
+        uint64_t nativeFrame=1300;
+        const auto nativeRefuse=[&] {
+            host.update(host.physical); host.Upload();
+            Check(host.FilterNr(nativeFrame++,false,false,false),"native unknown transfer preserves NR continuation");
+            Check(host.Read()==32,"native rejected transfer cannot alter NR input");
+        };
+        Hr(host.presenter->SetPrivateData(SwapchainColorSpace::Key,0,nullptr)); nativeRefuse();
+        const unsigned char shortNative=0;
+        Hr(host.presenter->SetPrivateData(SwapchainColorSpace::Key,sizeof(shortNative),&shortNative)); nativeRefuse();
+        for(auto space:{DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709,DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020}) {
+            Hr(SwapchainColorSpace::Write(host.presenter.Get(),space)); nativeRefuse();
+        }
+        Hr(SwapchainColorSpace::Write(host.presenter.Get(),DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709));
         Sleep(5200); host.update(host.natural);
         host.NaturalPixels(true,true,true);
         host.PhysicalPixels(true,true,true);

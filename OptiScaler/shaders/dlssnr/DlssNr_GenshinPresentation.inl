@@ -133,7 +133,7 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
     // wrapper's exact queue identities for BridgeScope; only actual GPU queues
     // are unwrapped for the NR recording below. This precedes its allocator Reset.
     if (FAILED(present->Wait(slot.fence.Get(), slot.ready)) ||
-        !slot.nrFilter.BeforeNr(swapchain, queue, color.Get(), screenSdr, outcome.presentEpoch,
+        !slot.nrFilter.BeforeNr(swapchain, queue, color.Get(), outcome.presentEpoch,
                                 true, orderedProducerQueue, filterDepth))
     {
         slot.quarantined = true;

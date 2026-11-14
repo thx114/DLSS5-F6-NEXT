@@ -49,9 +49,21 @@ SkipLoadingDisabledEffects=0
 TutorialProgress=4
 "@
 [IO.File]::WriteAllText((Join-Path $output 'natural.ini'), $config)
+# The core gives process-global tutorial state precedence over runtime config.
+# Keep this isolated fixture's splash UI out of the exact pixel oracle, even
+# when a previous fixture run saved TutorialProgress=0 beside its executable.
+[IO.File]::WriteAllText((Join-Path $output 'ReShade.ini'), "[OVERLAY]`nTutorialProgress=4`n")
 $hostSource = if ($Mode.StartsWith('nr-')) { 'host-before-nr.cpp' } else { 'host.cpp' }
+if ($Mode.StartsWith('nr-')) {
+    # Compile the actual forwarding method, not a fixture copy of its policy.
+    $wrapper = [IO.File]::ReadAllText((Join-Path $root 'OptiScaler/with_dx12/dx11_with_dx12_sc.cpp'))
+    $start = $wrapper.IndexOf('HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookSetColorSpace1(')
+    $end = $wrapper.IndexOf('HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(', $start)
+    if ($start -lt 0 -or $end -le $start) { throw 'Cannot extract actual color-space forwarding method' }
+    [IO.File]::WriteAllText((Join-Path $output 'Dx11wDx12ColorSpace.inl'), $wrapper.Substring($start, $end - $start))
+}
 $sources = @($hostSource, '../../HoYoShade.cpp', '../../HoYoShadeOwnedRuntime.cpp', '../../HoYoShadeDepth.cpp', '../../HoYoShadeDepthSemantics.cpp') | ForEach-Object { '"' + [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $_)) + '"' }
-$include = @($PSScriptRoot, "$root/OptiScaler", "$root/external/nvngx_dlss_sdk", "$root/OptiScaler/include", "$root/external/streamline/include") | ForEach-Object { '/I"' + $_ + '"' }
+$include = @($PSScriptRoot, $output, "$root/OptiScaler", "$root/external/nvngx_dlss_sdk", "$root/OptiScaler/include", "$root/external/streamline/include") | ForEach-Object { '/I"' + $_ + '"' }
 $batch = @"
 @echo off
 call "D:/VS2022BuildTools/Common7/Tools/VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64

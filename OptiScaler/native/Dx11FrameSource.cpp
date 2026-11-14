@@ -1,5 +1,6 @@
 ﻿#include <runtime/ComIdentity.h>
 #include "pch.h"
+#include <runtime/SwapchainColorSpace.h>
 #include <integration/HoYoShade.h>
 #include <integration/HoYoShadeNaturalAssociation.h>
 #include <native/OpticalFgNrPolicy.h>
@@ -413,7 +414,7 @@ AcquireStatus Dx11FrameSource::Acquire(FrameInput& input)
         (outputColor.valid && (outputColor.transfer == ColorTransfer::PQ || outputColor.transfer == ColorTransfer::HLG ||
             outputColor.dxgiColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 ||
             outputColor.dxgiColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020));
-    input.colorTransferKnown = State::Instance().outputColorSpace.valid;
+    input.filterSdrAllowed = SwapchainColorSpace::ExplicitSdr(_swapChain);
     input.width = desc.Width;
     input.height = desc.Height;
 

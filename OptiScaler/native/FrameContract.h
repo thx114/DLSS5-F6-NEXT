@@ -151,7 +151,10 @@ struct FrameInput
     // Local synchronous filter association only, never transport/GPU authority.
     // NativeDriver moves this out before producer input retention.
     std::shared_ptr<const HoYoShade::NaturalAssociation::Source> naturalSource;
-    bool colorOnly = false, finalOriginal = false, colorTransferKnown = false;
+    bool colorOnly = false, finalOriginal = false;
+    // Authorization for the SDR filter only. Algorithm colorSpace keeps its
+    // existing mapping and user settings; global output state cannot grant it.
+    bool filterSdrAllowed = false;
     NativePictureColorObservation nativePictureColor;
     // The adapter alone mints this after actual Present match/copy/upload and
     // successful BindInput. Driver moves it out before HeldFrame retention;

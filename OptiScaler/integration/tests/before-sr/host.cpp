@@ -224,9 +224,12 @@ struct Host {
         const auto expected = expectedSuppression ? 32u : 64u;
         std::printf("natural probe suppression=%d worker=%d actual_red=%u expected=%u effects_enabled=%d\n",
             suppressed, worker, static_cast<unsigned char*>(mapped.pData)[0], expected, natural->get_effects_state()); std::fflush(stdout);
-        for (unsigned y = 0; y < Height; ++y) for (unsigned x = 0; x < Width; ++x)
-            Check(static_cast<unsigned char*>(mapped.pData)[y * mapped.RowPitch + x * 4] == expected,
-                "natural Present pixels obey BeforeSR placement");
+        for (unsigned y = 0; y < Height; ++y) for (unsigned x = 0; x < Width; ++x) {
+            const auto red=static_cast<unsigned char*>(mapped.pData)[y * mapped.RowPitch + x * 4];
+            if(red!=expected) std::fprintf(stderr,"natural pixel mismatch x=%u y=%u red=%u expected=%u size=%ux%u\n",
+                x,y,red,expected,desc.Width,desc.Height);
+            Check(red == expected,"natural Present pixels obey BeforeSR placement");
+        }
         context->Unmap(staging.Get(), 0);
         std::printf("natural suppression=%d worker=%d red=%u\n", suppressed, worker, expected); std::fflush(stdout);
     }

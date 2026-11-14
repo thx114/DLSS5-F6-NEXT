@@ -279,7 +279,7 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
         HoYoShade::Selected(HoYoShade::Stage::BeforeNr) &&
         (!Config::Instance()->DlssNrEnabled.value_or_default() || Config::Instance()->DlssNrFinishedPicture.value_or_default());
     const bool beforeSr = useVirtualUpscaler && !virtualNativeNr && input.api == Api::D3D12 &&
-         input.colorTransferKnown && input.colorSpace == ColorSpace::Srgb &&
+         input.filterSdrAllowed &&
         HoYoShade::ColorContract::Resolve(input.pictureFormat) &&
         HoYoShade::NativeBeforeSrAvailable(naturalSource.Get());
     const bool finalOriginal = !useVirtualUpscaler && input.api == Api::D3D11 && input.finalOriginal &&
@@ -294,7 +294,7 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
         endpoint.stream = reinterpret_cast<uint64_t>(&source); endpoint.generation = 1;
         endpoint.frame = color.frame; endpoint.width = color.width; endpoint.height = color.height;
         endpoint.state = color.pictureState; endpoint.stateKnown = true;
-        endpoint.sdr = color.colorTransferKnown && color.colorSpace == ColorSpace::Srgb;
+        endpoint.sdr = color.filterSdrAllowed;
         endpoint.naturalDevice = color.naturalDevice; endpoint.naturalBackbuffer = color.naturalBackbuffer;
         endpoint.naturalSource = naturalSource.Get();
         if (stage == HoYoShade::Stage::BeforeSr)

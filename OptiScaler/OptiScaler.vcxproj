@@ -1429,6 +1429,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="hooks\HookTransaction.h" />
     <ClInclude Include="motion\DepthShaderCapabilities.h" />
     <ClInclude Include="runtime\ComIdentity.h" />
+    <ClInclude Include="runtime\SwapchainColorSpace.h" />
     <ClInclude Include="runtime\GameIdentity.h" />
     <ClInclude Include="runtime\HookCpuTiming.h" />
     <ClInclude Include="dlssnr\DlssNrStageTiming.h" />

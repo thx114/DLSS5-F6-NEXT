@@ -3,6 +3,7 @@
 #include "NrConsumerDepth.h"
 #include <integration/HoYoShade.h>
 #include <integration/HoYoShadeNaturalAssociation.h>
+#include <runtime/SwapchainColorSpace.h>
 #include <wrl/client.h>
 #include <memory>
 
@@ -44,8 +45,11 @@ class BridgeScope final
 public:
     static std::shared_ptr<const HoYoShade::NaturalAssociation::Source> Capture(
         IDXGISwapChain* child, ID3D12Resource* color, ID3D12CommandQueue* producer,
-        ID3D12CommandQueue* consumer, uint64_t epoch, HoYoShade::ProducerReady& submitted) noexcept
+        ID3D12CommandQueue* consumer, uint64_t epoch, HoYoShade::ProducerReady& submitted,
+        bool& explicitSdr) noexcept
     {
+        submitted = {};
+        explicitSdr = false;
         auto* active = current_;
         const Key caller{reinterpret_cast<uintptr_t>(child), reinterpret_cast<uintptr_t>(producer),
             reinterpret_cast<uintptr_t>(consumer), epoch, GetCurrentThreadId()};
@@ -63,9 +67,13 @@ public:
         if (FAILED(active->original_->GetBuffer(active->index_, IID_PPV_ARGS(&buffer)))) return {};
         auto proof = HoYoShade::NaturalAssociation::Source::Capture(active->original_, active->device_,
             buffer.Get(), active->index_, reinterpret_cast<uintptr_t>(child), 1, epoch);
+        if (!proof) return {};
         // This is the actual successful copy Execute/Signal followed by the
         // wrapper's successful present-queue Wait, not the guide producer queue.
         submitted = {active->copyQueue_, active->copyFence_, active->copyValue_};
+        // Read the declaration from the actual DX11 source of this successful
+        // copy, never from the child presenter or its format-derived default.
+        explicitSdr = SwapchainColorSpace::ExplicitSdr(active->original_);
         return proof;
     }
 };
@@ -127,20 +135,20 @@ public:
     bool DepthSafeToRelease() noexcept { return depth_.SafeToRelease(); }
     void CollectDepth() noexcept { depth_.Collect(); }
     bool BeforeNr(IDXGISwapChain* chain, ID3D12CommandQueue* queue,
-        ID3D12Resource* color, bool sdr, uint64_t epoch, bool bridge,
+        ID3D12Resource* color, uint64_t epoch, bool bridge,
         ID3D12CommandQueue* producer, const depth::Capture& capturedDepth) noexcept
     {
         return BeforeRead(
             [&] { return depth_.SourceHealthy() && HoYoShade::ColorConsumers(chain) == HoYoShade::ConsumerAccess::Safe; },
             [] { return HoYoShade::Selected(HoYoShade::Stage::BeforeNr); },
-            [&] { return SelectedBeforeNr(chain, queue, color, sdr, epoch, bridge, producer, capturedDepth); });
+            [&] { return SelectedBeforeNr(chain, queue, color, epoch, bridge, producer, capturedDepth); });
     }
 private:
     bool SelectedBeforeNr(IDXGISwapChain* chain, ID3D12CommandQueue* queue,
-        ID3D12Resource* color, bool sdr, uint64_t epoch, bool bridge,
+        ID3D12Resource* color, uint64_t epoch, bool bridge,
         ID3D12CommandQueue* producer, const depth::Capture& capturedDepth) noexcept
     {
-        if (!chain || !queue || !color || !sdr || epoch == UINT64_MAX) return true;
+        if (!chain || !queue || !color || epoch == UINT64_MAX) return true;
         try
         {
             using Microsoft::WRL::ComPtr;
@@ -156,12 +164,14 @@ private:
             endpoint.stream = reinterpret_cast<uintptr_t>(chain); endpoint.generation = 1; endpoint.frame = epoch;
             const auto desc = color->GetDesc();
             endpoint.width = static_cast<uint32_t>(desc.Width); endpoint.height = desc.Height;
-            endpoint.state = D3D12_RESOURCE_STATE_PRESENT; endpoint.stateKnown = true; endpoint.sdr = sdr;
+            endpoint.state = D3D12_RESOURCE_STATE_PRESENT; endpoint.stateKnown = true;
 
             std::shared_ptr<const HoYoShade::NaturalAssociation::Source> proof;
-            if (bridge) proof = BridgeScope::Capture(chain, color, producer, queue, epoch, endpoint.ready);
+            if (bridge) proof = BridgeScope::Capture(chain, color, producer, queue, epoch,
+                                                    endpoint.ready, endpoint.sdr);
             else
             {
+                endpoint.sdr = SwapchainColorSpace::ExplicitSdr(chain);
                 ComPtr<IDXGISwapChain3> indexed;
                 ComPtr<ID3D12Device> chainDevice;
                 if (FAILED(chain->QueryInterface(IID_PPV_ARGS(&indexed))) ||
@@ -169,6 +179,7 @@ private:
                 proof = HoYoShade::NaturalAssociation::Source::Capture(chain, chainDevice.Get(), color,
                     indexed->GetCurrentBackBufferIndex(), endpoint.stream, endpoint.generation, epoch);
             }
+            if (!endpoint.sdr) return true; // filter refusal leaves the existing NR color path unchanged
             HoYoShade::NaturalAssociation::Source::Scope source(std::move(proof));
             endpoint.naturalSource = source.Get();
             if (!endpoint.naturalSource) return true; // untouched refusal, not coverage
