@@ -1,10 +1,10 @@
 # F6 与 ReShade / GIMI 兼容性
 
-更新：2026-11-14（UTC+08）。本文以本机固定核心、当前 F6 源码、真实 Windows / WARP 测试和已锁定的用户游戏日志为依据。新候选的游戏画面、Rocket 退出与性能仍待用户新局验收；不更新 `F6-HANDOFF.md`。
+更新：2026-11-14（UTC+08）。桥 + F6 白屏局 PID227276 已绑定 F6 `44380f8`；最新 `d0ca697` 包含显示链 resize flags 修复 `ec1fead` 和原神 BeforeNR 公共滤镜事务接线，已于 12:53 原位部署到 `local/F6-ASI`，SHA256 `8970947E…`。固定核心 / WARP 专项通过；新 DLL 的加载、画面与性能仍待用户新局验收，不更新 `F6-HANDOFF.md`。
 
-最新纠正：用户已确认仅 Rocket / GIMI 可启动。10:54 PID242576 的 Rocket 插件启用值为 `1|0|0`（桥开、F6 / ReShade 关），12.4 秒后 `0xC0000005`，没有本局 F6 / ReShade 加载证据；不能套用 08:54 PID240612 混合局的异常栈。外部桥创建边界候选 `5ce2efb` 已于 11:23 原位部署，SHA256 `4BC59AD0…`，18/18 离线回归通过，游戏验收仍待新局。完整身份见 [当前状态](CURRENT-STATE.md#最新仅桥失败局与-gimi-创建边界)。
+此前纠正：用户已确认仅 Rocket / GIMI 可启动。10:54 PID242576 的 Rocket 插件启用值为 `1|0|0`（桥开、F6 / ReShade 关），12.4 秒后 `0xC0000005`，没有本局 F6 / ReShade 加载证据；不能套用 08:54 PID240612 混合局的异常栈。外部桥创建边界候选 `5ce2efb` 已于 11:23 原位部署，SHA256 `4BC59AD0…`，18/18 离线回归通过，游戏验收仍待新局。完整身份见 [当前状态](CURRENT-STATE.md#最新仅桥失败局与-gimi-创建边界)。
 
-最终源码 `44380f86f4611f51e9c08de77e8668eab0f4f3f4` 的 Release x64 已构建并原位部署到既有 `local/F6-StarRail-GapPacing`、`local/F6-ASI`：SHA256 `082361809BA0256E1AD898CFE280AC21610F9601E59AB680B11191E8380A5F49`，32,540,672 B。两目标 FileId 和 2 / 6 个硬链接不变，核对的 INI / ReShade core 哈希不变，本轮没有 `.next`。磁盘回执为 `f6-installed-after-final.json`；完整验证与实际加载边界见 [当前状态](CURRENT-STATE.md)。
+此前源码 `44380f8` 的 BeforeSR / GIMI Release x64 为 `08236180…`，32,540,672 B，当时部署到 `local/F6-StarRail-GapPacing`、`local/F6-ASI`。最新显示链 / BeforeNR 修复只原位覆盖当前 `local/F6-ASI`，FileId 和 6 个硬链接不变，原神 runtime alias 哈希已核对，未产生 `.next`；INI、Rocket 配置、桥和 ReShade core 哈希未变。新回执为 `before-nr-deployment.json` / `before-nr-installed-after.json`；完整构建身份、专项验证与实际加载边界见 [当前状态](CURRENT-STATE.md)。
 
 ## 当前实现
 
@@ -12,11 +12,11 @@
 
 BeforeSR 在当前生产输入的 handoff 后、SR Evaluate 前执行。共享颜色和深度使用同一源帧、源代次及真实 producer fence；独立 reader admission 与实际同队列 Signal / DX11 GPU Wait 保护后续写入。稳定的私有深度 copy 由对应 owned runtime / color bundle 持有，源 A/B 纹理轮换不会重建绑定或混用帧。CPU 返回不能归还未知 GPU reader。
 
-BeforeSR placement 对已登记的源链和物理输出链抑制自然 Present 效果，包括 worker 回调；不依赖某次成功的颜色 receipt，也不永久关闭用户 effects 或修改 preset。阶段编译或输入尚未就绪时等待当前路径，不转到 Present 补画。
+BeforeSR / BeforeNR placement 对已登记的源链和物理输出链抑制自然 Present 效果，包括 worker 回调；不依赖某次成功的颜色 receipt，也不永久关闭用户 effects 或修改 preset。阶段编译或输入尚未就绪时等待当前路径，不转到 Present 补画。
 
 | F6 路径 | BeforeSR | BeforeNR / FinalOutput |
 |---|---|---|
-| DX11-w-DX12 外部 NGX 桥 | 已有生产入口，本轮加入同帧深度、LP/MXAO 契约和自然效果去重 | 普通 FinishedPicture / 物理输出保留；原神默认 Present NR 仍缺独立 BeforeNR 入口 |
+| DX11-w-DX12 外部 NGX 桥 | 已有生产入口，本轮加入同帧深度、LP/MXAO 契约和自然效果去重 | 普通 FinishedPicture / 物理输出保留；原神默认 Present NR 已接入同一公共 BeforeNR 事务，游戏验收待完成 |
 | 普通原生 DX12 NGX | 无独立 recording slot 时继续明确拒绝阶段执行 | 既有入口保留 |
 | NativeProducer / 虚拟超分 | 受实际提交与 depth reader 权限约束的独立入口保留 | 取决于实际 native 路由 |
 | Vulkan 原生 / Vulkan-w-DX12 | F6 阶段调度未支持 | 全部 Vulkan 后端保留；普通 ReShade Vulkan 自然效果另行游戏验收 |
@@ -24,6 +24,22 @@ BeforeSR placement 对已登记的源链和物理输出链抑制自然 Present �
 现有阶段颜色支持 RGBA8/BGRA8 UNORM 及 sRGB、SDR；HDR、FP16、10-bit 和 typeless 不属于当前 owned stage 执行契约。保留 SR/NR/FG 和所有真实 queue/fence、allocator/list Reset 与资源退休。
 
 FG 物理端点仍要求已观察 provider 创建域、同线程输入 scope、SDR 和 flip-discard；TEST、DO_NOT_WAIT、dirty rect / scroll Present 会跳过。`UnknownPhysical` 不区分原图与生成帧，不能从提交次数推导每张生成帧都已处理。
+
+## 原神 NR 前滤镜：实现与验证边界
+
+2026-11-14 并行只读核查确认原神默认路径曾提前转入 `GenshinPresentation::Apply`，绕过公共 BeforeNR。`d0ca697` 已补齐该专用入口，并继续复用普通 FinishedPicture 的 `slot.nrFilter.BeforeNr` / `PresentTransaction`，没有为原神再造滤镜执行器。BeforeSR 和 BeforeNR 为不同位置，分别验证。
+
+已接入的顺序是 `SR → 游戏最终合成 → ReShade BeforeNR → NR → FG`。BeforeSR 继续作用于低分辨率 SR 输入；BeforeNR 则处理 NR 实际消费的最终颜色，由用户选择阶段，不自动改 INI。当前磁盘仍是 `Stage=1`（BeforeSR），本轮没有自动切换。
+
+1. **复用公共事务。** 已在 `DlssNr_GenshinPresentation.inl` 的当前 source / capture slot 校验及单次 claim 之后、私有 NR allocator / list Reset 之前调用 `native::nrfilter::PresentTransaction::BeforeNr`。颜色由当前 presenter 的实际 index / buffer 取得；不从旧 NR 输出或全局 last resource 推断。
+2. **由当前提交者交接。** `Dx11wDx12SC::Present` 已在实际上传和 `_WaitForInteropCopyOnPresentQueue` 成功后建立 `BridgeScope`，传入真实 `nrPresentQueue`。公共事务复用该 copy queue / fence / value 和源链证明；ReShade 的 owned list 在同一消费队列提交并恢复颜色状态，然后才允许 NR 读取。不能提交或 Reset 游戏借出的 list。
+3. **深度与颜色属于同一来源。** 将匹配 `currentMetadata`、source attempt / ordinal / generation 的 slot depth、实际子矩形及方向交给 `NrConsumerDepth`；以公共 `FilterDepthCapture` 在改写 NR 展示 epoch 前冻结原 capture serial / epoch，先在真实 present queue 等待捕获 fence。继续要求真实 capture / snapshot / filter reader 各自完成，不能把颜色 copy fence 当作深度 reader 退休凭据。
+4. **保持一次消费与去重。** source claim 先于滤镜可能提交的 GPU 工作。公共 natural source / runtime lifetime 关联已扩展到 BeforeNR，抑制源链和物理链的自然 Present 效果；效果编译、必需深度缺失或 LP/MXAO 预热未完成时保留本帧原颜色，不在 Present 末尾补执行。Execute 后 Signal 不确定时保留准确资源，并由 wrapper 的 `FailedUncertain` 在 FG join / 子链 Present 前终止消费。
+5. **按真实边界验证。** 固定 ReShade 核心 / WARP 的 BeforeNR 颜色 147,594 检查、深度 98,512、原样 LP/MXAO 129,632、不确定提交 24,679 均通过；BeforeSR 颜色 / 去重回归 270,396 通过。新 fixture 运行生产公共事务和深度 snapshot，并用真实下游 GPU copy 验证像素，覆盖源 / 物理 runtime、worker、resize、缺必需深度与错帧。整个原神 `Apply` 入口尚无直接 SDK fixture，调用顺序 / claim / 失败外传由 37 项生产接线检查及实际 Release 编译覆盖，游戏画面与性能仍待用户手动验收。
+
+范围保持当前 8-bit SDR 契约。DX11 通过有提交所有权的 DX12 transport 接入；原生 DX12 借用 recording list 不能获得新的提交权限，Vulkan 原生 / Vulkan-w-DX12 后端继续保留，阶段滤镜另行实现。
+
+本局 PID227276 的外层 BeforeSR 已到达 `RenderStage`，实际结果为 `core-not-loaded`、`submission=0`、`techniques=0`；本局 Rocket 的 ReShade 插件确实关闭。随后内部 DX12 Evaluate 的 `no producer submit authority` 警告不能反推外层没有提交所有权，也不能解释本局白屏。核心晚于首轮连接窗口加载后的重连限制仍是单列的接入问题；没有为了这次白屏修改该状态机或用户开关。
 
 ## LAUNCHPAD、MXAO 与光流
 

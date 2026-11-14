@@ -1,10 +1,55 @@
 # F6 当前状态
 
-更新：2026-11-14。BeforeSR 深度效果、LAUNCHPAD / MXAO、内置 GIMI 公共入口与 loader 修复已完成源码集成、离线验证和 DLL 原位部署。用户已确认仅 Rocket / GIMI 能启动，无需重复该对照。10:54 的仅桥勾选局仍退出，不能套用 08:54 混合局的 F6 / ReShade 调用栈；外部桥最新的创建边界修复已于 11:23（UTC+08）原位部署，SHA256 `4BC59AD0…`。**本候选的 Rocket / GIMI 游戏稳定性、画面和性能仍待用户新局验收。** 本轮没有修改 `F6-HANDOFF.md`。
+更新：2026-11-14。桥 + F6 白屏局的显示链 resize flags 错误已修复；原神默认 Present NR 的 BeforeNR 滤镜也已接入公共事务，补齐源链 / 物理链去重与不确定提交的 FG 阻断。最新源码 `d0ca697` 的 DLL 已于 12:53（UTC+08）原位覆盖当前 `local/F6-ASI`，SHA256 `8970947E…`，原 6 个硬链接保留。**新 DLL 的加载、白屏、滤镜效果与性能仍待用户手动重开游戏验收。** 本轮没有修改 `F6-HANDOFF.md`。
 
-产品树：`D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。最终构建源码保存点为 `44380f86f4611f51e9c08de77e8668eab0f4f3f4`（`Fix BeforeSR depth effects and native hook coexistence`）；后续维护文档提交不改变该构建身份。游戏由用户手动操作；未修改启动器选择、用户 INI / preset / profiles 或 ASI，未推送远端。
+产品树：`D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。当前构建源码保存点为 `d0ca697148bef6b1727ec4f32872aed567e6ecd8`（`Wire Genshin BeforeNR filters through shared presentation transaction`），包含此前显示链修复 `ec1fead`；此前 BeforeSR / GIMI 构建为 `44380f8`。后续维护文档提交不改变 DLL 构建身份。游戏由用户手动操作；未修改启动器选择、用户 INI / preset / profiles 或 ASI，未推送远端。
+
+## 最新：原神 BeforeNR 接线与部署（2026-11-14）
+
+目标顺序已接入 `SR → 游戏最终合成 → ReShade BeforeNR → NR → FG`。先确认本次 source / metadata / slot，再领取单次 source；冻结原 capture serial / epoch 后，在真实 present queue 等待捕获 fence，并以 BridgeScope 原始队列身份进入 `slot.nrFilter.BeforeNr`。该事务先于 NR 私有 allocator / list Reset；公共路径与原神共用 `FilterDepthCapture`，继续使用真实深度 snapshot / reader fence 退休。原神 BeforeNR 不再绕过公共入口。
+
+阶段归属扩展到 BeforeNR：已登记的源链和物理链在自然 Present / worker 仍抑制滤镜，预热或缺必需深度时不挪到末尾补画。`FailedUncertain` 在外层 wrapper 直接阻止后续 FG join / 子链 Present，不能仅靠缺 final-colour tag 或 slot quarantine 允许消费。
+
+| 项目 | 当前证据 |
+|---|---|
+| 固定核心 BeforeNR 颜色 / 去重 | `before-nr-color.log`，147,594 检查；真实公共 PresentTransaction、当前 DX12 buffer 和下游 GPU copy 像素，含源 / 物理 runtime、worker、resize、关闭后的恢复 |
+| BeforeNR 深度 | `before-nr-depth-final.log`，98,512 检查；生产 NrConsumerDepth snapshot、非对称方向与 A/B 交替，真实 capture / filter / consumer fence |
+| BeforeNR LP → MXAO | `before-nr-launchpad.log`，129,632 检查；首批不写回、后续改色、法线随当前深度变化、缺深度 / 错帧不写回 |
+| 不确定提交 | `before-nr-uncertain.log`，24,679 检查；真实 filter Execute 后注入 Signal 失败，停止消费者，关闭阶段仍不能解除颜色隔离 |
+| BeforeSR 回归 | `before-sr-color-after-nr.log`，270,396 检查，真实核心颜色及源 / 物理 / worker 去重仍通过 |
+| 生产接线检查 | Direct DLSS scene 37 项、FG guide wiring、interop policy wiring 26 项通过；包括实际 active claim、BeforeNR / Reset 顺序与外层失败阻断，源码检查不等于游戏执行 |
+| 完整 CommonCore | `white-screen-common-tests.log` / `white-screen-common-result.json`，exit 0；基于 `ec1fead` 启动，BeforeNR 后续改动由上列专项与新 Release 构建覆盖，没有宣称该套件全程对应同一最终源码 |
+| Release x64 | `before-nr-f6-build.log`，MSBuild exit 0，1 分 34 秒；32,541,184 B；mtime UTC `2026-11-14T04:51:17.8794446Z` |
+| DLL / 原位部署 | SHA256 `8970947E37DC465DAB4F61B13A41E387306E40B45D1C9AF5B893F2E7C26E1D7C`；12:53 `DEPLOYED_IN_PLACE`，目标 `local/F6-ASI`；FileId / 6 硬链接保持，原神 alias 同 SHA，无 `.next` |
+
+回执位于 `build/genshin-reshade-20261114/`：`before-nr-build-identity.json`、`before-nr-deployment.json`、`before-nr-installed-before.json`、`before-nr-installed-after.json`。核对的原神 INI、Rocket 配置、桥 DLL 和 ReShade core 哈希未变。磁盘 `[HoYoShade] Stage=1` 仍为 BeforeSR；需要测试 BeforeNR 时由用户自己选择阶段并启用 ReShade，AI 未替用户修改。阶段当前保留 8-bit SDR 契约，所有 Vulkan 后端完整参与 Release 编译，未做 Vulkan GPU 验收。
+
+这些真实核心 / WARP 测试执行公共滤镜事务和模拟的 transport seam；没有直接执行 NVIDIA NR 模型或整个游戏 `GenshinPresentation::Apply`。新专用入口由实际 Release 编译及生产接线检查覆盖，游戏正确性仍待用户。首次深度 probe 的缺深度断言失败是测试把可选深度效果当成必需深度；已按实际契约修正后重跑，LP/MXAO 的必需深度拒绝仍由原样效果测试覆盖。
+
+## 原神桥 + F6 白屏诊断与首轮修复（2026-11-14）
+
+- 本局为 `20261114-113109_YuanShen_227276`，`t0=11:31:08.214+08:00`，F6 日志加载版本 `44380f8`。Rocket 开关为桥 / F6 开、ReShade 关；本局没有 ReShade 自然日志，外层 BeforeSR 明确记录 `core-not-loaded`。11:30 的 ReShade 日志属于前一局，不能混用。
+- 11:31:37：游戏源链 count=1、sRGB format=29、flags=2；DX12 显示链创建时转换为 count=2 / UNORM，并在 DLSSG provider 中加入 `ALLOW_TEARING`。旧 resize 只转换 count / format，却把源 flags=2 传回 presenter，试图删除创建时固定的 tearing 位。真实 WARP / DXGI 负控以创建 `0x802`、resize `0x2` 复现相同 `0x80070057`。
+- 失败状态让 `Dx11wDx12SC::Present` 在颜色 copy、NR 和最终 Present 之前返回。与此同时，本局 NGX Evaluate 仍有 5,884 条入口日志，桥持续 `DISPATCH_OK`；这些不能证明输出像素或显示成功。11:34:04 另出现 DX12 `0x887A0006` fence fault，不能倒推为白屏最早原因。session 最终记录退出码 0。
+- 修复统一从该 presenter 的一次真实 `GetDesc` 适配 resize：保留 tearing / waitable / foreground 创建位，继续排除 DX12 不支持的 GDI 位，保留现有 XeFG 全 flags quirk；源 DX11 参数不改。健康且等价的 presenter 可跳过无用 resize，失败状态仍要求实际成功 resize；零宽高交给真实窗口尺寸解析，不当作旧缓冲区尺寸跳过。
+
+| 项目 | 当前证据 |
+|---|---|
+| 显示链专项 | 259 项 CPU policy、55 项真实 DXGI / WARP 检查；旧 flags 负控 `0x80070057`，修正后真实 resize 成功；26 项生产 wiring 检查 |
+| Release x64 | `white-screen-f6-build.log`，MSBuild exit 0，1 分 43 秒；保留后端正常参与构建，未进行 Vulkan GPU 验收 |
+| DLL | 32,541,184 B；SHA256 `D6BABF08EAA3917BAB79BB2C28B40A663193DEE1A2AB5CB3B2496E9D37324A0A`；mtime UTC `2026-11-14T04:02:02.9011353Z`；含 `ec1fead` 构建标识 |
+| 原位部署 | `DEPLOYED_IN_PLACE`，目标 `local/F6-ASI`；FileId `0x000000000000000000020000001b42ff`、6 个硬链接及当前原神 runtime alias 保持；本轮未产生 `.next` |
+| 配置与依赖 | 核对的原神 INI、Rocket 配置、桥 DLL `4BC59AD0…`、ReShade core 哈希未变；不切换启动器选中构建 |
+| 完整 CommonCore | `white-screen-common-tests.log`，exit 0；BeforeNR 后续源码的专项覆盖见上一节 |
+| 实际验收 | 仅旧局日志绑定 PID / 加载版本；新 DLL 尚无用户新局加载、画面或性能结论，加载内存 SHA 未采集 |
+
+证据位于 `build/genshin-reshade-20261114/`：`white-screen-20261114-113109/` 内为固定 session / bridge / F6 / Rocket 快照与解析回执；另有 `white-screen-build-identity.json`、`white-screen-deployment.json`、`white-screen-installed-before.json`、`white-screen-installed-after.json`。没有覆盖桥源码、桥 DLL、ReShade core 或用户配置。
+
+原神 NR 前滤镜的实现、实际队列 / 当前源 / 深度 reader 生命周期与验证范围见 [兼容性文档](F6-RESHADE-COMPATIBILITY.md#原神-nr-前滤镜实现与验证边界)。本节 `ec1fead` 的白屏候选已被包含该修复及 BeforeNR 的 `d0ca697` 产物原位更新，当前部署身份以上一节为准。
 
 ## 本轮实现
+
+以下为此前 `44380f8` 的 BeforeSR / GIMI 阶段记录，当前 DLL 身份以顶部 BeforeNR 部署一节为准。
 
 - `Enabled=auto, Stage=BeforeSR` 正确启用，显式 `false` 优先。外部原神桥继续直连普通 NGX；没有恢复内部原神 FSR 捕获链。
 - BeforeSR 接入同源帧 / 代次的颜色与深度，保留真实 producer / reader queue-fence 交接。私有深度 copy / SRV 按尺寸和格式复用，源 A/B 轮换不重建绑定。自然 Present 在登记的源链和物理输出链持续去重，覆盖 worker，不永久修改用户 effects。
