@@ -91,6 +91,11 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
         return outcome;
     }
     const auto desc = color->GetDesc();
+    auto colorSpace = desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ?
+        DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    UINT colorSpaceBytes = sizeof(colorSpace);
+    swapchain->GetPrivateData(Late::colorSpaceKey, &colorSpaceBytes, &colorSpace);
+    const bool screenSdr = colorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     auto* producer = Late::RealQueue(orderedProducerQueue);
     auto* present = Late::RealQueue(queue);
     Late::Slot* selected = nullptr;
@@ -123,6 +128,21 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
     outcome.fence = slot.fence;
     outcome.fenceValue = slot.ready;
     outcome.submissionSerial = slot.serial;
+    const auto filterDepth = Late::FilterDepthCapture(slot);
+    // The current source is claimed before the filter may submit. Keep the
+    // wrapper's exact queue identities for BridgeScope; only actual GPU queues
+    // are unwrapped for the NR recording below. This precedes its allocator Reset.
+    if (FAILED(present->Wait(slot.fence.Get(), slot.ready)) ||
+        !slot.nrFilter.BeforeNr(swapchain, queue, color.Get(), screenSdr, outcome.presentEpoch,
+                                true, orderedProducerQueue, filterDepth))
+    {
+        slot.quarantined = true;
+        outcome.result = FinishedPictureResult::FailedUncertain;
+        outcome.reason = FinishedPictureReason::RecordingFailed;
+        lastWrittenSource = {};
+        Late::Say("NR bypass: the current picture filter handoff is uncertain.");
+        return outcome;
+    }
     if (FAILED(slot.allocator->Reset()) || FAILED(slot.commands->Reset(slot.allocator.Get(), nullptr)))
     {
         slot.quarantined = true;
@@ -148,10 +168,6 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
         Late::Say("NR bypass: the current picture could not be recorded completely.");
         return outcome;
     };
-    auto colorSpace = desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ?
-        DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-    UINT colorSpaceBytes = sizeof(colorSpace);
-    swapchain->GetPrivateData(Late::colorSpaceKey, &colorSpaceBytes, &colorSpace);
     uint32_t encoding = cfg.DlssNrColourEncoding.value_or_default();
     static uint32_t queuedEncoding = encoding;
     static uint64_t appliedEncodingGeneration = 0;
@@ -163,7 +179,6 @@ FinishedPictureOutcome Apply(IDXGISwapChain* swapchain, ID3D12CommandQueue* queu
     using DlssNrColourEncoding::Screen;
     const bool screenPq = colorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
     const bool screenScrgb = colorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
-    const bool screenSdr = colorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     const auto choice = DlssNrColourEncoding::ResolveFinished(encoding, screenPq || screenScrgb || screenSdr,
         screenPq ? Screen::Pq : screenScrgb ? Screen::Scrgb : Screen::Sdr,
         desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT,

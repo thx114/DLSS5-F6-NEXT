@@ -85,6 +85,21 @@ require("selectedSource && selectedSource != currentMetadata" in presentation,
         "selected FG source cannot be mixed with a different NR source")
 require(presentation.index("sourceClock.Claim(attempt, source)") < presentation.index("g_compose->Dispatch("),
         "source is claimed before any model recording")
+claimed = presentation[presentation.index("auto& slot = *selected;"):]
+require(claimed.index("sourceClock.Claim(attempt, source)") < claimed.index("slot.nrFilter.BeforeNr("),
+        "active source claim precedes filter submission, not just the disabled branch")
+require(claimed.index("slot.pending = false") < claimed.index("slot.nrFilter.BeforeNr(") <
+        claimed.index("slot.allocator->Reset()"),
+        "single source is consumed before filtering, before any NR private recording")
+require(claimed.index("Late::FilterDepthCapture(slot)") < claimed.index("slot.nrFilter.BeforeNr(") <
+        claimed.index("frame.SourceCaptureEpoch = source.generation"),
+        "filter freezes capture identity before presentation epochs replace model scalars")
+require("present->Wait(slot.fence.Get(), slot.ready)" in claimed and
+        "true, orderedProducerQueue, filterDepth" in claimed,
+        "actual capture fence is ordered while BridgeScope keeps original queue identities")
+require(present.index("bridgeOutcome.result == DlssNr::FinishedPictureResult::FailedUncertain") <
+        present.index("colourOwner->JoinUpscalerFinalColour") < present.index("_fgSwapChain->Present"),
+        "uncertain filter/NR handoff stops both FG join and child Present")
 require(presentation.count("NrPresentation::RecordPublish(") == 1,
         "only one final publication site exists")
 require("pq ? slot.presentWork.Get() : color.Get()" in presentation and

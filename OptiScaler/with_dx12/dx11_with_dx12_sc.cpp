@@ -588,7 +588,8 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
         return DlssNr::ApplyToFinishedPictureDx11Bridge(_fgSwapChain, nrPresentQueue, WithDx12::GetD3D12CommandQueue(),
             colourSource ? colourSource->SourceMetadata() : GuideSourceMetadata::Ptr{});
     }();
-    if (HoYoShade::ColorConsumers(_fgSwapChain) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
+    if (bridgeOutcome.result == DlssNr::FinishedPictureResult::FailedUncertain ||
+        HoYoShade::ColorConsumers(_fgSwapChain) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
     // The real interop Wait above orders this exact copy on nrPresentQueue.
     // An optional native overwrite has a different receipt/source, so it cannot
     // borrow the selected NGX source's colour identity.

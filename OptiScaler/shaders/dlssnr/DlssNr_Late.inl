@@ -374,6 +374,16 @@ ID3D12CommandQueue* RealQueue(ID3D12CommandQueue* queue)
     return Util::CheckForRealObject(__FUNCTION__, queue, (IUnknown**) &real) ? real : queue;
 }
 
+native::nrfilter::depth::Capture FilterDepthCapture(const Slot& slot, bool captured = true)
+{
+    // Freeze capture identity before a consumer derives its own presentation /
+    // model epoch. Those clocks cannot authenticate the original guide copy.
+    return {(captured && slot.frame.SourceCaptureSerial == slot.serial &&
+             slot.frame.SourceCaptureEpoch == slot.frame.SubmissionEpoch) ? slot.depth.Get() : nullptr,
+            slot.producerQueue.Get(), slot.fence.Get(), slot.ready, slot.serial, slot.frame.SourceCaptureEpoch,
+            slot.filterDepthRegion, slot.frame.NativeFeatureFlagsKnown, slot.frame.DepthInverted};
+}
+
 // Both callers already split on OptiScaler's FG (the swapchain Present when it is off, FG_Hooks when it
 // runs); the check is repeated so capture, which has no such caller, decides the same way.
 bool PausedForGameFrameGeneration()
@@ -1705,10 +1715,7 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
         // already evaluated NR elsewhere and keeps its previous contract.
         (!diagnosticOnly && !slot.residualOnly && !slot.nrFilter.BeforeNr(swapchain, queue, color.Get(),
             screenSdr, epoch, dx11Bridge, orderedProducerQueue,
-            {(!freshColorFallback && slot.frame.SourceCaptureSerial == slot.serial &&
-              slot.frame.SourceCaptureEpoch == slot.frame.SubmissionEpoch) ? slot.depth.Get() : nullptr,
-             slot.producerQueue.Get(), slot.fence.Get(), slot.ready, slot.serial, slot.frame.SourceCaptureEpoch,
-             slot.filterDepthRegion, slot.frame.NativeFeatureFlagsKnown, slot.frame.DepthInverted})) ||
+            Late::FilterDepthCapture(slot, !freshColorFallback))) ||
         FAILED(slot.allocator->Reset()) ||
         FAILED(slot.commands->Reset(slot.allocator.Get(), nullptr)))
     {

@@ -3003,7 +3003,7 @@ void Testing::EnableHost(bool enabled) noexcept {
 }
 bool Testing::BeforePresent(reshade::api::effect_runtime* runtime, IDXGISwapChain* chain) noexcept
 {
-    return runtime && chain && BeforeSrNaturalPresent(runtime->get_command_queue(), runtime->get_device(),
+    return runtime && chain && BeforeStageNaturalPresent(runtime->get_command_queue(), runtime->get_device(),
         Key(chain), runtime->get_current_back_buffer().handle);
 }
 bool Testing::ConnectHost(HMODULE self, const char* config, Stage stage) noexcept

@@ -3,7 +3,7 @@
 param(
     [string]$CorePath = 'D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/HoYoShade/ReShade64.dll',
     [string]$OutputDirectory = 'build/genshin-reshade-20261114/real-core-test',
-    [ValidateSet('color','depth','launchpad')][string]$Mode = 'color'
+    [ValidateSet('color','depth','launchpad','nr-color','nr-depth','nr-launchpad','nr-uncertain')][string]$Mode = 'color'
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -16,13 +16,13 @@ if ((Get-FileHash -LiteralPath $CorePath -Algorithm SHA256).Hash -ne $expected) 
 Copy-Item -LiteralPath $CorePath -Destination (Join-Path $output 'HoYoShade/ReShade64.dll') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Probe.fx') -Destination (Join-Path $output 'Probe.fx') -Force
 $preset = "Techniques=Probe@Probe.fx`nTechniqueSorting=Probe@Probe.fx`n"
-if ($Mode -eq 'depth') {
+if ($Mode -in @('depth','nr-depth')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'DepthProbe.fx') -Destination (Join-Path $output 'DepthProbe.fx') -Force
     $preset = "Techniques=DepthProbe@DepthProbe.fx`nTechniqueSorting=DepthProbe@DepthProbe.fx`n"
 }
 $effects = $output
 $textures = $output
-if ($Mode -eq 'launchpad') {
+if ($Mode -in @('launchpad','nr-launchpad')) {
     $shaderRoot = Join-Path (Split-Path $CorePath -Parent) 'reshade-shaders/Shaders/iMMERSE'
     $effects = Join-Path $output 'shaders'
     $null = [IO.Directory]::CreateDirectory($effects)
@@ -45,13 +45,14 @@ SkipLoadingDisabledEffects=0
 TutorialProgress=4
 "@
 [IO.File]::WriteAllText((Join-Path $output 'natural.ini'), $config)
-$sources = @('host.cpp', '../../HoYoShade.cpp', '../../HoYoShadeOwnedRuntime.cpp', '../../HoYoShadeDepth.cpp', '../../HoYoShadeDepthSemantics.cpp') | ForEach-Object { '"' + [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $_)) + '"' }
+$hostSource = if ($Mode.StartsWith('nr-')) { 'host-before-nr.cpp' } else { 'host.cpp' }
+$sources = @($hostSource, '../../HoYoShade.cpp', '../../HoYoShadeOwnedRuntime.cpp', '../../HoYoShadeDepth.cpp', '../../HoYoShadeDepthSemantics.cpp') | ForEach-Object { '"' + [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $_)) + '"' }
 $include = @($PSScriptRoot, "$root/OptiScaler", "$root/external/nvngx_dlss_sdk", "$root/OptiScaler/include", "$root/external/streamline/include") | ForEach-Object { '/I"' + $_ + '"' }
 $batch = @"
 @echo off
 call "D:/VS2022BuildTools/Common7/Tools/VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64
 if errorlevel 1 exit /b %errorlevel%
-cl /nologo /std:c++20 /EHsc /MD /Od /MP4 /DNOMINMAX /DHOYOSHADE_STAGE_TEST /DHOYOSHADE_TEST_OWNED_STAGE /DHOYOSHADE_OWNED_RUNTIME_STANDALONE $($include -join ' ') $($sources -join ' ') /Fe:"$output/host.exe" /Fo:"$output/" /link d3d11.lib d3d12.lib dxgi.lib bcrypt.lib user32.lib advapi32.lib
+cl /nologo /std:c++20 /EHsc /MD /Od /MP4 /DNOMINMAX /DHOYOSHADE_STAGE_TEST /DHOYOSHADE_TEST_OWNED_STAGE /DHOYOSHADE_OWNED_RUNTIME_STANDALONE /DHOYOSHADE_OWNED_RUNTIME_TEST $($include -join ' ') $($sources -join ' ') /Fe:"$output/host.exe" /Fo:"$output/" /link d3d11.lib d3d12.lib dxgi.lib bcrypt.lib user32.lib advapi32.lib
 exit /b %errorlevel%
 "@
 [IO.File]::WriteAllText((Join-Path $output 'compile.cmd'), $batch.Replace("`r`n", "`n").Replace("`n", "`r`n"))

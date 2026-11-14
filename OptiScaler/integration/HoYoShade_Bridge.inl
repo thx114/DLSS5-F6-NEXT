@@ -102,7 +102,7 @@ std::shared_ptr<const NaturalAssociation::Source> CaptureBridgeSource(ID3D11Devi
     } catch (...) { return {}; }
 }
 namespace {
-bool EnrolledBeforeSrPresent(uint64_t nativeChain, uint64_t buffer)
+bool EnrolledStagedPresent(uint64_t nativeChain, uint64_t buffer)
 {
     const auto matches = [&](IDXGISwapChain* enrolled) {
         if (Key(enrolled) == nativeChain) return true;
@@ -130,16 +130,17 @@ bool EnrolledBeforeSrPresent(uint64_t nativeChain, uint64_t buffer)
     }
     return false;
 }
-bool BeforeSrNaturalPresent(reshade::api::command_queue* presenting, reshade::api::device* device,
+bool BeforeStageNaturalPresent(reshade::api::command_queue* presenting, reshade::api::device* device,
     uint64_t nativeChain, uint64_t buffer) noexcept
 {
-    if (!device || !presenting || !nativeChain || !buffer || !Selected(Stage::BeforeSr)) return false;
+    if (!device || !presenting || !nativeChain || !buffer ||
+        (!Selected(Stage::BeforeSr) && !Selected(Stage::BeforeNr))) return false;
     try {
         CallbackGuard guard;
         if (!guard.entered || ownedOperation ||
             (device->get_api() != reshade::api::device_api::d3d11 && device->get_api() != reshade::api::device_api::d3d12) ||
             device != presenting->get_device() ||
-            !EnrolledBeforeSrPresent(nativeChain, buffer)) return false;
+            !EnrolledStagedPresent(nativeChain, buffer)) return false;
         State::Natural* target = nullptr;
         for (auto& entry : Get().natural) {
             if (!entry.live || entry.id.sdkDevice != Key(device)) continue;
@@ -156,16 +157,17 @@ bool BeforeSrNaturalPresent(reshade::api::command_queue* presenting, reshade::ap
         auto* queue = target->runtime->get_command_queue();
         auto* list = queue ? queue->get_immediate_command_list() : nullptr;
         if (!list || list->get_device() != target->runtime->get_device()) return false;
-        // Placement, not image-success deduplication: BeforeSR never falls
-        // back to applying filters after SR, including SDK worker outputs and
-        // frames without SR. The natural runtime's persistent UI state stays.
+        // Stage placement covers both the source and physical output, including
+        // warmup/refused inputs and SDK worker Presents. Natural effects do not
+        // reappear after NR/FG while a pre-consumer stage owns this chain.
         OwnedOperation operation;
         target->thread = GetCurrentThreadId();
         target->frame.armed = true;
         target->runtime->render_effects(list, {0}, {0});
         static unsigned reports = 0;
-        if (reports++ < 8) LOG_INFO("HoYoShade BeforeSR natural Present disabled runtime={} lifetime={} epoch={} api={} chain={} placement=before-sr fallback=none pixel_source=not-inferred",
-            Key(target->runtime), target->lifetime, target->frame.epoch, target->id.api, nativeChain);
+        if (reports++ < 8) LOG_INFO("HoYoShade staged natural Present disabled runtime={} lifetime={} epoch={} api={} chain={} stage={} fallback=none pixel_source=not-inferred",
+            Key(target->runtime), target->lifetime, target->frame.epoch, target->id.api, nativeChain,
+            Selected(Stage::BeforeSr) ? "before-sr" : "before-nr");
         return true;
     } catch (...) { ++Get().overflow; }
     return false;
@@ -173,11 +175,11 @@ bool BeforeSrNaturalPresent(reshade::api::command_queue* presenting, reshade::ap
 void OnBeforeNaturalPresent(reshade::api::command_queue* presenting, reshade::api::swapchain* chain,
     const reshade::api::rect*, const reshade::api::rect*, uint32_t, const reshade::api::rect*) noexcept
 {
-    if (!chain || !presenting || !Selected(Stage::BeforeSr)) return;
+    if (!chain || !presenting || (!Selected(Stage::BeforeSr) && !Selected(Stage::BeforeNr))) return;
     try {
         const auto index = chain->get_current_back_buffer_index();
         if (index < chain->get_back_buffer_count())
-            BeforeSrNaturalPresent(presenting, chain->get_device(), chain->get_native(), chain->get_back_buffer(index).handle);
+            BeforeStageNaturalPresent(presenting, chain->get_device(), chain->get_native(), chain->get_back_buffer(index).handle);
     } catch (...) { ++Get().overflow; }
 }
 }
