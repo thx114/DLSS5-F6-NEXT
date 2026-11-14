@@ -1,10 +1,42 @@
 # F6 当前状态
 
-更新：2026-11-14。用户新局 PID240456 确认加载 `d0ca697`，白屏后以 `0x80000003` 退出；其崩溃发生在 D3D11On12 创建阶段，尚未执行 SR / NR / 阶段滤镜。已固定转储并在原样 ReShade / WARP 宿主复现同址断点，补齐内部 factory 的原生接口返回边界。新源码 `8ca0623` 已构建，并于 13:49:33（UTC+08）原位部署到 `local/F6-ASI`，SHA256 `BF6B85E9…`、原 FileId / 6 硬链接保持，无 `.next`。**这次新候选的游戏加载、白屏、滤镜效果与性能仍待用户手动重开验收。**
+更新：**2026-11-14 16:58（UTC+08）**。当前优先级是细节稳定；整体 Reflex **60 ms 为及格线**。下面的 15:26 及更早条目均为历史，不能覆盖本节。
 
-产品树：`D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。当前构建源码保存点为 `8ca06235bc66ca8ee1fe1b503c4a6d8cddcd8e78`（`Preserve native D3D11On12 factory boundaries across ReShade hooks`），保留 `d0ca697` 的原神 BeforeNR 接线和 `ec1fead` 的显示链 resize 修复。后续维护文档提交不改变 DLL 构建身份。游戏由用户手动操作；未修改启动器选择、用户 INI / preset / profiles、桥 DLL、ReShade core 或 ASI，未推送远端。
+## 当前：稳定修复已部署，游戏画面和整体延迟待验收
 
-## 最新：白屏后退出与 D3D11On12 内部工厂（2026-11-14）
+唯一产品树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。源码保存点 **`7c2f11ed7503b8aaf117729541c32fc3a36e45a8`**。Release x64 exit 0，50 秒；嵌入构建标记 `7c2f11e`，DLL **32,567,808 B，SHA256 `3B9EDFBE5D222BB4FC18BD79C85EF8308E573C9C542EAA11D3676FF772EC8F20`**，mtime UTC `2026-11-14T08:56:45.0743464Z`。16:56 已通过 `Deploy-F6.ps1 -BuildId local/F6-ASI` 原位覆盖；原 FileId `0x000000000000000000020000001b42ff` 和全部 6 条硬链接保持，别名逐一同 SHA，核对的 INI / profile / Rocket 配置 / ReShade core 哈希未变。没有切换启动器选项或创建新包。
+
+- **本次稳定修复：** 长细节历史的 RGB 保存可能较老的出生颜色，短稳定器此前误用它判断相邻帧外观。现在用独立 `stabilityContext[2]` 保存紧邻源帧的原始 RGB / 有效位，现有出生颜色和当前高精度深度语义不变。同一 dispatch 写出，跟随既有 source identity、真实 queue/fence 和成功 Reset 退休，预算计入新增纹理；没有扩大录制槽或放松深度 / 运动准入。DX12 表为 8 SRV / 5 UAV；生产 DXIL / 嵌入头逐字节一致，重新生成的 Vulkan 字节码与此前相同。实际 Vulkan GPU 未验收。
+- **可复现的像素结果：** 先播种一次强细节、随后弱输出并缓慢改变光照，避免测试不断更新出生颜色。生产 HLSL/WARP 3861 检查通过；恢复滚动出生颜色和恢复短稳定读取老出生颜色，两项独立负控均准确失败。28 个生命周期用例加 3 个实卡生产 DXIL / FP16 用例共 2678 检查通过；新外观场景连续 48 个源帧通过，恢复旧读取在第 8 帧失稳。另过 NR 公共颜色 / 输出 / Look、Reflex 和 FG pacing 定向回归；没有全量重跑 shared。以上不执行完整游戏 NR 模型，不等于游戏画面验收。
+- **阶段成本：** 修正计时夹具的 CPU non-visible UAV clear 描述符和异常持有后，当前 / 旧 / 当前在同宿主、2144×1344 工作图、1536×960 guides、平坦合成输入下各测 80 个样本。GPU 时间 P50 为 **2.780160 / 2.698240 / 2.779648 ms**，当前增加约 **0.082 ms**；三局 D3D12 debug layer errors=0，GPU-based validation 关闭，exe / CSO SHA 前后绑定。包含正常历史到期分支；不是持续完整分支的独占成本，也不是游戏帧数。早期 `stability-benchmark-*.log` 的 clear 描述符用法错误，已作废，不作性能结论。
+- **整体 60 ms 尚未通过：** 已成功运行的 PID225400 加载的是上一版 `b0eb017` / 磁盘 A9DDE228，不是本候选。两段前台显示采样中，总 Reflex P50 **101.489 / 113.347 ms**，线性插值 P95 **132.8955 / 141.1946 ms**；GPU 活跃时间 P50 **65.043 / 66.662 ms**。总值按同份有效报告最晚结束减最早开始，不重复相加模拟 / 队列 / GPU；不能拿排队子项替代总值，也不能称完整输入到显示延迟。没有有效新旧游戏 A/B；旧版对照失焦，11.09 Hz 无效。
+- **下一局定位：** `F6 source pacing` 已改为每线程每 5 秒采样，持续记录真实 SDK Present、PresentEnd 后收尾、解锁、实际 leased Sleep / limiter 的成对 QPC、原 token 和返回值；消除原来 32 条后停止的诊断盲区。不改变等待、准入或用户选项，不声称已降延迟。`present_tail_ms` 是 SDK 返回后的包含性尾段，不能再与其中子项相加。native phase 也区分 legacy history 与独立 feedback，不再拿旧 decision 的 false 误报反馈未工作。
+
+**操作边界以用户本次提供的最新 AGENTS.md 为准：游戏启动、进入场景、操作、调整和退出由用户手动完成，AI 构建、原位部署、读取日志和分析。** 本次续接没有操作游戏。下一局先验收细节跳变 / 残影，再以相同场景核对整体 Reflex ≤60 ms 和显示采样；持续性能目标仍未完成。
+
+证据目录：`build/genshin-reshade-20261114/detail-feedback-20261114-140355/`。当前构建 / 部署分别见 `stability-source-bound-build.json`、`stability-deployment.json`、`stability-installed-identity.json`、`stability-protected-{before,after}.json`；测试见 `stability-validation.json`、`stability-context-warp-final.log`、`stability-final-runtime-and-hardware.log`、`stability-final-hardware-negative.log`；成本与延迟见 `stability-final-benchmark/identity.json` 和 `stability-latency-observations.json`，分析脚本同目录。`native-current-final.log` 与 PID / creation time 绑定；`before-ab` 是其前缀，不能重复统计成独立样本。
+
+ReShade 仍受未知颜色域拒绝，尚无实际前置滤镜执行；当前用户设置仍是 BeforeSR。上一版自然 runtime 的缓存已正常命中，不能据此宣称 BeforeNR 滤镜成功。桥在 14:57 已推送的历史回执保留于下节，本候选没有部署新桥。保留无关 `pelican_bicycle.html` 和既有 `Invoke-ExactGameEntry.ps1` 未提交改动，不 reset / clean。
+
+## 历史：15:26 的缓存修复候选与当时操作条件
+
+更新：2026-11-14 15:26（UTC+08）。当前产品源码为 `b0eb017f1781e73b10f70a39b25d2f6db5ed9098`，包含 `bd79e40` 的 NR 反馈录制恢复与本次 ReShade 缓存事件修复，并保留此前 D3D11On12 / resize / BeforeNR 接线。Release x64 exit 0，1 分 40 秒；DLL **32,558,592 B，SHA256 `A9DDE228CCB4A1F2C144521CE2D2A4B125F462DC0AF094C5E1230BC98B688B70`**，mtime UTC `2026-11-14T07:26:00.5577369Z`。15:26:47 已原位部署到既有 `local/F6-ASI`，`DEPLOYED_IN_PLACE`；原 FileId `0x000000000000000000020000001b42ff`、6 条硬链接及核对的 INI / profile / Rocket 配置 / ReShade core 哈希保持。**新候选加载、游戏画面及性能仍未验收。**
+
+唯一产品树：`D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。文档提交不改变 DLL 源码身份。2026-11-14 本会话用户重新明确授权 CLI 启停、管理员进入世界，并要求尝试电脑技能点击 Rocket；该授权覆盖下文历史手测限制，但不授权改启动器选择、INI、preset、profiles、数据库或 ASI。用户已确认没有 Rocket CLI；Hub `launch_game` 在 Rocket 模式只准备配置，直接启动游戏 exe 的试验没有加载注入链，不能用于基准。电脑技能和独立控制入口经重置后均在连接前报 `failed to write kernel assets: 系统找不到指定的路径。(os error 3)`，未获得 Rocket 窗口，当前无法自主发起有效新局。不重复裸启动，不把工具失败写成游戏失败。
+
+## 最新：NR 反馈恢复、ReShade 缓存与桥推送（2026-11-14）
+
+- `bd79e40`：已完成 retained generation / source gap 后允许重新录制反馈，保留真实 queue/fence、Reset 关闭与独立历史邻接准入，不扩池、不复用不相邻帧；新增反馈录制 / busy / recovery 计数。28 个隔离运行时用例、policy 135、生产 shader WARP 3763、continuity 104 检查通过；两个真实 NVIDIA / 生产 DXIL / FP16 像素用例各 328 检查通过。修正的是宿主三 list teardown 的 Drain / Reset / Collect 顺序，未放松生产退休条件。这些不执行完整游戏 NR。
+- `b0eb017`：删除 `SelectionEvent` 中悬空 Destroy 条件，所有 Init / Reload / Preset / Order / Destroy 均发布代次，包括 owned 重入。保留 `reloadObserved`、revision / generation 及资源拒绝条件。真实固定 ReShade 核心回归覆盖两个顺序敏感 technique、非空 uniform 实时同步、owned 缓存、真实重排、否决 / 改写后的安全拒绝和恢复、二次 reload 与 destroy；713,775 像素 / 状态检查通过，4 次必要 graph build / 2 次私有快照后稳态无重复重建或快照 I/O。隔离副本重新加入 `!ownedOperation` 后准确触发负控失败；旧悬空条件也在真实 Init 断言被检出。BeforeSR 颜色 / 去重 270,398、BeforeNR 颜色 / 去重 147,586 检查通过，均不是游戏性能结论。
+- 外部桥同步已完成：隔离树 `D:/CODE/DLSS5_NEXT-workers/fsr-bridge-sync-20261114`，基于当次 fetch 的上游 `2db978753eb82ae8e4f90b8a0a13023db832b721` 合并当前四项有效补丁，NGX ON / OFF 各 18/18 通过；已普通快进推到 `thx114/genshin_fsr_brigde` 的 `main`，提交 `a03e99dc182430a605791f76487bc94acb5e21a8`，14:57:54 核对远端一致。未 force push、发布、部署新桥或动旧 fork 的 49 个未提交文件；本轮 F6 未推送。15:25 再次联网核对遇网络连接中止，不将 14:57 的快照称为持续实时最新。
+- 最新可用固定局仍是 `20261114-140355_YuanShen_230344`，实际加载 `8ca0623`，不是新候选。127 个同录制 GPU 样本：NR 总 P50 / P95 30.2756 / 35.6465 ms，模型 28.3832 / 33.408 ms；旧反馈多数被拒绝，history P50=0 不能作为正常低成本基线。582 个去重 Reflex 报告的 GPU 开始前排队 P50 / P95 20.9185 / 43.249 ms，不是受控 A/B，不能据此认定桥回退。
+- 该旧局 `Stage=1`，即 BeforeSR；自然 reload 确实到达，但坏事件发布使 `graph_builds=8046` 且缓存始终未命中。实际滤镜还被 `color-transfer-unknown-or-hdr` 拒绝，没有执行像素。源码 / 日志指向全局输出颜色域缺失；`IsHDR=false` 或 8-bit 存储格式不能单独证明低分辨率桥输入的 transfer。BeforeNR 已接线，但私有颜色信息读取仍有格式默认值授权的待修缺口；保持 unknown / HDR 拒绝，不能靠删条件宣称滤镜可用。用户反馈 GIMI 似乎正常，尚未独立确认新候选。
+
+本轮证据总目录：`build/genshin-reshade-20261114/detail-feedback-20261114-140355/`。NR 见 `source-bound-validation.json`、`recovery-teardown-final.log`、`hardware-pixels-teardown-final.log`；当前部署见 `selection-cache-build-identity.json`、`selection-cache-source-bound-deployment.json`、`selection-cache-installed-{before,after}.json`、`selection-cache-protected-{before,after}.json`；定向正负控见 `selection-cache-validation.json` 及其固定日志。完整旧局快照 `OptiScaler-snapshot.log` SHA256 `2DE83794F78BEF027A367A496F58AB6AA49BE42F7CA4F1F230C5603704829510`，28,241,340 B / 289,227 行。桥推送回执为桥树忽略目录 `local-only/push-receipt.json`。
+
+接续优先级：先补清楚颜色事实来源与读取失败语义；只在有效注入新局实际出现后绑定 PID / creation time / 加载身份和当前日志采样。桥普通 draw 的静态审计未发现新增锁、堆分配或原子 RMW，但存在重复 TLS scope；没有路由计时或游戏 A/B 前不做收益断言，也不凭静态计数贸然优化。
+
+## 历史：白屏后退出与 D3D11On12 内部工厂（2026-11-14，13:49）
 
 新局 `20261114-130257_YuanShen_240456`：13:02:54 加载 F6 `d0ca697`，ReShade `6.8.0.2155` 真实加载，桥路径由转储确认是 `temp3/Dx11FsrBridge (2).dll`；本局三个 Rocket 插件均开启，不能沿用此前 ReShade 关闭局的状态。13:03:37.823912 触发异常，13:04:05 收尾记录退出码 `-2147483645`。本局没有 NGX Evaluate、BeforeSR / BeforeNR 或实际 Present 入口，不以初始化的 NGX cache fallback 或 NR 架构警告替代退出根因。
 

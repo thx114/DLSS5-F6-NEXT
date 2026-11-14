@@ -1,6 +1,22 @@
 # F6 项目交接
 
-## 0. 当前：不开预览的早归还／原子查询版已部署，待手测（2026-11-13）
+## 0. 当前续接（2026-11-14 16:58，UTC+08）
+
+先读 [CURRENT-STATE](CURRENT-STATE.md) 顶部。本节覆盖后续所有历史操作条件和旧部署身份。
+
+- 产品源码保存点 **`7c2f11ed7503b8aaf117729541c32fc3a36e45a8`**，产品树 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。Release x64 exit 0，50 秒；DLL **32,567,808 B / SHA256 `3B9EDFBE5D222BB4FC18BD79C85EF8308E573C9C542EAA11D3676FF772EC8F20`**，嵌入构建标记 `7c2f11e`，mtime UTC `2026-11-14T08:56:45.0743464Z`。16:56 原位部署至既有 `local/F6-ASI`，原 FileId `0x000000000000000000020000001b42ff`、6 硬链接和核对的配置哈希保持；没有切包或切启动器选项。文档提交不改变该 DLL 身份。
+- **最新优先级：先修细节稳定，再核对整体 Reflex ≤60 ms 和性能。目标尚未完成。** 用户本次重新提供的 AGENTS.md 要求游戏启动、进入场景、操作、调整和退出由用户手动完成；AI 构建、原位覆盖、读日志和分析。本次续接未操作游戏，不沿用后文历史 CLI 授权覆盖最新指示。
+- 稳定修复将短窗口的相邻原始 RGB 与长历史出生 RGB 分离为 `stabilityContext[2]`；仍用现有当前高精度深度，保留真实 queue/fence、成功 Reset、source 邻接和预算。DX12 8 SRV / 5 UAV，生产 CSO / 嵌入头已逐字节核对；重新生成 Vulkan 字节码不变，保留后端编译，未做 Vulkan GPU 验收。
+- HLSL/WARP 3861 检查及滚动出生 / 错用长出生外观两项负控通过。28 个生命周期 + 3 个真实 NVIDIA / 生产 DXIL / FP16 用例共 2678 检查通过；新光照序列 48 源帧稳定，旧外观负控在源 8 失败。原测试若不断刷新出生信息，会漏检，不能再拿它作为稳定证明。公共颜色 / 输出 / Look、Reflex、pacing 定向回归通过；shared 未全量重跑。离线检查不执行完整游戏模型，**本候选实际加载和游戏画面仍待验收**。
+- 同宿主、同资源、2144×1344 / guides1536×960、平坦合成输入的当前 / 旧 / 当前 GPU 阶段 P50 **2.780160 / 2.698240 / 2.779648 ms**，增加约 0.082 ms。三组各 80 样本，包含正常到期分支，debug errors=0，GPU-based validation 关闭，exe / CSO SHA 前后绑定。旧的 `stability-benchmark-*.log` clear 描述符 API 误用，已作废；有效数据在 `stability-final-benchmark/`。不能据阶段对照宣称游戏没有降帧或整体 ≤60 ms。
+- 已有有效新局是上一版 PID225400 / creation FILETIME134391152493078336，启动 UTC07:34:09，实际加载 `b0eb017` / 磁盘 A9DDE228；已进入大世界，不能继续说启动器无法启动。两段前台显示变化率 88.66 / 86.47 Hz，源 Evaluate 约 14 Hz；总 Reflex P50 **101.489 / 113.347 ms**，GPU 活跃 P50 **65.043 / 66.662 ms**，60 ms 未过。总值按同报告端点跨度，不重复叠加队列、GPU或模拟，也不等于完整输入到显示。`before-ab.log` 是 `final.log` 前缀，不能重复统计。旧版 PID220956 首次对照失焦，11.09 Hz 无效；没有有效游戏新旧 A/B。当前安装已是本节新候选，不能拿旧 PID 当本候选加载证据。
+- 本局没有重复 Sleep 的确定证据。现已用每线程 5 秒的持续 `F6 source pacing` 记录原 token、实际 SDK Present / 收尾 / 解锁 / leased Sleep / limiter 的成对 QPC 和返回值，保留所有等待行为。`present_tail_ms` 是 SDK 返回后的包含性尾段，不能与子项再次相加；没有同份 Reflex report 的自动 join。native phase 现在分开输出 legacy decision 和 feedback plan，避免把旧字段 false 当成独立反馈断链。
+- 下一局由用户在原场景手测稳定跳变 / 残影，AI 读取新局日志绑定 PID、creation time、加载 `7c2f11e` 和当前磁盘身份，再核对总 Reflex、GPU 工作与排队、显示采样。潜在等价优化是复用 `result.context.a` 的已验证当前深度，尚未实施；若实施，需对 u0…u4 跨帧逐位验证，不能仅凭静态审计宣称收益。保留 SR / NR / FG 及用户参数，不扩录制池、不复用旧帧、不删除拒绝条件。
+- ReShade 当前设置仍是 BeforeSR，缓存自然 runtime 已命中，但前置滤镜仍被未知颜色域拒绝、没有实际执行。BeforeNR 私有颜色读取缺口仍待修，不能靠格式或 IsHDR=0 自动授权 SDR。桥历史推送回执：14:57 `thx114/genshin_fsr_brigde:main`=`a03e99dc182430a605791f76487bc94acb5e21a8`，当次上游=`2db978753eb82ae8e4f90b8a0a13023db832b721`，ON/OFF 各18/18；未部署新桥，未再次认证远端最新。本轮 F6 未推送。
+
+证据总目录 `build/genshin-reshade-20261114/detail-feedback-20261114-140355/`。当前身份见 `stability-source-bound-build.json`、`stability-deployment.json`、`stability-installed-identity.json`；验证见 `stability-validation.json` 及对应固定日志；有效成本 / 延迟见 `stability-final-benchmark/identity.json`、`stability-latency-observations.json` 和 `analyze_stability_round.py`。保留 `Invoke-ExactGameEntry.ps1` 既有未提交改动与无关 `pelican_bicycle.html`，不 reset / clean。所有本次只读 Sol high 子智能体已关闭；新任务由当前主会话另建，不复用过期实例。
+
+## 0.1 历史：不开预览的早归还／原子查询版（2026-11-13）
 
 ### 切换会话停止点
 
@@ -482,4 +498,4 @@ pwsh -NoProfile -File ./tools/runtime/Collect-F6DisplayTiming.ps1 `
 
 ## 12. 新会话续接提示
 
-> 以第0节和CURRENT-STATE为准。三游戏仍选local/F6-ASI，runtime 784CEF0274B47D8E按biz隔离；DLL A6D12031已原位部署，源码基于75d7a27未提交工作树，由asi-only-source绑定。通用ASI加载保留，用户插件、配置和各游戏NR原样，1857项文件及四个DLL硬链接核验通过，回退字节6D377DD4。用户手动重开游戏加载新版；当前加载、画面与性能未验，旧菜单初步通过不能代替本次验收。当前回执和回退路径见第0节，共享正式部署、旧包/runtimes及历史证据保留，不重复prepare现存包，不用新工具verify旧plan。HDR暂缓，不查询或操控游戏，不复用过期子智能体。
+> 先读第 0 节和 CURRENT-STATE 顶部，按当前 `selection-cache-source-bound-deployment.json` 核对产品，不沿用下文历史 DLL 身份。`b0eb017` / `A9DDE228` 已原位部署，NR 反馈与 ReShade 缓存专项通过，游戏加载、画面和性能仍未验收。本会话 CLI / Rocket 界面测试已获新授权，但控制工具连接失败且无 Rocket CLI；保留用户配置，继续补颜色事实与运行证据。桥 `a03e99d` 已推送、未部署，不复用旧会话或过期子智能体。
