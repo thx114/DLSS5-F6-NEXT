@@ -33,6 +33,7 @@ $counts = [ordered]@{
     GenshinSdkClosureLogLines = 0; GenshinStreamOutputLogLines = 0; GenshinOwnerOutputLogLines = 0
     GenshinOwnerShownLogLines = 0; GenshinPhysicalRefusalLogLines = 0
     FgCapabilityLogLines = 0; FgConfigurationLogLines = 0
+    SdkInputPresentLogLines = 0
     GenshinVisibilityLogLines = 0; GenshinPresentCpuLogLines = 0
     GenshinProducerProgressLogLines = 0; GenshinProducerComparisonLogLines = 0
 }
@@ -47,6 +48,7 @@ $genshinOwner = [Collections.Generic.List[object]]::new()
 $genshinRefusal = [Collections.Generic.List[object]]::new()
 $fgCapability = [Collections.Generic.List[object]]::new()
 $fgConfiguration = [Collections.Generic.List[object]]::new()
+$sdkInputPresent = [Collections.Generic.List[object]]::new()
 $genshinVisibility = [Collections.Generic.List[object]]::new()
 $genshinPresentCpu = [Collections.Generic.List[object]]::new()
 $genshinProducerProgress = [Collections.Generic.List[object]]::new()
@@ -230,6 +232,9 @@ try {
         if ($line.Contains('F6 FG configuration:')) {
             ++$counts.FgConfigurationLogLines; Save-Sample $fgConfiguration $lineNumber $line
         }
+        if ($line.Contains('F6 SDK input Present observation:')) {
+            ++$counts.SdkInputPresentLogLines; Save-Sample $sdkInputPresent $lineNumber $line
+        }
         if ($line.Contains('R846 FG visibility-boundary:')) {
             ++$counts.GenshinVisibilityLogLines; Save-Sample $genshinVisibility $lineNumber $line
         }
@@ -322,7 +327,7 @@ $result = [ordered]@{
     RetainedRowCounts = @{ NrCadence = $nr.Count; FgTaggedDepth = $fg.Count; ZzzSourceSdk = $zzz.Count; GpuCompleted = $gpu.Count
         ZzzNgxRoute = $zzzNgx.Count; GenshinSdkClosure = $genshinSdk.Count; GenshinStreamOutput = $genshinOutput.Count
         GenshinOwnerOutput = $genshinOwner.Count; GenshinPhysicalRefusal = $genshinRefusal.Count
-        FgCapability = $fgCapability.Count; FgConfiguration = $fgConfiguration.Count
+        FgCapability = $fgCapability.Count; FgConfiguration = $fgConfiguration.Count; SdkInputPresent = $sdkInputPresent.Count
         GenshinVisibility = $genshinVisibility.Count; GenshinPresentCpu = $genshinPresentCpu.Count
         GenshinProducerProgress = $genshinProducerProgress.Count; GenshinProducerComparison = $genshinProducerComparison.Count }
     NrCadence = @($nr); FgTaggedDepth = @($fg); ZzzSourceSdk = @($zzz)
@@ -330,6 +335,7 @@ $result = [ordered]@{
     ZzzNgxRoute = @($zzzNgx); GenshinSdkClosure = @($genshinSdk); GenshinStreamOutput = @($genshinOutput)
     GenshinOwnerOutput = @($genshinOwner); GenshinPhysicalRefusal = @($genshinRefusal)
     FgCapability = @($fgCapability); FgConfiguration = @($fgConfiguration)
+    SdkInputPresent = @($sdkInputPresent)
     GenshinVisibility = @($genshinVisibility); GenshinPresentCpu = @($genshinPresentCpu)
     GenshinProducerProgress = @($genshinProducerProgress); GenshinProducerComparison = @($genshinProducerComparison)
     IndependentlyVerified = @{ SelectedSr = $false; GpuObjectOwnership = $false; GeneratedPixels = $false; TemporalDetail = $false; NetPerformance = $false }

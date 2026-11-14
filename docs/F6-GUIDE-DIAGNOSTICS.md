@@ -61,3 +61,5 @@ pwsh -File tools/runtime/Get-F6RunEvidence.ps1 -Log <saved.log> -ExpectedPid <PI
 `F6 SDK input completion observation` 随现有实际 GetState 每线程最多5秒记录一次，包含调用线程、序号、请求/返回结构版本、原始fence地址/目标值和查询时的provider身份。`fields_observed`只表示在已知ABI内读取了字段，不证明SDK写入、fence完成或属于当前Present；零目标也是原始数值，不能代替未知状态。数字地址不会被解引用或持有COM引用。
 
 当前provider查询通常发生在Dispatch中，早于SDK Present；`source_frame_at_query`不把返回值绑定为该源帧的完成回执。`present_join`、`buffer_join`和`gpu_complete`保持UNKNOWN，`receipt_usable=false`；不据此计算FG GPU耗时或授权跨队列复用。
+
+`54b422f`另有`F6 SDK input Present observation`，每5秒最多一次，在实际SDK Present返回且计时结束后、teardown前查询。原buffer、buffer/input/SDK代次和Present线程与独立持有的fence关联；SDK index正常推进不改变本次输入。`joined=true`只表示该次关联及设备校验成功，`input_status=pending/complete/device-lost`来自该fence即时状态；日志仍明确`queue_separated=false`和`receipt_usable_for_retirement=false`，生产复用/退休未接通。`Get-F6RunEvidence.ps1`在`SdkInputPresent`保留原始字段和行号，计数见`SdkInputPresentLogLines`。没有行、查询失败、重复目标或缺少新局加载证据，均不能宣称已拆队列或达到60ms。
