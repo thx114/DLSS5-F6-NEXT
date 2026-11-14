@@ -69,11 +69,13 @@ LAUNCHPAD 也能估计图像光流。`OPTICAL_FLOW_Q=0` 表示 Low，并非关�
 
 阻断点：PR 清掉低分辨率 MV 标志，却仍交低分辨率纹理，违反 F6 FG 输入契约；新增字段默认值/测试未闭合。安装器改配置、复制 ReShade 与信任根等行为不纳入本次集成。
 
-初始集成采用上述固定 main 加独立的 `Ffx12SingleInstance` 配置接管控制，保存点 `3ec47e3de096fd7f64872f819d108a0535938884`。其后的启动兼容修复保存为 `f53873a7943b502e7739f5361c8b8f65c714b602`：创建入口和 COM 方法按实际 callable 配对，保留代理绘制前后处理，精确复制完整受支持接口表，并分开 SwapChain4 的 HDR 方法与 `ResizeBuffers1`。可重建源码差异见 [外部桥补丁](../patches/genshin-fsr-bridge/README.md)。
+初始集成采用上述固定 main 加独立的 `Ffx12SingleInstance` 配置接管控制，保存点 `3ec47e3de096fd7f64872f819d108a0535938884`。其后的启动兼容修复保存为 `f53873a7943b502e7739f5361c8b8f65c714b602`：创建入口和 COM 方法按实际 callable 配对，保留代理绘制前后处理，精确复制完整受支持接口表，并分开 SwapChain4 的 HDR 方法与 `ResizeBuffers1`。最终完整保存点 `586f7f0fd77be27f9ed9884537fff3180b88bbb9` 另含本局异构交换链的 `ResizeTarget` 正反顺序回归；生产源码未再改动。可重建源码差异见 [外部桥补丁](../patches/genshin-fsr-bridge/README.md)。
 
-当前 Release x64、NGX ON、release runtime ON、diagnostics OFF，`bridge-routing-resume-final.log` 13/13 CTest 通过，包括原 NgxParamMap、实际 DLL 多提供者 / 嵌套 / 工厂 / 接口表边界、代理前后处理、SwapChain3 / 4 和真实 WARP 字节。旧桥负控及修正前的 HDR 槽位用例均检出错误。COM 同址重建及克隆表退休仍是单列的继承缺口，不作为首次启动退出的根因。
+当前 Release x64、NGX ON、release runtime ON、diagnostics OFF，`bridge-routing-final-verified.log` 15/15 CTest 通过，包括原 NgxParamMap、实际 DLL 多提供者 / 嵌套 / 工厂 / 接口表边界、代理前后处理、SwapChain3 / 4、异构布局 ResizeTarget 和真实 WARP 字节。旧桥负控及修正前的 HDR 槽位用例均检出错误；ResizeTarget 的两个创建顺序在旧桥下各检出 2 次错误转发。COM 同址重建及克隆表退休仍是单列的继承缺口，不作为首次启动退出的根因。
 
-已原位部署既有 `temp3/Dx11FsrBridge (2).dll`：SHA256 `A49014B2424F85D50AEF7D3A0858DE33E32F7F60C589D5FFB63E6C9D684B9FC6`，818,176 B；原 FileId `0x000000000000000000040000001d8630` 和 2 个硬链接保持，桥 INI / ReShade 核心 / F6 DLL 哈希未变。回执 `bridge-routing-installed-after.json` 取代旧 `bridge-installed-after.json` 的当前身份；尚无新桥的新局实际加载 / 画面验收。
+已原位部署既有 `temp3/Dx11FsrBridge (2).dll`：SHA256 `94D3B633195B55EE8F398FDD837CAB4A732FD718962FD2BEA81FD7FC56C275C0`，818,176 B；原 FileId `0x000000000000000000040000001d8630` 和 2 个硬链接保持，桥 INI / ReShade 核心 / F6 DLL 哈希未变。回执 `bridge-routing-final-installed-after.json` 取代较早回执的当前身份；尚无新桥的新局实际加载 / 画面验收。
+
+08:54 局 PID240612 的实际 dump 已确认旧桥把 F6 wrapper 传给了 ReShade 的 `ResizeTarget` 原方法，导致 ReShade 按错误对象布局访问冲突；具体指针、展开栈和匹配 PE 身份见当前状态文档及 `dump-resize-routing-analysis.json`。这为该次 `0xC0000005` 提供了直接证据；更早 `0xC0000135` 的退出仍不能按同一根因处理。
 
 参考：`https://github.com/AizawaHikaru233/genshin_fsr_brigde/pull/15`、`https://github.com/AizawaHikaru233/genshin_fsr_brigde`、`https://github.com/CXP-2024/GIMI_reshade_dlss_integration`、本机固定核心 API20 SDK 与 iMMERSE 原 shader。
 

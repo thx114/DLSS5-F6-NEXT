@@ -1,8 +1,8 @@
 diff --git a/Dx11FsrBridge/CMakeLists.txt b/Dx11FsrBridge/CMakeLists.txt
-index b1c65716ddebd5f8e8eb19b854bf4926763d77e9..380fcd5d88dda444c85ced45e93ed47a9db6e886 100644
+index b1c65716ddebd5f8e8eb19b854bf4926763d77e9..13270a68353cdfc91a3e8e0485ed1d536ce126e9 100644
 --- a/Dx11FsrBridge/CMakeLists.txt
 +++ b/Dx11FsrBridge/CMakeLists.txt
-@@ -364,6 +364,38 @@ enable_testing()
+@@ -364,6 +364,40 @@ enable_testing()
  add_test(NAME NgxParamMapTest COMMAND NgxParamMapTest)
  
  if(DX11FSRBRIDGE_BUILD_TESTS)
@@ -18,6 +18,7 @@ index b1c65716ddebd5f8e8eb19b854bf4926763d77e9..380fcd5d88dda444c85ced45e93ed47a
 +    foreach(provider IN ITEMS First Second)
 +        add_library(CreateRouteProvider${provider} SHARED
 +            tests/create-routing/Provider.cpp tests/create-routing/Provider.def)
++        fsrbridge_configure_test(CreateRouteProvider${provider})
 +        set_target_properties(CreateRouteProvider${provider} PROPERTIES OUTPUT_NAME d3d11
 +            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/create-routing/${provider}"
 +            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/create-routing/${provider}")
@@ -30,7 +31,8 @@ index b1c65716ddebd5f8e8eb19b854bf4926763d77e9..380fcd5d88dda444c85ced45e93ed47a
 +    endforeach()
 +    add_executable(CreateRouteIntegrationTest tests/create-routing/Host.cpp)
 +    fsrbridge_configure_test(CreateRouteIntegrationTest)
-+    foreach(mode IN ITEMS independent nested success nested-success swapchain swapchain4 warp)
++    foreach(mode IN ITEMS independent nested success nested-success swapchain swapchain4
++        resize-routing resize-routing-reversed warp)
 +        add_test(NAME CreateRouteIntegration-${mode} COMMAND CreateRouteIntegrationTest
 +            "$<TARGET_FILE:Dx11FsrBridge>"
 +            "$<TARGET_FILE:CreateRouteProviderFirst>" "$<TARGET_FILE:CreateRouteProviderSecond>"
@@ -1361,10 +1363,10 @@ index 0000000000000000000000000000000000000000..f814fd273f99e564b19d87edc81f9ef7
 +}
 diff --git a/Dx11FsrBridge/tests/create-routing/Host.cpp b/Dx11FsrBridge/tests/create-routing/Host.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4c7638d23bbe25007a72c7bb56e9c0454d00f742
+index 0000000000000000000000000000000000000000..d39a514d5506f7fac5eb4899ea53275e43851798
 --- /dev/null
 +++ b/Dx11FsrBridge/tests/create-routing/Host.cpp
-@@ -0,0 +1,310 @@
+@@ -0,0 +1,352 @@
 +#include <windows.h>
 +#include <d3d11.h>
 +#include <dxgi1_5.h>
@@ -1463,7 +1465,8 @@ index 0000000000000000000000000000000000000000..4c7638d23bbe25007a72c7bb56e9c045
 +    });
 +    const std::wstring mode = argv[6];
 +    const bool nested = mode == L"nested" || mode == L"nested-success";
-+    const bool hdr_swapchain = mode == L"swapchain4";
++    const bool resize_routing = mode == L"resize-routing" || mode == L"resize-routing-reversed";
++    const bool hdr_swapchain = mode == L"swapchain4" || resize_routing;
 +    const bool swapchain_mode = mode == L"swapchain" || hdr_swapchain;
 +    const bool success = mode == L"success" || mode == L"nested-success" || swapchain_mode;
 +    const HMODULE first = LoadLibraryW(argv[2]);
@@ -1494,7 +1497,10 @@ index 0000000000000000000000000000000000000000..4c7638d23bbe25007a72c7bb56e9c045
 +            reinterpret_cast<void(WINAPI *)(BOOL)>(GetProcAddress(provider, "SetExtended"))(nested);
 +            reinterpret_cast<void(WINAPI *)(BOOL)>(GetProcAddress(provider, "SetSwapchain"))(swapchain_mode);
 +            reinterpret_cast<void(WINAPI *)(BOOL)>(GetProcAddress(provider, "SetHdrSwapchain"))(hdr_swapchain);
-+            reinterpret_cast<void(WINAPI *)()>(GetProcAddress(provider, "GuardTables"))();
++            // 错配专项也运行旧 DLL 负控，保留旧版本所读的额外 backing 槽。
++            // 精确页边界继续由其余成功路径用例独立覆盖。
++            if (!resize_routing)
++                reinterpret_cast<void(WINAPI *)()>(GetProcAddress(provider, "GuardTables"))();
 +        }
 +    }
 +
@@ -1521,7 +1527,45 @@ index 0000000000000000000000000000000000000000..4c7638d23bbe25007a72c7bb56e9c045
 +        belongs_to(bridge, reinterpret_cast<void *>(device2)) &&
 +        belongs_to(bridge, reinterpret_cast<void *>(combined1)) &&
 +        belongs_to(bridge, reinterpret_cast<void *>(combined2)), "both creation APIs actually enter production bridge");
-+    if (mode == L"warp")
++    if (resize_routing)
++    {
++        ID3D11Device *device = nullptr;
++        expect(call_device(device1, &device) == S_OK && device, "single provider creates device");
++        if (!device)
++            return 12;
++        IDXGIDevice *dxgi = nullptr;
++        IDXGIAdapter *adapter = nullptr;
++        IDXGIFactory2 *factory = nullptr;
++        if (FAILED(device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void **>(&dxgi))) ||
++            FAILED(dxgi->GetAdapter(&adapter)) ||
++            FAILED(adapter->GetParent(__uuidof(IDXGIFactory2), reinterpret_cast<void **>(&factory))))
++            return 13;
++        const auto select_wrapper = reinterpret_cast<void(WINAPI *)(BOOL)>(GetProcAddress(first, "SetWrapperChain"));
++        const bool reversed = mode == L"resize-routing-reversed";
++        IDXGISwapChain1 *chains[2] {};
++        DXGI_SWAP_CHAIN_DESC1 desc {};
++        desc.Width = 640;
++        desc.Height = 360;
++        for (unsigned i = 0; i < 2; ++i)
++        {
++            select_wrapper(reversed ? i == 0 : i != 0);
++            expect(SUCCEEDED(factory->CreateSwapChainForHwnd(device, nullptr, &desc, nullptr, nullptr, &chains[i])) &&
++                chains[i], "factory returns distinct-layout swapchain");
++            if (!chains[i])
++                return 14;
++            expect(belongs_to(bridge, (*reinterpret_cast<void ***>(chains[i]))[14]),
++                "each ResizeTarget actually enters production bridge");
++        }
++        expect(chains[0] != chains[1], "two live swapchains have distinct receiver identities");
++        DXGI_MODE_DESC target {};
++        target.Width = 640;
++        target.Height = 360;
++        for (unsigned pass = 0; pass < 2; ++pass)
++            for (auto *chain : chains)
++                expect(chain->ResizeTarget(&target) == E_ABORT,
++                    "interleaved ResizeTarget retains matching receiver, layout and original");
++    }
++    else if (mode == L"warp")
 +    {
 +        wchar_t system[MAX_PATH] {};
 +        GetSystemDirectoryW(system, MAX_PATH);
@@ -1697,10 +1741,10 @@ index 0000000000000000000000000000000000000000..fc152df0469ba3b67ba8c14fa8c95c5b
 +}
 diff --git a/Dx11FsrBridge/tests/create-routing/Provider.cpp b/Dx11FsrBridge/tests/create-routing/Provider.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..878dad6e4f10fcd95518ea718897e4b42a5c47e0
+index 0000000000000000000000000000000000000000..7b3168d48718547401e0dd819232a7d9e982247c
 --- /dev/null
 +++ b/Dx11FsrBridge/tests/create-routing/Provider.cpp
-@@ -0,0 +1,294 @@
+@@ -0,0 +1,347 @@
 +#include <windows.h>
 +#include <d3d11.h>
 +#include <d3d11_4.h>
@@ -1716,6 +1760,7 @@ index 0000000000000000000000000000000000000000..878dad6e4f10fcd95518ea718897e4b4
 +bool extended_context = false;
 +bool successful_swapchain = false;
 +bool hdr_swapchain = false;
++bool return_wrapper_chain = false;
 +struct Device
 +{
 +    void **vtable;
@@ -1731,13 +1776,38 @@ index 0000000000000000000000000000000000000000..878dad6e4f10fcd95518ea718897e4b4
 +void *factory_methods[40] {};
 +Device factory_object { factory_methods };
 +void *swapchain_methods[41] {};
-+Device swapchain_object { swapchain_methods };
++void *wrapper_methods[41] {};
++unsigned native_layout_tag = 0;
++unsigned operations_layout_tag = 0;
++struct NativeSwapchain
++{
++    void **vtable;
++    const void *original;
++};
++struct WrappedSwapchain
++{
++    void **vtable;
++    const void *operations;
++    unsigned marker;
++};
++NativeSwapchain swapchain_object { swapchain_methods, &native_layout_tag };
++WrappedSwapchain wrapper_object { wrapper_methods, &operations_layout_tag, 42 };
 +std::atomic<unsigned> wrong_this {};
 +std::atomic<unsigned> draws {};
 +std::atomic<unsigned> factory_calls {};
 +
 +void STDMETHODCALLTYPE unused() {}
 +ULONG STDMETHODCALLTYPE release(void *) { return 1; }
++
++bool is_swapchain(void *object)
++{
++    return object == &swapchain_object || object == &wrapper_object;
++}
++
++void *selected_swapchain()
++{
++    return return_wrapper_chain ? static_cast<void *>(&wrapper_object) : static_cast<void *>(&swapchain_object);
++}
 +
 +HRESULT STDMETHODCALLTYPE query_interface(void *object, REFIID iid, void **output)
 +{
@@ -1753,10 +1823,10 @@ index 0000000000000000000000000000000000000000..878dad6e4f10fcd95518ea718897e4b4
 +        *output = &factory_object;
 +        return S_OK;
 +    }
-+    if (object == &swapchain_object && output &&
++    if (is_swapchain(object) && output &&
 +        (iid == __uuidof(IDXGISwapChain3) || (iid == __uuidof(IDXGISwapChain4) && hdr_swapchain)))
 +    {
-+        *output = &swapchain_object;
++        *output = object;
 +        return S_OK;
 +    }
 +    if (object == &context_object && output)
@@ -1808,7 +1878,7 @@ index 0000000000000000000000000000000000000000..878dad6e4f10fcd95518ea718897e4b4
 +    ++factory_calls;
 +    if (successful_swapchain && output && object == &factory_object)
 +    {
-+        *output = reinterpret_cast<IDXGISwapChain *>(&swapchain_object);
++        *output = reinterpret_cast<IDXGISwapChain *>(selected_swapchain());
 +        return S_OK;
 +    }
 +    return object == &factory_object ? static_cast<HRESULT>(FIXTURE_RESULT) : E_UNEXPECTED;
@@ -1820,7 +1890,7 @@ index 0000000000000000000000000000000000000000..878dad6e4f10fcd95518ea718897e4b4
 +    ++factory_calls;
 +    if (successful_swapchain && output && object == &factory_object)
 +    {
-+        *output = reinterpret_cast<IDXGISwapChain1 *>(&swapchain_object);
++        *output = reinterpret_cast<IDXGISwapChain1 *>(selected_swapchain());
 +        return S_OK;
 +    }
 +    return object == &factory_object ? static_cast<HRESULT>(FIXTURE_RESULT) : E_UNEXPECTED;
@@ -1838,12 +1908,30 @@ index 0000000000000000000000000000000000000000..878dad6e4f10fcd95518ea718897e4b4
 +HRESULT STDMETHODCALLTYPE resize_tail(void *object, UINT, UINT, UINT, DXGI_FORMAT, UINT,
 +    const UINT *, IUnknown *const *)
 +{
-+    return object == &swapchain_object ? static_cast<HRESULT>(FIXTURE_RESULT) : E_UNEXPECTED;
++    return is_swapchain(object) ? static_cast<HRESULT>(FIXTURE_RESULT) : E_UNEXPECTED;
++}
++
++HRESULT STDMETHODCALLTYPE native_resize_target(void *object, const DXGI_MODE_DESC *target)
++{
++    // 把跨布局的错误 this 转为可观察失败，避免负控在解引用错误布局前崩溃。
++    if (object != &swapchain_object || !target || target->Width != 640 || target->Height != 360)
++        return E_UNEXPECTED;
++    return static_cast<NativeSwapchain *>(object)->original == &native_layout_tag
++        ? static_cast<HRESULT>(FIXTURE_RESULT) : E_UNEXPECTED;
++}
++
++HRESULT STDMETHODCALLTYPE wrapper_resize_target(void *object, const DXGI_MODE_DESC *target)
++{
++    if (object != &wrapper_object || !target || target->Width != 640 || target->Height != 360)
++        return E_UNEXPECTED;
++    const auto *wrapper = static_cast<WrappedSwapchain *>(object);
++    return wrapper->operations == &operations_layout_tag && wrapper->marker == 42
++        ? static_cast<HRESULT>(FIXTURE_RESULT) : E_UNEXPECTED;
 +}
 +
 +HRESULT STDMETHODCALLTYPE set_hdr_metadata(void *object, DXGI_HDR_METADATA_TYPE type, UINT size, void *metadata)
 +{
-+    return object == &swapchain_object && type == DXGI_HDR_METADATA_TYPE_NONE && size == 0 && metadata == nullptr
++    return is_swapchain(object) && type == DXGI_HDR_METADATA_TYPE_NONE && size == 0 && metadata == nullptr
 +        ? static_cast<HRESULT>(FIXTURE_RESULT) : E_UNEXPECTED;
 +}
 +
@@ -1895,8 +1983,16 @@ index 0000000000000000000000000000000000000000..878dad6e4f10fcd95518ea718897e4b4
 +    swapchain_methods[0] = reinterpret_cast<void *>(&query_interface);
 +    swapchain_methods[2] = reinterpret_cast<void *>(&release);
 +    swapchain_methods[12] = reinterpret_cast<void *>(&swapchain_desc);
++    swapchain_methods[14] = reinterpret_cast<void *>(&native_resize_target);
 +    swapchain_methods[39] = reinterpret_cast<void *>(&resize_tail);
 +    swapchain_methods[40] = reinterpret_cast<void *>(&set_hdr_metadata);
++    std::memcpy(wrapper_methods, swapchain_methods, sizeof(wrapper_methods));
++    wrapper_methods[14] = reinterpret_cast<void *>(&wrapper_resize_target);
++}
++
++extern "C" __declspec(dllexport) void WINAPI SetWrapperChain(BOOL enabled)
++{
++    return_wrapper_chain = enabled != FALSE;
 +}
 +
 +extern "C" __declspec(dllexport) void WINAPI SetSwapchain(BOOL enabled)
@@ -1934,6 +2030,7 @@ index 0000000000000000000000000000000000000000..878dad6e4f10fcd95518ea718897e4b4
 +    context_object.vtable = guarded_table(context_methods, extended_context ? 149 : 115);
 +    factory_object.vtable = guarded_table(factory_methods, 25);
 +    swapchain_object.vtable = guarded_table(swapchain_methods, hdr_swapchain ? 41 : 40);
++    wrapper_object.vtable = guarded_table(wrapper_methods, hdr_swapchain ? 41 : 40);
 +}
 +
 +extern "C" __declspec(dllexport) unsigned WINAPI GetWrongThis() { return wrong_this.load(); }

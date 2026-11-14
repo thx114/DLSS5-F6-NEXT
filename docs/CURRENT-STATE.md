@@ -65,15 +65,15 @@ LAUNCHPAD 为本机 MXAO 提供基础 / 平滑法线，需要当前深度。它�
 
 用户补充“只注入 FSR 也会崩溃”。实际旧桥 DLL 的独立宿主复现了两个同名 `d3d11.dll` 共用 original：第二提供者的 GPA / IAT 调用进入第一提供者。成功返回设备后，COM 方法也存在同类错配；同址 Factory2 / Factory 的重复安装还可能保存自身 hook。
 
-源码保存点 `f53873a7943b502e7739f5361c8b8f65c714b602` 按实际 callable 统一创建入口与 COM original，逐线程恢复嵌套调用；用标准 QI 定位实际 context，保留代理的绘制前后处理，内部 bypass 不再全局切换 vptr。接口表按实际 SDK 能力保留完整长度，并纠正 SwapChain4 的 HDR 方法槽 40，保留槽 39 的 `ResizeBuffers1`。未改 Rocket / ReShade 核心或用户配置。
+运行时修复保存点 `f53873a7943b502e7739f5361c8b8f65c714b602` 按实际 callable 统一创建入口与 COM original，逐线程恢复嵌套调用；用标准 QI 定位实际 context，保留代理的绘制前后处理，内部 bypass 不再全局切换 vptr。接口表按实际 SDK 能力保留完整长度，并纠正 SwapChain4 的 HDR 方法槽 40，保留槽 39 的 `ResizeBuffers1`。最终完整源码为 `586f7f0fd77be27f9ed9884537fff3180b88bbb9`，只追加本局 `ResizeTarget` 回归与 fixture 的 UTF-8 构建设置，生产源码与前一提交一致。未改 Rocket / ReShade 核心或用户配置。
 
-`bridge-routing-resume-final.log` 为 Release x64 / NGX ON / release runtime ON / diagnostics OFF 的构建与 13/13 CTest 通过证据；包含真实 DLL 多提供者、嵌套成功路径、页边界接口表、SwapChain3 / 4 和 WARP 字节读回。旧桥负控 `bridge-route-negative-old.log` 检出 5 项错误；新增 SwapChain4 用例在修正前 `bridge-routing-hdr-negative.log` 检出两个提供者的槽位错配。`DllMain` 归属 `Dx11FsrBridge.cpp.obj`，产物含新增提供者绑定日志。
+最终 `bridge-routing-final-verified.log` 为 Release x64 / NGX ON / release runtime ON / diagnostics OFF 的构建与 15/15 CTest 通过证据；包含真实 DLL 多提供者、嵌套成功路径、页边界接口表、SwapChain3 / 4、不同布局交换链的 `ResizeTarget` 正反创建顺序和 WARP 字节读回。旧桥负控 `bridge-route-negative-old.log` 检出 5 项错误；SwapChain4 修正前的 `bridge-routing-hdr-negative.log` 检出两个提供者的槽位错配；`bridge-resize-routing-negative-old.log` 与 `bridge-resize-routing-reversed-negative-old.log` 各检出 2 次错误转发。`DllMain` 归属 `Dx11FsrBridge.cpp.obj`，产物含新增提供者绑定日志。首次新增 ResizeTarget fixture 因 provider 未开 `/utf-8` 失败的日志保留，使用既有统一测试配置后实跑通过，不归因于生产路由。
 
-2026-11-14 09:57（UTC+08）已原位覆盖既有 `temp3/Dx11FsrBridge (2).dll`：SHA256 `A49014B2424F85D50AEF7D3A0858DE33E32F7F60C589D5FFB63E6C9D684B9FC6`，818,176 B。原 FileId `0x000000000000000000040000001d8630` 与两条硬链接保留，两个别名哈希一致；桥 INI、ReShade 核心和 F6 DLL 哈希未变。回执 `bridge-routing-build-identity.json`、`bridge-routing-deployment.json`、`bridge-routing-installed-before.json`、`bridge-routing-installed-after.json`；未生成待替换 `.next`。
+2026-11-14 10:18（UTC+08）已原位覆盖既有 `temp3/Dx11FsrBridge (2).dll`：SHA256 `94D3B633195B55EE8F398FDD837CAB4A732FD718962FD2BEA81FD7FC56C275C0`，818,176 B。原 FileId `0x000000000000000000040000001d8630` 与两条硬链接保留，两个别名哈希一致；桥 INI、ReShade 核心和 F6 DLL 哈希未变。最终回执 `bridge-routing-final-build-identity.json`、`bridge-routing-final-deployment.json`、`bridge-routing-final-installed-before.json`、`bridge-routing-final-installed-after.json`；未生成待替换 `.next`。较早 `bridge-routing-*` 的 A49014B2 是本轮中间部署记录。
 
-完整源码归档 `bridge-source-f53873a.zip` 留在本轮证据目录；可重建差异随 F6 保存在 [外部桥补丁](../patches/genshin-fsr-bridge/README.md)。独立复核记录了 COM 同址重建与克隆表退休的继承缺口，已列入桥的 `docs/OPEN-ISSUES.md`，不据此解释首次启动退出。
+完整源码归档 `bridge-source-586f7f0.zip` 留在本轮证据目录；可重建差异随 F6 保存在 [外部桥补丁](../patches/genshin-fsr-bridge/README.md)。独立复核记录了 COM 同址重建与克隆表退休的继承缺口，已列入桥的 `docs/OPEN-ISSUES.md`，不据此解释首次启动退出。
 
-上述离线复现确认了桥内缺陷，没有本次游戏退出的调用栈证明命中该缺陷；新桥加载及启动稳定性仍需用户手动新局。
+08:54 局的真实 dump 已把该次访问冲突绑定到旧桥原方法 / receiver 错配，具体见下节；更早的 `0xC0000135` 仍无同等调用栈证据，不能归为相同根因。新桥加载及启动稳定性仍需用户手动新局。
 
 ## 已锁定游戏证据与待验收
 
@@ -86,7 +86,9 @@ LAUNCHPAD 为本机 MXAO 提供基础 / 平滑法线，需要当前深度。它�
 | Rocket 局 `20261114-042258_YuanShen_228728` | 约 38.3 秒退出 `0xC0000135`，SR / NR / FG 入口全 0；XXMI 的主动 `DoubleBeepExit()` 也使用此码，未定位实际退出分支，无对应 dump / WER |
 | Rocket 局 `20261114-082043_YuanShen_227916` | 确认加载 `44380f8`，约 31.1 秒后 `0xC0000135` 退出；隐藏 DX11 swapchain 创建尚未返回，未进入 SR / NR / FG |
 | 仅桥对照 `20261114-084512_YuanShen_238544` | 约 8.6 秒后 `0xC0000135` 退出，桥日志停在创建设备接管后；该局不能用旧 F6 日志证明加载了 F6 |
-| 新局 `20261114-085448_YuanShen.exe_240612` | 加载 `44380f8`；隐藏 DX11 链和 DX11-w-DX12 wrapper 创建成功后，在 `0x7FF8088804B7` 发生 `0xC0000005`，UEF dump 146,284,432 B，已逐文件复制并 SHA 锁定，离线分析中；不能与 `0xC0000135` 归为同一根因 |
+| 新局 `20261114-085448_YuanShen.exe_240612` | 加载 `44380f8` 和旧 B596 桥；隐藏 DX11 链和 DX11-w-DX12 wrapper 创建成功后，旧桥把 F6 wrapper 交给 ReShade 的 `ResizeTarget` 原方法，在 `ReShade64.dll+1804B7` 发生 `0xC0000005`；UEF dump 146,284,432 B，已逐文件复制并 SHA 锁定 |
+
+本局 dump 的真实展开栈为 `ReShade64+1804B7 ← Dx11FsrBridge (2)+16B7C ← YuanShen+AAB844`，活动栈没有 F6 帧，不能把栈扫描的残留地址冒充活动调用。旧桥基址 `7FF871EC0000`，timestamp `6AF7870F` / image size `AA000` 与保留的 `bridge-only-lock-20261114/bridge-baseline-B596.dll` 匹配。主会话重读 dump，核验了全局原方法位置 `7FF871F5EA10` 指向 `ReShade+180480`，receiver 为 F6 wrapper `2A033225A50`；ReShade 把其 `+8` 的 Operations `7FFFF0039FB8` 解释成自己的原对象，再把 F6 函数地址当虚表，在 `call [rax+70h]` 访问冲突。寄存器、模块、指令和匹配 PE 身份见 `dump-resize-routing-analysis.json`；完整加载内存 SHA 未核，wrapper 虚表槽页未保存在 dump 中。本次无需修改 F6 wrapper 布局。新增异构布局专项通过、旧桥负控失败，说明修正版覆盖了这个调用错配；仍不替代新桥游戏验收。
 
 没有这些会话的 Display / PresentMon 数据，不能报 FG 后显示 FPS。两局场景和设置不同，不能把差值直接归因 ReShade。新源码修复和测试不等于 Rocket 崩溃已实机修好。
 
