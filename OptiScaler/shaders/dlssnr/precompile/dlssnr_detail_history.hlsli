@@ -420,8 +420,10 @@ DhResult DhEvaluate(uint2 p)
     if (!DhWorkTexture(t6) || !DhWorkTexture(t3) || !DhWorkTexture(t7)) return result;
     if (result.reason == 5u) return result;
     if (!DhFinite(depthTolerance) || depthTolerance < 0.0) return result;
-    float z;
-    if (!DhDepth(t5, WorkUv(p), z)) { result.reason = 3u; return result; }
+    // Detail evaluation already validated this source's canonical depth and
+    // stores it independently of the residual's birth colour on every path.
+    const float z = result.context.a;
+    if (z < 0.0) { result.reason = 3u; return result; }
     float2 mv;
     if (!DhMotion(WorkUv(p), mv)) { result.reason = 5u; return result; }
     const float2 previousUv = WorkUv(p) + mv + float2(feedbackRasterOffsetUvX, feedbackRasterOffsetUvY);

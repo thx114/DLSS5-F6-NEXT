@@ -17,10 +17,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -135,12 +137,16 @@ struct DispatchResult
     Image birthContext;
     Image stability;
     Image stabilityContext;
+    // Actual GPU storage, tightly packed without implementation row padding.
+    // Keep half/float bits intact, including signed zero and invalid payloads.
+    std::array<std::vector<uint8_t>, 5> storage;
 };
 
 class Fixture
 {
 public:
-    explicit Fixture(const std::filesystem::path& overrideShader = {})
+    explicit Fixture(const std::filesystem::path& overrideShader = {},
+                     const std::filesystem::path& referenceShader = {})
     {
         D3D_FEATURE_LEVEL level {};
         RequireHr(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
@@ -188,6 +194,7 @@ public:
         desc.AddressU = desc.AddressV = desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         desc.MaxLOD = D3D11_FLOAT32_MAX;
         RequireHr(device->CreateSamplerState(&desc, &sampler), "Create linear clamp sampler");
+        if (!referenceShader.empty()) reference = std::make_unique<Fixture>(referenceShader);
     }
 
     DispatchResult Run(const Inputs& inputs, const Constants& constants, bool productionFormats=false)
@@ -242,12 +249,38 @@ public:
         context->ClearState();
 
         DispatchResult result;
-        result.primary = Readback(outputs[0].Get());
-        result.secondary = Readback(outputs[1].Get());
-        result.birthContext = Readback(outputs[2].Get());
-        result.stability = Readback(outputs[3].Get());
-        result.stabilityContext = Readback(outputs[4].Get());
+        result.primary = Readback(outputs[0].Get(), result.storage[0]);
+        result.secondary = Readback(outputs[1].Get(), result.storage[1]);
+        result.birthContext = Readback(outputs[2].Get(), result.storage[2]);
+        result.stability = Readback(outputs[3].Get(), result.storage[3]);
+        result.stabilityContext = Readback(outputs[4].Get(), result.storage[4]);
+        if (reference)
+        {
+            const auto expected = reference->Run(inputs, constants, productionFormats);
+            for (size_t i = 0; i < result.storage.size(); ++i)
+            {
+                if (result.storage[i] != expected.storage[i])
+                {
+                    const auto mismatch = std::mismatch(result.storage[i].begin(), result.storage[i].end(),
+                                                        expected.storage[i].begin(), expected.storage[i].end());
+                    throw std::runtime_error("BITWISE MISMATCH dispatch=" + std::to_string(comparedDispatches + 1) +
+                        " u" + std::to_string(i) + " byte=" +
+                        std::to_string(mismatch.first - result.storage[i].begin()) +
+                        " mode=" + std::to_string(constants.Mode) +
+                        " production_formats=" + std::to_string(productionFormats));
+                }
+                comparedBytes += result.storage[i].size();
+            }
+            ++comparedDispatches;
+        }
         return result;
+    }
+
+    void ReportComparison() const
+    {
+        if (reference)
+            std::cout << "BITWISE PASS: " << comparedDispatches << " dispatches, " << comparedBytes
+                      << " GPU storage bytes, all u0..u4 outputs" << std::endl;
     }
 
 private:
@@ -262,7 +295,7 @@ private:
         return desc;
     }
 
-    Image Readback(ID3D11Texture2D* output)
+    Image Readback(ID3D11Texture2D* output, std::vector<uint8_t>& storage)
     {
         D3D11_TEXTURE2D_DESC desc {};
         output->GetDesc(&desc);
@@ -276,9 +309,13 @@ private:
         // Blocking Map observes real WARP output rather than a CPU reference.
         RequireHr(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Map WARP output");
         Image result({}, desc.Width, desc.Height);
+        const size_t rowBytes = static_cast<size_t>(desc.Width) *
+            (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ? 4 * sizeof(uint16_t) : sizeof(Pixel));
+        storage.resize(rowBytes * desc.Height);
         for (UINT y = 0; y < desc.Height; ++y)
         {
             const auto* row=static_cast<const char*>(mapped.pData)+static_cast<size_t>(y)*mapped.RowPitch;
+            std::memcpy(storage.data() + static_cast<size_t>(y) * rowBytes, row, rowBytes);
             if(desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT)
             {
                 const auto* values=reinterpret_cast<const uint16_t*>(row);
@@ -309,6 +346,8 @@ private:
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<ID3D11ComputeShader> shader;
     ComPtr<ID3D11SamplerState> sampler;
+    std::unique_ptr<Fixture> reference;
+    size_t comparedDispatches = 0, comparedBytes = 0;
 };
 
 Constants FeedbackConstants()
@@ -1534,20 +1573,22 @@ int main(int argc, char** argv)
 {
     try
     {
-        std::filesystem::path shaderPath;
+        std::filesystem::path shaderPath, referenceShaderPath;
         bool appearanceOnly = false;
         for (int i = 1; i < argc; ++i)
         {
             const std::string arg = argv[i];
             if (arg == "--shader" && i + 1 < argc) shaderPath = argv[++i];
+            else if (arg == "--reference-shader" && i + 1 < argc) referenceShaderPath = argv[++i];
             else if (arg == "--stability-appearance-only") appearanceOnly = true;
             else throw std::runtime_error("Unknown or incomplete test argument: " + arg);
         }
-        Fixture gpu(shaderPath);
+        Fixture gpu(shaderPath, referenceShaderPath);
         Checks checks;
         if (appearanceOnly)
         {
             TestStabilizerIndependentAppearance(gpu,checks);
+            gpu.ReportComparison();
             return checks.Finish();
         }
         TestWeightsAndLanding(gpu,checks);
@@ -1571,6 +1612,7 @@ int main(int argc, char** argv)
         TestIndependentStabilizer(gpu,checks);
         TestStabilizerIndependentAppearance(gpu,checks);
         TestStabilizerSurfaceAdmission(gpu,checks);
+        gpu.ReportComparison();
         return checks.Finish();
     }
     catch (const std::exception& error)
