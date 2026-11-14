@@ -1,6 +1,18 @@
 # F6 项目交接
 
-## 0. 当前续接（2026-11-14 17:21，UTC+08）
+## 0. 当前续接（2026-11-14T10:13Z）
+
+当前产品保存点 **`8390a8735ca6880c3626fdc5c77f897ec600167d`**，嵌入标记`8390a87`，保留下面的细节稳定与深度复用修复。Release x64 exit0，62秒，DLL **32,570,368 B / SHA256 `07B80733D1741A5F35400CB641479AE942397810918697A2819CAED7CABCE900`**，mtime UTC `2026-11-14T10:11:57.8610540Z`。10:12Z已原位部署既有`local/F6-ASI`，FileId与6条硬链接保持，核对的6份配置哈希未变，无`.next`，别名包括原神和崩铁cache。
+
+新增`F6 SDK input completion observation`：只记录现有GetState的原始数值，保留请求/返回ABI、实际查询线程/序号/时段和当时provider身份；不添加SDK查询、COM/fence调用或等待，不改变退休条件。已知v3/v4双边ABI门和异常LastError修复经生产函数抽取夹具1243检查/40次SDK脚本调用、旧ABI guard-page与异常两项负控验证；源调度1065、真实延迟适配780检查及guide wiring通过。完整shared未重跑，没有SDK DLL/游戏验收。
+
+**查询位于Dispatch而非本次SDK Present之后。** Present/buffer映射、SDK是否写入字段和GPU完成保持未知；数字地址不是可消费回执。完整队列拆分尚未实施，必须按实际fake buffer identity及swapchain代次闭合producer/最终颜色writer/SDK reader双向依赖。不能借copy槽、自有copy fence或物理输出tail替代SDK要求的present线程input completion。
+
+日志仍停在UTC08:06:43、60,804,125 B；**实际加载、细节稳定和整体Reflex≤60ms均待用户新局**，约110ms仍超标。不要重复已完成的微基准、构建和部署。用户手动启动/进入/操作/退出，AI只构建、原位部署、读日志。ABI审计子智能体Rawls已完成并关闭。
+
+证据目录为总目录下`completion-observation/`，详见`CURRENT-STATE.md`顶部；上一版逐位等价和GPU阶段结果仍有效，但不能算本版游戏验收。
+
+### 17:21（UTC+08）的细节深度复用记录
 
 当前产品源码保存点 **`c5901203eff7f466964029c607536f0f1f5118b5`**，嵌入标记 `c590120`。下述稳定修复已包含，并复用 `DhEvaluateDetail()` 的当前规范深度，删除短稳定器第二次 t5 读取。候选对前版 927 dispatch、u0…u4 共 8,464,384 原始 GPU 存储字节逐位一致，3861 检查零失败；u4-only 负控准确拒绝。28 生命周期与 3 实卡生产 DXIL / FP16 用例重跑通过，Vulkan 字节码重生成不变，独立 Sol high 复核无阻断。共享回归未全量重跑。
 

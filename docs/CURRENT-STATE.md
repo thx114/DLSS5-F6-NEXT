@@ -1,5 +1,14 @@
 # F6 当前状态
 
+更新：**2026-11-14T10:13Z**。产品保存点 **`8390a8735ca6880c3626fdc5c77f897ec600167d`**，保留下述细节稳定修复，增加现有 SDK 查询的输入完成字段观测，并修复异常路径的 LastError。Release x64 exit 0，62 秒；DLL **32,570,368 B / SHA256 `07B80733D1741A5F35400CB641479AE942397810918697A2819CAED7CABCE900`**，mtime UTC `2026-11-14T10:11:57.8610540Z`。10:12Z 原位部署既有 `local/F6-ASI`，原 FileId、6条硬链接和核对的6份配置哈希保持，无 `.next`；别名仍包括原神与崩铁 cache。本节覆盖下方旧部署身份。
+
+- `F6 SDK input completion observation` 每线程最多5秒一条，记录实际查询的线程、序号/时段、调用前后ABI、原始fence地址/目标数字及当时provider身份。不新增SDK/COM/fence调用，不改变排队或等待。调用前后均为已知v3/v4结构才读新增尾字段；其它可选字段同样受调用前版本限制。异常在SDK边界保存LastError，观察后恢复并原样重抛。
+- 真实生产查询函数抽取夹具 **1243检查、40次脚本化SDK调用通过**，覆盖尾部不可访问的旧ABI、版本/类型改写、失败残留、零目标、异常、递归、缓存与跨线程。两项隔离负控分别准确触发越界访问和LastError丢失；源调度1065、真实延迟适配780检查及guide wiring通过。未全量重跑shared，未执行SDK DLL或游戏。
+- 查询通常在Dispatch、早于SDK Present；source frame只是查询时的上下文。**Present/buffer join、SDK是否写入字段、GPU完成仍未知，不能据此退休或跨队列复用。** 后续拆分必须按swapchain代次和实际buffer identity，闭合最后颜色writer→下一producer及SDK reader→下一producer；共享copy槽不是SDK fake index。SDK要求的present线程回执不能由CPU Present返回、copy fence或物理输出tail替代。此次未拆分队列，未产生游戏降延迟证据。
+- 活动日志仍为 UTC08:06:43 / 60,804,125 B 的旧局。**细节稳定游戏验收与整体Reflex ≤60 ms仍未完成**，约110 ms的用户反馈保持未达标。仅用户操作游戏；下一局核对实际加载 `8390a87` 后再分析，不重复此前夹具/部署或拿旧局作当前候选结果。
+
+证据：`build/genshin-reshade-20261114/detail-feedback-20261114-140355/completion-observation/`，含`wrapper.log`、两项`negative-*.log`、`source-scheduling.log`、`guide-wiring.log`、`build.json`、`deployment-console.json`、`installed-identity.json`及前后配置指纹。当前主会话新建的只读Sol high ABI/观察审计已完成并关闭，没有复用旧智能体。
+
 更新：**2026-11-14 17:21（UTC+08）**。当前产品源码保存点 **`c5901203eff7f466964029c607536f0f1f5118b5`**，在下述细节稳定修复上复用已经验证的当前深度，避免短稳定器第二次读取同一深度纹理。Release x64 exit 0，50 秒；DLL **32,566,784 B / SHA256 `B780EB543B4EE2B43A1497B76D3B215A62025DEF8808D3509CCC5146609A36EC`**，嵌入标记 `c590120`，mtime UTC `2026-11-14T09:19:29.6803385Z`。17:21 已原位部署至既有 `local/F6-ASI`，原 FileId、全部 6 条硬链接与核对的配置哈希保持，无 `.next`。这些别名包括原神和崩铁 cache；未创建包、切换选择或改动用户选项。此处部署身份覆盖下述 16:58 条目的身份。
 
 - 候选与保存的前版 HLSL 在 927 次真实 WARP dispatch 的 u0…u4 **8,464,384 个原始 GPU 存储字节完全一致**，覆盖现有 FP16 / FP32、跨帧、无效输入、深度和 inspector 场景；3861 检查零失败。只改 u4 的独立负控于 dispatch 1 被准确检出。28 个生命周期和 3 个实卡 / 嵌入生产 DXIL / FP16 用例重跑通过；CSO / 嵌入头字节一致，重新生成的 Vulkan 字节码不变。只读 Sol high 复核无源码阻断，已关闭回收；未全量重跑 shared，也未做 Vulkan 实卡验收。

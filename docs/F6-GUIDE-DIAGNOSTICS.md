@@ -57,3 +57,7 @@ pwsh -File tools/runtime/Get-F6RunEvidence.ps1 -Log <saved.log> -ExpectedPid <PI
 `TotalReflexTarget` 默认比较完整有效报告与 **60 ms**，可用 `-TotalReflexTargetMs` 指定阈值；这是所选日志范围的统计，场景、焦点和运行身份仍需独立核对。`GpuActiveMs` 保留 SDK 报告的有效 GPU 活跃时间，缺失时保持未知；它不是各功能阶段的成本相加。`-LatencyFirstLine` / `-LatencyLastLine` 可限定同一场景的日志范围。
 
 `SourcePacingByThreadSwapchain` 按源线程和 swapchain 汇总成对 QPC 的 SDK Present、标记、清理、解锁、Reflex Sleep 和 limiter 时间。`PresentTailMs` 包含各个收尾子项，不能再相加；`UnattributedAfterUnlockMs` 仅扣除已观测的两种等待，仍可能含其它收尾工作。跳过的调用没有耗时样本，旧版不完整 pacing 行只记拒绝数。所有 CPU wall 区间与 Reflex 报告、GPU 时间保持各自语义。
+
+`F6 SDK input completion observation` 随现有实际 GetState 每线程最多5秒记录一次，包含调用线程、序号、请求/返回结构版本、原始fence地址/目标值和查询时的provider身份。`fields_observed`只表示在已知ABI内读取了字段，不证明SDK写入、fence完成或属于当前Present；零目标也是原始数值，不能代替未知状态。数字地址不会被解引用或持有COM引用。
+
+当前provider查询通常发生在Dispatch中，早于SDK Present；`source_frame_at_query`不把返回值绑定为该源帧的完成回执。`present_join`、`buffer_join`和`gpu_complete`保持UNKNOWN，`receipt_usable=false`；不据此计算FG GPU耗时或授权跨队列复用。
