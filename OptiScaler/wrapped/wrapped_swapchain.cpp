@@ -9,6 +9,7 @@
 #include <hooks/Streamline_Hooks.h>
 #include <runtime/HookCpuTiming.h>
 #include "wrapped_swapchain.h"
+#include "ProviderOutputQueue.h"
 #include <dlssnr/DlssNr.h>
 #include <dlssnr/DlssNrCurrentOutputCapture.h>
 #include <hooks/DxgiSwapchainSizing.h>
@@ -608,7 +609,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     };
 
     if (HoYoShade::ColorConsumers(pSwapChain) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
-    if (State::Instance().isShuttingDown)
+    if (State::Instance().isShuttingDown || (providerOutput && pDevice == nullptr))
     {
         const auto result=pPresentParameters
             ? r448Hook.Original([&]{return rawPresent(pPresentParameters);})
@@ -1159,6 +1160,7 @@ WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* p
     CheckForHdrOutput();
     FGHooks::RegisterMenuOutput(_real, _device, _handle);
     _providerOutput = framegen::final_output::CaptureProviderOutputBinding(_real, _device);
+    if (_providerOutput) _providerOutputDevice = _device;
     _starRailProviderOutput = IsStarRailProcess() && _providerOutput;
     if (_providerOutput)
         LOG_INFO("F6 DLSSG physical output bound: swapchain={:X} creationQueue={:X} reflexOwner=source sourceBookkeeping=false",
@@ -1312,7 +1314,7 @@ ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain4::Release()
         const bool bridgeOwns = VkPresentBridge::DxvkThroughVulkan();
 
         if (!bridgeOwns)
-            MenuOverlayDx::CleanupRenderTarget(true, _handle);
+            MenuOverlayDx::CleanupRenderTarget(true, _handle, !_providerOutput);
 
         if (State::Instance().currentSwapchain == this)
             State::Instance().currentSwapchain = nullptr;
@@ -1321,7 +1323,7 @@ ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain4::Release()
             State::Instance().currentRealSwapchain = nullptr;
 
         auto fg = State::Instance().currentFG;
-        if (!bridgeOwns && fg != nullptr && fg->Mutex.getOwner() != 1 && fg->SwapchainContext() != nullptr)
+        if (!bridgeOwns && !_providerOutput && fg != nullptr && fg->Mutex.getOwner() != 1 && fg->SwapchainContext() != nullptr)
         {
             fg->Deactivate();
             fg->ReleaseSwapchain(_handle);
@@ -1443,6 +1445,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetBuffer(UINT Buffer, REFIID 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookSetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget)
 {
     if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
+    if (_providerOutput) return _real->SetFullscreenState(Fullscreen, pTarget);
     LOG_DEBUG("Fullscreen: {}, pTarget: {:X}, Caller: {}", Fullscreen, (size_t) pTarget,
               Util::WhoIsTheCaller(_ReturnAddress()));
 
@@ -1502,10 +1505,43 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookGetFullscreenState(BOOL* p
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc) { return _real->GetDesc(pDesc); }
 
+HRESULT WrappedIDXGISwapChain4::ResizeProviderOutput(UINT count, UINT width, UINT height, DXGI_FORMAT format,
+    UINT flags, const UINT* nodes, IUnknown* const* queues, bool resize1)
+{
+    // SDK callbacks may run while the source holds its FG mutex in Present.
+    // Only this physical output's consumers participate in its resize.
+    HoYoShade::DirectResizeScope directResize(_real, this);
+    if (FAILED(directResize.Result())) return directResize.Result();
+    framegen::final_output::Endpoint::Resize finalResize(_finalOutput.get());
+    if (!finalResize) return DXGI_ERROR_WAS_STILL_DRAWING;
+    if (!finalResize.ConsumersSafe(_real)) return E_FAIL;
+    MenuOverlayDx::CleanupRenderTarget(true, _handle, false);
+    const auto result = resize1
+        ? _real3->ResizeBuffers1(count, width, height, format, flags, nodes, queues)
+        : _real->ResizeBuffers(count, width, height, format, flags);
+    directResize.Complete(result);
+    finalResize.Complete(result, count, nodes, queues, resize1);
+    if (SUCCEEDED(result))
+    {
+        if (resize1)
+        {
+            auto candidate = ProviderOutputQueue::AfterResize(_real, count, nodes, queues);
+            FGHooks::UnregisterMenuOutput(_real);
+            _device = candidate.Get();
+            _providerOutputDevice = std::move(candidate);
+            if (_device) FGHooks::RegisterMenuOutput(_real, _device, _handle);
+        }
+        _lastFlags = flags;
+        _RefreshFrameLatencyFlags();
+    }
+    return result;
+}
+
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
                                                                 DXGI_FORMAT NewFormat, UINT SwapChainFlags)
 {
     if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
+    if (_providerOutput) return ResizeProviderOutput(BufferCount, Width, Height, NewFormat, SwapChainFlags);
 
     HoYoShade::DirectResizeScope directResize(_real, this);
     if (FAILED(directResize.Result())) return directResize.Result();
@@ -1557,7 +1593,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::HookResizeBuffers(UINT BufferC
 
     // Not on a dxvk game whose menu the Vulkan present bridge draws (see Release).
     if (!VkPresentBridge::DxvkThroughVulkan())
-        MenuOverlayDx::CleanupRenderTarget(true, _handle);
+        MenuOverlayDx::CleanupRenderTarget(true, _handle, !_providerOutput);
 
     State::Instance().scChanged = true;
 
@@ -2073,6 +2109,9 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
                                                                  IUnknown* const* ppPresentQueue)
 {
     if (!ModuleLifetime::CleanupAllowed()) return DXGI_ERROR_WAS_STILL_DRAWING;
+    if (_providerOutput)
+        return ResizeProviderOutput(BufferCount, Width, Height, Format, SwapChainFlags,
+            pCreationNodeMask, ppPresentQueue, true);
 
     HoYoShade::DirectResizeScope directResize(_real, this);
     if (FAILED(directResize.Result())) return directResize.Result();
@@ -2104,10 +2143,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
     if (ppPresentQueue != nullptr && *ppPresentQueue != nullptr)
     {
         _device = *ppPresentQueue;
-        // A physical output may change its own presenting queue without
-        // becoming the producer of shared SR/NR/FG inputs.
-        if (!_providerOutput)
-            WithDx12::AdoptSwapchainQueue((ID3D12CommandQueue*)_device);
+        WithDx12::AdoptSwapchainQueue((ID3D12CommandQueue*)_device);
         FGHooks::RegisterMenuOutput(_real, _device, _handle);
     }
 
@@ -2135,7 +2171,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
 
     // Not on a dxvk game whose menu the Vulkan present bridge draws (see Release).
     if (!VkPresentBridge::DxvkThroughVulkan())
-        MenuOverlayDx::CleanupRenderTarget(true, _handle);
+        MenuOverlayDx::CleanupRenderTarget(true, _handle, !_providerOutput);
 
     State::Instance().scChanged = true;
 

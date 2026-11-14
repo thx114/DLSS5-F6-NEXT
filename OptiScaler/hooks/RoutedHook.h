@@ -22,6 +22,16 @@ class RoutedHook<Callback, MethodIndex, Domain, Result(*)(Args...)> final {
         const void* object;
     };
     inline static thread_local Frame* active = nullptr;
+    template<bool Direct> static Result CallOriginal(Function original, Args... args) {
+        if (!original) return static_cast<Result>(E_UNEXPECTED);
+        const auto result = original(args...);
+        if constexpr (Direct) {
+            if constexpr (requires { Domain::ReturnedDirect(result,args...); }) Domain::ReturnedDirect(result,args...);
+        } else {
+            if constexpr (requires { Domain::Returned(result,args...); }) Domain::Returned(result,args...);
+        }
+        return result;
+    }
     static const void* Object([[maybe_unused]] Args... args) noexcept {
         if constexpr (MethodIndex == SIZE_MAX) return nullptr;
         else return std::get<0>(std::tuple<Args...>(args...));
@@ -37,9 +47,7 @@ class RoutedHook<Callback, MethodIndex, Domain, Result(*)(Args...)> final {
             ~Exit() { active = previous; --RoutedDepth<Domain>; }
         } exit{frame.previous};
         if (RoutedDepth<Domain>++ != 0) {
-            const auto result=original(args...);
-            if constexpr (requires { Domain::Returned(result,args...); }) Domain::Returned(result,args...);
-            return result;
+            return CallOriginal<false>(original,args...);
         }
         return Callback(args...);
     }
@@ -60,7 +68,7 @@ public:
         } suppress;
         const auto object = Object(args...);
         for (auto* frame = active; frame; frame = frame->previous)
-            if (frame->object == object) return frame->original(args...);
+            if (frame->object == object) return CallOriginal<true>(frame->original,args...);
         if constexpr (MethodIndex != SIZE_MAX) {
             // Direct internal calls may use a different factory. Resolve that
             // object's actual method; never reuse the first factory's original.
@@ -70,12 +78,12 @@ public:
             const auto index = hooks.Find(entry);
             if (index == decltype(hooks)::capacity) {
                 lock.unlock();
-                return reinterpret_cast<Function>(entry)(args...);
+                return CallOriginal<true>(reinterpret_cast<Function>(entry),args...);
             }
             auto call = hooks.Acquire(index);
             lock.unlock();
             const auto original = call.Get();
-            return original ? original(args...) : static_cast<Result>(E_UNEXPECTED);
+            return CallOriginal<true>(original,args...);
         } else return static_cast<Result>(E_UNEXPECTED);
     }
 };

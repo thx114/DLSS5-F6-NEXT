@@ -32,6 +32,7 @@ $suites = @(
     @{ Name = 'NrPresentationSource'; Source = 'OptiScaler/runtime/tests/NrPresentationSourceTests.cpp' },
     @{ Name = 'NrPresentationOutputWarp'; Source = 'OptiScaler/runtime/tests/NrPresentationOutputWarpTests.cpp'; Libraries = 'd3d12.lib dxgi.lib' },
     @{ Name = 'SwapchainHookBoundary'; Source = 'OptiScaler/wrapped/tests/SwapchainHookBoundaryTests.cpp' },
+    @{ Name = 'ProviderOutputLifecycle'; Source = 'OptiScaler/wrapped/tests/ProviderOutputLifecycleTests.cpp'; StubInclude = 'build/common-core-tests'; Libraries = 'd3d12.lib dxgi.lib user32.lib' },
     @{ Name = 'NrEvaluateGuides'; Source = 'OptiScaler/runtime/tests/NrEvaluateGuidesTests.cpp'; Libraries = 'd3d12.lib dxgi.lib' },
     @{ Name = 'NrDetailHistoryPolicy'; Source = 'OptiScaler/dlssnr/tests/nr_detail_history_policy.cpp' },
     @{ Name = 'NrHistoryDebug'; Source = 'OptiScaler/runtime/tests/NrHistoryDebugTests.cpp' },
@@ -60,6 +61,7 @@ $suites = @(
     @{ Name = 'HoYoShadeEffectRequirements'; Source = 'OptiScaler/runtime/tests/HoYoShadeEffectRequirementsTests.cpp' },
     @{ Name = 'MethodHooks'; Source = 'OptiScaler/runtime/tests/MethodHooksTests.cpp'; Libraries = ('"{0}"' -f (Join-Path $root 'OptiScaler/library/detours/detours.lib')) },
     @{ Name = 'D3D11On12FactoryBoundary'; Source = 'OptiScaler/runtime/tests/D3D11On12FactoryBoundaryTests.cpp'; Libraries = ('"{0}"' -f (Join-Path $root 'OptiScaler/library/detours/detours.lib')) },
+    @{ Name = 'ProviderOutputCreation'; Source = 'OptiScaler/runtime/tests/ProviderOutputCreationTests.cpp'; Libraries = ('"{0}"' -f (Join-Path $root 'OptiScaler/library/detours/detours.lib')) },
     @{ Name = 'SourcePresent'; Source = 'OptiScaler/runtime/tests/SourcePresentTests.cpp' },
     @{ Name = 'FeatureTransition'; Source = 'OptiScaler/upscalers/tests/FeatureTransitionTests.cpp' },
     @{ Name = 'NgxDx12ResourceView'; Source = 'OptiScaler/upscalers/tests/NgxDx12ResourceViewTests.cpp' },
@@ -126,6 +128,11 @@ if ('GuideCaptureWarp' -in $suites.Name -or 'GuidePreviewWarp' -in $suites.Name 
 if ('MenuPreviewOutput' -in $suites.Name) {
     & $Python -B (Join-Path $root 'OptiScaler/menu/tests/test_preview_output_wiring.py')
     if ($LASTEXITCODE -ne 0) { throw 'Menu preview output wiring failed' }
+}
+
+if ('ProviderOutputLifecycle' -in $suites.Name) {
+    & $Python -B (Join-Path $root 'OptiScaler/wrapped/tests/prepare_provider_output_lifecycle.py') (Join-Path $output 'ProviderOutputLifecycleProduction.inl')
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot extract physical output lifecycle' }
 }
 
 if ('LookControls' -in $suites.Name) {

@@ -227,7 +227,7 @@ check("BeginNativeGuidePresent(nativeZzzMarkerSource)" in fg and "DXGI_ERROR_INV
 check("NativeGuidePresentToken(localToken,nativeZzzMarkerSource)" in fg, "End/Sleep use stale/latest token")
 check("static_cast<uint32_t>(*frameToken)!=frameCount" in reflex, "PCL forwarding accepts aliased independent token")
 check("F6 ZZZ actual PCL forward" in reflex and "source_mutated=false" in reflex, "actual PCL receipt missing")
-check(reflex.index("const auto actualPclFrame=") < reflex.index("const auto markerResult=StreamlineProxy::PCLSetMarker()"), "actual PCL ID captured after vendor reentry")
+check(reflex.index("const auto actualPclFrame=") < reflex.index("return StreamlineProxy::PCLSetMarker()(marker, *frameToken);"), "actual PCL ID captured after vendor reentry")
 finish = body(contract, "void Finish(bool success)")
 check("compare_exchange_strong" in finish and "mutex" not in finish, "SDK/upstream result callback takes continuity lock")
 check("const Origin origin" in contract, "upstream numeric identity is mutable")

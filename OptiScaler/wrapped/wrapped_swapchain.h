@@ -93,10 +93,13 @@ class DECLSPEC_UUID("3af622a3-82d0-49cd-994f-cce05122c222") WrappedIDXGISwapChai
     framegen::latency::Flags _frameLatencyFlags;
     std::mutex _frameLatencyMutex;
     void _RefreshFrameLatencyFlags();
+    HRESULT ResizeProviderOutput(UINT count, UINT width, UINT height, DXGI_FORMAT format, UINT flags,
+        const UINT* nodes = nullptr, IUnknown* const* queues = nullptr, bool resize1 = false);
     framegen::latency::Target _SelectFrameLatencyTarget(void* returnAddress);
     void _ObserveFrameLatencySetter(const void* caller, UINT requested, HRESULT result);
     std::unique_ptr<framegen::final_output::Endpoint> _finalOutput;
     bool _providerOutput = false; // Immutable creation identity; source Present owns Reflex updates.
+    ComPtr<IUnknown> _providerOutputDevice; // Exact creation queue stays alive with its physical Present owner.
     bool _starRailProviderOutput = false; // Immutable CPU identity; never filter/GPU consumer authority.
     std::uintptr_t _finalRawCreationQueueInput = 0; // Creation address only; never dereferenced or rebound.
     IDXGISwapChain* _real = nullptr;

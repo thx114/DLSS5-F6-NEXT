@@ -71,7 +71,17 @@ class DxgiFactoryHooks
     VALIDATE_MEMBER_HOOK(EnumAdapterByLuid, PFN_EnumAdapterByLuid)
     VALIDATE_MEMBER_HOOK(EnumAdapterByGpuPreference, PFN_EnumAdapterByGpuPreference)
 
-    struct FactoryCreateDomain {};
+    struct FactoryCreateDomain
+    {
+        template<class... Args> static void ReturnedDirect(HRESULT result, Args... args) { Returned(result,args...); }
+        static void Returned(HRESULT, IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
+        static void Returned(HRESULT, IDXGIFactory2*, IUnknown*, HWND, const DXGI_SWAP_CHAIN_DESC1*,
+                             const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*, IDXGISwapChain1**);
+        static void Returned(HRESULT, IDXGIFactory2*, IUnknown*, IUnknown*, const DXGI_SWAP_CHAIN_DESC1*,
+                             IDXGIOutput*, IDXGISwapChain1**);
+        static void Returned(HRESULT, IDXGIFactory2*, IUnknown*, const DXGI_SWAP_CHAIN_DESC1*,
+                             IDXGIOutput*, IDXGISwapChain1**);
+    };
     struct FactoryEnumDomain {};
     inline static HookOwnership::RoutedHook<&EnumAdapterByGpuPreference, 29, FactoryEnumDomain> o_EnumAdapterByGpuPreference;
     inline static HookOwnership::RoutedHook<&EnumAdapterByLuid, 26, FactoryEnumDomain> o_EnumAdapterByLuid;

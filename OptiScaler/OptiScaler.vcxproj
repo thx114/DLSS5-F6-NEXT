@@ -1132,6 +1132,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="with_dx12\SharedInputRead.h" />
     <ClInclude Include="hooks\MethodHooks.h" />
     <ClInclude Include="hooks\RoutedHook.h" />
+    <ClInclude Include="hooks\ProviderOutputCreation.h" />
+    <ClInclude Include="wrapped\ProviderOutputQueue.h" />
     <ClInclude Include="runtime\LibraryLoadRequest.h" />
     <ClInclude Include="runtime\LoaderModuleState.h" />
     <ClInclude Include="runtime\LibraryObservation.h" />

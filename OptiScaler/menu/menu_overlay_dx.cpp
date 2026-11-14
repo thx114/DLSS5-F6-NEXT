@@ -1457,7 +1457,7 @@ void MenuOverlayDx::FreeSrv(D3D12_CPU_DESCRIPTOR_HANDLE cpu, D3D12_GPU_DESCRIPTO
 
 }
 
-void MenuOverlayDx::CleanupRenderTarget(bool clearQueue, HWND hWnd)
+void MenuOverlayDx::CleanupRenderTarget(bool clearQueue, HWND hWnd, bool sourceOwner)
 {
     LOG_FUNC();
     g_overlayCleanupPending.store(true, std::memory_order_release);
@@ -1473,7 +1473,7 @@ void MenuOverlayDx::CleanupRenderTarget(bool clearQueue, HWND hWnd)
     }
 
     auto fg = State::Instance().currentFG;
-    if (fg != nullptr && fg->FrameGenerationContext() != nullptr && fg->IsActive())
+    if (sourceOwner && fg != nullptr && fg->FrameGenerationContext() != nullptr && fg->IsActive())
     {
         State::Instance().fgChanged = true;
         fg->UpdateTarget();

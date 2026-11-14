@@ -14,7 +14,7 @@ ID3D12GraphicsCommandList* MenuCommandList();
 ID3D12DescriptorHeap* SrvHeap();
 bool AllocSrv(D3D12_CPU_DESCRIPTOR_HANDLE* cpu, D3D12_GPU_DESCRIPTOR_HANDLE* gpu);
 void FreeSrv(D3D12_CPU_DESCRIPTOR_HANDLE cpu, D3D12_GPU_DESCRIPTOR_HANDLE gpu);
-void CleanupRenderTarget(bool clearQueue, HWND hWnd);
+void CleanupRenderTarget(bool clearQueue, HWND hWnd, bool sourceOwner = true);
 // Written means a draw was issued/executed for this call, even if its later fence
 // Signal failed. It never claims GPU completion or successful display.
 struct PresentResult

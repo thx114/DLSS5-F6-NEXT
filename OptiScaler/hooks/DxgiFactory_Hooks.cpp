@@ -3,6 +3,7 @@
 #include <runtime/F6InputPolicy.h>
 #include "DxgiFactory_Hooks.h"
 #include "SwapchainCreateRule.h"
+#include "ProviderOutputCreation.h"
 #include <framegen/dlssg/DLSSG_Dx12.h>
 #include "DxgiSwapchainSizing.h"
 
@@ -262,6 +263,36 @@ static bool PrepareDx12InteropDesc1(DXGI_SWAP_CHAIN_DESC1& desc, bool tearingSup
 }
 
 namespace { std::recursive_mutex factoryHookMutex; }
+void DxgiFactoryHooks::FactoryCreateDomain::Returned(HRESULT result, IDXGIFactory*, IUnknown* queue,
+    DXGI_SWAP_CHAIN_DESC* desc, IDXGISwapChain** output)
+{
+    if (desc) ProviderOutputCreation::Observe<WrappedIDXGISwapChain4>(result, output, queue,
+        desc->OutputWindow, desc->Flags, false, false, framegen::final_output::CaptureProviderOutputBinding);
+}
+void DxgiFactoryHooks::FactoryCreateDomain::Returned(HRESULT result, IDXGIFactory2*, IUnknown* queue,
+    HWND window, const DXGI_SWAP_CHAIN_DESC1* desc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*,
+    IDXGISwapChain1** output)
+{
+    if (desc) ProviderOutputCreation::Observe<WrappedIDXGISwapChain4>(result, output, queue,
+        window, desc->Flags, false, false, framegen::final_output::CaptureProviderOutputBinding);
+}
+void DxgiFactoryHooks::FactoryCreateDomain::Returned(HRESULT result, IDXGIFactory2*, IUnknown* queue,
+    IUnknown* window, const DXGI_SWAP_CHAIN_DESC1* desc, IDXGIOutput*, IDXGISwapChain1** output)
+{
+    if (desc) ProviderOutputCreation::Observe<WrappedIDXGISwapChain4>(result, output, queue,
+        reinterpret_cast<HWND>(window), desc->Flags, true, false, framegen::final_output::CaptureProviderOutputBinding);
+}
+void DxgiFactoryHooks::FactoryCreateDomain::Returned(HRESULT result, IDXGIFactory2*, IUnknown* queue,
+    const DXGI_SWAP_CHAIN_DESC1* desc, IDXGIOutput*, IDXGISwapChain1** output)
+{
+    if (!desc || !SwapchainCreate::Created(result, output) ||
+        !framegen::final_output::CreationScope::Active()) return;
+    DXGI_SWAP_CHAIN_DESC resolved {};
+    if (SUCCEEDED((*output)->GetDesc(&resolved)))
+        ProviderOutputCreation::Observe<WrappedIDXGISwapChain4>(result, output, queue,
+            resolved.OutputWindow, desc->Flags, false, true, framegen::final_output::CaptureProviderOutputBinding);
+}
+
 void DxgiFactoryHooks::HookToFactory(IDXGIFactory* pFactory)
 {
     if (!pFactory) return;
