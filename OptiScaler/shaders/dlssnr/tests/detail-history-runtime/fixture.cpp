@@ -548,6 +548,150 @@ static void FinishedNativeRoute()
     Check(DetailHistory::SafeToRelease(), "finished-picture owners retire only after both completion and Reset");
     DetailHistory::Release(); TickRetired();
 }
+static void CompletedRetainedRecovery()
+{
+    World world;
+    auto first = world.New(); auto second = world.New(); auto third = world.New();
+    auto a = world.Frame(first, 10);
+    Check(DetailHistory::Before(a).active, "old private recording admitted");
+    Capture(world, a); world.Execute(first);
+    const auto older = DetailHistory::recordings.current.resourceUse;
+    auto b = world.Frame(second, 11);
+    Check(DetailHistory::Before(b).historyUsable, "new private recording uses adjacent source");
+    Capture(world, b); world.Execute(second);
+    world.Drain();
+    world.Reset(second); // pool can reuse a newer slot before an older idle one
+    DetailHistory::Collect();
+    Check(!DetailHistory::recordings.current.pending && DetailHistory::recordings.Pending() == 1,
+          "newer current has retired while one completed executable owner remains");
+    Check(older->GpuComplete() && !older->Complete() && !older->owners.empty(),
+          "older idle generation is still retained despite completed GPU work");
+    auto c = world.Frame(third, 12);
+    const auto plan = DetailHistory::Before(c);
+    Check(plan.active && plan.historyUsable,
+          "completed retained owner cannot permanently block a new authenticated private recording");
+    Check(!older->closed && !older->owners.empty(), "recording admission does not close or retire the old owner");
+    Capture(world, c); world.Execute(third);
+    Check(DetailHistory::Status().historySource == 12, "recovered source publishes its own identity");
+    world.Drain(); world.Reset(third);
+    for (uint64_t source = 13; source < 109; ++source)
+    {
+        auto& next = source % 2 ? second : third;
+        auto frame = world.Frame(next, source);
+        const auto following = DetailHistory::Before(frame);
+        Check(following.active && following.historyUsable,
+              "an older idle completed generation cannot starve a sustained private pool");
+        Capture(world, frame); world.Execute(next);
+        world.Drain(); world.Reset(next); DetailHistory::Collect();
+        Check(!older->closed && !older->owners.empty() && DetailHistory::recordings.Pending() == 1,
+              "sustained recovery neither expands the retirement ring nor releases the older generation");
+    }
+    world.Reset(first); DetailHistory::Collect();
+    Check(DetailHistory::SafeToRelease(), "all actual generations finish and Reset before release");
+    DetailHistory::Release(); TickRetired();
+}
+static void RecoveryRefusals(const std::string& condition)
+{
+    World world;
+    auto first = world.New(); auto second = world.New(); auto third = world.New();
+    auto a = world.Frame(first, 10);
+    Check(DetailHistory::Before(a).active, "refusal setup source admitted");
+    Capture(world, a); world.Execute(first);
+    const auto old = DetailHistory::recordings.current.resourceUse;
+    auto b = world.Frame(second, 11);
+    Check(DetailHistory::Before(b).active, "refusal setup second source admitted");
+    Capture(world, b); world.Execute(second);
+    world.Drain(); world.Reset(second); DetailHistory::Collect();
+    auto c = world.Frame(third, 12);
+    if (condition == "hint") c.preSrProducerQueueVerified = false;
+    else if (condition == "queue") c.temporalQueue = world.otherQueue.Get();
+    else if (condition == "contract") c.revision = 2;
+    else if (condition == "quarantine") old->quarantined = true;
+    else if (condition == "device-lost") {
+        static DlssNrGpuLifetime::TestFaults fault;
+        fault.deviceRemoved = true; old->faults = &fault;
+    }
+    else if (condition == "same-list") c.cmdList = first.list.Get();
+    else throw std::runtime_error("unknown recovery refusal");
+    Check(!DetailHistory::Before(c).active, "unproven recovery cannot grant a recording");
+    Check(!old->closed && !old->owners.empty(), "failed recovery leaves old owners intact");
+    if (condition == "quarantine" || condition == "device-lost") return;
+    world.Reset(first); DetailHistory::Collect();
+    world.Finish(second); world.Finish(third);
+}
+static void PrivateRotation()
+{
+    World world;
+    std::array<Recording, 3> pool {world.New(), world.New(), world.New()};
+    for (uint64_t source = 1; source <= 48; ++source)
+    {
+        auto& next = pool[(source - 1) % pool.size()];
+        if (source > pool.size()) { world.Drain(); world.Reset(next); }
+        auto frame = world.Frame(next, source);
+        const auto plan = DetailHistory::Before(frame);
+        Check(plan.active && plan.historyUsable == (source != 1),
+              "three private command lists keep adjacent feedback across real reuse boundaries");
+        Capture(world, frame); world.Execute(next);
+        Check(DetailHistory::recordings.Pending() <= pool.size(), "rotation retains a bounded number of real generations");
+    }
+    world.Drain();
+    for (auto& recording : pool) world.Reset(recording);
+    DetailHistory::Collect();
+    Check(DetailHistory::SafeToRelease(), "rotation retires every generation only after GPU completion and Reset");
+    DetailHistory::Release(); TickRetired();
+}
+static void SourceGapRecovery()
+{
+    World world;
+    auto first = world.New(); auto second = world.New(); auto third = world.New();
+    auto a = world.Frame(first, 20);
+    Check(DetailHistory::Before(a).active, "source gap seed admitted");
+    Capture(world, a); world.Execute(first);
+    const auto old = DetailHistory::recordings.current.resourceUse;
+    world.Drain();
+    auto missed = world.Frame(second, 21);
+    missed.motion = nullptr;
+    Check(!DetailHistory::Before(missed).active, "missing current guide refuses the actual source");
+    auto b = world.Frame(second, 22);
+    const auto plan = DetailHistory::Before(b);
+    Check(plan.active && !plan.historyUsable && DetailHistory::constants.FeedbackHistoryValid == 0,
+          "a later source can record a fresh seed without sampling non-adjacent history");
+    Check(!old->closed && !old->owners.empty(), "fresh reseed leaves old executable ownership intact");
+    Capture(world, b); world.Execute(second);
+    auto c = world.Frame(third, 23);
+    const auto following = DetailHistory::Before(c);
+    Check(following.active && following.historyUsable,
+          "adjacent feedback resumes immediately after the fresh seed publishes");
+    Capture(world, c); world.Execute(third);
+    world.Drain(); world.Reset(first); world.Reset(second); world.Reset(third); DetailHistory::Collect();
+    Check(DetailHistory::SafeToRelease(), "gap recovery never releases an open executable generation");
+    DetailHistory::Release(); TickRetired();
+}
+static void PendingGapRecovery()
+{
+    World world; auto first = world.New(); auto second = world.New(); auto third = world.New();
+    Gate gate(world, world.queue.Get());
+    auto a = world.Frame(first, 20);
+    Check(DetailHistory::Before(a).active, "pending gap seed admitted");
+    Capture(world, a); world.Execute(first);
+    const auto old = DetailHistory::recordings.current.resourceUse;
+    auto missed = world.Frame(second, 21); missed.motion = nullptr;
+    Check(!DetailHistory::Before(missed).active, "missing guide invalidates source history");
+    auto pending = world.Frame(second, 22);
+    Check(!DetailHistory::Before(pending).active && !old->GpuComplete() && !old->closed && !old->owners.empty(),
+          "a source gap cannot bypass actual pending GPU ownership");
+    gate.Open(); world.Drain();
+    auto fresh = world.Frame(second, 23);
+    const auto plan = DetailHistory::Before(fresh);
+    Check(plan.active && !plan.historyUsable, "exact completion permits fresh recording after a refused gap");
+    Capture(world, fresh); world.Execute(second);
+    auto adjacent = world.Frame(third, 24);
+    Check(DetailHistory::Before(adjacent).historyUsable, "fresh seed restores the next adjacent source");
+    Capture(world, adjacent); world.Execute(third);
+    world.Drain(); world.Reset(first); world.Reset(second); world.Reset(third); DetailHistory::Collect();
+    Check(DetailHistory::SafeToRelease(), "pending-gap ownership retires only through exact completion and closure");
+    DetailHistory::Release(); TickRetired();
+}
 static void Pending()
 {
     World world; auto first = world.New(); auto second = world.New();
@@ -689,7 +833,8 @@ static void FinishedNativeDxil(const char* oldShader=nullptr, bool stabilizer=fa
     world.config.DlssNrPresentedTemporalMaxAgeMs.value=2346;
     world.info.BeforeUpscale=false;world.info.FinishedPicture=world.info.NativeSceneRoute=true;
     world.info.SceneGuideOwner[0]=0x101;world.info.SceneGuideOwner[1]=0x202;world.info.SceneGuideOwner[2]=73;
-    auto recording=world.New();
+    std::array<Recording,3> pool {world.New(),world.New(),world.New()};
+    Recording* active=&pool[0];
     const auto upload=[&](ID3D12Resource* texture,D3D12_RESOURCE_STATES before,const void* pixel,UINT pixelBytes) {
         const auto desc=texture->GetDesc();D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};UINT64 bytes=0;
         world.device->GetCopyableFootprints(&desc,0,1,0,&footprint,nullptr,nullptr,&bytes);
@@ -705,15 +850,17 @@ static void FinishedNativeDxil(const char* oldShader=nullptr, bool stabilizer=fa
             std::memcpy(static_cast<char*>(mapped)+footprint.Offset+y*footprint.Footprint.RowPitch+x*pixelBytes,
                         pixel,pixelBytes);
         resource->Unmap(0,nullptr);
-        Barrier(recording.list.Get(),texture,before,D3D12_RESOURCE_STATE_COPY_DEST);
+        Barrier(active->list.Get(),texture,before,D3D12_RESOURCE_STATE_COPY_DEST);
         D3D12_TEXTURE_COPY_LOCATION dst {};dst.pResource=texture;dst.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         D3D12_TEXTURE_COPY_LOCATION src {};src.pResource=resource.Get();src.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        src.PlacedFootprint=footprint;recording.list->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
-        Barrier(recording.list.Get(),texture,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        src.PlacedFootprint=footprint;active->list->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
+        Barrier(active->list.Get(),texture,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         world.pass.buffers.push_back(std::move(resource));
     };
     for(unsigned n=0;n<40;++n)
     {
+        auto& recording=pool[n%pool.size()];active=&recording;
+        if(n>=pool.size())world.Reset(recording);
         const auto prior=n?D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE:D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         const uint16_t raw[] {0x3800,0x3800,0x3800,0x3c00}; // exact FP16 .5 RGB, alpha 1
         const uint16_t answer[] {uint16_t(stabilizer?(n%2?0x3700:0x3880):(n?0x3800:0x3880)),0x3800,0x3800,0x3c00}; // seed adds .0625 red
@@ -752,9 +899,12 @@ static void FinishedNativeDxil(const char* oldShader=nullptr, bool stabilizer=fa
         Check(stabilizer ? (n<2||(red>.46f&&red<.54f)) : (red>.505f&&red<=.5625f),
               "embedded production DXIL retains detail or suppresses alternating signed NR noise through actual published FP16 sources");
         Check(DetailHistory::Status().historySource==n+1,"physical recording publishes only its exact current source");
-        world.Reset(recording);
     }
-    world.Finish(recording);
+    world.Drain();
+    for(auto& recording:pool)world.Reset(recording);
+    DetailHistory::Collect();
+    Check(DetailHistory::SafeToRelease(),"all three physical GPU recordings close before releasing shared history");
+    DetailHistory::Release();TickRetired();
 }
 
 static void StabilityOwnership()
@@ -780,7 +930,9 @@ static void StabilityOwnership()
 }
 static const char* cases[] {
     "stability-ownership",
-    "fresh", "adjacent", "finished-native-route", "pending", "completion-only", "wrong-queue", "history-signal", "registry-signal",
+    "fresh", "adjacent", "finished-native-route", "completed-retained-recovery", "source-gap-recovery", "pending-gap-recovery", "private-rotation",
+    "recovery-hint", "recovery-queue", "recovery-contract", "recovery-quarantine", "recovery-device-lost", "recovery-same-list",
+    "pending", "completion-only", "wrong-queue", "history-signal", "registry-signal",
     "replay", "reconfigure-strength", "reconfigure-revision", "reconfigure-encoding", "reconfigure-mapping",
     "reconfigure-duration-zero", "duration-zero", "strength-zero", "dispatch-failure"
 };
@@ -805,6 +957,11 @@ int main(int argc, char** argv)
         else if (name == "fresh") Fresh();
         else if (name == "adjacent") Adjacent();
         else if (name == "finished-native-route") FinishedNativeRoute();
+        else if (name == "completed-retained-recovery") CompletedRetainedRecovery();
+        else if (name == "source-gap-recovery") SourceGapRecovery();
+        else if (name == "pending-gap-recovery") PendingGapRecovery();
+        else if (name == "private-rotation") PrivateRotation();
+        else if (name.starts_with("recovery-")) RecoveryRefusals(name.substr(9));
         else if (name == "finished-native-dxil") FinishedNativeDxil();
         else if (name == "stability-native-dxil") FinishedNativeDxil(nullptr,true);
         else if (name == "pending") Pending();

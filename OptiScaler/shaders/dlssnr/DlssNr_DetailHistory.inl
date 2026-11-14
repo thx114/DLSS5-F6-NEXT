@@ -20,6 +20,7 @@ struct Snapshot
     bool recorded = false, published = false, queueOrdered = false;
     const char* reason = "not-requested";
     uint64_t historySource = 0, recordedCount = 0, publishedCount = 0;
+    uint64_t busyCount = 0, recoveryCount = 0;
     uint64_t pending = 0, bytes = 0;
     uint64_t source = 0, configuration = 0, owner = 0;
     uint64_t full = 0, modelCalls = 0, modelFailures = 0;
@@ -381,8 +382,14 @@ Plan Before(const Frame& f)
     // Advance retains every executable record/use/fence/owner; same-queue reads
     // and writes may proceed in order, physical reuse/retirement still requires
     // completion+Reset. No hint queue can enter this path, and no CPU wait occurs.
-    if (fusedReadable || (!orderedAdvance && OwnersBusy()))
+    const bool recovered = !fusedReadable && !orderedAdvance &&
+        recordings.ResumeCompleted(authenticatedProducer, list, queue, activeKey, f.frameNumber);
+    if (fusedReadable || (!orderedAdvance && !recovered && OwnersBusy()))
+    {
+        ++snapshot.busyCount;
         return reject("recording-awaits-completion-and-reset");
+    }
+    if (recovered) ++snapshot.recoveryCount;
     if (!settings.Enabled())
     {
         Invalidate();

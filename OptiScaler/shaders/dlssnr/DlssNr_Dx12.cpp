@@ -6779,9 +6779,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 const auto& reuse = DetailReuse::reuseEvidence;
                 const auto feedback = DetailHistory::Status();
                 LOG_INFO("DLSS-NR cadence recorded owner=0x{:x} config={} picture={} dispatch={} queue=0x{:x} list=0x{:x} listGen={} modelCalls={} modelFailures={} reuseFull={} reuseAccepted={} reuseRefused={} requested={} intervalUsed={} cacheReason={} sourceOrdinal={} sourceFenceTarget={} sourceFenceCompleted={} sourceQueueOrdered={} pendingRecordings={} targetFence={} slotInFlight={} bytesUpperBound={} exposureUnknown={} fenceUnknown={} slotBusy={} byteCap={} gpuCompletionSamples={} colourSize={}x{} workSize={}x{} motionRect={},{}+{}x{} modelMvScale={},{} reuseMvScale={},{} coordinateKey={} motionIsPictureFlow={} nativePhaseVerified={} historyReadSlot={} historyWriteSlot={} captureRecorded={} sourceOrdinal_scope=nr_reuse_source nativeSrJoin={} srGeneration={} srSourceFrame={} srPictureSerial={} "
-                    "detailFeedbackRequested={} detailFeedbackActive={} detailFeedbackHistoryUsable={} detailFeedbackRecorded={} detailFeedbackPublished={} detailFeedbackQueueOrdered={} detailFeedbackSource={} detailFeedbackReason={} detailFeedbackPending={} detailFeedbackBytes={} "
+                    "detailFeedbackRequested={} detailFeedbackActive={} detailFeedbackHistoryUsable={} detailFeedbackRecorded={} detailFeedbackPublished={} detailFeedbackQueueOrdered={} detailFeedbackSource={} detailFeedbackReason={} detailFeedbackPending={} detailFeedbackBytes={} detailFeedbackRecordedCount={} detailFeedbackBusyCount={} detailFeedbackRecoveryCount={} "
                     "historyReadiness={} recordingReadiness={} sourceFenceObject=0x{:x} orderedNativeQueue={} producerNativeGuideContract={} "
-                    "feedbackRequested={} feedbackMode={} guideGate={} producerDepthGuides={} producerFlowGuides={} feedbackActive={} feedbackHistoryUsable={} feedbackFusionRecorded={} feedbackDurationMs={} feedbackCoeff={} feedbackMaxAgeMs={} feedbackStrengthLimit={} feedbackReset={} feedbackDepth={} completedRetirementsOnly={} "
+                    "feedbackRequested={} feedbackMode={} guideGate={} producerDepthGuides={} producerFlowGuides={} feedbackActive={} feedbackHistoryUsable={} feedbackFusionRecorded={} feedbackDurationMs={} feedbackMaxAgeMs={} feedbackStrengthLimit={} feedbackReset={} feedbackDepth={} completedRetirementsOnly={} "
                     "sceneModelGuides={} sceneModelMotion={} conditionalSceneGeometry={} sceneSource={} sceneGuideGate={} guideMappingVersion=1 "
                     "modelMode={} modelDispatch={} modelCallsThisDispatch={} modelFailuresThisDispatch={} "
                     "modelLastPass={} modelLastResult={} modelOutcome={} modelPassesCompleted={} modelPassesPlanned={} historyAnswerComplete={} modelDepth=0x{:x} modelMV=0x{:x} "
@@ -6813,6 +6813,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     feedback.requested, feedback.active, feedback.historyUsable,
                     feedback.recorded, feedback.published, feedback.queueOrdered,
                     feedback.historySource, feedback.reason, feedback.pending, feedback.bytes,
+                    feedback.recordedCount, feedback.busyCount, feedback.recoveryCount,
                     DetailReuse::historyReadiness, DetailReuse::recordingReadiness,
                     DetailReuse::sourceFenceIdentity,
                     reuseFrame.orderedNativeQueue, frame.NativeGuideContractVerified,
@@ -6837,7 +6838,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     reuseFrame.independentFeedbackRequested ? feedback.recorded && feedback.historyUsable :
                         DetailReuse::temporalFusionRecorded,
                     std::min(cfg.DlssNrPresentedTemporalDurationMs.value_or_default(), Config::kPresentedTemporalDurationMaxMs),
-                    DetailReuse::params.TemporalHistoryWeight,
                     cfg.DlssNrPresentedTemporalMaxAgeMs.value_or_default(),
                     cfg.DlssNrPresentedTemporalStrength.value_or_default(), reuseFrame.modelReset, reuseFrame.depth != nullptr,
                     reuse.completedRetirementsOnly,
