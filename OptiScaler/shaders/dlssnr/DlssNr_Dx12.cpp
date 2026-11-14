@@ -2225,6 +2225,7 @@ void ReportSkipOnce(const char* reason)
 
 #include "DlssNr_DetailReuse.inl"
 #include "DlssNr_DetailHistory.inl"
+namespace DetailReuse { void LogNativeRecordingEvidence(); }
 
 // Display-only inspection, kept outside the history module's admission policy.
 // The shared preview owns immutable completed copies and renderer read leases.
@@ -6856,6 +6857,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     DlssNrWatchedLists::g_overflowCount.load(std::memory_order_acquire),
                     DlssNrWatchedLists::g_overflowPeak.load(std::memory_order_relaxed),
                     g_nrGpuWork.RetiredCount(), g_nrGpuWork.Tracked(), g_nrGpuWork.Halted(), cadenceEvidenceLines);
+                if (feedback.requested && !feedback.active && feedback.pending &&
+                    std::strcmp(feedback.reason, "recording-awaits-completion-and-reset") == 0)
+                    DetailReuse::LogNativeRecordingEvidence();
             }
             const auto observe = [&](const char* scope, DlssNrGpuTime* timer,
                                      const std::vector<DlssNrGpuTime::Evidence>& fresh) {
@@ -8116,6 +8120,66 @@ void RetireCompletedNativeRecordings(const Frame& f)
         DlssNr::Late::RetireCompletedPrivateRecordings(&slot);
         return;
     }
+}
+
+void LogNativeRecordingEvidence()
+{
+    // Called only by the existing bounded cadence export under g_nrMutex. The
+    // published source is not necessarily the blocker; read the exact record,
+    // token and private owner without resetting, collecting or granting reuse.
+    DetailHistory::recordings.Each([](const DetailHistory::Recording& record)
+    {
+        const auto& use = record.resourceUse;
+        if (!record.pending && (!use || use->Complete())) return;
+        const bool hasFence = record.fence != nullptr;
+        const auto completed = hasFence ? record.fence->GetCompletedValue() : 0;
+        LOG_INFO("DLSS-NR feedback blocker record: source={} generation={} commands={} owner={} "
+                 "pending={} submitted={} quarantined={} retirementProven={} retirementAmbiguous={} "
+                 "queue={} retirementQueue={} fence={} target={} completed={} token={} tokenGeneration={} "
+                 "tokenClosed={} tokenDiscarded={} tokenSubmitted={} tokenQuarantined={} tokenGpuComplete={} "
+                 "tokenComplete={} fusedReadable={} recording_scope=exact_record observation_only=true",
+            record.ordinal, record.generation, static_cast<void*>(record.commands),
+            static_cast<void*>(record.commandOwner.Get()), record.pending, record.submitted,
+            record.quarantined, record.retirementProven, record.retirementAmbiguous,
+            static_cast<void*>(record.queue), static_cast<void*>(record.retirementQueue.Get()),
+            static_cast<void*>(record.fence.Get()), record.value, completed,
+            static_cast<void*>(use.get()), use ? use->generation : 0,
+            use && use->closed, use && use->discarded, use && use->submitted,
+            use && use->quarantined, use && use->GpuComplete(), use && use->Complete(), DetailHistory::fusedReadable);
+        if (use)
+            for (unsigned n = 0; n < use->executions.size(); ++n)
+            {
+                const auto& execution = use->executions[n];
+                if (!execution.queue) continue;
+                LOG_INFO("DLSS-NR feedback blocker execution: source={} tokenGeneration={} execution={} "
+                         "queue={} fence={} target={} completed={} fenceKnown={} observation_only=true",
+                    record.ordinal, use->generation, n, static_cast<void*>(execution.queue.Get()),
+                    static_cast<void*>(execution.fence.Get()), execution.target,
+                    execution.fence ? execution.fence->GetCompletedValue() : 0, execution.fence != nullptr);
+            }
+        unsigned groupIndex = 0;
+        for (auto* group : { &DlssNr::Late::slots, &DlssNr::Late::freshColorSlots })
+        {
+            for (unsigned n = 0; n < group->size(); ++n)
+            {
+                const auto& slot = (*group)[n];
+                if (!slot.commands) continue;
+                auto* identity = RealSubmittedCommands(slot.commands.Get());
+                if (identity != record.commands && identity != record.commandOwner.Get() &&
+                    (!use || identity != use->listOwner.Get())) continue;
+                LOG_INFO("DLSS-NR feedback blocker private owner: source={} group={} slot={} commands={} "
+                         "serial={} captureSource={} captureEpoch={} backBuffer={} pending={} submitted={} "
+                         "quarantined={} sourceDepthFinished={} fence={} ready={} done={} completed={} "
+                         "producerQueue={} observation_only=true",
+                    record.ordinal, groupIndex, n, static_cast<void*>(identity), slot.serial,
+                    slot.frame.SourceCaptureSerial, slot.frame.SourceCaptureEpoch, slot.backBufferIdentity,
+                    slot.pending, slot.submitted, slot.quarantined, slot.nrFilter.DepthSourceFinished(),
+                    static_cast<void*>(slot.fence.Get()), slot.ready, slot.done,
+                    slot.fence ? slot.fence->GetCompletedValue() : 0, static_cast<void*>(slot.producerQueue.Get()));
+            }
+            ++groupIndex;
+        }
+    });
 }
 } // namespace DetailReuse
 } // namespace
