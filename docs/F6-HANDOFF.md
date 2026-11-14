@@ -10,6 +10,8 @@ SDR passthrough 仅在 UAV 目标与实际存储格式匹配时共用只读编�
 
 ### 历史：SDK 观察部署（2026-11-14T10:13Z）
 
+队列拆分的下一步实现计划另见总目录 `completion-observation/queue-separation-plan.md`；包含已核对的 source/Present/teardown 接线点与失败语义，尚无行为改动。owning SDK fence capture 必须在 FG hook 原始 Present 返回后、后续 teardown 之前；外层 swapchain Present 返回已太晚。当前主会话新建的只读 Sol high 设计审计 Euclid 已完成并关闭。
+
 当前产品保存点 **`8390a8735ca6880c3626fdc5c77f897ec600167d`**，嵌入标记`8390a87`，保留下面的细节稳定与深度复用修复。Release x64 exit0，62秒，DLL **32,570,368 B / SHA256 `07B80733D1741A5F35400CB641479AE942397810918697A2819CAED7CABCE900`**，mtime UTC `2026-11-14T10:11:57.8610540Z`。10:12Z已原位部署既有`local/F6-ASI`，FileId与6条硬链接保持，核对的6份配置哈希未变，无`.next`，别名包括原神和崩铁cache。
 
 新增`F6 SDK input completion observation`：只记录现有GetState的原始数值，保留请求/返回ABI、实际查询线程/序号/时段和当时provider身份；不添加SDK查询、COM/fence调用或等待，不改变退休条件。已知v3/v4双边ABI门和异常LastError修复经生产函数抽取夹具1243检查/40次SDK脚本调用、旧ABI guard-page与异常两项负控验证；源调度1065、真实延迟适配780检查及guide wiring通过。完整shared未重跑，没有SDK DLL/游戏验收。

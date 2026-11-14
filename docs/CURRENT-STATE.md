@@ -9,6 +9,8 @@
 
 本轮证据：`build/genshin-reshade-20261114/detail-feedback-20261114-140355/shared-encode/`，包含 `pixels.log`、`runtime.log`、`transaction-recovery.log`、`output-regression.log`、`benchmark-*.log`、`benchmark-identity.json`、`build.json`、`deployment.json`、`installed-identity.json`、`protected-{before,after}.json`；shader receipt 在 `build/shaders/evidence/shared-encode-20261114/`。
 
+后续队列拆分的具体接线已收敛到同总目录 `completion-observation/queue-separation-plan.md`：实际 buffer 独立代次、SDK 原始 Present 返回后且 teardown 前的 owning fence capture、最后 writer 与 SDK reader 的双向依赖、未决输入及 resize/detach 退休。仅设计，未激活；本轮只读 Sol high 评审已完成并关闭，现有阶段测试与部署无需因该计划重复。
+
 ## 历史：SDK 观察部署
 
 更新：**2026-11-14T10:13Z**。产品保存点 **`8390a8735ca6880c3626fdc5c77f897ec600167d`**，保留下述细节稳定修复，增加现有 SDK 查询的输入完成字段观测，并修复异常路径的 LastError。Release x64 exit 0，62 秒；DLL **32,570,368 B / SHA256 `07B80733D1741A5F35400CB641479AE942397810918697A2819CAED7CABCE900`**，mtime UTC `2026-11-14T10:11:57.8610540Z`。10:12Z 原位部署既有 `local/F6-ASI`，原 FileId、6条硬链接和核对的6份配置哈希保持，无 `.next`；别名仍包括原神与崩铁 cache。本节覆盖下方旧部署身份。
