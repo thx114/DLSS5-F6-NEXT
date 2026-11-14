@@ -20,7 +20,8 @@ class OutputCache final
     static bool SameView(const GuideCapture::PreviewDemand& a, const GuideCapture::PreviewDemand& b) noexcept
     {
         // Freezing stops acquisition, but keeps the selected immutable image.
-        return a.mode == b.mode && a.raw == b.raw && a.flipY == b.flipY && a.gain == b.gain;
+        return a.mode == b.mode && a.raw == b.raw && a.flipY == b.flipY && a.gain == b.gain &&
+               a.historyView == b.historyView;
     }
     static void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource,
                            D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)

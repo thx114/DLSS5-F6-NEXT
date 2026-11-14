@@ -27,6 +27,7 @@ inline uint64_t Now() noexcept {
 #include <stdexcept>
 #include <tuple>
 #include <thread>
+#include "PreviewDeviceAlias.h"
 
 namespace HookFixture {
 namespace Util {inline bool CheckForRealObject(const char*,IUnknown*,IUnknown**){return false;}}
@@ -284,7 +285,8 @@ struct Fixture {
         D3D12_DESCRIPTOR_HEAP_DESC hd{};hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV;hd.NumDescriptors=1;
         Hr(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&d.rtv)));const auto handle=d.rtv->GetCPUDescriptorHandleForHeapStart();
         device->CreateRenderTargetView(d.target.Get(),nullptr,handle);d.commands.list->OMSetRenderTargets(1,&handle,FALSE,nullptr);
-        Check(GuideCapture::DrawPreview(snapshot,d.commands.list.Get(),td.Format,d.width,d.height),"actual production pixel shader records selected snapshot");
+        Until([&]{return GuideCapture::DrawPreview(snapshot,d.commands.list.Get(),td.Format,d.width,d.height);},
+            "actual production pixel shader records selected snapshot on the output device");
         if(copy){
             UINT64 bytes=0;device->GetCopyableFootprints(&td,0,1,0,&d.footprint,nullptr,nullptr,&bytes);
             D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=bytes;bd.Height=1;bd.DepthOrArraySize=1;
@@ -486,6 +488,63 @@ static void TestDisplayedRetirement(Fixture& f){
     Check(!GuideCapture::ReadDisplayed(displayed),"replacement retirement clears its own displayed metadata");
     snapshot={};replacement={};Demand(PreviewMode::Off);
 }
+struct PreviewListDeviceAlias {
+    inline static thread_local ID3D12Device* device=nullptr;
+    inline static thread_local ID3D12GraphicsCommandList* selected=nullptr;
+    using GetDevice=HRESULT(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*,REFIID,void**);
+    inline static GetDevice original=nullptr;
+    static HRESULT STDMETHODCALLTYPE Get(ID3D12GraphicsCommandList* list,REFIID iid,void** out){
+        return list==selected?device->QueryInterface(iid,out):original(list,iid,out);}
+};
+static void TestDeviceAliasPixels(Fixture& f){
+    ComPtr<ID3D12Device> alias;alias.Attach(new PreviewDeviceAlias(f.device.Get()));
+    // D3D12 returns the same per-adapter device for repeated factories. Use a
+    // different actual adapter for this negative control when hardware exists.
+    ComPtr<ID3D12Device> foreign;
+    ComPtr<IDXGIFactory4> factory;Hr(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
+    for(UINT index=0;!foreign;++index){ComPtr<IDXGIAdapter1> adapter;
+        if(factory->EnumAdapters1(index,&adapter)==DXGI_ERROR_NOT_FOUND)break;
+        DXGI_ADAPTER_DESC1 desc{};Hr(adapter->GetDesc1(&desc));if(desc.Flags&DXGI_ADAPTER_FLAG_SOFTWARE)continue;
+        if(FAILED(D3D12CreateDevice(adapter.Get(),D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&foreign))))foreign.Reset();}
+    if(!foreign)std::puts("GuidePreview: no hardware adapter; actual foreign-device negative control skipped");
+    Check(alias.Get()!=f.device.Get()&&D3D12DeviceIdentity::Same(alias.Get(),f.device.Get()),
+        "different ReShade contract interface resolves to the same actual WARP device");
+    for(const auto mode:{PreviewMode::FgDepth,PreviewMode::FgMotion,PreviewMode::NrDepth,PreviewMode::NrMotion,PreviewMode::History}){
+        Demand(mode);auto in=f.Inputs();in.contribution=f.inputs[0].Get();in.contributionRect=in.colourRect;
+        auto r=f.New();GuideCapture::SampleToken token;const auto stream=GuideCapture::PreviewDetail::Selected(mode);
+        const uint64_t source=700+static_cast<unsigned>(mode);
+        // Exercise the same producer device-vs-resource mismatch as a proxy list
+        // without replacing WARP execution or its real queues, fences and pixels.
+        auto** table=*reinterpret_cast<void***>(r.list.Get());auto original=table[7];DWORD protection=0;
+        Check(VirtualProtect(table+7,sizeof(void*),PAGE_EXECUTE_READWRITE,&protection)!=FALSE,"alias GetDevice slot protection");
+        PreviewListDeviceAlias::device=alias.Get();PreviewListDeviceAlias::selected=r.list.Get();
+        PreviewListDeviceAlias::original=reinterpret_cast<PreviewListDeviceAlias::GetDevice>(original);
+        table[7]=reinterpret_cast<void*>(&PreviewListDeviceAlias::Get);
+        try{
+            Until([&]{return GuideCapture::TryBeginSample(stream,token)&&GuideCapture::TryRecord(token,r.list.Get(),in,Stamp(source));},
+                "wrapper list and native input resources record a real preview");
+        }catch(...){table[7]=original;DWORD ignored=0;VirtualProtect(table+7,sizeof(void*),protection,&ignored);throw;}
+        table[7]=original;DWORD ignored=0;Check(VirtualProtect(table+7,sizeof(void*),protection,&ignored)!=FALSE,"restore real GetDevice method");
+        f.Execute(r,f.producer.Get());f.Drain(f.producer.Get());Until([&]{return Observe(source).done;},"aliased producer actual GPU fence");
+        f.Reset(r);auto snapshot=Acquire(source);Fixture::Close(r);auto pixels=f.Pixels(snapshot);
+        Check(!pixels.empty(),"same-native preview produces output pixels");
+        auto surface=std::static_pointer_cast<GuideCapture::PreviewDetail::Surface>(snapshot.lease);
+        Check(surface->device.Get()==alias.Get()&&surface->display&&surface->display->device.Get()==f.device.Get(),
+            "producer keeps proxy domain and actual output owns display objects");
+        const auto first=pixels[0];
+        if(mode==PreviewMode::FgDepth||mode==PreviewMode::NrDepth){const float z=std::log2(1+65535.f*(1-5.f/256))/16;
+            PixelNear(first,z,z,z,"native output displays actual guide depth");}
+        if(mode==PreviewMode::History)PixelNear(first,21.f/512,21.f/512,21.f/512,"native output displays actual contribution strength");
+        if(mode==PreviewMode::FgMotion||mode==PreviewMode::NrMotion){const float x=.0025f*.75f,y=-.00375f*1.25f;
+            PixelNear(first,.5f+x*3,.5f+y*3,std::sqrt(x*x+y*y)*3,"native output displays actual scaled guide motion");}
+        if(foreign){ComPtr<ID3D12CommandAllocator> allocator;ComPtr<ID3D12GraphicsCommandList> rejected;
+            Hr(foreign->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(&allocator)));
+            Hr(foreign->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,allocator.Get(),nullptr,IID_PPV_ARGS(&rejected)));
+            Check(!D3D12DeviceIdentity::Same(f.device.Get(),foreign.Get()),"negative control uses a distinct actual device");
+            Check(!GuideCapture::RetainRead(snapshot,rejected.Get()),"a distinct actual device never gains a snapshot reader");Hr(rejected->Close());}
+        snapshot={};Demand(PreviewMode::Off);
+    }
+}
 static void TestProducerGate(Fixture& f){
     Demand(PreviewMode::FgColour);auto r=f.New();f.Record(r,20,f.Inputs());
     {QueueGate gate(f,f.producer.Get());f.Execute(r,f.producer.Get());f.Reset(r);
@@ -598,7 +657,7 @@ int main(int argc,char** argv){try{
     Fixture f;if(argc==2&&std::strcmp(argv[1],"--producer-replay")==0){
         TestProducerReplay(f);std::printf("GuidePreview producer replay WARP: %u checks passed; actual repeated Execute, no device removal\n",checks);return 0;
     }
-    TestOpenFgGuideDemand();TestPixelsAndDemand(f);TestHistoryInspectorPixels(f);TestDisplayedRetirement(f);TestProducerGate(f);TestReaderRetirement(f);TestDelayedReceipts(f);TestBatchedHooks(f);TestCompletedOwnerRing(f);
+    TestOpenFgGuideDemand();TestPixelsAndDemand(f);TestHistoryInspectorPixels(f);TestDisplayedRetirement(f);TestDeviceAliasPixels(f);TestProducerGate(f);TestReaderRetirement(f);TestDelayedReceipts(f);TestBatchedHooks(f);TestCompletedOwnerRing(f);
     TestReaderReplay(f);TestQueueMismatch(f);TestSignalFailure(f);
     std::printf("GuidePreview WARP: %u checks passed; production GPU compute/display, actual queues/fences/Reset; no NVIDIA SDK/game claims\n",checks);return 0;
 }catch(const std::exception& e){GuideCapture::SetPreviewDemand({});std::fprintf(stderr,"GuidePreview WARP failure: %s\n",e.what());return 1;}}

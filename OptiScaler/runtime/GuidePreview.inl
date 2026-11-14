@@ -3,14 +3,25 @@
 namespace GuideCapture {
 namespace PreviewDetail {
 constexpr unsigned SlotCount=3,ReadersPerSlot=8,UsesPerSlot=ReadersPerSlot+1;
+struct Display {
+    ComPtr<ID3D12Device> device;
+    ComPtr<ID3D12RootSignature> root;
+    ComPtr<ID3D12DescriptorHeap> heap;
+    std::vector<std::pair<DXGI_FORMAT,ComPtr<ID3D12PipelineState>>> pipelines;
+    std::array<ComPtr<ID3D12Fence>,ReadersPerSlot> fences;
+};
 struct Surface {
     ComPtr<ID3D12Device> device;
-    ComPtr<ID3D12RootSignature> computeRoot,displayRoot;
+    ComPtr<ID3D12RootSignature> computeRoot;
     ComPtr<ID3D12PipelineState> compute;
     ComPtr<ID3D12Resource> texture;
-    ComPtr<ID3D12DescriptorHeap> computeHeap,readHeap;
+    ComPtr<ID3D12DescriptorHeap> computeHeap;
     std::array<ComPtr<ID3D12Resource>,2> inputs;
-    std::vector<std::pair<DXGI_FORMAT,ComPtr<ID3D12PipelineState>>> displays;
+    // The output list supplies its own interface domain. All display objects,
+    // including reader fences, are created there, never on the producer proxy.
+    std::shared_ptr<Display> display;
+    ComPtr<ID3D12Device> requestedDisplayDevice;
+    bool displayPreparing=false;
     unsigned width=0,height=0;
     // Balanced even on the very first executable recording: quarantine retains
     // uncertain owners but cannot prevent the application's actual replay.
@@ -18,6 +29,7 @@ struct Surface {
 };
 struct Use {
     ComPtr<ID3D12CommandList> list;ComPtr<ID3D12CommandQueue> queue;ComPtr<ID3D12Fence> fence;
+    std::shared_ptr<Display> display;
     uint64_t generation=0,value=0;bool pre=false,post=false,reset=false,done=false,quarantined=false,signalled=false,signalling=false;
     bool Active() const {return list!=nullptr;}
 };
@@ -72,29 +84,22 @@ std::shared_ptr<Surface> Prepare(ID3D12Device* device,unsigned width,unsigned he
        FAILED(device->CreateRootSignature(0,serialized->GetBufferPointer(),serialized->GetBufferSize(),IID_PPV_ARGS(&p->computeRoot))))return {};
     D3D12_COMPUTE_PIPELINE_STATE_DESC pd{};pd.pRootSignature=p->computeRoot.Get();pd.CS={code->GetBufferPointer(),code->GetBufferSize()};
     if(FAILED(device->CreateComputePipelineState(&pd,IID_PPV_ARGS(&p->compute))))return {};
-    roots[0].Constants.Num32BitValues=4;ranges[0].NumDescriptors=1;roots[1].DescriptorTable.NumDescriptorRanges=1;
-    rd.Flags=D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-    if(FAILED(D3D12SerializeRootSignature(&rd,D3D_ROOT_SIGNATURE_VERSION_1,&serialized,&error))||
-       FAILED(device->CreateRootSignature(0,serialized->GetBufferPointer(),serialized->GetBufferSize(),IID_PPV_ARGS(&p->displayRoot))))return {};
     D3D12_DESCRIPTOR_HEAP_DESC hd{};hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;hd.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;hd.NumDescriptors=3;
-    if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&p->computeHeap))))return {};hd.NumDescriptors=1;
-    if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&p->readHeap))))return {};
+    if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&p->computeHeap))))return {};
     D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;D3D12_RESOURCE_DESC td{};
     td.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;td.Width=width;td.Height=height;td.DepthOrArraySize=1;td.MipLevels=1;
     td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;td.SampleDesc.Count=1;td.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,p->state,nullptr,IID_PPV_ARGS(&p->texture))))return {};
-    D3D12_SHADER_RESOURCE_VIEW_DESC vd{};vd.Format=td.Format;vd.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;
-    vd.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;vd.Texture2D.MipLevels=1;
-    device->CreateShaderResourceView(p->texture.Get(),&vd,p->readHeap->GetCPUDescriptorHandleForHeapStart());return p;
+    return p;
 }
-ID3D12PipelineState* PrepareDisplayPipeline(Surface& surface,DXGI_FORMAT format){
-    for(auto& p:surface.displays)if(p.first==format)return p.second.Get();
+ID3D12PipelineState* PrepareDisplayPipeline(Display& display,DXGI_FORMAT format){
+    for(auto& p:display.pipelines)if(p.first==format)return p.second.Get();
     // HDR needs an explicit output transfer contract; never display SDR as PQ.
     if(format!=DXGI_FORMAT_R8G8B8A8_UNORM&&format!=DXGI_FORMAT_B8G8R8A8_UNORM&&
        format!=DXGI_FORMAT_R8G8B8A8_UNORM_SRGB&&format!=DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)return nullptr;
     ComPtr<ID3DBlob> vs,ps;if(!Compile(GuidePreviewShader::Display,sizeof(GuidePreviewShader::Display)-1,"vs","vs_5_0",vs)||
         !Compile(GuidePreviewShader::Display,sizeof(GuidePreviewShader::Display)-1,"ps","ps_5_0",ps))return nullptr;
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};pd.pRootSignature=surface.displayRoot.Get();
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};pd.pRootSignature=display.root.Get();
     pd.VS={vs->GetBufferPointer(),vs->GetBufferSize()};pd.PS={ps->GetBufferPointer(),ps->GetBufferSize()};
     auto& blend=pd.BlendState.RenderTarget[0];
     blend.SrcBlend=D3D12_BLEND_ONE;blend.DestBlend=D3D12_BLEND_ZERO;blend.BlendOp=D3D12_BLEND_OP_ADD;
@@ -104,8 +109,30 @@ ID3D12PipelineState* PrepareDisplayPipeline(Surface& surface,DXGI_FORMAT format)
     pd.RasterizerState.DepthClipEnable=TRUE;pd.DepthStencilState.DepthEnable=FALSE;pd.DepthStencilState.StencilEnable=FALSE;
     pd.DepthStencilState.DepthWriteMask=D3D12_DEPTH_WRITE_MASK_ZERO;pd.DepthStencilState.DepthFunc=D3D12_COMPARISON_FUNC_ALWAYS;
     pd.PrimitiveTopologyType=D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;pd.NumRenderTargets=1;pd.RTVFormats[0]=format;pd.SampleDesc.Count=1;
-    ComPtr<ID3D12PipelineState> pipeline;if(FAILED(surface.device->CreateGraphicsPipelineState(&pd,IID_PPV_ARGS(&pipeline))))return nullptr;
-    auto* result=pipeline.Get();surface.displays.emplace_back(format,std::move(pipeline));return result;
+    ComPtr<ID3D12PipelineState> pipeline;if(FAILED(display.device->CreateGraphicsPipelineState(&pd,IID_PPV_ARGS(&pipeline))))return nullptr;
+    auto* result=pipeline.Get();display.pipelines.emplace_back(format,std::move(pipeline));return result;
+}
+std::shared_ptr<Display> PrepareDisplay(ID3D12Device* device,ID3D12Resource* texture){
+    auto p=std::make_shared<Display>();p->device=device;
+    D3D12_DESCRIPTOR_RANGE range{D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,0,0,0};
+    D3D12_ROOT_PARAMETER roots[2]{};roots[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;roots[0].Constants={0,0,4};
+    roots[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;roots[1].DescriptorTable={1,&range};
+    D3D12_ROOT_SIGNATURE_DESC rd{};rd.NumParameters=2;rd.pParameters=roots;
+    rd.Flags=D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    ComPtr<ID3DBlob> serialized,error;
+    if(FAILED(D3D12SerializeRootSignature(&rd,D3D_ROOT_SIGNATURE_VERSION_1,&serialized,&error))||
+       FAILED(device->CreateRootSignature(0,serialized->GetBufferPointer(),serialized->GetBufferSize(),IID_PPV_ARGS(&p->root))))return {};
+    D3D12_DESCRIPTOR_HEAP_DESC hd{};hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    hd.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;hd.NumDescriptors=1;
+    if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&p->heap))))return {};
+    D3D12_SHADER_RESOURCE_VIEW_DESC vd{};vd.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;vd.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;
+    vd.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;vd.Texture2D.MipLevels=1;
+    device->CreateShaderResourceView(texture,&vd,p->heap->GetCPUDescriptorHandleForHeapStart());
+    constexpr DXGI_FORMAT formats[]={DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_FORMAT_B8G8R8A8_UNORM,
+        DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,DXGI_FORMAT_B8G8R8A8_UNORM_SRGB};
+    for(auto format:formats)if(!PrepareDisplayPipeline(*p,format))return {};
+    for(auto& fence:p->fences)if(FAILED(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence))))return {};
+    return p;
 }
 bool Register(Use& use,ID3D12GraphicsCommandList* list,ID3D12Device*,unsigned key){
     ComPtr<ID3D12CommandList> canonical;if(FAILED(list->QueryInterface(IID_PPV_ARGS(&canonical))))return false;
@@ -146,7 +173,7 @@ bool Poll(){
         if(producer&&!slot.discarded){slot.published=true;slot.completedTick=GuideDiagnostics::Now();
             if(slot.revision==s.revision&&s.demand.mode!=PreviewMode::Off&&!s.demand.frozen&&
                (s.latest==UINT_MAX||slot.serial>s.slots[s.latest].serial))s.latest=key/UsesPerSlot;}
-        s.active[key].store(nullptr,std::memory_order_release);use.list.Reset();use.queue.Reset();
+        s.active[key].store(nullptr,std::memory_order_release);use.list.Reset();use.queue.Reset();use.display.reset();
         if(producer){for(auto& input:slot.surface->inputs)input.Reset();
             if(slot.discarded)slot.surface->state=slot.startState;}
     });
@@ -249,6 +276,19 @@ void CancelSample(SampleToken& token) noexcept {
 namespace PreviewDetail {
 bool PrepareOne(){
     auto& s=Get();
+    for(unsigned n=0;n<SlotCount;++n){std::shared_ptr<Surface> surface;ComPtr<ID3D12Device> device;
+        {std::lock_guard lock(s.mutex);surface=s.slots[n].surface;
+            if(!surface||!surface->requestedDisplayDevice||surface->displayPreparing||s.demand.mode==PreviewMode::Off)continue;
+            device=surface->requestedDisplayDevice;surface->displayPreparing=true;}
+        // An immutable binding for this snapshot, prepared away from Present.
+        // Old bindings remain held by their actual reader recordings.
+        auto display=PrepareDisplay(device.Get(),surface->texture.Get());
+        {std::lock_guard lock(s.mutex);surface->displayPreparing=false;
+            if(surface->requestedDisplayDevice.Get()==device.Get()){
+                surface->requestedDisplayDevice.Reset();
+                if(display)surface->display=std::move(display);else Mark("Independent output preview preparation failed");}}
+        return true;
+    }
     for(unsigned n=0;n<SlotCount;++n){ComPtr<ID3D12Device> device;unsigned w=0,h=0;
         {std::lock_guard lock(s.mutex);auto& slot=s.slots[n];
             if(!slot.requestedDevice||slot.preparing||slot.reserved||slot.producer.Active()||s.demand.mode==PreviewMode::Off)continue;
@@ -256,21 +296,16 @@ bool PrepareOne(){
             if(busy||(slot.surface&&slot.surface.use_count()!=1)||n==s.latest)continue;
             device=slot.requestedDevice;w=slot.requestedWidth;h=slot.requestedHeight;
             slot.requestedDevice.Reset();slot.preparing=true;}
-        // Entire new-device storage + all nine idle fences are prepared outside
-        // the lifecycle mutex. Never reuse an old-device fence on a new queue.
+        // Producer storage and fence belong to its actual device interface.
+        // Reader storage/fences are prepared separately on the output device.
         auto surface=Prepare(device.Get(),w,h);
-        std::array<ComPtr<ID3D12Fence>,UsesPerSlot> fences;
-        if(surface){
-            constexpr DXGI_FORMAT formats[]={DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_FORMAT_B8G8R8A8_UNORM,
-                DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,DXGI_FORMAT_B8G8R8A8_UNORM_SRGB};
-            for(auto format:formats)if(!PrepareDisplayPipeline(*surface,format)){surface.reset();break;}
-            for(auto& fence:fences)if(surface&&FAILED(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)))){surface.reset();break;}
-        }
+        ComPtr<ID3D12Fence> fence;
+        if(surface&&FAILED(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence))))surface.reset();
         {std::lock_guard lock(s.mutex);auto& slot=s.slots[n];
             slot.preparing=false;
             if(surface&&!slot.reserved&&!slot.producer.Active()&&n!=s.latest){
-                slot.surface.swap(surface);slot.producer.fence.Swap(fences[0]);slot.producer.value=0;
-                for(unsigned j=0;j<ReadersPerSlot;++j){slot.readers[j].fence.Swap(fences[j+1]);slot.readers[j].value=0;}
+                slot.surface.swap(surface);slot.producer.fence.Swap(fence);slot.producer.value=0;
+                for(auto& reader:slot.readers){reader.fence.Reset();reader.value=0;}
             }else if(!surface)Mark("Independent DX12 preview preparation failed");}
         // Old idle resources/fences destruct outside the shared mutex.
         return true;
@@ -304,11 +339,11 @@ bool TryRecord(SampleToken& token,ID3D12GraphicsCommandList* list,const Inputs& 
         if(other&&!otherRect.width&&!otherRect.height)otherRect=in.colourRect;
         if(mode==8&&in.compareFreshAnswer&&(!other||other==resource||!Region(other,otherRect)))return fail("Unavailable: same-frame history comparison missing");
         if(mode==4&&(!std::isfinite(in.motionToUvX)||!std::isfinite(in.motionToUvY)))return fail("Unavailable: SDK motion scale unknown");
-        ComPtr<ID3D12Device> device,owner;if(FAILED(list->GetDevice(IID_PPV_ARGS(&device)))||FAILED(resource->GetDevice(IID_PPV_ARGS(&owner)))||device.Get()!=owner.Get())return fail("Unavailable: source/list device mismatch");
+        ComPtr<ID3D12Device> device,owner;if(list->GetDevice(IID_PPV_ARGS(&device))!=S_OK||resource->GetDevice(IID_PPV_ARGS(&owner))!=S_OK||!D3D12DeviceIdentity::Same(device.Get(),owner.Get()))return fail("Unavailable: source/list device mismatch");
         const auto format=ViewFormat(resource->GetDesc().Format,mode==3?1:0);
         const auto otherFormat=other?ViewFormat(other->GetDesc().Format,0):DXGI_FORMAT_R32G32B32A32_FLOAT;
         if(format==DXGI_FORMAT_UNKNOWN||otherFormat==DXGI_FORMAT_UNKNOWN)return fail("Unavailable: unsupported input view format");
-        if(other){owner.Reset();if(FAILED(other->GetDevice(IID_PPV_ARGS(&owner)))||owner.Get()!=device.Get())return fail("Unavailable: comparison device mismatch");}
+        if(other){owner.Reset();if(other->GetDevice(IID_PPV_ARGS(&owner))!=S_OK||!D3D12DeviceIdentity::Same(owner.Get(),device.Get()))return fail("Unavailable: comparison device mismatch");}
         if(!lock.try_lock()){CancelSample(token);return false;}
         if(!slot.reserved||slot.serial!=token.serial||token.revision!=s.revision||s.demand.frozen||s.demand.mode!=demand.mode){lock.unlock();CancelSample(token);return false;}
         if(stamp.source==s.lastSource&&stamp.feature==s.lastFeature&&stamp.owner==s.lastOwner&&stamp.configuration==s.lastConfig){lock.unlock();CancelSample(token);return false;}
@@ -349,27 +384,46 @@ bool TryAcquireCompleted(PreviewSnapshot& out) noexcept {
         out.consumer=slot.consumer;out.epoch=slot.epoch;out.feature=slot.feature;out.configuration=slot.configuration;out.owner=slot.owner;out.colourHdr=slot.colourHdr;return true;
     }catch(...){return false;}
 }
-bool RetainRead(const PreviewSnapshot& snapshot,ID3D12GraphicsCommandList* list) noexcept {
+namespace PreviewDetail {
+bool RetainOutputRead(const PreviewSnapshot& snapshot,ID3D12GraphicsCommandList* list,std::shared_ptr<Display>& display) noexcept {
     try{auto& s=PreviewDetail::Get();std::unique_lock lock(s.mutex,std::try_to_lock);if(!lock.owns_lock()||!snapshot.lease||!list||s.demand.mode==PreviewMode::Off||snapshot.revision!=s.revision)return false;
-        if(list->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT)return false;ComPtr<ID3D12Device> device;if(FAILED(list->GetDevice(IID_PPV_ARGS(&device))))return false;
+        if(list->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT)return false;ComPtr<ID3D12Device> device;if(list->GetDevice(IID_PPV_ARGS(&device))!=S_OK)return false;
         for(unsigned n=0;n<PreviewDetail::SlotCount;++n){auto& slot=s.slots[n];
             if(slot.serial!=snapshot.serial||slot.surface.get()!=snapshot.lease.get()||!slot.published||slot.producer.quarantined)continue;
-            if(slot.surface->device.Get()!=device.Get())return false;
-            for(auto& r:slot.readers)if(r.Active()&&r.list.Get()==static_cast<ID3D12CommandList*>(list)&&!r.reset)return !r.pre&&!r.quarantined;
-            for(unsigned j=0;j<PreviewDetail::ReadersPerSlot;++j)if(!slot.readers[j].Active())return PreviewDetail::Register(slot.readers[j],list,device.Get(),n*PreviewDetail::UsesPerSlot+j+1);
+            if(!D3D12DeviceIdentity::Same(slot.surface->device.Get(),device.Get())){Mark("Unavailable: preview output device mismatch");return false;}
+            for(auto& r:slot.readers)if(r.Active()&&r.list.Get()==static_cast<ID3D12CommandList*>(list)&&!r.reset){
+                if(r.pre||r.quarantined)return false;display=r.display;return bool(display);}
+            display=slot.surface->display;
+            if(!display||display->device.Get()!=device.Get()){
+                slot.surface->requestedDisplayDevice=device;Mark("Preparing preview on the actual output device");
+                lock.unlock();StartWorker(Storage());return false;}
+            for(unsigned j=0;j<PreviewDetail::ReadersPerSlot;++j)if(!slot.readers[j].Active()){
+                auto& reader=slot.readers[j];
+                if(reader.fence.Get()!=display->fences[j].Get()){reader.fence=display->fences[j];reader.value=0;}
+                if(!PreviewDetail::Register(reader,list,device.Get(),n*PreviewDetail::UsesPerSlot+j+1))return false;
+                reader.display=display;return true;}
+            Mark("Preview output reader slots busy; skipped");
         }return false;
     }catch(...){return false;}
 }
+}
+bool RetainRead(const PreviewSnapshot& snapshot,ID3D12GraphicsCommandList* list) noexcept {
+    std::shared_ptr<PreviewDetail::Display> display;return PreviewDetail::RetainOutputRead(snapshot,list,display);
+}
 bool DrawPreview(const PreviewSnapshot& snapshot,ID3D12GraphicsCommandList* list,DXGI_FORMAT format,unsigned width,unsigned height) noexcept {
     try{if(!snapshot.lease||!list||!width||!height)return false;
-        auto surface=std::static_pointer_cast<PreviewDetail::Surface>(snapshot.lease);ID3D12PipelineState* pipeline=nullptr;
-        // Immutable pipeline set was fully prepared on the worker.
-        for(const auto& entry:surface->displays)if(entry.first==format){pipeline=entry.second.Get();break;}
-        if(!pipeline){PreviewUnavailable("Unavailable: output HDR/format transfer contract is not supported");return false;}
-        if(!RetainRead(snapshot,list)){PreviewUnavailable("Preview reader slots busy or output device incompatible; skipped");return false;}
-        const float c[]{float(width),float(height),float(snapshot.width),float(snapshot.height)};ID3D12DescriptorHeap* heaps[]{surface->readHeap.Get()};
-        list->SetDescriptorHeaps(1,heaps);list->SetGraphicsRootSignature(surface->displayRoot.Get());list->SetPipelineState(pipeline);
-        list->SetGraphicsRoot32BitConstants(0,4,c,0);list->SetGraphicsRootDescriptorTable(1,surface->readHeap->GetGPUDescriptorHandleForHeapStart());
+        if(format!=DXGI_FORMAT_R8G8B8A8_UNORM&&format!=DXGI_FORMAT_B8G8R8A8_UNORM&&
+           format!=DXGI_FORMAT_R8G8B8A8_UNORM_SRGB&&format!=DXGI_FORMAT_B8G8R8A8_UNORM_SRGB){
+            PreviewUnavailable("Unavailable: output HDR/format transfer contract is not supported");return false;}
+        std::shared_ptr<PreviewDetail::Display> display;
+        if(!PreviewDetail::RetainOutputRead(snapshot,list,display))return false;
+        ID3D12PipelineState* pipeline=nullptr;
+        // Immutable output-domain pipelines and descriptors were prepared on the worker.
+        for(const auto& entry:display->pipelines)if(entry.first==format){pipeline=entry.second.Get();break;}
+        if(!pipeline)return false;
+        const float c[]{float(width),float(height),float(snapshot.width),float(snapshot.height)};ID3D12DescriptorHeap* heaps[]{display->heap.Get()};
+        list->SetDescriptorHeaps(1,heaps);list->SetGraphicsRootSignature(display->root.Get());list->SetPipelineState(pipeline);
+        list->SetGraphicsRoot32BitConstants(0,4,c,0);list->SetGraphicsRootDescriptorTable(1,display->heap->GetGPUDescriptorHandleForHeapStart());
         const D3D12_VIEWPORT vp{0,0,float(width),float(height),0,1};const D3D12_RECT rect{0,0,LONG(width),LONG(height)};
         list->RSSetViewports(1,&vp);list->RSSetScissorRects(1,&rect);list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);list->DrawInstanced(3,1,0,0);return true;
     }catch(...){return false;}

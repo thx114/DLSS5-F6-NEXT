@@ -88,6 +88,8 @@ int main(){try{
     auto contendedPixels=ReadOutput(f,contention);
     PixelNear(contendedPixels[0],7.f/512,5.f/256,.25f,"reader rejection never exposes normal game image");
     demand.frozen=true;cache.Select(demand,true);Check(cache.HasImage(),"freeze retains selected view");
+    ++demand.historyView;cache.Select(demand,true);
+    Check(!cache.HasImage(),"frozen history subview change immediately invalidates old pixels");
     demand.gain+=1;cache.Select(demand,true);Check(!cache.HasImage(),"gain revision invalidates pixels");
     auto changed=OutputTarget(f);read=true;
     Check(!cache.Record(f.device.Get(),changed.commands.list.Get(),changed.target.Get(),nullptr,read)&&!read,

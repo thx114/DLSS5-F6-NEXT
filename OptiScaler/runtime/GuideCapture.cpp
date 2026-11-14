@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "GuideCapture.h"
+#include "D3D12DeviceIdentity.h"
 #include "../shaders/preview/GuidePreviewShader.h"
 #include <Windows.h>
 #include <d3dcompiler.h>
