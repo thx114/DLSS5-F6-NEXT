@@ -69,9 +69,11 @@ LAUNCHPAD 也能估计图像光流。`OPTICAL_FLOW_Q=0` 表示 Low，并非关�
 
 阻断点：PR 清掉低分辨率 MV 标志，却仍交低分辨率纹理，违反 F6 FG 输入契约；新增字段默认值/测试未闭合。安装器改配置、复制 ReShade 与信任根等行为不纳入本次集成。
 
-已采用最新 main 加独立的 `Ffx12SingleInstance` 配置接管控制。源码保存为隔离仓库提交 `3ec47e3de096fd7f64872f819d108a0535938884` 和 `bridge-source-3ec47e3.zip`。Release x64、NGX ON、release runtime ON、diagnostics OFF，4/4 CTest 与 NgxParamMap 全部 3,657 检查通过。
+初始集成采用上述固定 main 加独立的 `Ffx12SingleInstance` 配置接管控制，保存点 `3ec47e3de096fd7f64872f819d108a0535938884`。其后的启动兼容修复保存为 `f53873a7943b502e7739f5361c8b8f65c714b602`：创建入口和 COM 方法按实际 callable 配对，保留代理绘制前后处理，精确复制完整受支持接口表，并分开 SwapChain4 的 HDR 方法与 `ResizeBuffers1`。可重建源码差异见 [外部桥补丁](../patches/genshin-fsr-bridge/README.md)。
 
-已原位部署既有 `temp3/Dx11FsrBridge (2).dll`：SHA256 `B5966CFF7A7A54D9B8471FDC7F956A0D7AA409F01D16BD37DCAAE6F31D22B240`，662,528 B；FileId `0x000000000000000000040000001d8630` 和 2 个硬链接保持，桥 INI/ReShade core hash 不变。回执为 `bridge-installed-after.json`。尚无新局实际加载/画面验收。
+当前 Release x64、NGX ON、release runtime ON、diagnostics OFF，`bridge-routing-resume-final.log` 13/13 CTest 通过，包括原 NgxParamMap、实际 DLL 多提供者 / 嵌套 / 工厂 / 接口表边界、代理前后处理、SwapChain3 / 4 和真实 WARP 字节。旧桥负控及修正前的 HDR 槽位用例均检出错误。COM 同址重建及克隆表退休仍是单列的继承缺口，不作为首次启动退出的根因。
+
+已原位部署既有 `temp3/Dx11FsrBridge (2).dll`：SHA256 `A49014B2424F85D50AEF7D3A0858DE33E32F7F60C589D5FFB63E6C9D684B9FC6`，818,176 B；原 FileId `0x000000000000000000040000001d8630` 和 2 个硬链接保持，桥 INI / ReShade 核心 / F6 DLL 哈希未变。回执 `bridge-routing-installed-after.json` 取代旧 `bridge-installed-after.json` 的当前身份；尚无新桥的新局实际加载 / 画面验收。
 
 参考：`https://github.com/AizawaHikaru233/genshin_fsr_brigde/pull/15`、`https://github.com/AizawaHikaru233/genshin_fsr_brigde`、`https://github.com/CXP-2024/GIMI_reshade_dlss_integration`、本机固定核心 API20 SDK 与 iMMERSE 原 shader。
 

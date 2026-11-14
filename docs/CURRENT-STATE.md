@@ -1,6 +1,6 @@
 # F6 当前状态
 
-更新：2026-11-14。BeforeSR 深度效果、LAUNCHPAD / MXAO、内置 GIMI 公共入口与 loader 修复已完成源码集成、离线验证和 DLL 原位部署。**尚无新候选的游戏加载、Rocket 稳定性、画面或性能验收。** 用户撤销了暂停和编写交接的要求，本轮没有修改 `F6-HANDOFF.md`。
+更新：2026-11-14。BeforeSR 深度效果、LAUNCHPAD / MXAO、内置 GIMI 公共入口与 loader 修复已完成源码集成、离线验证和 DLL 原位部署。用户新局已确认加载 `44380f8`，但启动仍有退出；外部 FSR 桥的提供者与 COM 转发修复现已原位部署。**新桥的 Rocket / GIMI 游戏稳定性、画面和性能仍待用户新局验收。** 本轮没有修改 `F6-HANDOFF.md`。
 
 产品树：`D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。最终构建源码保存点为 `44380f86f4611f51e9c08de77e8668eab0f4f3f4`（`Fix BeforeSR depth effects and native hook coexistence`）；后续维护文档提交不改变该构建身份。游戏由用户手动操作；未修改启动器选择、用户 INI / preset / profiles 或 ASI，未推送远端。
 
@@ -59,7 +59,21 @@ LAUNCHPAD 为本机 MXAO 提供基础 / 平滑法线，需要当前深度。它�
 
 实际采用 main 加独立 `Ffx12SingleInstance` 接管配置控制，隔离源码保存点 `3ec47e3de096fd7f64872f819d108a0535938884`，归档 `bridge-source-3ec47e3.zip`。Release x64、NGX ON、release runtime ON、diagnostics OFF；4/4 CTest 及 NgxParamMap 的全部 3,657 检查通过。
 
-已原位部署既有 `temp3/Dx11FsrBridge (2).dll`：SHA256 `B5966CFF7A7A54D9B8471FDC7F956A0D7AA409F01D16BD37DCAAE6F31D22B240`，662,528 B，FileId `0x000000000000000000040000001d8630` 和 2 硬链接保持；桥 INI / ReShade core 未改。回执 `bridge-deployment.json`、`bridge-installed-after.json`。未推送或评论 PR；新局加载 / 画面仍待验收。
+早期部署的 `B5966CFF…` 桥已被下述提供者转发修正版覆盖；`bridge-deployment.json`、`bridge-installed-after.json` 只保留该次历史部署。
+
+### 续接：提供者与 COM 转发修复
+
+用户补充“只注入 FSR 也会崩溃”。实际旧桥 DLL 的独立宿主复现了两个同名 `d3d11.dll` 共用 original：第二提供者的 GPA / IAT 调用进入第一提供者。成功返回设备后，COM 方法也存在同类错配；同址 Factory2 / Factory 的重复安装还可能保存自身 hook。
+
+源码保存点 `f53873a7943b502e7739f5361c8b8f65c714b602` 按实际 callable 统一创建入口与 COM original，逐线程恢复嵌套调用；用标准 QI 定位实际 context，保留代理的绘制前后处理，内部 bypass 不再全局切换 vptr。接口表按实际 SDK 能力保留完整长度，并纠正 SwapChain4 的 HDR 方法槽 40，保留槽 39 的 `ResizeBuffers1`。未改 Rocket / ReShade 核心或用户配置。
+
+`bridge-routing-resume-final.log` 为 Release x64 / NGX ON / release runtime ON / diagnostics OFF 的构建与 13/13 CTest 通过证据；包含真实 DLL 多提供者、嵌套成功路径、页边界接口表、SwapChain3 / 4 和 WARP 字节读回。旧桥负控 `bridge-route-negative-old.log` 检出 5 项错误；新增 SwapChain4 用例在修正前 `bridge-routing-hdr-negative.log` 检出两个提供者的槽位错配。`DllMain` 归属 `Dx11FsrBridge.cpp.obj`，产物含新增提供者绑定日志。
+
+2026-11-14 09:57（UTC+08）已原位覆盖既有 `temp3/Dx11FsrBridge (2).dll`：SHA256 `A49014B2424F85D50AEF7D3A0858DE33E32F7F60C589D5FFB63E6C9D684B9FC6`，818,176 B。原 FileId `0x000000000000000000040000001d8630` 与两条硬链接保留，两个别名哈希一致；桥 INI、ReShade 核心和 F6 DLL 哈希未变。回执 `bridge-routing-build-identity.json`、`bridge-routing-deployment.json`、`bridge-routing-installed-before.json`、`bridge-routing-installed-after.json`；未生成待替换 `.next`。
+
+完整源码归档 `bridge-source-f53873a.zip` 留在本轮证据目录；可重建差异随 F6 保存在 [外部桥补丁](../patches/genshin-fsr-bridge/README.md)。独立复核记录了 COM 同址重建与克隆表退休的继承缺口，已列入桥的 `docs/OPEN-ISSUES.md`，不据此解释首次启动退出。
+
+上述离线复现确认了桥内缺陷，没有本次游戏退出的调用栈证明命中该缺陷；新桥加载及启动稳定性仍需用户手动新局。
 
 ## 已锁定游戏证据与待验收
 
@@ -70,6 +84,9 @@ LAUNCHPAD 为本机 MXAO 提供基础 / 平滑法线，需要当前深度。它�
 | 普通局 `20261114-024410_YuanShen_57172` | 1,446 个 Evaluate 入口；816 个前台且 Opti 菜单关闭的源间隔，P50 / P95 47.408 / 58.934 ms，中位源间隔倒数约 21.1 FPS |
 | ReShade 局 `20261114-024706_YuanShen_230352` | 1,571 个 Evaluate 入口；341 个对应源间隔，P50 / P95 59.198 / 72.326 ms，约 16.9 源 FPS；旧 F6 `auto + BeforeSR` 实际关闭 |
 | Rocket 局 `20261114-042258_YuanShen_228728` | 约 38.3 秒退出 `0xC0000135`，SR / NR / FG 入口全 0；XXMI 的主动 `DoubleBeepExit()` 也使用此码，未定位实际退出分支，无对应 dump / WER |
+| Rocket 局 `20261114-082043_YuanShen_227916` | 确认加载 `44380f8`，约 31.1 秒后 `0xC0000135` 退出；隐藏 DX11 swapchain 创建尚未返回，未进入 SR / NR / FG |
+| 仅桥对照 `20261114-084512_YuanShen_238544` | 约 8.6 秒后 `0xC0000135` 退出，桥日志停在创建设备接管后；该局不能用旧 F6 日志证明加载了 F6 |
+| 新局 `20261114-085448_YuanShen.exe_240612` | 加载 `44380f8`；隐藏 DX11 链和 DX11-w-DX12 wrapper 创建成功后，在 `0x7FF8088804B7` 发生 `0xC0000005`，UEF dump 146,284,432 B，已逐文件复制并 SHA 锁定，离线分析中；不能与 `0xC0000135` 归为同一根因 |
 
 没有这些会话的 Display / PresentMon 数据，不能报 FG 后显示 FPS。两局场景和设置不同，不能把差值直接归因 ReShade。新源码修复和测试不等于 Rocket 崩溃已实机修好。
 

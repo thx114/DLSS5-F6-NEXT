@@ -1,0 +1,2032 @@
+diff --git a/Dx11FsrBridge/CMakeLists.txt b/Dx11FsrBridge/CMakeLists.txt
+index b1c65716ddebd5f8e8eb19b854bf4926763d77e9..380fcd5d88dda444c85ced45e93ed47a9db6e886 100644
+--- a/Dx11FsrBridge/CMakeLists.txt
++++ b/Dx11FsrBridge/CMakeLists.txt
+@@ -364,6 +364,38 @@ enable_testing()
+ add_test(NAME NgxParamMapTest COMMAND NgxParamMapTest)
+ 
+ if(DX11FSRBRIDGE_BUILD_TESTS)
++    add_executable(CreateFunctionRoutesTest tests/CreateFunctionRoutesTest.cpp)
++    fsrbridge_configure_test(CreateFunctionRoutesTest)
++    target_include_directories(CreateFunctionRoutesTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
++    add_test(NAME CreateFunctionRoutesTest COMMAND CreateFunctionRoutesTest)
++    add_executable(ComMethodRoutesTest tests/ComMethodRoutesTest.cpp)
++    fsrbridge_configure_test(ComMethodRoutesTest)
++    target_include_directories(ComMethodRoutesTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
++    add_test(NAME ComMethodRoutesTest COMMAND ComMethodRoutesTest)
++
++    foreach(provider IN ITEMS First Second)
++        add_library(CreateRouteProvider${provider} SHARED
++            tests/create-routing/Provider.cpp tests/create-routing/Provider.def)
++        set_target_properties(CreateRouteProvider${provider} PROPERTIES OUTPUT_NAME d3d11
++            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/create-routing/${provider}"
++            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/create-routing/${provider}")
++    endforeach()
++    target_compile_definitions(CreateRouteProviderFirst PRIVATE FIXTURE_RESULT=0x80004004)
++    target_compile_definitions(CreateRouteProviderSecond PRIVATE FIXTURE_RESULT=0x80070057)
++    foreach(importer IN ITEMS First Second)
++        add_library(CreateRouteImports${importer} SHARED tests/create-routing/Imports.cpp)
++        target_link_libraries(CreateRouteImports${importer} PRIVATE CreateRouteProviderFirst)
++    endforeach()
++    add_executable(CreateRouteIntegrationTest tests/create-routing/Host.cpp)
++    fsrbridge_configure_test(CreateRouteIntegrationTest)
++    foreach(mode IN ITEMS independent nested success nested-success swapchain swapchain4 warp)
++        add_test(NAME CreateRouteIntegration-${mode} COMMAND CreateRouteIntegrationTest
++            "$<TARGET_FILE:Dx11FsrBridge>"
++            "$<TARGET_FILE:CreateRouteProviderFirst>" "$<TARGET_FILE:CreateRouteProviderSecond>"
++            "$<TARGET_FILE:CreateRouteImportsFirst>" "$<TARGET_FILE:CreateRouteImportsSecond>" ${mode})
++        set_tests_properties(CreateRouteIntegration-${mode} PROPERTIES TIMEOUT 30)
++    endforeach()
++
+     # il2cpp callsite hook：观察/跳过/还原模式 + per-instance 隔离 + 相机 hook。
+     # 需链 Il2CppCallSiteHook.cpp。**此测试已实测通过**。
+     add_executable(Il2CppCallSiteHookTest
+diff --git a/Dx11FsrBridge/ComMethodRoutes.h b/Dx11FsrBridge/ComMethodRoutes.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ea50102c245d6723c48f5663901ebf68b5db9ef
+--- /dev/null
++++ b/Dx11FsrBridge/ComMethodRoutes.h
+@@ -0,0 +1,89 @@
++#pragma once
++
++#include "CreateFunctionRoutes.h"
++#include <d3d11.h>
++#include <type_traits>
++
++inline thread_local unsigned context_policy_bypass = 0;
++
++class ContextPolicyBypass
++{
++public:
++    explicit ContextPolicyBypass(ID3D11DeviceContext *) { ++context_policy_bypass; }
++    ~ContextPolicyBypass() { --context_policy_bypass; }
++    ContextPolicyBypass(const ContextPolicyBypass &) = delete;
++    ContextPolicyBypass &operator=(const ContextPolicyBypass &) = delete;
++};
++
++// 2026-11-14：生产 DLL 的成功设备回归证实，全局 original 会把 proxy this 传入
++// native 实现。正常回调只取匹配的 TLS 帧；内部跨对象调用才解析对象当前的方法槽。
++template <typename Function, Function Observe, std::size_t Method, bool SkipNested = false>
++class ComMethodRoutes;
++
++template <typename Result, typename Object, typename... Args,
++    Result(STDMETHODCALLTYPE *Observe)(Object *, Args...), std::size_t Method, bool SkipNested>
++class ComMethodRoutes<Result(STDMETHODCALLTYPE *)(Object *, Args...), Observe, Method, SkipNested>
++{
++    using Function = Result(STDMETHODCALLTYPE *)(Object *, Args...);
++    struct Frame
++    {
++        Frame *previous;
++        Function original;
++        Object *object;
++    };
++    inline static thread_local Frame *active_ = nullptr;
++    inline static std::atomic<bool> installed_ {};
++
++    static Result STDMETHODCALLTYPE invoke(Object *object, Args... args)
++    {
++        Frame frame { active_, Routes::original(), object };
++        active_ = &frame;
++        struct Restore
++        {
++            Frame *previous;
++            ~Restore() { active_ = previous; }
++        } restore { frame.previous };
++        if constexpr (std::is_same_v<Object, ID3D11DeviceContext>)
++            if (context_policy_bypass != 0)
++                return frame.original(object, args...);
++        // Draw/Dispatch/Present 的业务接管只发生一次；资源与 shader 返回观察独立保留。
++        if constexpr (SkipNested)
++            if (frame.previous != nullptr)
++                return frame.original(object, args...);
++        return Observe(object, args...);
++    }
++
++    using Routes = CreateFunctionRoutes<Function, &invoke>;
++
++public:
++    static void *bind(void *target)
++    {
++        const auto entry = Routes::bind(reinterpret_cast<Function>(target));
++        if (entry != nullptr)
++            installed_.store(true, std::memory_order_release);
++        return reinterpret_cast<void *>(entry);
++    }
++
++    static Function original_for(Object *object)
++    {
++        for (auto *frame = active_; frame != nullptr; frame = frame->previous)
++            if (frame->object == object)
++                return frame->original;
++        if (object == nullptr)
++            return nullptr;
++        auto **table = *reinterpret_cast<void ***>(object);
++        return Routes::target(reinterpret_cast<Function>(table[Method]));
++    }
++
++    Result operator()(Object *object, Args... args) const
++    {
++        const Function original = original_for(object);
++        if (original != nullptr)
++            return original(object, args...);
++        if constexpr (!std::is_void_v<Result>)
++            return static_cast<Result>(E_UNEXPECTED);
++    }
++
++    bool operator==(std::nullptr_t) const { return !installed_.load(std::memory_order_acquire); }
++    bool operator!=(std::nullptr_t) const { return installed_.load(std::memory_order_acquire); }
++};
+diff --git a/Dx11FsrBridge/CreateFunctionRoutes.h b/Dx11FsrBridge/CreateFunctionRoutes.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dc5f55fc81066f5c43d312dcacaaf44b035f457
+--- /dev/null
++++ b/Dx11FsrBridge/CreateFunctionRoutes.h
+@@ -0,0 +1,95 @@
++#pragma once
++
++#include <Windows.h>
++#include <array>
++#include <atomic>
++#include <cstddef>
++#include <mutex>
++#include <utility>
++
++// 2026-11-14：Rocket 与系统 D3D11 可以同名共存；实测单个 original 会把第二个
++// provider 的调用转给第一个。按真实 callable 绑定入口，嵌套时只恢复当前线程上下文。
++template <typename Function, Function Observe, std::size_t Capacity = 16>
++class CreateFunctionRoutes;
++
++template <typename Result, typename... Args, Result(WINAPI *Observe)(Args...), std::size_t Capacity>
++class CreateFunctionRoutes<Result(WINAPI *)(Args...), Observe, Capacity>
++{
++    using Function = Result(WINAPI *)(Args...);
++    inline static std::array<std::atomic<Function>, Capacity> originals_ {};
++    inline static std::mutex install_mutex_;
++    inline static thread_local Function current_ = nullptr;
++
++    struct CallScope
++    {
++        Function previous = current_;
++
++        explicit CallScope(Function original)
++        {
++            current_ = original;
++        }
++
++        ~CallScope()
++        {
++            current_ = previous;
++        }
++    };
++
++    template <std::size_t Index>
++    static Result WINAPI invoke(Args... args)
++    {
++        CallScope scope(originals_[Index].load(std::memory_order_acquire));
++        return Observe(args...);
++    }
++
++    template <std::size_t... Indices>
++    static constexpr auto make_entries(std::index_sequence<Indices...>)
++    {
++        return std::array<Function, Capacity> { &invoke<Indices>... };
++    }
++
++    inline static constexpr auto entries_ = make_entries(std::make_index_sequence<Capacity> {});
++
++public:
++    static Function original()
++    {
++        return current_;
++    }
++
++    static Function target(Function entry)
++    {
++        for (std::size_t i = 0; i < Capacity; ++i)
++            if (entry == entries_[i])
++                return originals_[i].load(std::memory_order_acquire);
++        return entry;
++    }
++
++    static Function bind(Function target, bool *added = nullptr)
++    {
++        if (added != nullptr)
++            *added = false;
++        if (target == nullptr)
++            return nullptr;
++        // IAT 重扫可能看到已安装入口；不能再把自己的入口当作新的 original。
++        for (Function entry : entries_)
++            if (target == entry)
++                return entry;
++
++        std::lock_guard lock(install_mutex_);
++        for (std::size_t i = 0; i < Capacity; ++i)
++            if (originals_[i].load(std::memory_order_relaxed) == target)
++                return entries_[i];
++        for (std::size_t i = 0; i < Capacity; ++i)
++        {
++            if (originals_[i].load(std::memory_order_relaxed) == nullptr)
++            {
++                originals_[i].store(target, std::memory_order_release);
++                if (added != nullptr)
++                    *added = true;
++                return entries_[i];
++            }
++        }
++        // 无可用静态入口时保留原调用，不能退回其它 provider 的 original。
++        return nullptr;
++    }
++};
+diff --git a/Dx11FsrBridge/Dx11FsrBridge.cpp b/Dx11FsrBridge/Dx11FsrBridge.cpp
+index 80b5f60fb68c5bc76818f633a54dfbfb819918a4..540a1dfcc866087665e65dcf3c458a5a56336656 100644
+--- a/Dx11FsrBridge/Dx11FsrBridge.cpp
++++ b/Dx11FsrBridge/Dx11FsrBridge.cpp
+@@ -11,6 +11,9 @@
+ #include <dxgi1_6.h>
+ #include <detours/detours.h>
+ #include "RenderScaleMenu.h"
++#include "CreateFunctionRoutes.h"
++#include "ComMethodRoutes.h"
++#include "InterfaceVtableLayout.h"
+ #include "Fsr2FamilyTakeover.h"
+ #include "Il2CppCallSiteHook.h"
+ #include "TransparentJitterHook.h"
+@@ -66,15 +69,6 @@
+ namespace
+ {
+ std::once_flag g_initialize_once;
+-constexpr std::size_t k_context_vtable_size = 128;
+-constexpr std::size_t k_context4_vtable_size = 149;
+-constexpr std::size_t k_device_vtable_size = 80;
+-// DLSSG exposes the returned DX11-on-DX12 swap chain as IDXGISwapChain4.
+-// Keep all inherited entries when cloning its vtable, not only the older
+-// IDXGISwapChain2-sized prefix.
+-constexpr std::size_t k_swapchain_vtable_size = 41;
+-constexpr std::size_t k_factory_vtable_size = 32;
+-constexpr std::size_t k_factory2_vtable_size = 40;
+ #if defined(DX11FSRBRIDGE_COLOR_DIAGNOSTICS)
+ constexpr bool k_color_diagnostics_enabled = true;
+ #else
+@@ -116,7 +110,8 @@ constexpr std::size_t k_idx_resize_buffers = k_swapchain_base_methods + 5;
+ constexpr std::size_t k_idx_resize_target = k_swapchain_base_methods + 6;
+ constexpr std::size_t k_idx_check_color_space_support = 37;
+ constexpr std::size_t k_idx_set_color_space1 = 38;
+-constexpr std::size_t k_idx_set_hdr_metadata = 39;
++// IDXGISwapChain3 的末槽 39 是 ResizeBuffers1；SwapChain4 在其后追加 HDR 方法。
++constexpr std::size_t k_idx_set_hdr_metadata = 40;
+ constexpr std::size_t k_idx_factory_create_swap_chain = 10;
+ constexpr std::size_t k_idx_factory2_create_swap_chain_for_hwnd = 15;
+ constexpr std::size_t k_idx_output6_get_desc1 = 27;
+@@ -665,25 +660,18 @@ static OptiOutput opti_output_current()
+ static void record_adapter_info(std::uint32_t vendor, std::uint32_t device_id, const std::wstring &desc);
+ static void resolve_backend_auto(std::uint32_t vendor, std::uint32_t device_id, const std::wstring &desc);
+ static void route_from_d3d11_device(ID3D11Device *d3d11_device);
+-// P1 单实例接管的**生效值**：ini 取值，或后端强制。
+-// 为什么 NGX 必须强制（2026-11-13 代码审计）：NGX 的 feature 与资源池是**全局唯一实例**
+-// （NgxBackend.cpp 的 `NgxInstance g_inst`，v8 起不再是 map + LRU），只支持一条流水线。
+-// 全量接管 + 两路视图交替派发时：尺寸/格式不同 ⇒ 每次 instance_key 变化都
+-// destroy_instance() + create_instance()；尺寸格式全等 ⇒ 走跨 key 复用，但每帧把
+-// g_inst.first 置 true 复位时域（那里的原话：否则两个视图的时域累积互相污染）。
+-// 两种都不可能两路同时正常出图 ⇒ 本键对 NGX 后端无效，一律只接管一个实例。
++// 2026-11-14：接管范围遵从现有配置，不再因 NGX 后端覆盖用户选择。
++// 这里只恢复配置控制；单个 NGX feature 仍在跨视图切换时 Reset 或重建，
++// 不能据此认为两个视图拥有独立的时域历史。实际游戏切换效果待验收。
+ static bool single_instance_takeover_effective()
+ {
+-    return g_config.ffx12_single_instance || ffx12::backend() == ffx12::BackendKind::Ngx;
++    return g_config.ffx12_single_instance;
+ }
+ 
+-// 后端选择行（`ngx_core backend=…`）的单实例状态后缀：只在「ini 写 0 却被强制」时出现，
+-// 让日志里的**配置值**与**生效值**能分开读（AGENTS.md §五.6 日志口径自洽）。
++// 生效值与配置值一致，不再输出 single_instance=forced。
+ static std::string single_instance_log_suffix()
+ {
+-    return (!g_config.ffx12_single_instance && ffx12::backend() == ffx12::BackendKind::Ngx)
+-        ? " single_instance=forced"
+-        : "";
++    return "";
+ }
+ #if !defined(DX11FSRBRIDGE_RELEASE_RUNTIME)
+ std::mutex g_ps_trace_mutex;
+@@ -969,8 +957,6 @@ using check_color_space_support_fn = HRESULT(STDMETHODCALLTYPE *)(IDXGISwapChain
+ using set_color_space1_fn = HRESULT(STDMETHODCALLTYPE *)(IDXGISwapChain3 *, DXGI_COLOR_SPACE_TYPE);
+ using set_hdr_metadata_fn = HRESULT(STDMETHODCALLTYPE *)(IDXGISwapChain4 *, DXGI_HDR_METADATA_TYPE, UINT, void *);
+ 
+-create_device_and_swapchain_fn g_original_create_device_and_swapchain = nullptr;
+-create_device_fn g_original_create_device = nullptr;
+ load_library_a_fn g_original_load_library_a = nullptr;
+ load_library_w_fn g_original_load_library_w = nullptr;
+ load_library_ex_a_fn g_original_load_library_ex_a = nullptr;
+@@ -979,57 +965,192 @@ get_proc_address_fn g_original_get_proc_address = nullptr;
+ display_config_get_device_info_fn g_original_display_config_get_device_info = nullptr;
+ display_config_set_device_info_fn g_original_display_config_set_device_info = nullptr;
+ output_get_desc1_fn g_original_output_get_desc1 = nullptr;
+-factory_create_swap_chain_fn g_original_factory_create_swap_chain = nullptr;
+-factory2_create_swap_chain_for_hwnd_fn g_original_factory2_create_swap_chain_for_hwnd = nullptr;
+-create_buffer_fn g_original_create_buffer = nullptr;
+-create_texture_2d_fn g_original_create_texture_2d = nullptr;
+-create_vertex_shader_fn g_original_create_vertex_shader = nullptr;
+-create_pixel_shader_fn g_original_create_pixel_shader = nullptr;
+-create_compute_shader_fn g_original_create_compute_shader = nullptr;
+-present_fn g_original_present = nullptr;
+-std::mutex g_swapchain_present_mutex;
+-std::unordered_map<void *, present_fn> g_original_present_by_instance;
+-set_fullscreen_state_fn g_original_set_fullscreen_state = nullptr;
+-get_fullscreen_state_fn g_original_get_fullscreen_state = nullptr;
+-resize_buffers_fn g_original_resize_buffers = nullptr;
+-resize_target_fn g_original_resize_target = nullptr;
+-check_color_space_support_fn g_original_check_color_space_support = nullptr;
+-set_color_space1_fn g_original_set_color_space1 = nullptr;
+-set_hdr_metadata_fn g_original_set_hdr_metadata = nullptr;
+-std::mutex g_swapchain_resize_mutex;
+-std::unordered_map<void *, resize_buffers_fn> g_original_resize_buffers_by_instance;
++void STDMETHODCALLTYPE hooked_vs_set_constant_buffers(ID3D11DeviceContext *context, UINT start_slot, UINT count, ID3D11Buffer *const *buffers);
++ComMethodRoutes<vs_set_constant_buffers_fn, &hooked_vs_set_constant_buffers, k_idx_vs_set_constant_buffers> g_original_vs_set_constant_buffers;
++void STDMETHODCALLTYPE hooked_vs_set_shader(ID3D11DeviceContext *context, ID3D11VertexShader *shader, ID3D11ClassInstance *const *class_instances, UINT class_instances_count);
++ComMethodRoutes<vs_set_shader_fn, &hooked_vs_set_shader, k_idx_vs_set_shader> g_original_vs_set_shader;
++void STDMETHODCALLTYPE hooked_ps_set_shader_resources(ID3D11DeviceContext *context, UINT start_slot, UINT count, ID3D11ShaderResourceView *const *views);
++ComMethodRoutes<ps_set_shader_resources_fn, &hooked_ps_set_shader_resources, k_idx_ps_set_shader_resources> g_original_ps_set_shader_resources;
++void STDMETHODCALLTYPE hooked_ps_set_shader(ID3D11DeviceContext *context, ID3D11PixelShader *shader, ID3D11ClassInstance *const *class_instances, UINT class_instances_count);
++ComMethodRoutes<ps_set_shader_fn, &hooked_ps_set_shader, k_idx_ps_set_shader> g_original_ps_set_shader;
++void STDMETHODCALLTYPE hooked_ps_set_constant_buffers(ID3D11DeviceContext *context, UINT start_slot, UINT count, ID3D11Buffer *const *buffers);
++ComMethodRoutes<ps_set_constant_buffers_fn, &hooked_ps_set_constant_buffers, k_idx_ps_set_constant_buffers> g_original_ps_set_constant_buffers;
++void STDMETHODCALLTYPE hooked_cs_set_shader_resources(ID3D11DeviceContext *context, UINT start_slot, UINT count, ID3D11ShaderResourceView *const *views);
++ComMethodRoutes<cs_set_shader_resources_fn, &hooked_cs_set_shader_resources, k_idx_cs_set_shader_resources> g_original_cs_set_shader_resources;
++void STDMETHODCALLTYPE hooked_cs_set_uavs(ID3D11DeviceContext *context, UINT start_slot, UINT count, ID3D11UnorderedAccessView *const *views, const UINT *initial_counts);
++ComMethodRoutes<cs_set_uavs_fn, &hooked_cs_set_uavs, k_idx_cs_set_uavs> g_original_cs_set_uavs;
++void STDMETHODCALLTYPE hooked_cs_set_shader(ID3D11DeviceContext *context, ID3D11ComputeShader *shader, ID3D11ClassInstance *const *class_instances, UINT class_instances_count);
++ComMethodRoutes<cs_set_shader_fn, &hooked_cs_set_shader, k_idx_cs_set_shader> g_original_cs_set_shader;
++void STDMETHODCALLTYPE hooked_om_set_render_targets(ID3D11DeviceContext *context, UINT count, ID3D11RenderTargetView *const *rtvs, ID3D11DepthStencilView *dsv);
++ComMethodRoutes<om_set_render_targets_fn, &hooked_om_set_render_targets, k_idx_om_set_render_targets> g_original_om_set_render_targets;
++void STDMETHODCALLTYPE hooked_om_set_render_targets_and_uavs(
++    ID3D11DeviceContext *context,
++    UINT render_target_count,
++    ID3D11RenderTargetView *const *render_targets,
++    ID3D11DepthStencilView *depth_stencil,
++    UINT uav_start_slot,
++    UINT uav_count,
++    ID3D11UnorderedAccessView *const *unordered_access_views,
++    const UINT *uav_initial_counts);
++ComMethodRoutes<om_set_render_targets_and_uavs_fn, &hooked_om_set_render_targets_and_uavs, k_idx_om_set_render_targets_and_uavs> g_original_om_set_render_targets_and_uavs;
++void STDMETHODCALLTYPE hooked_dispatch(ID3D11DeviceContext *context, UINT group_x, UINT group_y, UINT group_z);
++ComMethodRoutes<dispatch_fn, &hooked_dispatch, k_idx_dispatch, true> g_original_dispatch;
++void STDMETHODCALLTYPE hooked_draw_indexed(ID3D11DeviceContext *context, UINT index_count, UINT start_index_location, INT base_vertex_location);
++ComMethodRoutes<draw_indexed_fn, &hooked_draw_indexed, k_idx_draw_indexed, true> g_original_draw_indexed;
++void STDMETHODCALLTYPE hooked_draw(ID3D11DeviceContext *context, UINT vertex_count, UINT start_vertex_location);
++ComMethodRoutes<draw_fn, &hooked_draw, k_idx_draw, true> g_original_draw;
++HRESULT STDMETHODCALLTYPE hooked_map(ID3D11DeviceContext *context, ID3D11Resource *resource, UINT subresource, D3D11_MAP map_type, UINT map_flags, D3D11_MAPPED_SUBRESOURCE *mapped);
++ComMethodRoutes<map_fn, &hooked_map, k_idx_map> g_original_map;
++void STDMETHODCALLTYPE hooked_unmap(ID3D11DeviceContext *context, ID3D11Resource *resource, UINT subresource);
++ComMethodRoutes<unmap_fn, &hooked_unmap, k_idx_unmap> g_original_unmap;
++void STDMETHODCALLTYPE hooked_rs_set_viewports(ID3D11DeviceContext *context, UINT count, const D3D11_VIEWPORT *viewports);
++ComMethodRoutes<rs_set_viewports_fn, &hooked_rs_set_viewports, k_idx_rs_set_viewports> g_original_rs_set_viewports;
++void STDMETHODCALLTYPE hooked_copy_subresource_region(ID3D11DeviceContext *context, ID3D11Resource *dst, UINT dst_subresource, UINT dst_x, UINT dst_y, UINT dst_z, ID3D11Resource *src, UINT src_subresource, const D3D11_BOX *src_box);
++ComMethodRoutes<copy_subresource_region_fn, &hooked_copy_subresource_region, k_idx_copy_subresource_region> g_original_copy_subresource_region;
++void STDMETHODCALLTYPE hooked_copy_resource(ID3D11DeviceContext *context, ID3D11Resource *dst, ID3D11Resource *src);
++ComMethodRoutes<copy_resource_fn, &hooked_copy_resource, k_idx_copy_resource> g_original_copy_resource;
++void STDMETHODCALLTYPE hooked_update_subresource(ID3D11DeviceContext *context, ID3D11Resource *dst, UINT dst_subresource, const D3D11_BOX *dst_box, const void *src_data, UINT src_row_pitch, UINT src_depth_pitch);
++ComMethodRoutes<update_subresource_fn, &hooked_update_subresource, k_idx_update_subresource> g_original_update_subresource;
++void STDMETHODCALLTYPE hooked_cs_set_constant_buffers(ID3D11DeviceContext *context, UINT start_slot, UINT count, ID3D11Buffer *const *buffers);
++ComMethodRoutes<cs_set_constant_buffers_fn, &hooked_cs_set_constant_buffers, k_idx_cs_set_constant_buffers> g_original_cs_set_constant_buffers;
++void STDMETHODCALLTYPE hooked_clear_rtv(ID3D11DeviceContext *context, ID3D11RenderTargetView *rtv, const FLOAT color[4]);
++ComMethodRoutes<clear_rtv_fn, &hooked_clear_rtv, k_idx_clear_rtv> g_original_clear_rtv;
++void STDMETHODCALLTYPE hooked_clear_dsv(ID3D11DeviceContext *context, ID3D11DepthStencilView *dsv, UINT flags, FLOAT depth, UINT8 stencil);
++ComMethodRoutes<clear_dsv_fn, &hooked_clear_dsv, k_idx_clear_dsv> g_original_clear_dsv;
++HRESULT STDMETHODCALLTYPE hooked_create_buffer(ID3D11Device *device, const D3D11_BUFFER_DESC *desc, const D3D11_SUBRESOURCE_DATA *initial_data, ID3D11Buffer **buffer);
++ComMethodRoutes<create_buffer_fn, &hooked_create_buffer, k_idx_device_create_buffer> g_original_create_buffer;
++HRESULT STDMETHODCALLTYPE hooked_create_texture_2d(ID3D11Device *device, const D3D11_TEXTURE2D_DESC *desc, const D3D11_SUBRESOURCE_DATA *initial_data, ID3D11Texture2D **texture);
++ComMethodRoutes<create_texture_2d_fn, &hooked_create_texture_2d, k_idx_device_create_texture_2d> g_original_create_texture_2d;
++HRESULT STDMETHODCALLTYPE hooked_create_vertex_shader(ID3D11Device *device, const void *shader_bytecode, SIZE_T bytecode_length, ID3D11ClassLinkage *class_linkage, ID3D11VertexShader **vertex_shader);
++ComMethodRoutes<create_vertex_shader_fn, &hooked_create_vertex_shader, k_idx_device_create_vertex_shader> g_original_create_vertex_shader;
++HRESULT STDMETHODCALLTYPE hooked_create_pixel_shader(ID3D11Device *device, const void *shader_bytecode, SIZE_T bytecode_length, ID3D11ClassLinkage *class_linkage, ID3D11PixelShader **pixel_shader);
++ComMethodRoutes<create_pixel_shader_fn, &hooked_create_pixel_shader, k_idx_device_create_pixel_shader> g_original_create_pixel_shader;
++HRESULT STDMETHODCALLTYPE hooked_create_compute_shader(ID3D11Device *device, const void *shader_bytecode, SIZE_T bytecode_length, ID3D11ClassLinkage *class_linkage, ID3D11ComputeShader **compute_shader);
++ComMethodRoutes<create_compute_shader_fn, &hooked_create_compute_shader, k_idx_device_create_compute_shader> g_original_create_compute_shader;
++HRESULT STDMETHODCALLTYPE hooked_set_fullscreen_state(IDXGISwapChain *swapchain, BOOL fullscreen, IDXGIOutput *target);
++ComMethodRoutes<set_fullscreen_state_fn, &hooked_set_fullscreen_state, k_idx_set_fullscreen_state> g_original_set_fullscreen_state;
++HRESULT STDMETHODCALLTYPE hooked_get_fullscreen_state(IDXGISwapChain *swapchain, BOOL *fullscreen, IDXGIOutput **target);
++ComMethodRoutes<get_fullscreen_state_fn, &hooked_get_fullscreen_state, k_idx_get_fullscreen_state> g_original_get_fullscreen_state;
++HRESULT STDMETHODCALLTYPE hooked_resize_buffers(
++    IDXGISwapChain *swapchain,
++    UINT buffer_count,
++    UINT width,
++    UINT height,
++    DXGI_FORMAT format,
++    UINT flags);
++ComMethodRoutes<resize_buffers_fn, &hooked_resize_buffers, k_idx_resize_buffers> g_original_resize_buffers;
++HRESULT STDMETHODCALLTYPE hooked_resize_target(IDXGISwapChain *swapchain, const DXGI_MODE_DESC *target_parameters);
++ComMethodRoutes<resize_target_fn, &hooked_resize_target, k_idx_resize_target> g_original_resize_target;
++HRESULT STDMETHODCALLTYPE hooked_check_color_space_support(
++    IDXGISwapChain3 *swapchain,
++    DXGI_COLOR_SPACE_TYPE color_space,
++    UINT *support);
++ComMethodRoutes<check_color_space_support_fn, &hooked_check_color_space_support, k_idx_check_color_space_support> g_original_check_color_space_support;
++HRESULT STDMETHODCALLTYPE hooked_set_color_space1(
++    IDXGISwapChain3 *swapchain,
++    DXGI_COLOR_SPACE_TYPE color_space);
++ComMethodRoutes<set_color_space1_fn, &hooked_set_color_space1, k_idx_set_color_space1> g_original_set_color_space1;
++HRESULT STDMETHODCALLTYPE hooked_set_hdr_metadata(
++    IDXGISwapChain4 *swapchain,
++    DXGI_HDR_METADATA_TYPE type,
++    UINT size,
++    void *metadata);
++ComMethodRoutes<set_hdr_metadata_fn, &hooked_set_hdr_metadata, k_idx_set_hdr_metadata> g_original_set_hdr_metadata;
++HRESULT STDMETHODCALLTYPE hooked_factory_create_swap_chain(IDXGIFactory *factory, IUnknown *device, DXGI_SWAP_CHAIN_DESC *desc, IDXGISwapChain **swapchain);
++ComMethodRoutes<factory_create_swap_chain_fn, &hooked_factory_create_swap_chain, k_idx_factory_create_swap_chain> g_original_factory_create_swap_chain;
++HRESULT STDMETHODCALLTYPE hooked_factory2_create_swap_chain_for_hwnd(IDXGIFactory2 *factory, IUnknown *device, HWND hwnd, const DXGI_SWAP_CHAIN_DESC1 *desc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fullscreen_desc, IDXGIOutput *restrict_to_output, IDXGISwapChain1 **swapchain);
++ComMethodRoutes<factory2_create_swap_chain_for_hwnd_fn, &hooked_factory2_create_swap_chain_for_hwnd, k_idx_factory2_create_swap_chain_for_hwnd> g_original_factory2_create_swap_chain_for_hwnd;
++HRESULT STDMETHODCALLTYPE hooked_present(IDXGISwapChain *swapchain, UINT sync_interval, UINT flags);
++ComMethodRoutes<present_fn, &hooked_present, k_idx_present, true> g_original_present;
++
++void *bind_com_method(void *callback, void *original)
++{
++    if (callback == reinterpret_cast<void *>(&hooked_vs_set_constant_buffers))
++        return decltype(g_original_vs_set_constant_buffers)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_vs_set_shader))
++        return decltype(g_original_vs_set_shader)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_ps_set_shader_resources))
++        return decltype(g_original_ps_set_shader_resources)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_ps_set_shader))
++        return decltype(g_original_ps_set_shader)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_ps_set_constant_buffers))
++        return decltype(g_original_ps_set_constant_buffers)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_cs_set_shader_resources))
++        return decltype(g_original_cs_set_shader_resources)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_cs_set_uavs))
++        return decltype(g_original_cs_set_uavs)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_cs_set_shader))
++        return decltype(g_original_cs_set_shader)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_om_set_render_targets))
++        return decltype(g_original_om_set_render_targets)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_om_set_render_targets_and_uavs))
++        return decltype(g_original_om_set_render_targets_and_uavs)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_dispatch))
++        return decltype(g_original_dispatch)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_draw_indexed))
++        return decltype(g_original_draw_indexed)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_draw))
++        return decltype(g_original_draw)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_map))
++        return decltype(g_original_map)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_unmap))
++        return decltype(g_original_unmap)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_rs_set_viewports))
++        return decltype(g_original_rs_set_viewports)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_copy_subresource_region))
++        return decltype(g_original_copy_subresource_region)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_copy_resource))
++        return decltype(g_original_copy_resource)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_update_subresource))
++        return decltype(g_original_update_subresource)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_cs_set_constant_buffers))
++        return decltype(g_original_cs_set_constant_buffers)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_clear_rtv))
++        return decltype(g_original_clear_rtv)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_clear_dsv))
++        return decltype(g_original_clear_dsv)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_create_buffer))
++        return decltype(g_original_create_buffer)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_create_texture_2d))
++        return decltype(g_original_create_texture_2d)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_create_vertex_shader))
++        return decltype(g_original_create_vertex_shader)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_create_pixel_shader))
++        return decltype(g_original_create_pixel_shader)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_create_compute_shader))
++        return decltype(g_original_create_compute_shader)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_set_fullscreen_state))
++        return decltype(g_original_set_fullscreen_state)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_get_fullscreen_state))
++        return decltype(g_original_get_fullscreen_state)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_resize_buffers))
++        return decltype(g_original_resize_buffers)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_resize_target))
++        return decltype(g_original_resize_target)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_check_color_space_support))
++        return decltype(g_original_check_color_space_support)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_set_color_space1))
++        return decltype(g_original_set_color_space1)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_set_hdr_metadata))
++        return decltype(g_original_set_hdr_metadata)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_factory_create_swap_chain))
++        return decltype(g_original_factory_create_swap_chain)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_factory2_create_swap_chain_for_hwnd))
++        return decltype(g_original_factory2_create_swap_chain_for_hwnd)::bind(original);
++    if (callback == reinterpret_cast<void *>(&hooked_present))
++        return decltype(g_original_present)::bind(original);
++    return nullptr;
++}
++
+ #if defined(DX11FSRBRIDGE_COLOR_DIAGNOSTICS)
+ std::mutex g_fsr2_color_diagnostics_mutex;
+ std::string g_last_fsr2_color_diagnostics;
+ #endif
+-vs_set_constant_buffers_fn g_original_vs_set_constant_buffers = nullptr;
+-vs_set_shader_fn g_original_vs_set_shader = nullptr;
+-ps_set_shader_resources_fn g_original_ps_set_shader_resources = nullptr;
+-ps_set_shader_fn g_original_ps_set_shader = nullptr;
+-ps_set_constant_buffers_fn g_original_ps_set_constant_buffers = nullptr;
+-cs_set_shader_resources_fn g_original_cs_set_shader_resources = nullptr;
+-cs_set_uavs_fn g_original_cs_set_uavs = nullptr;
+-cs_set_shader_fn g_original_cs_set_shader = nullptr;
+-cs_set_constant_buffers_fn g_original_cs_set_constant_buffers = nullptr;
+-om_set_render_targets_fn g_original_om_set_render_targets = nullptr;
+-om_set_render_targets_and_uavs_fn g_original_om_set_render_targets_and_uavs = nullptr;
+-dispatch_fn g_original_dispatch = nullptr;
+-draw_indexed_fn g_original_draw_indexed = nullptr;
+-draw_fn g_original_draw = nullptr;
+-map_fn g_original_map = nullptr;
+-unmap_fn g_original_unmap = nullptr;
+-rs_set_viewports_fn g_original_rs_set_viewports = nullptr;
+-copy_resource_fn g_original_copy_resource = nullptr;
+-copy_subresource_region_fn g_original_copy_subresource_region = nullptr;
+-update_subresource_fn g_original_update_subresource = nullptr;
+-clear_rtv_fn g_original_clear_rtv = nullptr;
+-clear_dsv_fn g_original_clear_dsv = nullptr;
+ 
+ std::mutex g_vtable_mutex;
+ std::unordered_map<void *, void **> g_cloned_vtables;
+-std::unordered_map<void *, void **> g_original_vtables;
+ std::mutex g_context_device_hook_mutex;
+-std::unordered_set<std::uint64_t> g_context_device_hook_attempts;
++std::unordered_set<std::uint64_t> g_context_device_hooks;
+ std::atomic_uint32_t g_native_ldr_final_target_candidate_count { 0 };
+ std::atomic_uint32_t g_native_ldr_texture_create_observed_count { 0 };
+ 
+@@ -1059,6 +1180,29 @@ HRESULT WINAPI hooked_create_device(
+     D3D_FEATURE_LEVEL *feature_level,
+     ID3D11DeviceContext **context);
+ 
++using DeviceCreateRoutes = CreateFunctionRoutes<create_device_fn, &hooked_create_device>;
++using CombinedCreateRoutes = CreateFunctionRoutes<create_device_and_swapchain_fn, &hooked_create_device_and_swapchain>;
++void log_create_route(const char *api, void *target, void *entry);
++
++void *resolve_create_device(void *target)
++{
++    bool added = false;
++    void *entry = reinterpret_cast<void *>(DeviceCreateRoutes::bind(reinterpret_cast<create_device_fn>(target), &added));
++    if (added)
++        log_create_route("D3D11CreateDevice", target, entry);
++    return entry;
++}
++
++void *resolve_create_device_and_swapchain(void *target)
++{
++    bool added = false;
++    void *entry = reinterpret_cast<void *>(CombinedCreateRoutes::bind(
++        reinterpret_cast<create_device_and_swapchain_fn>(target), &added));
++    if (added)
++        log_create_route("D3D11CreateDeviceAndSwapChain", target, entry);
++    return entry;
++}
++
+ HMODULE WINAPI hooked_load_library_a(LPCSTR file_name);
+ HMODULE WINAPI hooked_load_library_w(LPCWSTR file_name);
+ HMODULE WINAPI hooked_load_library_ex_a(LPCSTR file_name, HANDLE file, DWORD flags);
+@@ -1075,7 +1219,7 @@ HRESULT STDMETHODCALLTYPE hooked_create_texture_2d(ID3D11Device *device, const D
+ HRESULT STDMETHODCALLTYPE hooked_create_vertex_shader(ID3D11Device *device, const void *shader_bytecode, SIZE_T bytecode_length, ID3D11ClassLinkage *class_linkage, ID3D11VertexShader **vertex_shader);
+ HRESULT STDMETHODCALLTYPE hooked_create_pixel_shader(ID3D11Device *device, const void *shader_bytecode, SIZE_T bytecode_length, ID3D11ClassLinkage *class_linkage, ID3D11PixelShader **pixel_shader);
+ HRESULT STDMETHODCALLTYPE hooked_create_compute_shader(ID3D11Device *device, const void *shader_bytecode, SIZE_T bytecode_length, ID3D11ClassLinkage *class_linkage, ID3D11ComputeShader **compute_shader);
+-void install_device_hooks(ID3D11Device *device);
++bool install_device_hooks(ID3D11Device *device);
+ void log_line(const std::string &line);
+ #if defined(DX11FSRBRIDGE_ENABLE_DIAGNOSTICS)
+ void set_osd_text(const std::wstring &text);
+@@ -3469,6 +3613,15 @@ std::string module_path_from_address(void *address)
+     return length != 0 ? std::string(path, length) : "unknown";
+ }
+ 
++void log_create_route(const char *api, void *target, void *entry)
++{
++    // 每个真实提供者仅在首次绑定时记录，供新局判定是否经过 Rocket；不是逐帧探针。
++    LOG_INFO(blog::cat::hook, std::string("d3d11_create_route api=") + api +
++        " original=" + hex64(reinterpret_cast<std::uintptr_t>(target)) +
++        " entry=" + hex64(reinterpret_cast<std::uintptr_t>(entry)) +
++        " provider=" + module_path_from_address(target));
++}
++
+ #if defined(DX11FSRBRIDGE_FG_DXGI_DIAGNOSTICS)
+ std::string describe_dxgi_swapchain_device(IUnknown *device)
+ {
+@@ -5409,7 +5562,8 @@ void log_iat_skip(const char *reason, HMODULE module, const void *slot, std::siz
+     LOG_INFO(blog::cat::core, buf);
+ }
+ 
+-bool hook_iat_unchecked(HMODULE module, const char *import_name, const char *function_name, void *replacement, void **original)
++bool hook_iat_unchecked(HMODULE module, const char *import_name, const char *function_name, void *replacement,
++    void **original, void *(*resolve)(void *))
+ {
+     const auto *base = reinterpret_cast<const std::uint8_t *>(module);
+     const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
+@@ -5536,6 +5690,16 @@ bool hook_iat_unchecked(HMODULE module, const char *import_name, const char *fun
+             }
+ 
+             void *current = reinterpret_cast<void *>(iat[thunk_index].u1.Function);
++            if (resolve != nullptr)
++            {
++                replacement = resolve(current);
++                if (replacement == nullptr)
++                {
++                    perf_probe::virtual_protect_counted(&iat[thunk_index].u1.Function,
++                        sizeof(std::uintptr_t), old_protect, &old_protect);
++                    return false;
++                }
++            }
+             if (current == replacement)
+             {
+                 perf_probe::virtual_protect_counted(&iat[thunk_index].u1.Function, sizeof(std::uintptr_t), old_protect, &old_protect);
+@@ -5606,7 +5770,8 @@ bool hook_iat_unchecked(HMODULE module, const char *import_name, const char *fun
+     return false;
+ }
+ 
+-bool hook_iat(HMODULE module, const char *import_name, const char *function_name, void *replacement, void **original)
++bool hook_iat(HMODULE module, const char *import_name, const char *function_name, void *replacement,
++    void **original, void *(*resolve)(void *) = nullptr)
+ {
+     if (module == nullptr)
+         return false;
+@@ -5620,7 +5785,7 @@ bool hook_iat(HMODULE module, const char *import_name, const char *function_name
+ 
+     __try
+     {
+-        return hook_iat_unchecked(module, import_name, function_name, replacement, original);
++        return hook_iat_unchecked(module, import_name, function_name, replacement, original, resolve);
+     }
+     __except (EXCEPTION_EXECUTE_HANDLER)
+     {
+@@ -5946,15 +6111,13 @@ void install_create_hooks_for_loaded_modules()
+     for (HMODULE module : enumerate_process_modules())
+     {
+         if (hook_iat(module, "d3d11.dll", "D3D11CreateDeviceAndSwapChain",
+-                reinterpret_cast<void *>(&hooked_create_device_and_swapchain),
+-                reinterpret_cast<void **>(&g_original_create_device_and_swapchain)))
++                nullptr, nullptr, &resolve_create_device_and_swapchain))
+         {
+             ++swapchain_hooks;
+         }
+ 
+         if (hook_iat(module, "d3d11.dll", "D3D11CreateDevice",
+-                reinterpret_cast<void *>(&hooked_create_device),
+-                reinterpret_cast<void **>(&g_original_create_device)))
++                nullptr, nullptr, &resolve_create_device))
+         {
+             ++device_hooks;
+         }
+@@ -6079,66 +6242,28 @@ bool clone_and_patch_vtable(void *instance, std::size_t method_count, const std:
+ 
+     std::memcpy(clone, source, sizeof(void *) * method_count);
+     for (const auto &[index, value] : patches)
+-        clone[index] = value;
++    {
++        void *entry = bind_com_method(value, source[index]);
++        if (entry == nullptr)
++        {
++            VirtualFree(clone, 0, MEM_RELEASE);
++            return false;
++        }
++        clone[index] = entry;
++    }
+ 
+     *object = clone;
+     g_cloned_vtables[instance] = clone;
+-    g_original_vtables[instance] = source;
+     return true;
+ }
+ 
+ std::size_t context_vtable_size(ID3D11DeviceContext *context)
+ {
+-    if (context == nullptr)
+-        return k_context_vtable_size;
+-
+-    ID3D11DeviceContext4 *context4 = nullptr;
+-    const HRESULT result = context->QueryInterface(__uuidof(ID3D11DeviceContext4), reinterpret_cast<void **>(&context4));
+-    if (FAILED(result) || context4 == nullptr)
+-        return k_context_vtable_size;
+-
+-    const bool shared_instance = static_cast<ID3D11DeviceContext *>(context4) == context;
+-    context4->Release();
+-    return shared_instance ? k_context4_vtable_size : k_context_vtable_size;
++    return interface_layout::context(context);
+ }
+ 
+-bool set_cloned_vtable_enabled(void *instance, bool enabled)
+-{
+-    if (instance == nullptr)
+-        return false;
+-
+-    std::lock_guard lock(g_vtable_mutex);
+-    const auto cloned = g_cloned_vtables.find(instance);
+-    const auto original = g_original_vtables.find(instance);
+-    if (cloned == g_cloned_vtables.end() || original == g_original_vtables.end())
+-        return false;
+-
+-    void ***object = reinterpret_cast<void ***>(instance);
+-    *object = enabled ? cloned->second : original->second;
+-    return true;
+-}
+-
+-class ScopedContextVtableBypass
+-{
+-  public:
+-    explicit ScopedContextVtableBypass(ID3D11DeviceContext *context)
+-        : context_(context), active_(set_cloned_vtable_enabled(context, false))
+-    {
+-    }
+-
+-    ~ScopedContextVtableBypass()
+-    {
+-        if (active_)
+-            set_cloned_vtable_enabled(context_, true);
+-    }
+-
+-    ScopedContextVtableBypass(const ScopedContextVtableBypass &) = delete;
+-    ScopedContextVtableBypass &operator=(const ScopedContextVtableBypass &) = delete;
+-
+-  private:
+-    ID3D11DeviceContext *context_ = nullptr;
+-    bool active_ = false;
+-};
++// 内部工作跨代理转发时共享线程域，避免临时改写某一对象的全局 vptr。
++using ScopedContextVtableBypass = ContextPolicyBypass;
+ 
+ #if defined(DX11FSRBRIDGE_FINAL_SCENE_PROBE)
+ void update_final_scene_probe_backbuffers(IDXGISwapChain *swapchain)
+@@ -7418,14 +7543,7 @@ HRESULT STDMETHODCALLTYPE hooked_present(IDXGISwapChain *swapchain, UINT sync_in
+     // 无挂起时零开销（单锁内布尔检查）。
+     if (ffx12::async_upscale_enabled())
+         ffx12::finish_pending();
+-    present_fn original_present = g_original_present;
+-    {
+-        std::lock_guard lock(g_swapchain_present_mutex);
+-        const auto it = g_original_present_by_instance.find(swapchain);
+-        if (it != g_original_present_by_instance.end())
+-            original_present = it->second;
+-    }
+-    return original_present != nullptr ? original_present(swapchain, sync_interval, flags) : E_FAIL;
++    return g_original_present(swapchain, sync_interval, flags);
+ }
+ 
+ HRESULT STDMETHODCALLTYPE hooked_set_fullscreen_state(IDXGISwapChain *swapchain, BOOL fullscreen, IDXGIOutput *target)
+@@ -7496,15 +7614,7 @@ HRESULT STDMETHODCALLTYPE hooked_resize_buffers(
+         }
+     }
+ 
+-    resize_buffers_fn original_resize = nullptr;
+-    {
+-        std::lock_guard lock(g_swapchain_resize_mutex);
+-        const auto it = g_original_resize_buffers_by_instance.find(swapchain);
+-        if (it != g_original_resize_buffers_by_instance.end())
+-            original_resize = it->second;
+-    }
+-    if (original_resize == nullptr)
+-        original_resize = g_original_resize_buffers;
++    const auto original_resize = decltype(g_original_resize_buffers)::original_for(swapchain);
+ 
+     const HRESULT result = original_resize != nullptr
+         ? original_resize(swapchain, buffer_count, width, height, effective_format, flags)
+@@ -8030,19 +8140,22 @@ void ensure_context_device_texture_hook(ID3D11DeviceContext *context)
+         return;
+ 
+     const std::uint64_t device_key = reinterpret_cast<std::uint64_t>(device);
+-    bool first_attempt = false;
++    bool needs_install = false;
+     {
+         std::lock_guard lock(g_context_device_hook_mutex);
+-        first_attempt = g_context_device_hook_attempts.insert(device_key).second;
++        needs_install = !g_context_device_hooks.contains(device_key);
+     }
+-    if (first_attempt)
++    if (needs_install)
+     {
+         void **device_vtable = *reinterpret_cast<void ***>(device);
+         LOG_INFO(blog::cat::core, "device_create_texture_entry device=" + hex64(device_key) +
+             " entry=" + hex64(reinterpret_cast<std::uintptr_t>(device_vtable[k_idx_device_create_texture_2d])) +
+             " expected=" + hex64(reinterpret_cast<std::uintptr_t>(&hooked_create_texture_2d)));
+-        install_device_hooks(device);
+-        LOG_DEBUG(blog::cat::hook, "context_device_texture_hook device=" + hex64(device_key));
++        if (install_device_hooks(device))
++        {
++            std::lock_guard lock(g_context_device_hook_mutex);
++            g_context_device_hooks.insert(device_key);
++        }
+     }
+     device->Release();
+ }
+@@ -14362,54 +14475,17 @@ void install_context_hooks(ID3D11DeviceContext *context)
+     if (context == nullptr)
+         return;
+ 
+-    void **vtable = *reinterpret_cast<void ***>(context);
+-    if (g_original_vs_set_constant_buffers == nullptr)
+-        g_original_vs_set_constant_buffers = reinterpret_cast<vs_set_constant_buffers_fn>(vtable[k_idx_vs_set_constant_buffers]);
+-    if (g_original_vs_set_shader == nullptr)
+-        g_original_vs_set_shader = reinterpret_cast<vs_set_shader_fn>(vtable[k_idx_vs_set_shader]);
+-    if (g_original_ps_set_shader_resources == nullptr)
+-        g_original_ps_set_shader_resources = reinterpret_cast<ps_set_shader_resources_fn>(vtable[k_idx_ps_set_shader_resources]);
+-    if (g_original_ps_set_shader == nullptr)
+-        g_original_ps_set_shader = reinterpret_cast<ps_set_shader_fn>(vtable[k_idx_ps_set_shader]);
+-    if (g_original_ps_set_constant_buffers == nullptr)
+-        g_original_ps_set_constant_buffers = reinterpret_cast<ps_set_constant_buffers_fn>(vtable[k_idx_ps_set_constant_buffers]);
+-    if (g_original_cs_set_shader_resources == nullptr)
+-        g_original_cs_set_shader_resources = reinterpret_cast<cs_set_shader_resources_fn>(vtable[k_idx_cs_set_shader_resources]);
+-    if (g_original_cs_set_uavs == nullptr)
+-        g_original_cs_set_uavs = reinterpret_cast<cs_set_uavs_fn>(vtable[k_idx_cs_set_uavs]);
+-    if (g_original_cs_set_shader == nullptr)
+-        g_original_cs_set_shader = reinterpret_cast<cs_set_shader_fn>(vtable[k_idx_cs_set_shader]);
+-    if (g_original_om_set_render_targets == nullptr)
+-        g_original_om_set_render_targets = reinterpret_cast<om_set_render_targets_fn>(vtable[k_idx_om_set_render_targets]);
+-    if (g_original_om_set_render_targets_and_uavs == nullptr)
+-    {
+-        g_original_om_set_render_targets_and_uavs =
+-            reinterpret_cast<om_set_render_targets_and_uavs_fn>(vtable[k_idx_om_set_render_targets_and_uavs]);
+-    }
+-    if (g_original_dispatch == nullptr)
+-        g_original_dispatch = reinterpret_cast<dispatch_fn>(vtable[k_idx_dispatch]);
+-    if (g_original_draw_indexed == nullptr)
+-        g_original_draw_indexed = reinterpret_cast<draw_indexed_fn>(vtable[k_idx_draw_indexed]);
+-    if (g_original_draw == nullptr)
+-        g_original_draw = reinterpret_cast<draw_fn>(vtable[k_idx_draw]);
+-    if (g_original_map == nullptr)
+-        g_original_map = reinterpret_cast<map_fn>(vtable[k_idx_map]);
+-    if (g_original_unmap == nullptr)
+-        g_original_unmap = reinterpret_cast<unmap_fn>(vtable[k_idx_unmap]);
+-    if (g_original_rs_set_viewports == nullptr)
+-        g_original_rs_set_viewports = reinterpret_cast<rs_set_viewports_fn>(vtable[k_idx_rs_set_viewports]);
+-    if (g_original_copy_subresource_region == nullptr)
+-        g_original_copy_subresource_region = reinterpret_cast<copy_subresource_region_fn>(vtable[k_idx_copy_subresource_region]);
+-    if (g_original_copy_resource == nullptr)
+-        g_original_copy_resource = reinterpret_cast<copy_resource_fn>(vtable[k_idx_copy_resource]);
+-    if (g_original_update_subresource == nullptr)
+-        g_original_update_subresource = reinterpret_cast<update_subresource_fn>(vtable[k_idx_update_subresource]);
+-    if (g_original_cs_set_constant_buffers == nullptr)
+-        g_original_cs_set_constant_buffers = reinterpret_cast<cs_set_constant_buffers_fn>(vtable[k_idx_cs_set_constant_buffers]);
+-    if (g_original_clear_rtv == nullptr)
+-        g_original_clear_rtv = reinterpret_cast<clear_rtv_fn>(vtable[k_idx_clear_rtv]);
+-    if (g_original_clear_dsv == nullptr)
+-        g_original_clear_dsv = reinterpret_cast<clear_dsv_fn>(vtable[k_idx_clear_dsv]);
++    ID3D11DeviceContext *execution = interface_layout::execution_context(context);
++    if (execution != nullptr)
++    {
++        if (execution != context)
++        {
++            install_context_hooks(execution);
++            execution->Release();
++            return;
++        }
++        execution->Release();
++    }
+ 
+     std::vector<std::pair<std::size_t, void *>> patches {
+         { k_idx_ps_set_shader_resources, reinterpret_cast<void *>(&hooked_ps_set_shader_resources) },
+@@ -14637,22 +14713,11 @@ HRESULT STDMETHODCALLTYPE hooked_create_compute_shader(ID3D11Device *device, con
+     return hr;
+ }
+ 
+-void install_device_hooks(ID3D11Device *device)
++bool install_device_hooks(ID3D11Device *device)
+ {
+     if (device == nullptr)
+-        return;
++        return false;
+ 
+-    void **vtable = *reinterpret_cast<void ***>(device);
+-    if (g_original_create_buffer == nullptr)
+-        g_original_create_buffer = reinterpret_cast<create_buffer_fn>(vtable[k_idx_device_create_buffer]);
+-    if (g_original_create_texture_2d == nullptr)
+-        g_original_create_texture_2d = reinterpret_cast<create_texture_2d_fn>(vtable[k_idx_device_create_texture_2d]);
+-    if (g_original_create_vertex_shader == nullptr)
+-        g_original_create_vertex_shader = reinterpret_cast<create_vertex_shader_fn>(vtable[k_idx_device_create_vertex_shader]);
+-    if (g_original_create_pixel_shader == nullptr)
+-        g_original_create_pixel_shader = reinterpret_cast<create_pixel_shader_fn>(vtable[k_idx_device_create_pixel_shader]);
+-    if (g_original_create_compute_shader == nullptr)
+-        g_original_create_compute_shader = reinterpret_cast<create_compute_shader_fn>(vtable[k_idx_device_create_compute_shader]);
+ 
+     std::vector<std::pair<std::size_t, void *>> patches {
+         { k_idx_device_create_buffer, reinterpret_cast<void *>(&hooked_create_buffer) },
+@@ -14668,30 +14733,33 @@ void install_device_hooks(ID3D11Device *device)
+         { k_idx_device_create_compute_shader, reinterpret_cast<void *>(&hooked_create_compute_shader) },
+     });
+ #endif
+-    clone_and_patch_vtable(device, k_device_vtable_size, patches);
++    bool installed = clone_and_patch_vtable(device, interface_layout::device(device), patches);
+ 
+     if (g_config.trace_texture_creates || g_config.native_ldr_final_target_unorm)
+     {
+         const std::vector<std::pair<std::size_t, void *>> texture_patches {
+             { k_idx_device_create_texture_2d, reinterpret_cast<void *>(&hooked_create_texture_2d) },
+         };
+-        auto patch_extended_interface = [&](REFIID interface_id, const char *interface_name)
++        auto patch_extended_interface = [&](REFIID interface_id, const char *interface_name, std::size_t minimum)
+         {
+             IUnknown *extended = nullptr;
+             if (FAILED(device->QueryInterface(interface_id, reinterpret_cast<void **>(&extended))) || extended == nullptr)
+                 return;
+             const auto interface_key = reinterpret_cast<std::uint64_t>(extended);
+-            clone_and_patch_vtable(extended, k_device_vtable_size, texture_patches);
++            const bool extended_installed = clone_and_patch_vtable(extended, interface_layout::device(
++                reinterpret_cast<ID3D11Device *>(extended), minimum), texture_patches);
++            installed = extended_installed && installed;
+             LOG_DEBUG(blog::cat::hook, std::string("texture_device_interface_hook interface=") + interface_name +
+-                " instance=" + hex64(interface_key));
++                " instance=" + hex64(interface_key) + " installed=" + std::to_string(extended_installed));
+             extended->Release();
+         };
+-        patch_extended_interface(__uuidof(ID3D11Device1), "ID3D11Device1");
+-        patch_extended_interface(__uuidof(ID3D11Device2), "ID3D11Device2");
+-        patch_extended_interface(__uuidof(ID3D11Device3), "ID3D11Device3");
+-        patch_extended_interface(__uuidof(ID3D11Device4), "ID3D11Device4");
+-        patch_extended_interface(__uuidof(ID3D11Device5), "ID3D11Device5");
++        patch_extended_interface(__uuidof(ID3D11Device1), "ID3D11Device1", 50);
++        patch_extended_interface(__uuidof(ID3D11Device2), "ID3D11Device2", 54);
++        patch_extended_interface(__uuidof(ID3D11Device3), "ID3D11Device3", 65);
++        patch_extended_interface(__uuidof(ID3D11Device4), "ID3D11Device4", 67);
++        patch_extended_interface(__uuidof(ID3D11Device5), "ID3D11Device5", 69);
+     }
++    return installed;
+ }
+ 
+ void update_swapchain_backbuffer_resources(IDXGISwapChain *swapchain)
+@@ -14821,7 +14889,7 @@ void install_swapchain_hooks(IDXGISwapChain *swapchain)
+         " swapchain=" + hex64(reinterpret_cast<std::uintptr_t>(swapchain)));
+ 
+     void *hook_instance = swapchain;
+-    std::size_t hook_method_count = k_swapchain_vtable_size;
++    std::size_t hook_method_count = interface_layout::swapchain(swapchain);
+     IDXGISwapChain4 *swapchain4 = nullptr;
+     IDXGISwapChain3 *swapchain3 = nullptr;
+     bool supports_hdr_metadata = false;
+@@ -14830,12 +14898,13 @@ void install_swapchain_hooks(IDXGISwapChain *swapchain)
+         if (SUCCEEDED(swapchain->QueryInterface(__uuidof(IDXGISwapChain4), reinterpret_cast<void **>(&swapchain4))) && swapchain4 != nullptr)
+         {
+             hook_instance = swapchain4;
++            hook_method_count = interface_layout::swapchain(swapchain4);
+             supports_hdr_metadata = true;
+         }
+         else if (SUCCEEDED(swapchain->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void **>(&swapchain3))) && swapchain3 != nullptr)
+         {
+             hook_instance = swapchain3;
+-            hook_method_count = 39;
++            hook_method_count = interface_layout::swapchain(swapchain3);
+         }
+         else
+         {
+@@ -14846,36 +14915,7 @@ void install_swapchain_hooks(IDXGISwapChain *swapchain)
+         }
+     }
+ 
+-    void **vtable = *reinterpret_cast<void ***>(hook_instance);
+-    if (should_hook_present)
+-    {
+-        const auto original_present = reinterpret_cast<present_fn>(vtable[k_idx_present]);
+-        if (g_original_present == nullptr)
+-            g_original_present = original_present;
+-        std::lock_guard lock(g_swapchain_present_mutex);
+-        g_original_present_by_instance.try_emplace(hook_instance, original_present);
+-        g_original_present_by_instance.try_emplace(swapchain, original_present);
+-    }
+-    if (should_hook_general_swapchain_controls && g_original_set_fullscreen_state == nullptr)
+-        g_original_set_fullscreen_state = reinterpret_cast<set_fullscreen_state_fn>(vtable[k_idx_set_fullscreen_state]);
+-    if (should_hook_general_swapchain_controls && g_original_get_fullscreen_state == nullptr)
+-        g_original_get_fullscreen_state = reinterpret_cast<get_fullscreen_state_fn>(vtable[k_idx_get_fullscreen_state]);
+-    if (should_hook_general_swapchain_controls && g_original_resize_buffers == nullptr)
+-        g_original_resize_buffers = reinterpret_cast<resize_buffers_fn>(vtable[k_idx_resize_buffers]);
+-    if (should_hook_native_ldr_resize)
+-    {
+-        std::lock_guard lock(g_swapchain_resize_mutex);
+-        g_original_resize_buffers_by_instance.try_emplace(hook_instance, reinterpret_cast<resize_buffers_fn>(vtable[k_idx_resize_buffers]));
+-    }
+-    if (should_hook_general_swapchain_controls && g_original_resize_target == nullptr)
+-        g_original_resize_target = reinterpret_cast<resize_target_fn>(vtable[k_idx_resize_target]);
+     const bool has_color_interface = swapchain4 != nullptr || swapchain3 != nullptr;
+-    if (has_color_interface && g_original_check_color_space_support == nullptr)
+-        g_original_check_color_space_support = reinterpret_cast<check_color_space_support_fn>(vtable[k_idx_check_color_space_support]);
+-    if (has_color_interface && g_original_set_color_space1 == nullptr)
+-        g_original_set_color_space1 = reinterpret_cast<set_color_space1_fn>(vtable[k_idx_set_color_space1]);
+-    if (supports_hdr_metadata && g_original_set_hdr_metadata == nullptr)
+-        g_original_set_hdr_metadata = reinterpret_cast<set_hdr_metadata_fn>(vtable[k_idx_set_hdr_metadata]);
+     std::vector<std::pair<std::size_t, void *>> patches;
+     if (should_hook_present)
+         patches.emplace_back(k_idx_present, reinterpret_cast<void *>(&hooked_present));
+@@ -14950,11 +14990,8 @@ void install_factory_hooks(IDXGIFactory *factory)
+     if (factory == nullptr)
+         return;
+ 
+-    void **vtable = *reinterpret_cast<void ***>(factory);
+-    if (g_original_factory_create_swap_chain == nullptr)
+-        g_original_factory_create_swap_chain = reinterpret_cast<factory_create_swap_chain_fn>(vtable[k_idx_factory_create_swap_chain]);
+ 
+-    clone_and_patch_vtable(factory, k_factory_vtable_size, {
++    clone_and_patch_vtable(factory, interface_layout::factory(factory), {
+         { k_idx_factory_create_swap_chain, reinterpret_cast<void *>(&hooked_factory_create_swap_chain) },
+     });
+ }
+@@ -14964,11 +15001,8 @@ void install_factory2_hooks(IDXGIFactory2 *factory)
+     if (factory == nullptr)
+         return;
+ 
+-    void **vtable = *reinterpret_cast<void ***>(factory);
+-    if (g_original_factory2_create_swap_chain_for_hwnd == nullptr)
+-        g_original_factory2_create_swap_chain_for_hwnd = reinterpret_cast<factory2_create_swap_chain_for_hwnd_fn>(vtable[k_idx_factory2_create_swap_chain_for_hwnd]);
+ 
+-    clone_and_patch_vtable(factory, k_factory2_vtable_size, {
++    clone_and_patch_vtable(factory, interface_layout::factory(factory, 25), {
+         { k_idx_factory_create_swap_chain, reinterpret_cast<void *>(&hooked_factory_create_swap_chain) },
+         { k_idx_factory2_create_swap_chain_for_hwnd, reinterpret_cast<void *>(&hooked_factory2_create_swap_chain_for_hwnd) },
+     });
+@@ -15035,7 +15069,7 @@ HRESULT WINAPI hooked_create_device_and_swapchain(
+         LOG_INFO(blog::cat::hdr, "native_ldr_swapchain_format from=29/R8G8B8A8_UNORM_SRGB to=28/R8G8B8A8_UNORM api=CreateDeviceAndSwapChain");
+     }
+ 
+-    const HRESULT hr = g_original_create_device_and_swapchain(
++    const HRESULT hr = CombinedCreateRoutes::original()(
+         adapter,
+         driver_type,
+         software,
+@@ -15081,7 +15115,7 @@ HRESULT WINAPI hooked_create_device(
+     ID3D11DeviceContext **context)
+ {
+     // 旧 On12 引导移除（旧方案隔离）。
+-    const HRESULT hr = g_original_create_device(
++    const HRESULT hr = DeviceCreateRoutes::original()(
+         adapter,
+         driver_type,
+         software,
+@@ -15340,25 +15374,23 @@ LONG WINAPI hooked_display_config_set_device_info(DISPLAYCONFIG_DEVICE_INFO_HEAD
+ FARPROC WINAPI hooked_get_proc_address(HMODULE module, LPCSTR proc_name)
+ {
+     FARPROC address = g_original_get_proc_address(module, proc_name);
+-    if (address == nullptr || proc_name == nullptr)
++    if (address == nullptr || reinterpret_cast<ULONG_PTR>(proc_name) <= 0xffff)
+         return address;
+ 
+     if (is_d3d11_module(module))
+     {
+         if (std::strcmp(proc_name, "D3D11CreateDeviceAndSwapChain") == 0)
+         {
+-            if (g_original_create_device_and_swapchain == nullptr)
+-                g_original_create_device_and_swapchain = reinterpret_cast<create_device_and_swapchain_fn>(address);
++            void *entry = resolve_create_device_and_swapchain(reinterpret_cast<void *>(address));
+             LOG_DEBUG(blog::cat::hook, "GetProcAddress intercepted D3D11CreateDeviceAndSwapChain");
+-            return reinterpret_cast<FARPROC>(&hooked_create_device_and_swapchain);
++            return entry != nullptr ? reinterpret_cast<FARPROC>(entry) : address;
+         }
+ 
+         if (std::strcmp(proc_name, "D3D11CreateDevice") == 0)
+         {
+-            if (g_original_create_device == nullptr)
+-                g_original_create_device = reinterpret_cast<create_device_fn>(address);
++            void *entry = resolve_create_device(reinterpret_cast<void *>(address));
+             LOG_DEBUG(blog::cat::hook, "GetProcAddress intercepted D3D11CreateDevice");
+-            return reinterpret_cast<FARPROC>(&hooked_create_device);
++            return entry != nullptr ? reinterpret_cast<FARPROC>(entry) : address;
+         }
+     }
+ 
+diff --git a/Dx11FsrBridge/InterfaceVtableLayout.h b/Dx11FsrBridge/InterfaceVtableLayout.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..29736f152a257aa5e956adfc3c56e161525049d1
+--- /dev/null
++++ b/Dx11FsrBridge/InterfaceVtableLayout.h
+@@ -0,0 +1,83 @@
++#pragma once
++
++#include <d3d11_4.h>
++#include <dxgi1_6.h>
++#include <cstddef>
++
++namespace interface_layout
++{
++template <typename Interface>
++bool same_address(IUnknown *object)
++{
++    Interface *extended = nullptr;
++    if (FAILED(object->QueryInterface(__uuidof(Interface), reinterpret_cast<void **>(&extended))) || !extended)
++        return false;
++    const bool same = static_cast<void *>(extended) == static_cast<void *>(object);
++    extended->Release();
++    return same;
++}
++
++// SDK 的完整继承槽数；只把同址扩展接口的尾部保留在当前对象的克隆表中。
++inline std::size_t device(ID3D11Device *object, std::size_t minimum = 43)
++{
++    if (same_address<ID3D11Device5>(object)) return 69;
++    if (same_address<ID3D11Device4>(object)) return 67;
++    if (same_address<ID3D11Device3>(object)) return 65;
++    if (same_address<ID3D11Device2>(object)) return 54;
++    if (same_address<ID3D11Device1>(object)) return 50;
++    return minimum;
++}
++
++inline std::size_t context(ID3D11DeviceContext *object)
++{
++    if (same_address<ID3D11DeviceContext4>(object)) return 149;
++    if (same_address<ID3D11DeviceContext3>(object)) return 147;
++    if (same_address<ID3D11DeviceContext2>(object)) return 144;
++    if (same_address<ID3D11DeviceContext1>(object)) return 134;
++    return 115;
++}
++
++inline std::size_t factory(IDXGIFactory *object, std::size_t minimum = 12)
++{
++    if (same_address<IDXGIFactory7>(object)) return 32;
++    if (same_address<IDXGIFactory6>(object)) return 30;
++    if (same_address<IDXGIFactory5>(object)) return 29;
++    if (same_address<IDXGIFactory4>(object)) return 28;
++    if (same_address<IDXGIFactory3>(object)) return 26;
++    if (same_address<IDXGIFactory2>(object)) return 25;
++    if (same_address<IDXGIFactory1>(object)) return 14;
++    return minimum;
++}
++
++inline std::size_t swapchain(IDXGISwapChain *object)
++{
++    if (same_address<IDXGISwapChain4>(object)) return 41;
++    if (same_address<IDXGISwapChain3>(object)) return 40;
++    if (same_address<IDXGISwapChain2>(object)) return 36;
++    if (same_address<IDXGISwapChain1>(object)) return 29;
++    return 18;
++}
++
++template <typename Extended>
++ID3D11DeviceContext *query_context(ID3D11DeviceContext *object)
++{
++    Extended *extended = nullptr;
++    if (FAILED(object->QueryInterface(__uuidof(Extended), reinterpret_cast<void **>(&extended))) || !extended)
++        return nullptr;
++    ID3D11DeviceContext *base = nullptr;
++    extended->QueryInterface(__uuidof(ID3D11DeviceContext), reinterpret_cast<void **>(&base));
++    extended->Release();
++    return base;
++}
++
++// XXMI 等只封装旧 context 接口、将更高接口透传给 runtime。使用标准 QI 返回的
++// base context 观察实际绘制，代理自身的 BeforeDraw/AfterDraw 保持执行。
++inline ID3D11DeviceContext *execution_context(ID3D11DeviceContext *object)
++{
++    if (auto *base = query_context<ID3D11DeviceContext4>(object)) return base;
++    if (auto *base = query_context<ID3D11DeviceContext3>(object)) return base;
++    if (auto *base = query_context<ID3D11DeviceContext2>(object)) return base;
++    if (auto *base = query_context<ID3D11DeviceContext1>(object)) return base;
++    return nullptr;
++}
++}
+diff --git a/Dx11FsrBridge/tests/ComMethodRoutesTest.cpp b/Dx11FsrBridge/tests/ComMethodRoutesTest.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..9c5c50fa75df3828961b51b519a90028c6f8e8d7
+--- /dev/null
++++ b/Dx11FsrBridge/tests/ComMethodRoutesTest.cpp
+@@ -0,0 +1,87 @@
++#include "ComMethodRoutes.h"
++#include <cstdio>
++
++namespace
++{
++struct Context
++{
++    void **table;
++};
++using Draw = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, UINT);
++void STDMETHODCALLTYPE observe(ID3D11DeviceContext *, UINT, UINT);
++using Routes = ComMethodRoutes<Draw, &observe, 13, true>;
++Routes original;
++void *native_table[115] {};
++void *proxy_table[115] {};
++Context native { native_table };
++Context proxy { proxy_table };
++unsigned before = 0, after = 0, gpu_draws = 0, takeovers = 0, observed_shader = 0, shader = 0;
++unsigned failures = 0;
++
++void STDMETHODCALLTYPE native_draw(ID3D11DeviceContext *object, UINT, UINT)
++{
++    if (object != reinterpret_cast<ID3D11DeviceContext *>(&native))
++        ++failures;
++    ++gpu_draws;
++}
++
++void STDMETHODCALLTYPE proxy_draw(ID3D11DeviceContext *, UINT count, UINT start)
++{
++    ++before;
++    shader = 42; // 模组的 BeforeDraw 替换输入。
++    reinterpret_cast<Draw>(native.table[13])(
++        reinterpret_cast<ID3D11DeviceContext *>(&native), count, start);
++    ++after;
++}
++
++void STDMETHODCALLTYPE observe(ID3D11DeviceContext *object, UINT count, UINT start)
++{
++    observed_shader = shader;
++    if (count == 3)
++    {
++        ++takeovers;
++        return; // 成功 SR 接管吞掉原绘制，仍必须完成代理前后处理。
++    }
++    original(object, count, start);
++}
++
++void expect(bool condition, const char *what)
++{
++    if (!condition)
++    {
++        ++failures;
++        std::printf("FAIL: %s\n", what);
++    }
++}
++}
++
++int main()
++{
++    native_table[13] = Routes::bind(reinterpret_cast<void *>(&native_draw));
++    proxy_table[13] = reinterpret_cast<void *>(&proxy_draw);
++    const auto draw = reinterpret_cast<Draw>(proxy_table[13]);
++    auto *context = reinterpret_cast<ID3D11DeviceContext *>(&proxy);
++    draw(context, 3, 0);
++    expect(before == 1 && after == 1 && takeovers == 1 && gpu_draws == 0 && observed_shader == 42,
++        "native takeover observes mod changes and retains BeforeDraw/AfterDraw");
++    draw(context, 5, 0);
++    expect(before == 2 && after == 2 && gpu_draws == 1, "non-takeover preserves native execution");
++    {
++        ContextPolicyBypass first(context);
++        {
++            ContextPolicyBypass second(context);
++            draw(context, 3, 0);
++        }
++        expect(context_policy_bypass == 1, "nested bypass restores previous domain");
++        draw(context, 3, 0);
++    }
++    expect(context_policy_bypass == 0 && takeovers == 1 && gpu_draws == 3,
++        "internal bypass crosses proxy without executing bridge policy");
++    draw(context, 3, 0);
++    expect(before == 5 && after == 5 && takeovers == 2 && gpu_draws == 3,
++        "takeover resumes after internal work");
++    expect(Routes::original_for(reinterpret_cast<ID3D11DeviceContext *>(&native)) == &native_draw,
++        "internal direct call resolves the object's own original");
++    std::printf("ComMethodRoutes takeover/bypass: %u failures\n", failures);
++    return failures ? 1 : 0;
++}
+diff --git a/Dx11FsrBridge/tests/CreateFunctionRoutesTest.cpp b/Dx11FsrBridge/tests/CreateFunctionRoutesTest.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..f814fd273f99e564b19d87edc81f9ef738a718cc
+--- /dev/null
++++ b/Dx11FsrBridge/tests/CreateFunctionRoutesTest.cpp
+@@ -0,0 +1,88 @@
++#include "CreateFunctionRoutes.h"
++#include <cstdio>
++#include <thread>
++#include <vector>
++
++namespace
++{
++using Function = int(WINAPI *)(int);
++int WINAPI observe(int value);
++using Routes = CreateFunctionRoutes<Function, &observe>;
++std::atomic<unsigned> failures {};
++Function native_entry = nullptr;
++Function proxy_entry = nullptr;
++
++int WINAPI native(int value)
++{
++    return value + 11;
++}
++
++int WINAPI proxy(int value)
++{
++    return native_entry(value) + 101;
++}
++
++int WINAPI observe(int value)
++{
++    const Function before = Routes::original();
++    const int result = before(value);
++    if (Routes::original() != before)
++        ++failures;
++    return result;
++}
++
++int WINAPI observe_small(int value);
++using SmallRoutes = CreateFunctionRoutes<Function, &observe_small, 2>;
++int WINAPI observe_small(int value)
++{
++    return SmallRoutes::original()(value);
++}
++
++int WINAPI third(int value)
++{
++    return value + 303;
++}
++
++void expect(bool condition, const char *description)
++{
++    if (!condition)
++    {
++        ++failures;
++        std::printf("FAIL: %s\n", description);
++    }
++}
++}
++
++int main()
++{
++    native_entry = Routes::bind(&native);
++    proxy_entry = Routes::bind(&proxy);
++    expect(native_entry != nullptr && proxy_entry != nullptr && native_entry != proxy_entry,
++        "distinct originals retain distinct callable entries");
++    expect(native_entry(7) == 18 && proxy_entry(7) == 119, "nested proxy keeps its own result");
++    expect(Routes::original() == nullptr, "outermost call restores empty context");
++    expect(Routes::bind(native_entry) == native_entry, "IAT rescan does not wrap an existing entry");
++    expect(Routes::bind(&native) == native_entry, "GetProcAddress and IAT share stable entry");
++
++    std::vector<std::thread> threads;
++    for (int i = 0; i < 8; ++i)
++        threads.emplace_back([i]
++        {
++            for (int value = 0; value < 2000; ++value)
++            {
++                const Function entry = Routes::bind(i % 2 ? &proxy : &native);
++                if (entry(value) != value + (i % 2 ? 112 : 11) || Routes::original() != nullptr)
++                    ++failures;
++            }
++        });
++    for (auto &thread : threads)
++        thread.join();
++
++    expect(SmallRoutes::bind(&native)(3) == 14, "first limited route works");
++    expect(SmallRoutes::bind(&proxy)(3) == 115, "second limited route works");
++    expect(SmallRoutes::bind(&third) == nullptr, "exhaustion never substitutes a different original");
++    expect(SmallRoutes::bind(nullptr) == nullptr, "null original remains null");
++    std::printf("CreateFunctionRoutes: 16000 concurrent calls, nested restoration, rescan and capacity: %u failures\n",
++        failures.load());
++    return failures.load() ? 1 : 0;
++}
+diff --git a/Dx11FsrBridge/tests/create-routing/Host.cpp b/Dx11FsrBridge/tests/create-routing/Host.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..4c7638d23bbe25007a72c7bb56e9c0454d00f742
+--- /dev/null
++++ b/Dx11FsrBridge/tests/create-routing/Host.cpp
+@@ -0,0 +1,310 @@
++#include <windows.h>
++#include <d3d11.h>
++#include <dxgi1_5.h>
++#include <cstdio>
++#include <cstring>
++#include <filesystem>
++#include <fstream>
++#include <string>
++
++namespace
++{
++int failures = 0;
++void expect(bool condition, const char *what)
++{
++    std::printf("%s: %s\n", condition ? "PASS" : "FAIL", what);
++    failures += !condition;
++}
++
++// 给两个真实 PE 导入表设置不同提供者，模拟第三方 loader 已建立的两层调用。
++bool set_import(HMODULE module, const char *name, FARPROC target)
++{
++    auto *base = reinterpret_cast<unsigned char *>(module);
++    auto *dos = reinterpret_cast<IMAGE_DOS_HEADER *>(base);
++    auto *nt = reinterpret_cast<IMAGE_NT_HEADERS *>(base + dos->e_lfanew);
++    auto *descriptor = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR *>(base +
++        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
++    for (; descriptor->Name; ++descriptor)
++    {
++        if (_stricmp(reinterpret_cast<char *>(base + descriptor->Name), "d3d11.dll") != 0)
++            continue;
++        auto *names = reinterpret_cast<IMAGE_THUNK_DATA *>(base + descriptor->OriginalFirstThunk);
++        auto *slots = reinterpret_cast<IMAGE_THUNK_DATA *>(base + descriptor->FirstThunk);
++        for (; names->u1.AddressOfData; ++names, ++slots)
++        {
++            if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal))
++                continue;
++            auto *symbol = reinterpret_cast<IMAGE_IMPORT_BY_NAME *>(base + names->u1.AddressOfData);
++            if (std::strcmp(reinterpret_cast<char *>(symbol->Name), name) != 0)
++                continue;
++            DWORD previous = 0;
++            if (!VirtualProtect(&slots->u1.Function, sizeof(slots->u1.Function), PAGE_READWRITE, &previous))
++                return false;
++            slots->u1.Function = reinterpret_cast<ULONG_PTR>(target);
++            DWORD ignored = 0;
++            return VirtualProtect(&slots->u1.Function, sizeof(slots->u1.Function), previous, &ignored) != FALSE;
++        }
++    }
++    return false;
++}
++
++HRESULT call_device(FARPROC target, ID3D11Device **device = nullptr, ID3D11DeviceContext **context = nullptr)
++{
++    return reinterpret_cast<decltype(&D3D11CreateDevice)>(target)(nullptr, D3D_DRIVER_TYPE_NULL,
++        nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, device, nullptr, context);
++}
++
++bool belongs_to(HMODULE module, void *address)
++{
++    HMODULE owner = nullptr;
++    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++        reinterpret_cast<LPCWSTR>(address), &owner) && owner == module;
++}
++
++HRESULT call_combined(FARPROC target)
++{
++    return reinterpret_cast<decltype(&D3D11CreateDeviceAndSwapChain)>(target)(nullptr,
++        D3D_DRIVER_TYPE_NULL, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, nullptr,
++        nullptr, nullptr, nullptr, nullptr);
++}
++}
++
++int wmain(int argc, wchar_t **argv)
++{
++    if (argc != 7)
++        return 2;
++    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
++    std::setvbuf(stdout, nullptr, _IONBF, 0);
++    SetUnhandledExceptionFilter([](EXCEPTION_POINTERS *fault) -> LONG
++    {
++        std::printf("fixture exception=%08lX at=%p\n", fault->ExceptionRecord->ExceptionCode,
++            fault->ExceptionRecord->ExceptionAddress);
++        void *frames[16] {};
++        const USHORT count = CaptureStackBackTrace(0, 16, frames, nullptr);
++        for (USHORT i = 0; i < count; ++i)
++        {
++            HMODULE module = nullptr;
++            wchar_t path[MAX_PATH] {};
++            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                reinterpret_cast<LPCWSTR>(frames[i]), &module);
++            if (module)
++                GetModuleFileNameW(module, path, MAX_PATH);
++            std::printf("  %u %p %ls+%llX\n", i, frames[i], path,
++                reinterpret_cast<unsigned long long>(frames[i]) - reinterpret_cast<unsigned long long>(module));
++        }
++        return EXCEPTION_EXECUTE_HANDLER;
++    });
++    const std::wstring mode = argv[6];
++    const bool nested = mode == L"nested" || mode == L"nested-success";
++    const bool hdr_swapchain = mode == L"swapchain4";
++    const bool swapchain_mode = mode == L"swapchain" || hdr_swapchain;
++    const bool success = mode == L"success" || mode == L"nested-success" || swapchain_mode;
++    const HMODULE first = LoadLibraryW(argv[2]);
++    const HMODULE second = LoadLibraryW(argv[3]);
++    const HMODULE imports1 = LoadLibraryW(argv[4]);
++    const HMODULE imports2 = LoadLibraryW(argv[5]);
++    if (!first || !second || !imports1 || !imports2 || first == second)
++        return 3;
++    const auto original_get_proc = &GetProcAddress;
++    const char *names[] = { "D3D11CreateDevice", "D3D11CreateDeviceAndSwapChain" };
++    for (const char *name : names)
++        if (!set_import(imports2, name, original_get_proc(second, name)))
++            return 4;
++    const auto import_device1 = reinterpret_cast<HRESULT(WINAPI *)()>(GetProcAddress(imports1, "CallDevice"));
++    const auto import_device2 = reinterpret_cast<HRESULT(WINAPI *)()>(GetProcAddress(imports2, "CallDevice"));
++    const auto import_combined1 = reinterpret_cast<HRESULT(WINAPI *)()>(GetProcAddress(imports1, "CallCombined"));
++    const auto import_combined2 = reinterpret_cast<HRESULT(WINAPI *)()>(GetProcAddress(imports2, "CallCombined"));
++    if (!import_device1 || !import_device2 || !import_combined1 || !import_combined2)
++        return 5;
++    if (nested)
++        reinterpret_cast<void(WINAPI *)(HMODULE)>(GetProcAddress(second, "SetInner"))(first);
++    if (success)
++    {
++        reinterpret_cast<void(WINAPI *)(BOOL)>(GetProcAddress(first, "SetSuccess"))(TRUE);
++        reinterpret_cast<void(WINAPI *)(BOOL)>(GetProcAddress(second, "SetSuccess"))(TRUE);
++        for (const HMODULE provider : {first, second})
++        {
++            reinterpret_cast<void(WINAPI *)(BOOL)>(GetProcAddress(provider, "SetExtended"))(nested);
++            reinterpret_cast<void(WINAPI *)(BOOL)>(GetProcAddress(provider, "SetSwapchain"))(swapchain_mode);
++            reinterpret_cast<void(WINAPI *)(BOOL)>(GetProcAddress(provider, "SetHdrSwapchain"))(hdr_swapchain);
++            reinterpret_cast<void(WINAPI *)()>(GetProcAddress(provider, "GuardTables"))();
++        }
++    }
++
++    // 每个子进程使用自己的配置/日志目录，不触碰安装目录或用户预设。
++    wchar_t executable[MAX_PATH] {};
++    GetModuleFileNameW(nullptr, executable, MAX_PATH);
++    const auto run = std::filesystem::path(executable).parent_path() /
++        (L"create-routing-run-" + std::to_wstring(GetCurrentProcessId()));
++    std::filesystem::create_directories(run);
++    const auto bridge_path = run / L"Dx11FsrBridge.dll";
++    std::filesystem::copy_file(argv[1], bridge_path, std::filesystem::copy_options::overwrite_existing);
++    std::ofstream(run / L"Dx11FsrBridge.ini") <<
++        "[Dx11FsrBridge]\nEnabled=1\nTransparentJitter=0\nFsr2Il2CppHook=0\nRenderScaleMenu=0\nFfx12Backend=ngx\n";
++    const HMODULE bridge = LoadLibraryW(bridge_path.c_str());
++    if (!bridge)
++        return 6;
++
++    // 反向查询第二提供者，不能让查询顺序或 IAT 首次绑定决定 original。
++    const auto device2 = GetProcAddress(second, names[0]);
++    const auto combined2 = GetProcAddress(second, names[1]);
++    const auto device1 = GetProcAddress(first, names[0]);
++    const auto combined1 = GetProcAddress(first, names[1]);
++    expect(belongs_to(bridge, reinterpret_cast<void *>(device1)) &&
++        belongs_to(bridge, reinterpret_cast<void *>(device2)) &&
++        belongs_to(bridge, reinterpret_cast<void *>(combined1)) &&
++        belongs_to(bridge, reinterpret_cast<void *>(combined2)), "both creation APIs actually enter production bridge");
++    if (mode == L"warp")
++    {
++        wchar_t system[MAX_PATH] {};
++        GetSystemDirectoryW(system, MAX_PATH);
++        const HMODULE runtime = LoadLibraryW((std::filesystem::path(system) / L"d3d11.dll").c_str());
++        const auto create = reinterpret_cast<decltype(&D3D11CreateDevice)>(GetProcAddress(runtime, names[0]));
++        expect(belongs_to(bridge, reinterpret_cast<void *>(create)), "system WARP create actually enters bridge");
++        for (unsigned round = 0; round < 2; ++round)
++        {
++            ID3D11Device *device = nullptr;
++            ID3D11DeviceContext *context = nullptr;
++            const HRESULT created = create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
++                D3D11_SDK_VERSION, &device, nullptr, &context);
++            expect(SUCCEEDED(created) && device && context, "real WARP device and context returned");
++            if (FAILED(created) || !device || !context)
++                return 8;
++            expect(belongs_to(bridge, (*reinterpret_cast<void ***>(device))[3]) &&
++                belongs_to(bridge, (*reinterpret_cast<void ***>(context))[47]), "real device/context methods enter bridge");
++            unsigned data[16] {};
++            for (unsigned i = 0; i < 16; ++i)
++                data[i] = 0x12345678 + i + round;
++            D3D11_BUFFER_DESC desc {};
++            desc.ByteWidth = sizeof(data);
++            desc.Usage = D3D11_USAGE_IMMUTABLE;
++            desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
++            D3D11_SUBRESOURCE_DATA initial {};
++            initial.pSysMem = data;
++            ID3D11Buffer *source = nullptr;
++            ID3D11Buffer *readback = nullptr;
++            expect(SUCCEEDED(device->CreateBuffer(&desc, &initial, &source)) && source, "WARP source buffer created");
++            desc.Usage = D3D11_USAGE_STAGING;
++            desc.BindFlags = 0;
++            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++            expect(SUCCEEDED(device->CreateBuffer(&desc, nullptr, &readback)) && readback, "WARP readback buffer created");
++            if (!source || !readback)
++                return 9;
++            context->CopyResource(readback, source);
++            D3D11_MAPPED_SUBRESOURCE mapped {};
++            const HRESULT read = context->Map(readback, 0, D3D11_MAP_READ, 0, &mapped);
++            expect(SUCCEEDED(read) && mapped.pData, "WARP copy completed before CPU mapping");
++            if (SUCCEEDED(read))
++            {
++                expect(std::memcmp(data, mapped.pData, sizeof(data)) == 0, "real WARP bytes preserved through routed calls");
++                context->Unmap(readback, 0);
++            }
++            readback->Release();
++            source->Release();
++            // 保留至进程退出，避免旧桥本身未退休的实例地址重用干扰本回归。
++        }
++    }
++    else if (!success)
++    {
++        expect(call_device(device1) == E_ABORT, "GPA first device provider");
++        expect(call_device(device2) == E_INVALIDARG, "GPA second device provider");
++        expect(call_combined(combined1) == E_ABORT, "GPA first combined provider");
++        expect(call_combined(combined2) == E_INVALIDARG, "GPA second combined provider");
++        expect(import_device1() == E_ABORT, "IAT first device provider");
++        expect(import_device2() == E_INVALIDARG, "IAT second device provider");
++        expect(import_combined1() == E_ABORT, "IAT first combined provider");
++        expect(import_combined2() == E_INVALIDARG, "IAT second combined provider");
++        const auto count1 = reinterpret_cast<unsigned(WINAPI *)()>(GetProcAddress(first, "GetCalls"));
++        const auto count2 = reinterpret_cast<unsigned(WINAPI *)()>(GetProcAddress(second, "GetCalls"));
++        expect(count1() == (nested ? 8u : 4u) && count2() == 4,
++            "proxy/native execution counts preserve complete chain");
++    }
++    else
++    {
++        ID3D11Device *native_device = nullptr;
++        ID3D11Device *proxy_device = nullptr;
++        ID3D11DeviceContext *native_context = nullptr;
++        ID3D11DeviceContext *proxy_context = nullptr;
++        expect(call_device(device1, &native_device, &native_context) == S_OK && native_device, "native successful device observed");
++        expect(call_device(device2, &proxy_device, &proxy_context) == S_OK && proxy_device, "proxy successful device observed");
++        expect(belongs_to(bridge, (*reinterpret_cast<void ***>(native_device))[3]) &&
++            belongs_to(bridge, (*reinterpret_cast<void ***>(proxy_device))[3]), "both device methods actually enter bridge");
++        D3D11_BUFFER_DESC desc {};
++        desc.ByteWidth = 16;
++        expect(native_device->CreateBuffer(&desc, nullptr, nullptr) == E_ABORT,
++            "native device retains its own original method");
++        expect(proxy_device->CreateBuffer(&desc, nullptr, nullptr) == E_INVALIDARG,
++            "proxy device retains its own original method");
++        expect(native_context && proxy_context &&
++            belongs_to(bridge, (*reinterpret_cast<void ***>(native_context))[13]) &&
++            belongs_to(bridge, (*reinterpret_cast<void ***>(proxy_context))[13]) == !nested,
++            "native context enters bridge while forwarding proxy retains its original Draw");
++        native_context->Draw(5, 1);
++        proxy_context->Draw(5, 1);
++        for (const HMODULE provider : {first, second})
++        {
++            const auto wrong = reinterpret_cast<unsigned(WINAPI *)()>(GetProcAddress(provider, "GetWrongThis"));
++            const auto draws = reinterpret_cast<unsigned(WINAPI *)()>(GetProcAddress(provider, "GetDraws"));
++            const unsigned expected_draws = nested && provider == first ? 2 : 1;
++            expect(wrong() == 0 && draws() == expected_draws, "Draw forwards exact receiver once per layer");
++        }
++        for (ID3D11Device *device : {native_device, proxy_device})
++        {
++            IDXGIDevice *dxgi = nullptr;
++            IDXGIAdapter *adapter = nullptr;
++            IDXGIFactory2 *factory = nullptr;
++            if (FAILED(device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void **>(&dxgi))) ||
++                FAILED(dxgi->GetAdapter(&adapter)) ||
++                FAILED(adapter->GetParent(__uuidof(IDXGIFactory2), reinterpret_cast<void **>(&factory))))
++                return 7;
++            expect(belongs_to(bridge, (*reinterpret_cast<void ***>(factory))[10]) &&
++                belongs_to(bridge, (*reinterpret_cast<void ***>(factory))[15]), "both factory methods actually enter bridge");
++            DXGI_SWAP_CHAIN_DESC legacy {};
++            DXGI_SWAP_CHAIN_DESC1 hwnd_desc {};
++            legacy.BufferDesc.Width = hwnd_desc.Width = 640;
++            legacy.BufferDesc.Height = hwnd_desc.Height = 360;
++            const HRESULT expected = device == native_device ? E_ABORT : E_INVALIDARG;
++            IDXGISwapChain *chain = nullptr;
++            IDXGISwapChain1 *hwnd_chain = nullptr;
++            const HRESULT legacy_result = factory->CreateSwapChain(device, &legacy, swapchain_mode ? &chain : nullptr);
++            expect(legacy_result == (swapchain_mode ? S_OK : expected),
++                "Factory2 and same-address Factory keep legacy original");
++            expect(factory->CreateSwapChainForHwnd(device, nullptr, &hwnd_desc, nullptr, nullptr,
++                swapchain_mode ? &hwnd_chain : nullptr) == (swapchain_mode ? S_OK : expected),
++                "ForHwnd keeps matching factory original");
++            if (swapchain_mode)
++            {
++                IDXGISwapChain3 *chain3 = nullptr;
++                expect(chain && SUCCEEDED(chain->QueryInterface(__uuidof(IDXGISwapChain3),
++                    reinterpret_cast<void **>(&chain3))) && chain3, "guarded SwapChain3 returned");
++                if (!chain3)
++                    return 10;
++                expect(belongs_to(bridge, (*reinterpret_cast<void ***>(chain3))[13]),
++                    "SwapChain3 actually hooked by production DLL");
++                expect(chain3->ResizeBuffers1(2, 640, 360, DXGI_FORMAT_R8G8B8A8_UNORM, 0,
++                    nullptr, nullptr) == expected, "SwapChain3 final slot39 survives full-table clone");
++                if (hdr_swapchain)
++                {
++                    IDXGISwapChain4 *chain4 = nullptr;
++                    expect(SUCCEEDED(chain->QueryInterface(__uuidof(IDXGISwapChain4),
++                        reinterpret_cast<void **>(&chain4))) && chain4, "guarded SwapChain4 returned");
++                    if (!chain4)
++                        return 11;
++                    void **methods = *reinterpret_cast<void ***>(chain4);
++                    expect(!belongs_to(bridge, methods[39]) && belongs_to(bridge, methods[40]),
++                        "SwapChain4 hooks HDR slot40 and preserves ResizeBuffers1 slot39");
++                    expect(chain4->SetHDRMetaData(DXGI_HDR_METADATA_TYPE_NONE, 0, nullptr) == expected,
++                        "HDR metadata retains matching provider and exact receiver");
++                    chain4->Release();
++                }
++                chain3->Release();
++            }
++        }
++        for (const HMODULE provider : {first, second})
++            expect(reinterpret_cast<unsigned(WINAPI *)()>(GetProcAddress(provider, "GetFactoryCalls"))() == 2,
++                "each real factory called exactly twice");
++    }
++    std::printf("production DLL routing: %d failures\n", failures);
++    std::fflush(stdout);
++    ExitProcess(failures ? 1 : 0);
++}
+diff --git a/Dx11FsrBridge/tests/create-routing/Imports.cpp b/Dx11FsrBridge/tests/create-routing/Imports.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc152df0469ba3b67ba8c14fa8c95c5b87428bdb
+--- /dev/null
++++ b/Dx11FsrBridge/tests/create-routing/Imports.cpp
+@@ -0,0 +1,14 @@
++#include <windows.h>
++#include <d3d11.h>
++
++extern "C" __declspec(dllexport) HRESULT WINAPI CallDevice()
++{
++    return D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_NULL, nullptr, 0, nullptr, 0,
++        D3D11_SDK_VERSION, nullptr, nullptr, nullptr);
++}
++
++extern "C" __declspec(dllexport) HRESULT WINAPI CallCombined()
++{
++    return D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_NULL, nullptr, 0, nullptr, 0,
++        D3D11_SDK_VERSION, nullptr, nullptr, nullptr, nullptr, nullptr);
++}
+diff --git a/Dx11FsrBridge/tests/create-routing/Provider.cpp b/Dx11FsrBridge/tests/create-routing/Provider.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..878dad6e4f10fcd95518ea718897e4b42a5c47e0
+--- /dev/null
++++ b/Dx11FsrBridge/tests/create-routing/Provider.cpp
+@@ -0,0 +1,294 @@
++#include <windows.h>
++#include <d3d11.h>
++#include <d3d11_4.h>
++#include <dxgi1_5.h>
++#include <atomic>
++#include <cstring>
++
++namespace
++{
++HMODULE inner_module = nullptr;
++std::atomic<unsigned> calls {};
++bool successful = false;
++bool extended_context = false;
++bool successful_swapchain = false;
++bool hdr_swapchain = false;
++struct Device
++{
++    void **vtable;
++};
++void *device_methods[80] {};
++Device device_object { device_methods };
++void *context_methods[149] {};
++Device context_object { context_methods };
++void *dxgi_methods[12] {};
++Device dxgi_object { dxgi_methods };
++void *adapter_methods[10] {};
++Device adapter_object { adapter_methods };
++void *factory_methods[40] {};
++Device factory_object { factory_methods };
++void *swapchain_methods[41] {};
++Device swapchain_object { swapchain_methods };
++std::atomic<unsigned> wrong_this {};
++std::atomic<unsigned> draws {};
++std::atomic<unsigned> factory_calls {};
++
++void STDMETHODCALLTYPE unused() {}
++ULONG STDMETHODCALLTYPE release(void *) { return 1; }
++
++HRESULT STDMETHODCALLTYPE query_interface(void *object, REFIID iid, void **output)
++{
++    if (output)
++        *output = nullptr;
++    if (object == &device_object && iid == __uuidof(IDXGIDevice) && output)
++    {
++        *output = &dxgi_object;
++        return S_OK;
++    }
++    if (object == &factory_object && iid == __uuidof(IDXGIFactory2) && output)
++    {
++        *output = &factory_object;
++        return S_OK;
++    }
++    if (object == &swapchain_object && output &&
++        (iid == __uuidof(IDXGISwapChain3) || (iid == __uuidof(IDXGISwapChain4) && hdr_swapchain)))
++    {
++        *output = &swapchain_object;
++        return S_OK;
++    }
++    if (object == &context_object && output)
++    {
++        if (iid == __uuidof(ID3D11DeviceContext))
++        {
++            *output = &context_object;
++            return S_OK;
++        }
++        if (iid == __uuidof(ID3D11DeviceContext4) && extended_context)
++        {
++            if (inner_module)
++            {
++                const auto get_context = reinterpret_cast<ID3D11DeviceContext *(WINAPI *)()>(
++                    GetProcAddress(inner_module, "GetContext"));
++                return get_context()->QueryInterface(iid, output);
++            }
++            *output = &context_object;
++            return S_OK;
++        }
++    }
++    return E_NOINTERFACE;
++}
++
++HRESULT STDMETHODCALLTYPE get_adapter(void *, IDXGIAdapter **adapter)
++{
++    *adapter = reinterpret_cast<IDXGIAdapter *>(&adapter_object);
++    return S_OK;
++}
++
++HRESULT STDMETHODCALLTYPE get_parent(void *, REFIID iid, void **output)
++{
++    if (iid == __uuidof(IDXGIFactory) || iid == __uuidof(IDXGIFactory2))
++    {
++        *output = &factory_object;
++        return S_OK;
++    }
++    *output = nullptr;
++    return E_NOINTERFACE;
++}
++
++HRESULT STDMETHODCALLTYPE get_desc(void *, DXGI_ADAPTER_DESC *)
++{
++    return E_FAIL;
++}
++
++HRESULT STDMETHODCALLTYPE create_swapchain(void *object, IUnknown *, DXGI_SWAP_CHAIN_DESC *, IDXGISwapChain **output)
++{
++    ++factory_calls;
++    if (successful_swapchain && output && object == &factory_object)
++    {
++        *output = reinterpret_cast<IDXGISwapChain *>(&swapchain_object);
++        return S_OK;
++    }
++    return object == &factory_object ? static_cast<HRESULT>(FIXTURE_RESULT) : E_UNEXPECTED;
++}
++
++HRESULT STDMETHODCALLTYPE create_hwnd(void *object, IUnknown *, HWND, const DXGI_SWAP_CHAIN_DESC1 *,
++    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *, IDXGIOutput *, IDXGISwapChain1 **output)
++{
++    ++factory_calls;
++    if (successful_swapchain && output && object == &factory_object)
++    {
++        *output = reinterpret_cast<IDXGISwapChain1 *>(&swapchain_object);
++        return S_OK;
++    }
++    return object == &factory_object ? static_cast<HRESULT>(FIXTURE_RESULT) : E_UNEXPECTED;
++}
++
++HRESULT STDMETHODCALLTYPE swapchain_desc(void *, DXGI_SWAP_CHAIN_DESC *desc)
++{
++    *desc = {};
++    desc->BufferDesc.Width = 640;
++    desc->BufferDesc.Height = 360;
++    desc->BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++    return S_OK;
++}
++
++HRESULT STDMETHODCALLTYPE resize_tail(void *object, UINT, UINT, UINT, DXGI_FORMAT, UINT,
++    const UINT *, IUnknown *const *)
++{
++    return object == &swapchain_object ? static_cast<HRESULT>(FIXTURE_RESULT) : E_UNEXPECTED;
++}
++
++HRESULT STDMETHODCALLTYPE set_hdr_metadata(void *object, DXGI_HDR_METADATA_TYPE type, UINT size, void *metadata)
++{
++    return object == &swapchain_object && type == DXGI_HDR_METADATA_TYPE_NONE && size == 0 && metadata == nullptr
++        ? static_cast<HRESULT>(FIXTURE_RESULT) : E_UNEXPECTED;
++}
++
++void STDMETHODCALLTYPE draw(void *object, UINT, UINT)
++{
++    ++draws;
++    if (object != &context_object)
++        ++wrong_this;
++    if (inner_module && successful)
++    {
++        const auto get_context = reinterpret_cast<ID3D11DeviceContext *(WINAPI *)()>(
++            GetProcAddress(inner_module, "GetContext"));
++        get_context()->Draw(5, 1);
++    }
++}
++
++HRESULT STDMETHODCALLTYPE create_buffer(void *object, const D3D11_BUFFER_DESC *,
++    const D3D11_SUBRESOURCE_DATA *, ID3D11Buffer **)
++{
++    return object == &device_object ? static_cast<HRESULT>(FIXTURE_RESULT) : E_UNEXPECTED;
++}
++}
++
++extern "C" __declspec(dllexport) void WINAPI SetSuccess(BOOL enabled)
++{
++    successful = enabled != FALSE;
++    for (auto &method : device_methods)
++        method = reinterpret_cast<void *>(&unused);
++    for (auto &method : context_methods)
++        method = reinterpret_cast<void *>(&unused);
++    for (auto &method : factory_methods)
++        method = reinterpret_cast<void *>(&unused);
++    for (auto &method : swapchain_methods)
++        method = reinterpret_cast<void *>(&unused);
++    device_methods[0] = reinterpret_cast<void *>(&query_interface);
++    device_methods[3] = reinterpret_cast<void *>(&create_buffer);
++    context_methods[0] = reinterpret_cast<void *>(&query_interface);
++    context_methods[2] = reinterpret_cast<void *>(&release);
++    context_methods[13] = reinterpret_cast<void *>(&draw);
++    dxgi_methods[2] = reinterpret_cast<void *>(&release);
++    dxgi_methods[7] = reinterpret_cast<void *>(&get_adapter);
++    adapter_methods[2] = reinterpret_cast<void *>(&release);
++    adapter_methods[6] = reinterpret_cast<void *>(&get_parent);
++    adapter_methods[8] = reinterpret_cast<void *>(&get_desc);
++    factory_methods[2] = reinterpret_cast<void *>(&release);
++    factory_methods[0] = reinterpret_cast<void *>(&query_interface);
++    factory_methods[10] = reinterpret_cast<void *>(&create_swapchain);
++    factory_methods[15] = reinterpret_cast<void *>(&create_hwnd);
++    swapchain_methods[0] = reinterpret_cast<void *>(&query_interface);
++    swapchain_methods[2] = reinterpret_cast<void *>(&release);
++    swapchain_methods[12] = reinterpret_cast<void *>(&swapchain_desc);
++    swapchain_methods[39] = reinterpret_cast<void *>(&resize_tail);
++    swapchain_methods[40] = reinterpret_cast<void *>(&set_hdr_metadata);
++}
++
++extern "C" __declspec(dllexport) void WINAPI SetSwapchain(BOOL enabled)
++{
++    successful_swapchain = enabled != FALSE;
++}
++
++extern "C" __declspec(dllexport) void WINAPI SetHdrSwapchain(BOOL enabled)
++{
++    hdr_swapchain = enabled != FALSE;
++}
++
++extern "C" __declspec(dllexport) void WINAPI SetExtended(BOOL enabled)
++{
++    extended_context = enabled != FALSE;
++}
++
++void **guarded_table(void **source, unsigned count)
++{
++    SYSTEM_INFO info {};
++    GetSystemInfo(&info);
++    auto *pages = static_cast<unsigned char *>(VirtualAlloc(nullptr, info.dwPageSize * 2,
++        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
++    DWORD previous = 0;
++    if (!pages || !VirtualProtect(pages + info.dwPageSize, info.dwPageSize, PAGE_NOACCESS, &previous))
++        return nullptr;
++    auto **table = reinterpret_cast<void **>(pages + info.dwPageSize) - count;
++    std::memcpy(table, source, count * sizeof(void *));
++    return table;
++}
++
++extern "C" __declspec(dllexport) void WINAPI GuardTables()
++{
++    device_object.vtable = guarded_table(device_methods, 43);
++    context_object.vtable = guarded_table(context_methods, extended_context ? 149 : 115);
++    factory_object.vtable = guarded_table(factory_methods, 25);
++    swapchain_object.vtable = guarded_table(swapchain_methods, hdr_swapchain ? 41 : 40);
++}
++
++extern "C" __declspec(dllexport) unsigned WINAPI GetWrongThis() { return wrong_this.load(); }
++extern "C" __declspec(dllexport) unsigned WINAPI GetDraws() { return draws.load(); }
++extern "C" __declspec(dllexport) unsigned WINAPI GetFactoryCalls() { return factory_calls.load(); }
++extern "C" __declspec(dllexport) ID3D11DeviceContext *WINAPI GetContext()
++{
++    return reinterpret_cast<ID3D11DeviceContext *>(&context_object);
++}
++
++extern "C" __declspec(dllexport) void WINAPI SetInner(HMODULE module)
++{
++    inner_module = module;
++}
++
++extern "C" __declspec(dllexport) unsigned WINAPI GetCalls()
++{
++    return calls.load();
++}
++
++extern "C" __declspec(dllexport) HRESULT WINAPI FixtureCreateDevice(
++    IDXGIAdapter *adapter, D3D_DRIVER_TYPE driver, HMODULE software, UINT flags,
++    const D3D_FEATURE_LEVEL *levels, UINT count, UINT sdk, ID3D11Device **device,
++    D3D_FEATURE_LEVEL *level, ID3D11DeviceContext **context)
++{
++    ++calls;
++    if (inner_module != nullptr)
++    {
++        const auto inner = reinterpret_cast<decltype(&D3D11CreateDevice)>(
++            GetProcAddress(inner_module, "D3D11CreateDevice"));
++        const HRESULT expected = successful ? S_OK : E_ABORT;
++        if (!inner || inner(adapter, driver, software, flags, levels, count, sdk, device, level, context) != expected)
++            return E_UNEXPECTED;
++    }
++    if (successful)
++    {
++        if (device)
++            *device = reinterpret_cast<ID3D11Device *>(&device_object);
++        if (context)
++            *context = reinterpret_cast<ID3D11DeviceContext *>(&context_object);
++        return S_OK;
++    }
++    return static_cast<HRESULT>(FIXTURE_RESULT);
++}
++
++extern "C" __declspec(dllexport) HRESULT WINAPI FixtureCreateDeviceAndSwapChain(
++    IDXGIAdapter *adapter, D3D_DRIVER_TYPE driver, HMODULE software, UINT flags,
++    const D3D_FEATURE_LEVEL *levels, UINT count, UINT sdk, const DXGI_SWAP_CHAIN_DESC *desc,
++    IDXGISwapChain **swapchain, ID3D11Device **device, D3D_FEATURE_LEVEL *level, ID3D11DeviceContext **context)
++{
++    ++calls;
++    if (inner_module != nullptr)
++    {
++        const auto inner = reinterpret_cast<decltype(&D3D11CreateDeviceAndSwapChain)>(
++            GetProcAddress(inner_module, "D3D11CreateDeviceAndSwapChain"));
++        if (!inner || inner(adapter, driver, software, flags, levels, count, sdk,
++            desc, swapchain, device, level, context) != E_ABORT)
++            return E_UNEXPECTED;
++    }
++    return static_cast<HRESULT>(FIXTURE_RESULT);
++}
+diff --git a/Dx11FsrBridge/tests/create-routing/Provider.def b/Dx11FsrBridge/tests/create-routing/Provider.def
+new file mode 100644
+index 0000000000000000000000000000000000000000..fe2c9d801dd039ebccea42ceaa0526d3e09d15a3
+--- /dev/null
++++ b/Dx11FsrBridge/tests/create-routing/Provider.def
+@@ -0,0 +1,3 @@
++EXPORTS
++    D3D11CreateDevice=FixtureCreateDevice
++    D3D11CreateDeviceAndSwapChain=FixtureCreateDeviceAndSwapChain
+diff --git a/docs/OPEN-ISSUES.md b/docs/OPEN-ISSUES.md
+index 34e01aad4702eea43915992afc79c1b515b62855..fb13352d9193d1f886e9e2179a5799efb3798efa 100644
+--- a/docs/OPEN-ISSUES.md
++++ b/docs/OPEN-ISSUES.md
+@@ -5,7 +5,7 @@
+ > **改动历史不在这里**：某段代码为什么是现在这样，用 `git log` / `git blame` 查。
+ > 条目关闭后直接删除；要留结论就移入文末「已解决」，并注明解决它的提交。
+ 
+-最后更新：2026-11-13
++最后更新：2026-11-14
+ 
+ ---
+ 
+@@ -13,6 +13,12 @@
+ 
+ - **DX11 FSR2 导出层路线**：是否把 FSR2 以导出层形式暴露，至今未定案。
+ - **OptiScaler `Dx11wDx12` 开启帧生成会闪退**：现象稳定复现，根因未定位。
++- **COM 对象同址重建的 Hook 身份与退休**：`Dx11FsrBridge.cpp` 的 `clone_and_patch_vtable` 和
++  `ensure_context_device_texture_hook` 只按裸地址记录安装成功，没有对象销毁的退休入口。设备、
++  context、factory 或 swapchain 销毁后复用地址，可能跳过新对象的安装，已发布的克隆表也一直保留。
++  需要用当前 vptr 与真实对象代次确认安装身份，并明确 COM 接口及克隆表的退休条件；补充固定地址
++  重建的实际 DLL 回归。现有 WARP 用例保留设备至进程退出，不覆盖这种重建。这是继承缺口，
++  不能据此解释首次启动时的退出，也未通过本轮提供者转发修复关闭。
+ 
+ > **2026-11-12 补充（不修改上方原文）**
+ >
