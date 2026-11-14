@@ -214,6 +214,25 @@ foreach ($suite in $suites) {
                 throw "History birth-reference negative did not detect the original defect; inspect $negativeLog"
             }
             Write-Output 'NR history rolling-reference mutation: original drift defect detected as expected'
+            # Independently restore the short stabilizer's old, long-birth
+            # appearance read. Keep its new resource ABI and every other gate.
+            $appearanceRoot = Join-Path $suiteOutput 'stability-appearance-negative'
+            $null = [IO.Directory]::CreateDirectory($appearanceRoot)
+            foreach ($file in @('dlssnr_detail_reuse.hlsl','dlssnr_detail_history.hlsli','dlssnr_replace_curve.hlsli')) {
+                Copy-Item -LiteralPath (Join-Path $shaderRoot $file) -Destination (Join-Path $appearanceRoot $file) -Force
+            }
+            $appearanceHistoryPath = Join-Path $appearanceRoot 'dlssnr_detail_history.hlsli'
+            $historySource = [IO.File]::ReadAllText($appearanceHistoryPath)
+            $appearanceRead = 'oldRaw += w * adjacent.rgb;'
+            if (!$historySource.Contains($appearanceRead)) { throw 'Stabilizer appearance negative no longer matches production' }
+            [IO.File]::WriteAllText($appearanceHistoryPath,$historySource.Replace($appearanceRead,'oldRaw += w * context.rgb;'))
+            $appearanceLog = Join-Path $appearanceRoot 'result.log'
+            & $exe --shader (Join-Path $appearanceRoot 'dlssnr_detail_reuse.hlsl') --stability-appearance-only *> $appearanceLog
+            if ($LASTEXITCODE -ne 1 -or
+                !(Select-String -LiteralPath $appearanceLog -SimpleMatch 'FAIL: short stabilizer follows adjacent appearance independently of long-detail birth' -Quiet)) {
+                throw "Short-stabilizer appearance negative escaped or failed for an unrelated reason; inspect $appearanceLog"
+            }
+            Write-Output 'NR short-stabilizer appearance mutation: long-birth contamination detected as expected'
         }
         if ($suite.Name -eq 'GuidePreviewWarp') {
             & $exe --producer-replay

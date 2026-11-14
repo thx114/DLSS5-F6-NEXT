@@ -417,7 +417,7 @@ DhResult DhEvaluate(uint2 p)
         feedbackDeltaSeconds >= feedbackStabilitySeconds ||
         !DhFinite(feedbackStabilityFloor) || !DhFinite(feedbackStabilityClamp) || feedbackStabilityClamp <= 0.0 ||
         !DhFinite2(float2(feedbackRasterOffsetUvX, feedbackRasterOffsetUvY))) return result;
-    if (!DhWorkTexture(t6) || !DhWorkTexture(t3)) return result;
+    if (!DhWorkTexture(t6) || !DhWorkTexture(t3) || !DhWorkTexture(t7)) return result;
     if (result.reason == 5u) return result;
     if (!DhFinite(depthTolerance) || depthTolerance < 0.0) return result;
     float z;
@@ -445,7 +445,9 @@ DhResult DhEvaluate(uint2 p)
         if (!DhInside(q)) { result.reason = 6u; return result; }
         const float4 saved = t6.Load(int3(q, 0));
         const float4 context = t3.Load(int3(q, 0));
-        if (!DhFinite4(saved) || saved.a < 0.0 || !DhFinite4(context) || context.a < 0.0 || context.a > 1.0)
+        const float4 adjacent = t7.Load(int3(q, 0));
+        if (!DhFinite4(saved) || saved.a < 0.0 || !DhFinite4(context) || context.a < 0.0 || context.a > 1.0 ||
+            !DhFinite4(adjacent) || adjacent.a < 0.0)
             { result.reason = 7u; return result; }
         const float relative = abs(z - context.a) / max(max(z, context.a), 1e-6);
         if (depthTolerance < 1.0)
@@ -454,7 +456,9 @@ DhResult DhEvaluate(uint2 p)
             depthTrust = min(depthTrust, 1.0 - smoothstep(0.5 * tolerance, tolerance, relative));
         }
         old += w * saved.rgb;
-        oldRaw += w * context.rgb;
+        // context.rgb is the possibly much older long-detail birth fingerprint.
+        // The short stabilizer validates appearance against this adjacent source.
+        oldRaw += w * adjacent.rgb;
         oldLag = max(oldLag, saved.a);
     }
     if (!DhFinite3(old) || !DhFinite3(oldRaw) || !DhFinite(oldLag + feedbackDeltaSeconds)) return result;
@@ -488,7 +492,12 @@ void DetailHistoryResolve(uint2 p)
     u0[p] = result.answer;
     u1[p] = result.detail;
     u2[p] = result.context;
-    if (feedbackStabilitySeconds > 0.0) u3[p] = result.stabilized;
+    if (feedbackStabilitySeconds > 0.0)
+    {
+        u3[p] = result.stabilized;
+        const float4 raw = t0.Load(int3(p, 0));
+        u4[p] = DhFinite4(raw) ? float4(raw.rgb, 1.0) : float4(0.0, 0.0, 0.0, -1.0);
+    }
 }
 
 float3 DhReasonColour(uint reason)

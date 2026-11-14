@@ -76,11 +76,11 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     bool _historyInspectReady = false, _historyInspectFailed = false;
     bool HistoryInspectReady();
 
-    // The shared table reads seven inputs and writes up to four outputs. Unused slots
+    // The shared table reads eight inputs and writes up to five outputs. Unused slots
     // still need a view bound -- an unbound descriptor is not an empty read, it is a read from
     // nothing -- so a stand-in is written into whichever are spare.
-    static constexpr uint32_t kSrvCount = 7; // t5 depth/distrust; t6 optional independent residual stabilizer
-    static constexpr uint32_t kUavCount = 4; // answer, original residual, birth context, optional stabilization
+    static constexpr uint32_t kSrvCount = 8; // t5 depth/distrust; t6 stabilizer; t7 adjacent appearance
+    static constexpr uint32_t kUavCount = 5; // answer, residual, birth context, stabilization, adjacent appearance
 
     uint32_t _numThreadsX = 8;
     uint32_t _numThreadsY = 8;
@@ -222,7 +222,8 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
                              ID3D12Resource* In2, ID3D12Resource* In3, ID3D12Resource* In4, ID3D12Resource* OutTarget,
                              ID3D12Resource* OutSecond, ID3D12Resource* InHistoryDistrust = nullptr,
                              ID3D12Resource* OutContext = nullptr,
-                             ID3D12Resource* InStability = nullptr, ID3D12Resource* OutStability = nullptr);
+                             ID3D12Resource* InStability = nullptr, ID3D12Resource* OutStability = nullptr,
+                             ID3D12Resource* InStabilityContext = nullptr, ID3D12Resource* OutStabilityContext = nullptr);
 
     // Compress screen edges (dlssnr_spatial.hlsl, DlssNr_Spatial.h). SpatialReady builds the pipelines on first use and
     // says whether there are any; DispatchSpatial is false (no-op) without them. Same descriptor table shape as

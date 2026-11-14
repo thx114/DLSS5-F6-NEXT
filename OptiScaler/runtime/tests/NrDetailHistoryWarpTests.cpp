@@ -55,7 +55,7 @@ struct Image
     const Pixel& At(UINT x, UINT y) const { return pixels.at(static_cast<size_t>(y) * width + x); }
     const Pixel& Probe() const { return At(kProbeX, kProbeY); }
 };
-using Inputs = std::array<Image, 7>;
+using Inputs = std::array<Image, 8>;
 
 bool Near(float a, float b)
 {
@@ -134,6 +134,7 @@ struct DispatchResult
     Image secondary;
     Image birthContext;
     Image stability;
+    Image stabilityContext;
 };
 
 class Fixture
@@ -191,9 +192,9 @@ public:
 
     DispatchResult Run(const Inputs& inputs, const Constants& constants, bool productionFormats=false)
     {
-        std::array<ComPtr<ID3D11Texture2D>, 7> textures;
-        std::array<ComPtr<ID3D11ShaderResourceView>, 7> views;
-        std::array<ID3D11ShaderResourceView*, 7> rawViews {};
+        std::array<ComPtr<ID3D11Texture2D>, 8> textures;
+        std::array<ComPtr<ID3D11ShaderResourceView>, 8> views;
+        std::array<ID3D11ShaderResourceView*, 8> rawViews {};
         for (size_t i = 0; i < inputs.size(); ++i)
         {
             const auto& input = inputs[i];
@@ -210,9 +211,9 @@ public:
 
         auto desc = TextureDesc(constants.WorkWidth, constants.WorkHeight);
         desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
-        std::array<ComPtr<ID3D11Texture2D>, 4> outputs;
-        std::array<ComPtr<ID3D11UnorderedAccessView>, 4> uavs;
-        std::array<ID3D11UnorderedAccessView*, 4> rawUavs {};
+        std::array<ComPtr<ID3D11Texture2D>, 5> outputs;
+        std::array<ComPtr<ID3D11UnorderedAccessView>, 5> uavs;
+        std::array<ID3D11UnorderedAccessView*, 5> rawUavs {};
         const float clear[4] {};
         for (size_t i = 0; i < outputs.size(); ++i)
         {
@@ -245,6 +246,7 @@ public:
         result.secondary = Readback(outputs[1].Get());
         result.birthContext = Readback(outputs[2].Get());
         result.stability = Readback(outputs[3].Get());
+        result.stabilityContext = Readback(outputs[4].Get());
         return result;
     }
 
@@ -332,7 +334,7 @@ Inputs FlatInputs()
 {
     return {Image({0.4f,0.5f,0.6f,1}), Image({0.42f,0.52f,0.62f,0.73f}),
             Image({0.035f,0.01f,-0.015f,0.2f}), Image({0.4f,0.5f,0.6f,0.4f}),
-            Image({0,0,0,0}), Image({0.4f,0,0,0}), Image({},0,0)};
+            Image({0,0,0,0}), Image({0.4f,0,0,0}), Image({},0,0), Image({.4f,.5f,.6f,1})};
 }
 
 void Fill(Image& image, Pixel value) { std::fill(image.pixels.begin(), image.pixels.end(), value); }
@@ -1347,12 +1349,26 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
     c.FeedbackStabilitySeconds=0;
     checks.ImageEquals(gpu.Run(fallback,c).primary,fallback[1],"stability zero is exactly fresh with long carry disabled");
     c.FeedbackStabilitySeconds=.2f;c.FeedbackHistoryValid=0;
-    for(unsigned slot=2;slot<7;++slot)fallback[slot]=Image({},0,0);
+    for(unsigned slot=2;slot<fallback.size();++slot)fallback[slot]=Image({},0,0);
     checks.ImageEquals(gpu.Run(fallback,c).primary,fallback[1],"first frame never samples unbound stability or guide resources");
     fallback=inputs;c.FeedbackHistoryValid=1;c.FeedbackDeltaSeconds=.2f;
     checks.ImageEquals(gpu.Run(fallback,c).primary,fallback[1],"expired source time does not reuse stabilization");
     c.FeedbackDeltaSeconds=.05f;Fill(fallback[6],{nan,0,0,0});
     checks.ImageEquals(gpu.Run(fallback,c).primary,fallback[1],"nonfinite filtered history cannot contaminate current NR");
+    for(unsigned invalid=0;invalid<5;++invalid)
+    {
+        fallback=inputs;
+        switch(invalid)
+        {
+        case 0: fallback[7]=Image({},0,0);break;
+        case 1: fallback[7]=Image({},kWidth-1,kHeight);break;
+        case 2: Fill(fallback[7],{nan,0,0,1});break;
+        case 3: Fill(fallback[7],{.4f,.5f,.6f,-1});break;
+        case 4: Fill(fallback[7],{.4f,.5f,.6f,std::numeric_limits<float>::infinity()});break;
+        }
+        checks.ImageEquals(gpu.Run(fallback,c).primary,fallback[1],
+                          "invalid adjacent appearance never authorizes short stabilization "+std::to_string(invalid));
+    }
     fallback=inputs;c.FeedbackStabilityFloor=1;c.FeedbackStabilityClamp=.05f;
     Fill(fallback[6],{10000,-10000,10000,0});
     const auto bounded=gpu.Run(fallback,c).primary.Probe();
@@ -1377,7 +1393,7 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
         c.FeedbackHistoryValid=n!=0;
         const auto result=gpu.Run(fallback,c,true);
         if(n>15){inputEnergy+=residual*residual;const double d=result.primary.Probe().r-.4;outputEnergy+=d*d;}
-        fallback[2]=result.secondary;fallback[3]=result.birthContext;fallback[6]=result.stability;
+        fallback[2]=result.secondary;fallback[3]=result.birthContext;fallback[6]=result.stability;fallback[7]=result.stabilityContext;
         checks.Expect(result.stability.Probe().a<=c.FeedbackStabilitySeconds+.001f,
                       "long noise sequence has bounded lag without periodic full-screen resets");
     }
@@ -1386,6 +1402,35 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
     const auto inspected=gpu.Run(fallback,c);
     checks.Expect(inspected.primary.Probe().r>.1f,"stability weight inspector uses the same production evaluator");
     checks.ImageEquals(inspected.stability,Image{},"inspector never writes filtered history");
+    checks.ImageEquals(inspected.stabilityContext,Image{},"inspector never writes adjacent-appearance history");
+}
+
+void TestStabilizerIndependentAppearance(Fixture& gpu, Checks& checks)
+{
+    auto inputs=FlatInputs();
+    auto c=FeedbackConstants();
+    c.FeedbackDeltaSeconds=.05f;
+    c.FeedbackDurationSeconds=.153f;c.FeedbackMaxAgeSeconds=.697f;c.FeedbackStrength=.95f;
+    c.DepthTolerance=.122f;c.ClipGamma=.128f;c.MotionReject=9.55f;
+    c.FeedbackStabilitySeconds=.199f;c.FeedbackStabilityFloor=.41f;c.FeedbackStabilityClamp=.049f;
+    // A stationary surface changes illumination smoothly while the model's
+    // positive edit alternates. Long-detail birth colours may be much older
+    // than the immediately preceding source used by the short stabilizer.
+    for(unsigned n=0;n<48;++n)
+    {
+        const float raw=.1f+.013f*n;
+        const float residual=n==0?.08f:(n%2?.024f:.012f);
+        Fill(inputs[0],{raw,raw,raw,1});
+        Fill(inputs[1],{raw+residual,raw+residual,raw+residual,.73f});
+        c.FeedbackHistoryValid=n!=0;
+        const auto result=gpu.Run(inputs,c,true);
+        if(n>3)
+            checks.Expect(result.stability.Probe().a>.02f,
+                "short stabilizer follows adjacent appearance independently of long-detail birth at source "+std::to_string(n));
+        checks.Expect(result.stability.Probe().a<=c.FeedbackStabilitySeconds+.001f,
+                      "smooth illumination never removes the short stabilizer lag bound");
+        inputs[2]=result.secondary;inputs[3]=result.birthContext;inputs[6]=result.stability;inputs[7]=result.stabilityContext;
+    }
 }
 
 void TestStabilizerSurfaceAdmission(Fixture& gpu, Checks& checks)
@@ -1489,8 +1534,22 @@ int main(int argc, char** argv)
 {
     try
     {
-        Fixture gpu(argc==3 && std::string(argv[1])=="--shader" ? std::filesystem::path(argv[2]) : std::filesystem::path{});
+        std::filesystem::path shaderPath;
+        bool appearanceOnly = false;
+        for (int i = 1; i < argc; ++i)
+        {
+            const std::string arg = argv[i];
+            if (arg == "--shader" && i + 1 < argc) shaderPath = argv[++i];
+            else if (arg == "--stability-appearance-only") appearanceOnly = true;
+            else throw std::runtime_error("Unknown or incomplete test argument: " + arg);
+        }
+        Fixture gpu(shaderPath);
         Checks checks;
+        if (appearanceOnly)
+        {
+            TestStabilizerIndependentAppearance(gpu,checks);
+            return checks.Finish();
+        }
         TestWeightsAndLanding(gpu,checks);
         TestFirstFrameAndInvalidValues(gpu,checks);
         TestStrictFootprintAndDepth(gpu,checks);
@@ -1510,6 +1569,7 @@ int main(int argc, char** argv)
         TestInspectorMatchesActualEvaluation(gpu,checks);
         TestTunableThresholds(gpu,checks);
         TestIndependentStabilizer(gpu,checks);
+        TestStabilizerIndependentAppearance(gpu,checks);
         TestStabilizerSurfaceAdmission(gpu,checks);
         return checks.Finish();
     }

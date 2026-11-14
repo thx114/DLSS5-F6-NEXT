@@ -32,6 +32,9 @@ NrDetailHistoryPolicy::SourceSequence sources;
 ID3D12Resource* detail[2] {};
 ID3D12Resource* colourDepth[2] {};
 ID3D12Resource* stability[2] {};
+// Short-window appearance belongs to the immediately preceding source, while
+// colourDepth RGB deliberately retains each long-detail channel's birth.
+ID3D12Resource* stabilityContext[2] {};
 ID3D12Resource* fused = nullptr;
 ID3D12Device* resourceDevice = nullptr; // identity, resources retain their device
 unsigned width = 0, height = 0, publishedWrite = 0, activeWrite = 0;
@@ -156,7 +159,8 @@ bool OwnersBusy()
 void ParkAll()
 {
     Invalidate();
-    for (auto** p : { &detail[0], &detail[1], &colourDepth[0], &colourDepth[1], &stability[0], &stability[1], &fused }) Park(*p);
+    for (auto** p : { &detail[0], &detail[1], &colourDepth[0], &colourDepth[1],
+                      &stability[0], &stability[1], &stabilityContext[0], &stabilityContext[1], &fused }) Park(*p);
     resourceDevice = nullptr; width = height = 0; allocatedBytes = 0;
 }
 D3D12_RESOURCE_DESC ScratchDesc(DXGI_FORMAT format, unsigned w, unsigned h)
@@ -173,7 +177,8 @@ bool PrepareResources(const Frame& f)
 {
     if (resourceDevice == f.device && width == f.workWidth && height == f.workHeight &&
         detail[0] && detail[1] && colourDepth[0] && colourDepth[1] && fused &&
-        ((f.cfg->DlssNrPresentedTemporalStabilityMs.value_or_default() != 0) == (stability[0] != nullptr && stability[1] != nullptr))) return true;
+        ((f.cfg->DlssNrPresentedTemporalStabilityMs.value_or_default() != 0) ==
+         (stability[0] != nullptr && stability[1] != nullptr && stabilityContext[0] != nullptr && stabilityContext[1] != nullptr))) return true;
     // An unchanged allocation can advance in authenticated queue order. A new
     // size/device reaches here only after the old executable users have closed.
     ParkAll();
@@ -182,7 +187,8 @@ bool PrepareResources(const Frame& f)
     const auto db = AllocationBytes(f.device, d), cb = AllocationBytes(f.device, c);
     const bool stabilize = f.cfg->DlssNrPresentedTemporalStabilityMs.value_or_default() != 0;
     const auto baseBytes = AddBytes(AddBytes(AddBytes(db, db), db), AddBytes(cb, cb));
-    const auto required = stabilize ? AddBytes(baseBytes, AddBytes(db, db)) : baseBytes;
+    const auto stableBytes = AddBytes(AddBytes(db, db), AddBytes(db, db));
+    const auto required = stabilize ? AddBytes(baseBytes, stableBytes) : baseBytes;
     const auto retired = ParkedBytes();
     snapshot.bytes = AddBytes(required, retired);
     if (!NrDetailHistoryPolicy::FitsBudget(required, retired))
@@ -191,11 +197,15 @@ bool PrepareResources(const Frame& f)
     {
         detail[i] = CreateScratch(f.device, d.Format, f.workWidth, f.workHeight);
         colourDepth[i] = CreateScratch(f.device, c.Format, f.workWidth, f.workHeight);
-        if (stabilize) stability[i] = CreateScratch(f.device, d.Format, f.workWidth, f.workHeight);
+        if (stabilize)
+        {
+            stability[i] = CreateScratch(f.device, d.Format, f.workWidth, f.workHeight);
+            stabilityContext[i] = CreateScratch(f.device, d.Format, f.workWidth, f.workHeight);
+        }
     }
     fused = CreateScratch(f.device, d.Format, f.workWidth, f.workHeight);
     if (!detail[0] || !detail[1] || !colourDepth[0] || !colourDepth[1] || !fused ||
-        (stabilize && (!stability[0] || !stability[1])))
+        (stabilize && (!stability[0] || !stability[1] || !stabilityContext[0] || !stabilityContext[1])))
     { ParkAll(); snapshot.reason = "history-allocation-failed"; return false; }
     resourceDevice = f.device; width = f.workWidth; height = f.workHeight;
     allocatedBytes = required;
@@ -403,7 +413,8 @@ Plan Before(const Frame& f)
     auto& slot = recordings.current;
     const auto use = NrRecording(f.device, f.cmdList);
     if (!DlssNrGpuLifetime::Retain(use, { detail[0], detail[1], colourDepth[0], colourDepth[1],
-                                         fused, stability[0], stability[1], f.modelInput, f.motion, f.depth }))
+                                         fused, stability[0], stability[1], stabilityContext[0], stabilityContext[1],
+                                         f.modelInput, f.motion, f.depth }))
         return reject("feedback-recording-owner-unavailable");
     const auto history = NrDetailHistoryPolicy::Select(activeKey, publishedKey, historyPublished, f.modelReset, step, settings);
     if(NrHistoryDebug::Wanted())
@@ -453,7 +464,7 @@ Plan Before(const Frame& f)
 }
 
 using Inspector = void (*)(const Frame&, const DlssNrDetailReuseConstants&, const Recording&,
-                          ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*);
+                          ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*);
 void After(const Frame& f, bool complete, ID3D12Resource*& finalAnswer, Inspector inspect = nullptr)
 {
     PublishOnExit publishObservation;
@@ -475,11 +486,17 @@ void After(const Frame& f, bool complete, ID3D12Resource*& finalAnswer, Inspecto
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     if (stability[publishedWrite]) Barrier(f.cmdList, stability[publishedWrite], D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    if (stabilityContext[publishedWrite]) Barrier(f.cmdList, stabilityContext[publishedWrite], D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     constants.Mode = NrDetailHistoryPolicy::ResolveMode;
     const bool resolved = f.pass->DispatchDetailReuse(f.cmdList, constants, f.workWidth, f.workHeight,
         f.modelInput, finalAnswer, detail[publishedWrite], colourDepth[publishedWrite], f.motion,
-        fused, detail[activeWrite], f.depth, colourDepth[activeWrite], stability[publishedWrite], stability[activeWrite]);
-    if(resolved&&inspect)inspect(f,constants,slot,finalAnswer,detail[publishedWrite],colourDepth[publishedWrite],stability[publishedWrite]);
+        fused, detail[activeWrite], f.depth, colourDepth[activeWrite], stability[publishedWrite], stability[activeWrite],
+        stabilityContext[publishedWrite], stabilityContext[activeWrite]);
+    if(resolved&&inspect)inspect(f,constants,slot,finalAnswer,detail[publishedWrite],colourDepth[publishedWrite],
+                               stability[publishedWrite],stabilityContext[publishedWrite]);
+    if (stabilityContext[publishedWrite]) Barrier(f.cmdList, stabilityContext[publishedWrite], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     if (stability[publishedWrite]) Barrier(f.cmdList, stability[publishedWrite], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     Barrier(f.cmdList, colourDepth[publishedWrite], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,

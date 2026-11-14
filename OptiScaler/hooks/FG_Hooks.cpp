@@ -2285,6 +2285,19 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     }
     HookCpuTiming::WallSample starRailSdkWall;
     std::optional<CallerCpuTrace::Scope> starRailSdkCpu;
+    // Observe the real source path throughout long sessions without requiring
+    // a profile change. Fixed scalars, one sample per thread per five seconds;
+    // timestamps/logging never authorize a token, queue, wait or retirement.
+    static thread_local ULONGLONG lastSourcePacingSample=0;
+    const auto sourcePacingNow=sourcePacingScope.Owns()?GetTickCount64():0;
+    const bool sampleSourcePacing=sourcePacingScope.Owns() &&
+        (!lastSourcePacingSample || sourcePacingNow-lastSourcePacingSample>=5000);
+    if(sampleSourcePacing)lastSourcePacingSample=sourcePacingNow;
+    const auto sourcePacingTick=[&]() noexcept {return sampleSourcePacing?HookCpuTiming::Tick():int64_t{0};};
+    int64_t sourceSdkBegin=0,sourceSdkEnd=0,sourceReflexBegin=0,sourceReflexEnd=0,
+        sourceLimiterBegin=0,sourceLimiterEnd=0;
+    bool sourceReflexCalled=false,sourceLimiterCalled=false;
+    uint32_t sourceReflexResult=0;
     const bool collectSdkPresent=collectStarRailPacing || GenshinFgTimingRequested(Flags);
     if (starRailSourceFailed)
         result = DXGI_ERROR_INVALID_CALL; // Unknown input cannot consume stale guides.
@@ -2294,10 +2307,12 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
                 if (starRailTimingRoute)
                     starRailSdkCpu.emplace(CallerCpuTrace::Op::FgSdkPresent, This, sourcePacingTokenFrame,
                                           pacingPresentFrame, Flags);
+                sourceSdkBegin=sourcePacingTick();
                 const auto apiResult = pPresentParameters == nullptr
                     ? o_FGSCPresent(This, SyncInterval, Flags)
                     : o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, effectivePresentParameters);
                 const auto apiLastError = GetLastError();
+                sourceSdkEnd=sourcePacingTick();
                 if (starRailSdkCpu) {
                     starRailSdkCpu->Stop();
                     starRailSdkCpu->Result(static_cast<uint32_t>(apiResult));
@@ -2438,6 +2453,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         }
     }
 
+    const auto sourceMarkerEnd=sourcePacingTick();
     if (state.swapchainInteropApi == SwapchainInteropApi::None)
         Hudfix_Dx12::PresentEnd();
 
@@ -2485,6 +2501,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         }
     }
 
+    const auto sourceCleanupEnd=sourcePacingTick();
     // Teardown can itself deactivate the provider. Snapshot scheduling only
     // after that boundary, while its guard/FG mutex are still held. No provider
     // pointer is dereferenced for pacing after those guards are released.
@@ -2536,6 +2553,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     // or OwnedMutex access can race destruction after execution Finish().
     presentMutexRelease.Release();
     if (directDlssSource) presentExecution.Finish();
+    const auto sourceUnlockEnd=sourcePacingTick();
     // FG source pacing decision end
 
     if (deferStarRailLimiter)
@@ -2551,23 +2569,6 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         // No provider, raw SDK token or mutable scheduling decision is accessed
         // here. Teardown may now proceed concurrently; the independent lease
         // owns precisely the token/API lifetime required by its Sleep call.
-        // Record the immutable policy itself, with a fixed process budget and
-        // per-thread rate limit. This log neither queries SDK state nor claims
-        // generated identity, displayed FPS, or any resource retirement.
-        static std::atomic<unsigned> pacingReports{0};
-        static thread_local ULONGLONG lastPacingReport=0;
-        const auto pacingNow=GetTickCount64();
-        if(!lastPacingReport || pacingNow-lastPacingReport>=5000) {
-            auto used=pacingReports.load(std::memory_order_relaxed);
-            while(used<32 && !pacingReports.compare_exchange_weak(used,used+1,std::memory_order_relaxed)){}
-            if(used<32) {
-                lastPacingReport=pacingNow;
-                LOG_INFO("F6 source pacing: present_entry={} provider_known={} provider_frame={} token_frame={} original_token_lease={} fg_active={} applied_generated_snapshot={} reflex_sleep={} explicit_limiter={} cap_fps={} reflex_cap={} native_cap={} xell_cap={} source_role=direct_dlss wait_boundary=after_fg_mutex_and_execution_unlock observation_only=true generated_identity=UNKNOWN",
-                    pacingPresentFrame,pacingProviderKnown,pacingProviderFrame,sourcePacingTokenFrame,leaseValid,
-                    pacingDecision.fgActive,pacingDecision.generatedFrames,pacingDecision.reflexSleep,
-                    pacingDecision.frameLimit,pacingCapFps,reflexOwnsCap,nativeOwnsCap,xellOwnsCap);
-            }
-        }
         const bool callReflex=pacingDecision.reflexSleep;
         FgPacingContext reflexContext = pacingContext;
         if (collectPacing)
@@ -2586,8 +2587,11 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
             if (starRailTimingRoute)
                 apiCpu.emplace(CallerCpuTrace::Op::FgReflexSleep, This, sourcePacingTokenFrame,
                                sourcePacingTokenFrame);
+            sourceReflexCalled=true;sourceReflexBegin=sourcePacingTick();
             const auto sleepResult=pacingLease->Sleep();
             const auto apiLastError = GetLastError();
+            sourceReflexResult=static_cast<uint32_t>(sleepResult);
+            sourceReflexEnd=sourcePacingTick();
             if (apiCpu) apiCpu->Stop();
             reflexWall = timing.Finish();
             if (apiCpu) apiCpu->Finish(static_cast<uint32_t>(sleepResult), true);
@@ -2624,7 +2628,9 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         if (callLimiter)
         {
             HookCpuTiming::Scope timing(HookCpuTiming::Stage::FgFrameLimitSleep,collectPacing);
+            sourceLimiterCalled=true;sourceLimiterBegin=sourcePacingTick();
             FrameLimit::sleep(pacingDecision.fgActive, pacingDecision.generatedFrames);
+            sourceLimiterEnd=sourcePacingTick();
             limiterWall = timing.Finish();
         }
         if (collectPacing)
@@ -2647,6 +2653,25 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     if (lowLatencyDevice != nullptr)
         native::lowlatency::OnPresentEnd(lowLatencyDevice, native::lowlatency::PresentSource::FrameGeneration);
 
+    if(sampleSourcePacing)
+    {
+        const auto sourceTailEnd=sourcePacingTick();
+        const auto savedError=GetLastError();LARGE_INTEGER hz{};
+        const bool frequencyKnown=QueryPerformanceFrequency(&hz)!=FALSE && hz.QuadPart>0;
+        const auto wallMs=[&](int64_t begin,int64_t end) {
+            return frequencyKnown && begin>0 && end>=begin?1000.0*double(end-begin)/double(hz.QuadPart):-1.0;
+        };
+        LOG_INFO("F6 source pacing: pid={} thread={} sc={:X} present_entry={} provider_known={} provider_frame={} token_frame={} original_token_lease={} fg_active={} applied_generated_snapshot={} reflex_sleep={} explicit_limiter={} cap_fps={} reflex_cap={} native_cap={} xell_cap={} sdk_call_known={} sdk_result={} sdk_wall_ms={:.4f} present_tail_ms={:.4f} post_sdk_to_marker_ms={:.4f} cleanup_ms={:.4f} decision_unlock_ms={:.4f} reflex_called={} reflex_result={} reflex_wall_ms={:.4f} limiter_called={} limiter_wall_ms={:.4f} sdk_begin_qpc={} sdk_end_qpc={} marker_end_qpc={} cleanup_end_qpc={} unlock_end_qpc={} reflex_begin_qpc={} reflex_end_qpc={} limiter_begin_qpc={} limiter_end_qpc={} tail_end_qpc={} qpc_hz={} source_role=direct_dlss wait_boundary=after_fg_mutex_and_execution_unlock observation_only=true cpu_wall_not_gpu_time=true inclusive_not_additive=true generated_identity=UNKNOWN report_frame_join=UNKNOWN",
+            GetCurrentProcessId(),GetCurrentThreadId(),(uintptr_t)This,pacingPresentFrame,pacingProviderKnown,pacingProviderFrame,
+            sourcePacingTokenFrame,leaseValid,pacingDecision.fgActive,pacingDecision.generatedFrames,pacingDecision.reflexSleep,
+            pacingDecision.frameLimit,pacingCapFps,reflexOwnsCap,nativeOwnsCap,xellOwnsCap,sourceSdkBegin>0 && sourceSdkEnd>=sourceSdkBegin,starRailSdkResult,
+            wallMs(sourceSdkBegin,sourceSdkEnd),wallMs(sourceSdkEnd,sourceTailEnd),wallMs(sourceSdkEnd,sourceMarkerEnd),
+            wallMs(sourceMarkerEnd,sourceCleanupEnd),wallMs(sourceCleanupEnd,sourceUnlockEnd),
+            sourceReflexCalled,sourceReflexResult,wallMs(sourceReflexBegin,sourceReflexEnd),sourceLimiterCalled,wallMs(sourceLimiterBegin,sourceLimiterEnd),
+            sourceSdkBegin,sourceSdkEnd,sourceMarkerEnd,sourceCleanupEnd,sourceUnlockEnd,sourceReflexBegin,sourceReflexEnd,
+            sourceLimiterBegin,sourceLimiterEnd,sourceTailEnd,frequencyKnown?hz.QuadPart:0);
+        SetLastError(savedError);
+    }
     LOG_DEBUG("Present finished");
 
     return result;

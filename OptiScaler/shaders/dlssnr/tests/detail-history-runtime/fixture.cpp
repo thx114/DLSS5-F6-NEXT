@@ -7,8 +7,10 @@
 #endif
 #include <windows.h>
 #include <d3d12.h>
+#include <d3d12sdklayers.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
+#include <DirectXPackedVector.h>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -117,7 +119,7 @@ static void Barrier(ID3D12GraphicsCommandList* list, ID3D12Resource* resource,
 struct Pass {
     struct Call {
         DlssNrDetailReuseConstants constants;
-        std::array<ID3D12Resource*, 11> resources;
+        std::array<ID3D12Resource*, 13> resources;
     };
     bool ready = true;
     unsigned failCall = 0;
@@ -127,6 +129,7 @@ struct Pass {
     ComPtr<ID3D12PipelineState> pipeline;
     std::vector<ComPtr<ID3D12DescriptorHeap>> heaps;
     std::vector<ComPtr<ID3D12Resource>> buffers;
+    std::vector<ComPtr<ID3D12QueryHeap>> queryHeaps;
     std::vector<unsigned char> shaderOverride; // explicit offline old-binary negative only
     void ExecuteShader(ID3D12GraphicsCommandList* list, const Call& call)
     {
@@ -134,9 +137,9 @@ struct Pass {
         if (!pipeline)
         {
             D3D12_DESCRIPTOR_RANGE ranges[] {
-                {D3D12_DESCRIPTOR_RANGE_TYPE_SRV,7,0,0,0},
-                {D3D12_DESCRIPTOR_RANGE_TYPE_UAV,4,0,0,7},
-                {D3D12_DESCRIPTOR_RANGE_TYPE_CBV,1,0,0,11}};
+                {D3D12_DESCRIPTOR_RANGE_TYPE_SRV,8,0,0,0},
+                {D3D12_DESCRIPTOR_RANGE_TYPE_UAV,5,0,0,8},
+                {D3D12_DESCRIPTOR_RANGE_TYPE_CBV,1,0,0,13}};
             D3D12_ROOT_PARAMETER parameter {}; parameter.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
             parameter.DescriptorTable={3,ranges};
             D3D12_STATIC_SAMPLER_DESC sampler {};
@@ -153,17 +156,17 @@ struct Pass {
             Hr(device->CreateComputePipelineState(&pso,IID_PPV_ARGS(&pipeline)));
         }
         D3D12_DESCRIPTOR_HEAP_DESC heapDesc {};
-        heapDesc.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;heapDesc.NumDescriptors=12;
+        heapDesc.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;heapDesc.NumDescriptors=14;
         heapDesc.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         ComPtr<ID3D12DescriptorHeap> heap;Hr(device->CreateDescriptorHeap(&heapDesc,IID_PPV_ARGS(&heap)));
         const auto first=heap->GetCPUDescriptorHandleForHeapStart();
         const auto stride=device->GetDescriptorHandleIncrementSize(heapDesc.Type);
         const auto handle=[&](unsigned slot){return D3D12_CPU_DESCRIPTOR_HANDLE{first.ptr+SIZE_T(slot)*stride};};
         const auto& r=call.resources;
-        ID3D12Resource* srv[] {r[0],r[1],r[2],r[3],r[4],r[7],r[9]};
-        ID3D12Resource* uav[] {r[5],r[6],r[8],r[10]};
-        for(unsigned i=0;i<7;++i)device->CreateShaderResourceView(srv[i]?srv[i]:srv[0],nullptr,handle(i));
-        for(unsigned i=0;i<4;++i)device->CreateUnorderedAccessView(uav[i]?uav[i]:uav[0],nullptr,nullptr,handle(7+i));
+        ID3D12Resource* srv[] {r[0],r[1],r[2],r[3],r[4],r[7],r[9],r[11]};
+        ID3D12Resource* uav[] {r[5],r[6],r[8],r[10],r[12]};
+        for(unsigned i=0;i<8;++i)device->CreateShaderResourceView(srv[i]?srv[i]:srv[0],nullptr,handle(i));
+        for(unsigned i=0;i<5;++i)device->CreateUnorderedAccessView(uav[i]?uav[i]:uav[0],nullptr,nullptr,handle(8+i));
         D3D12_HEAP_PROPERTIES upload {};upload.Type=D3D12_HEAP_TYPE_UPLOAD;
         D3D12_RESOURCE_DESC buffer {};buffer.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;
         buffer.Width=(sizeof(call.constants)+255)&~255ull;buffer.Height=buffer.DepthOrArraySize=buffer.MipLevels=1;
@@ -174,7 +177,7 @@ struct Pass {
         void* mapped=nullptr;const D3D12_RANGE none {0,0};Hr(constants->Map(0,&none,&mapped));
         std::memcpy(mapped,&call.constants,sizeof(call.constants));constants->Unmap(0,nullptr);
         const D3D12_CONSTANT_BUFFER_VIEW_DESC cb {constants->GetGPUVirtualAddress(),UINT(buffer.Width)};
-        device->CreateConstantBufferView(&cb,handle(11));
+        device->CreateConstantBufferView(&cb,handle(13));
         ID3D12DescriptorHeap* tables[] {heap.Get()};list->SetDescriptorHeaps(1,tables);
         list->SetComputeRootSignature(root.Get());list->SetPipelineState(pipeline.Get());
         list->SetComputeRootDescriptorTable(0,heap->GetGPUDescriptorHandleForHeapStart());
@@ -188,11 +191,13 @@ struct Pass {
         unsigned, unsigned, ID3D12Resource* input, ID3D12Resource* answer,
         ID3D12Resource* detail, ID3D12Resource* colour, ID3D12Resource* motion,
         ID3D12Resource* output, ID3D12Resource* secondary = nullptr, ID3D12Resource* depth = nullptr,
-        ID3D12Resource* birthContext = nullptr, ID3D12Resource* oldStability = nullptr, ID3D12Resource* newStability = nullptr)
+        ID3D12Resource* birthContext = nullptr, ID3D12Resource* oldStability = nullptr, ID3D12Resource* newStability = nullptr,
+        ID3D12Resource* oldStabilityContext = nullptr, ID3D12Resource* newStabilityContext = nullptr)
     {
-        calls.push_back({constants, {input, answer, detail, colour, motion, output, secondary, depth, birthContext, oldStability, newStability}});
+        calls.push_back({constants, {input, answer, detail, colour, motion, output, secondary, depth, birthContext,
+                                    oldStability, newStability, oldStabilityContext, newStabilityContext}});
         if (failCall && calls.size() == failCall) return false;
-        for (auto* resource : {output, secondary, birthContext, newStability}) {
+        for (auto* resource : {output, secondary, birthContext, newStability, newStabilityContext}) {
             if (!resource) continue;
             D3D12_RESOURCE_BARRIER barrier {};
             barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
@@ -265,7 +270,8 @@ struct World {
     Config config;
     DlssNrFrameInfo info;
     Pass pass;
-    explicit World(bool hardware=false)
+    explicit World(bool hardware=false, unsigned workWidth=8, unsigned workHeight=4,
+                   unsigned guideWidth=8, unsigned guideHeight=4)
     {
         ComPtr<IDXGIFactory4> factory;
         ComPtr<IDXGIAdapter> warp;
@@ -291,15 +297,15 @@ struct World {
         D3D12_COMMAND_QUEUE_DESC desc {}; desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         Hr(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&queue)));
         Hr(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&otherQueue)));
-        input.Attach(CreateScratch(device.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT, 8, 4));
-        motion.Attach(CreateScratch(device.Get(), DXGI_FORMAT_R32G32_FLOAT, 8, 4));
-        depth.Attach(CreateScratch(device.Get(), DXGI_FORMAT_R32_FLOAT, 8, 4));
-        fresh.Attach(CreateScratch(device.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT, 8, 4));
+        input.Attach(CreateScratch(device.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT, workWidth, workHeight));
+        motion.Attach(CreateScratch(device.Get(), DXGI_FORMAT_R32G32_FLOAT, guideWidth, guideHeight));
+        depth.Attach(CreateScratch(device.Get(), DXGI_FORMAT_R32_FLOAT, guideWidth, guideHeight));
+        fresh.Attach(CreateScratch(device.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT, workWidth, workHeight));
         info.BeforeUpscale = true;
         info.NativeRouteConventionVerified = info.NativeGuideMetadataKnown = info.NativeFeatureFlagsKnown = true;
         info.NativeCurrentJitterKnown = info.NativeMotionJitterKnown = info.MotionVectorsLowResolution = true;
-        info.RenderSubrectWidth = info.OutputWidth = 8;
-        info.RenderSubrectHeight = info.OutputHeight = 4;
+        info.RenderSubrectWidth = guideWidth; info.RenderSubrectHeight = guideHeight;
+        info.OutputWidth = workWidth; info.OutputHeight = workHeight;
         info.SourceCaptureEpoch = 73;
     }
     ~World()
@@ -326,6 +332,9 @@ struct World {
         frame.cfg = &config; frame.info = &info; frame.pass = &pass;
         frame.cmdList = recording.list.Get(); frame.device = device.Get(); frame.temporalQueue = queue.Get();
         frame.modelInput = input.Get(); frame.motion = motion.Get(); frame.depth = depth.Get();
+        frame.workWidth=static_cast<unsigned>(input->GetDesc().Width); frame.workHeight=input->GetDesc().Height;
+        frame.motionWidth=frame.depthWidth=static_cast<unsigned>(motion->GetDesc().Width);
+        frame.motionHeight=frame.depthHeight=motion->GetDesc().Height;
         frame.owner = 99; frame.frameNumber = source;
         return frame;
     }
@@ -814,23 +823,43 @@ static void DispatchFailure()
     world.Reset(first); DetailHistory::Release(); TickRetired();
 }
 
-static void FinishedNativeDxil(const char* oldShader=nullptr, bool stabilizer=false)
+static void LoadComparisonShader(Pass& pass, const char* path)
 {
-    World world(true);
-    if(stabilizer) world.config.DlssNrPresentedTemporalStabilityMs.value=200;
-    world.pass.executeShader=true;
-    if(oldShader)
+    if(path)
     {
         FILE* file=nullptr;
-        Check(fopen_s(&file,oldShader,"rb")==0&&file,"old-binary negative shader opened");
+        Check(fopen_s(&file,path,"rb")==0&&file,"offline comparison shader opened");
         std::fseek(file,0,SEEK_END);const auto length=std::ftell(file);std::rewind(file);
         if(length<=0||length>4*1024*1024){std::fclose(file);throw std::runtime_error("invalid old shader size");}
-        world.pass.shaderOverride.resize(size_t(length));
-        const auto read=std::fread(world.pass.shaderOverride.data(),1,size_t(length),file);std::fclose(file);
-        Check(read==size_t(length),"old-binary negative shader read completely");
+        pass.shaderOverride.resize(size_t(length));
+        const auto read=std::fread(pass.shaderOverride.data(),1,size_t(length),file);std::fclose(file);
+        Check(read==size_t(length),"offline comparison shader read completely");
+        std::printf("Comparison shader path=%s bytes=%zu\n",path,pass.shaderOverride.size());
     }
+}
+enum class NativePixelScenario { DetailCarry, SignedNoise, AdjacentAppearance };
+static void FinishedNativeDxil(const char* oldShader=nullptr, NativePixelScenario scenario=NativePixelScenario::DetailCarry)
+{
+    World world(true);
+    const bool stabilizer=scenario!=NativePixelScenario::DetailCarry;
+    const bool appearance=scenario==NativePixelScenario::AdjacentAppearance;
+    if(stabilizer) world.config.DlssNrPresentedTemporalStabilityMs.value=200;
+    world.pass.executeShader=true;
+    LoadComparisonShader(world.pass,oldShader);
     world.config.DlssNrPresentedTemporalDurationMs.value=stabilizer?0:820;
     world.config.DlssNrPresentedTemporalMaxAgeMs.value=2346;
+    if(appearance)
+    {
+        world.config.DlssNrPresentedTemporalDurationMs.value=153;
+        world.config.DlssNrPresentedTemporalMaxAgeMs.value=697;
+        world.config.DlssNrPresentedTemporalStrength.value=.95f;
+        world.config.DlssNrPresentedTemporalDepthTolerance.value=.122f;
+        world.config.DlssNrPresentedTemporalColourTolerance.value=.128f;
+        world.config.DlssNrPresentedTemporalMotionTolerance.value=9.55f;
+        world.config.DlssNrPresentedTemporalStabilityMs.value=199;
+        world.config.DlssNrPresentedTemporalStabilityFloor.value=.41f;
+        world.config.DlssNrPresentedTemporalStabilityClamp.value=.049f;
+    }
     world.info.BeforeUpscale=false;world.info.FinishedPicture=world.info.NativeSceneRoute=true;
     world.info.SceneGuideOwner[0]=0x101;world.info.SceneGuideOwner[1]=0x202;world.info.SceneGuideOwner[2]=73;
     std::array<Recording,3> pool {world.New(),world.New(),world.New()};
@@ -857,24 +886,35 @@ static void FinishedNativeDxil(const char* oldShader=nullptr, bool stabilizer=fa
         Barrier(active->list.Get(),texture,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         world.pass.buffers.push_back(std::move(resource));
     };
-    for(unsigned n=0;n<40;++n)
+    for(unsigned n=0;n<(appearance?48u:40u);++n)
     {
         auto& recording=pool[n%pool.size()];active=&recording;
         if(n>=pool.size())world.Reset(recording);
         const auto prior=n?D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE:D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        const uint16_t raw[] {0x3800,0x3800,0x3800,0x3c00}; // exact FP16 .5 RGB, alpha 1
-        const uint16_t answer[] {uint16_t(stabilizer?(n%2?0x3700:0x3880):(n?0x3800:0x3880)),0x3800,0x3800,0x3c00}; // seed adds .0625 red
-        const float depth=.5f,motion[] {n%2?-.25f:.25f,0};
+        uint16_t raw[] {0x3800,0x3800,0x3800,0x3c00}; // exact FP16 .5 RGB, alpha 1
+        uint16_t answer[] {uint16_t(stabilizer?(n%2?0x3700:0x3880):(n?0x3800:0x3880)),0x3800,0x3800,0x3c00}; // seed adds .0625 red
+        if(appearance)
+        {
+            const float value=.1f+.013f*n,residual=n==0?.08f:(n%2?.024f:.012f);
+            for(unsigned channel=0;channel<3;++channel)
+            {
+                raw[channel]=DirectX::PackedVector::XMConvertFloatToHalf(value);
+                answer[channel]=DirectX::PackedVector::XMConvertFloatToHalf(value+residual);
+            }
+        }
+        const float depth=.5f,motion[] {appearance?0.0f:(n%2?-.25f:.25f),0};
         upload(world.input.Get(),prior,raw,sizeof(raw));upload(world.fresh.Get(),prior,answer,sizeof(answer));
         upload(world.depth.Get(),prior,&depth,sizeof(depth));upload(world.motion.Get(),prior,motion,sizeof(motion));
         auto frame=world.Frame(recording,n+1);frame.beforeUpscale=false;frame.finishedPicture=true;
+        if(appearance)world.info.GuideObservationTick=1000+(n+1)*50;
         frame.nativePreSrRoute=false;frame.preSrProducerQueueVerified=false;frame.orderedNativeQueue=true;
         const auto plan=DetailHistory::Before(frame);
         Check(plan.active&&plan.historyUsable==bool(n),"actual finished route has adjacent history for every continuous source");
         Capture(world,frame);
         // Read exactly the answer selected by the real module, after actual
         // production DXIL, FP16 writes and queue execution. No CPU pixel oracle.
-        auto* fused=DetailHistory::fused;const auto desc=fused->GetDesc();
+        auto* fused=appearance?DetailHistory::stability[DetailHistory::activeWrite]:DetailHistory::fused;
+        const auto desc=fused->GetDesc();
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};UINT64 bytes=0;
         world.device->GetCopyableFootprints(&desc,0,1,0,&footprint,nullptr,nullptr,&bytes);
         D3D12_HEAP_PROPERTIES heap {};heap.Type=D3D12_HEAP_TYPE_READBACK;
@@ -894,10 +934,18 @@ static void FinishedNativeDxil(const char* oldShader=nullptr, bool stabilizer=fa
         void* data=nullptr;const D3D12_RANGE range {0,SIZE_T(bytes)};Hr(readback->Map(0,&range,&data));
         const auto* probe=reinterpret_cast<const uint16_t*>(static_cast<const char*>(data)+
                           footprint.Offset+2*footprint.Footprint.RowPitch+4*8);
-        const float red=std::ldexp(1.0f+float(probe[0]&1023)/1024.0f,int((probe[0]>>10)&31)-15);
+        const float red=DirectX::PackedVector::XMConvertHalfToFloat(probe[0]);
+        const float lag=DirectX::PackedVector::XMConvertHalfToFloat(probe[3]);
         readback->Unmap(0,nullptr);
-        Check(stabilizer ? (n<2||(red>.46f&&red<.54f)) : (red>.505f&&red<=.5625f),
-              "embedded production DXIL retains detail or suppresses alternating signed NR noise through actual published FP16 sources");
+        if(appearance)
+        {
+            std::printf("appearance source=%u residual=%.6f mean_lag_ms=%.3f\n",n+1,red,lag*1000.0f);
+            Check(n<=3||lag>.02f,"short stabilizer follows adjacent appearance independently of long-detail birth in embedded DXIL");
+            Check(lag<=.200f&&red>.010f&&red<.081f,"physical FP16 stabilizer keeps bounded lag and current residual range");
+        }
+        else
+            Check(stabilizer ? (n<2||(red>.46f&&red<.54f)) : (red>.505f&&red<=.5625f),
+                  "embedded production DXIL retains detail or suppresses alternating signed NR noise through actual published FP16 sources");
         Check(DetailHistory::Status().historySource==n+1,"physical recording publishes only its exact current source");
     }
     world.Drain();
@@ -905,6 +953,99 @@ static void FinishedNativeDxil(const char* oldShader=nullptr, bool stabilizer=fa
     DetailHistory::Collect();
     Check(DetailHistory::SafeToRelease(),"all three physical GPU recordings close before releasing shared history");
     DetailHistory::Release();TickRetired();
+}
+
+// Representative full-resolution stage cost only. Synthetic flat inputs, no
+// NVIDIA model/SR/FG or game. GPU timestamps exclude upload, drain and CPU work.
+static void BenchmarkHistory(const char* shader)
+{
+    ComPtr<ID3D12Debug> debug;Hr(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)));debug->EnableDebugLayer();
+    World world(true,2144,1344,1536,960);
+    world.pass.executeShader=true;LoadComparisonShader(world.pass,shader);
+    world.config.DlssNrPresentedTemporalDurationMs.value=153;
+    world.config.DlssNrPresentedTemporalMaxAgeMs.value=697;
+    world.config.DlssNrPresentedTemporalStrength.value=.95f;
+    world.config.DlssNrPresentedTemporalDepthTolerance.value=.122f;
+    world.config.DlssNrPresentedTemporalColourTolerance.value=.128f;
+    world.config.DlssNrPresentedTemporalMotionTolerance.value=9.55f;
+    world.config.DlssNrPresentedTemporalStabilityMs.value=199;
+    world.config.DlssNrPresentedTemporalStabilityFloor.value=.41f;
+    world.config.DlssNrPresentedTemporalStabilityClamp.value=.049f;
+    world.info.BeforeUpscale=false;world.info.FinishedPicture=world.info.NativeSceneRoute=true;
+    world.info.SceneGuideOwner[0]=0x101;world.info.SceneGuideOwner[1]=0x202;world.info.SceneGuideOwner[2]=73;
+    D3D12_QUERY_HEAP_DESC queryDesc {};queryDesc.Type=D3D12_QUERY_HEAP_TYPE_TIMESTAMP;queryDesc.Count=2;
+    ComPtr<ID3D12QueryHeap> queries;Hr(world.device->CreateQueryHeap(&queryDesc,IID_PPV_ARGS(&queries)));
+    world.pass.queryHeaps.push_back(queries);
+    D3D12_HEAP_PROPERTIES readHeap {};readHeap.Type=D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC readDesc {};readDesc.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;readDesc.Width=16;
+    readDesc.Height=readDesc.DepthOrArraySize=readDesc.MipLevels=1;readDesc.SampleDesc.Count=1;
+    readDesc.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;ComPtr<ID3D12Resource> timestamps;
+    Hr(world.device->CreateCommittedResource(&readHeap,D3D12_HEAP_FLAG_NONE,&readDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&timestamps)));
+    world.pass.buffers.push_back(timestamps);
+    UINT64 frequency=0;Hr(world.queue->GetTimestampFrequency(&frequency));Check(frequency!=0,"real queue timestamp frequency known");
+    D3D12_DESCRIPTOR_HEAP_DESC clearDesc {};clearDesc.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    clearDesc.NumDescriptors=4;clearDesc.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    ComPtr<ID3D12DescriptorHeap> clearHeap;Hr(world.device->CreateDescriptorHeap(&clearDesc,IID_PPV_ARGS(&clearHeap)));
+    clearDesc.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    ComPtr<ID3D12DescriptorHeap> clearCpuHeap;Hr(world.device->CreateDescriptorHeap(&clearDesc,IID_PPV_ARGS(&clearCpuHeap)));
+    world.pass.heaps.push_back(clearHeap);world.pass.heaps.push_back(clearCpuHeap);
+    const auto stride=world.device->GetDescriptorHandleIncrementSize(clearDesc.Type);
+    std::array<Recording,3> pool {world.New(),world.New(),world.New()};
+    std::vector<double> samples;
+    for(unsigned n=0;n<100;++n)
+    {
+        auto& recording=pool[n%pool.size()];
+        if(n>=pool.size())world.Reset(recording);
+        if(!n)
+        {
+            ID3D12DescriptorHeap* heaps[] {clearHeap.Get()};recording.list->SetDescriptorHeaps(1,heaps);
+            ID3D12Resource* textures[] {world.input.Get(),world.fresh.Get(),world.motion.Get(),world.depth.Get()};
+            const float values[][4] {{.4f,.5f,.6f,1},{.42f,.52f,.62f,.73f},{.125f,0,0,0},{.5f,0,0,0}};
+            for(unsigned i=0;i<4;++i)
+            {
+                const D3D12_CPU_DESCRIPTOR_HANDLE cpu {clearCpuHeap->GetCPUDescriptorHandleForHeapStart().ptr+SIZE_T(i)*stride};
+                const D3D12_CPU_DESCRIPTOR_HANDLE gpuCpu {clearHeap->GetCPUDescriptorHandleForHeapStart().ptr+SIZE_T(i)*stride};
+                const D3D12_GPU_DESCRIPTOR_HANDLE gpu {clearHeap->GetGPUDescriptorHandleForHeapStart().ptr+UINT64(i)*stride};
+                world.device->CreateUnorderedAccessView(textures[i],nullptr,nullptr,cpu);
+                world.device->CopyDescriptorsSimple(1,gpuCpu,cpu,clearDesc.Type);
+                recording.list->ClearUnorderedAccessViewFloat(gpu,cpu,textures[i],values[i],0,nullptr);
+                Barrier(recording.list.Get(),textures[i],D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            }
+        }
+        auto frame=world.Frame(recording,n+1);world.info.GuideObservationTick=1000+(n+1)*68;
+        frame.beforeUpscale=false;frame.finishedPicture=true;frame.nativePreSrRoute=false;
+        frame.preSrProducerQueueVerified=false;frame.orderedNativeQueue=true;
+        const auto plan=DetailHistory::Before(frame);Check(plan.active&&plan.historyUsable==bool(n),"benchmark has exact adjacent published history");
+        recording.list->EndQuery(queries.Get(),D3D12_QUERY_TYPE_TIMESTAMP,0);
+        Capture(world,frame);
+        recording.list->EndQuery(queries.Get(),D3D12_QUERY_TYPE_TIMESTAMP,1);
+        recording.list->ResolveQueryData(queries.Get(),D3D12_QUERY_TYPE_TIMESTAMP,0,2,timestamps.Get(),0);
+        world.Execute(recording);world.Drain();
+        void* data=nullptr;const D3D12_RANGE range {0,16};Hr(timestamps->Map(0,&range,&data));
+        UINT64 ticks[2] {};std::memcpy(ticks,data,sizeof(ticks));timestamps->Unmap(0,nullptr);
+        Check(ticks[1]>ticks[0],"measured timestamp interval belongs to this exact completed queue submission");
+        if(n>=20)samples.push_back(1000.0*double(ticks[1]-ticks[0])/double(frequency));
+    }
+    world.Drain();for(auto& recording:pool)world.Reset(recording);DetailHistory::Collect();
+    Check(DetailHistory::SafeToRelease(),"benchmark closes exact queues and executable lists before retirement");
+    DetailHistory::Release();TickRetired();
+    ComPtr<ID3D12InfoQueue> info;Hr(world.device.As(&info));
+    for(UINT64 i=0;i<info->GetNumStoredMessagesAllowedByRetrievalFilter();++i)
+    {
+        SIZE_T bytes=0;Hr(info->GetMessage(i,nullptr,&bytes));std::vector<unsigned char> storage(bytes);
+        auto* message=reinterpret_cast<D3D12_MESSAGE*>(storage.data());Hr(info->GetMessage(i,message,&bytes));
+        if(message->Severity==D3D12_MESSAGE_SEVERITY_CORRUPTION || message->Severity==D3D12_MESSAGE_SEVERITY_ERROR)
+            throw std::runtime_error(std::string("D3D12 benchmark validation: ")+message->pDescription);
+    }
+    std::puts("BENCH d3d12_debug_layer=true gpu_based_validation=false errors=0");
+    for(size_t i=0;i<samples.size();++i)std::printf("BENCH source=%zu gpu_ms=%.6f pixel_branch=not_instrumented\n",i+21,samples[i]);
+    std::sort(samples.begin(),samples.end());
+    const auto percentile=[&](double p){const double x=(samples.size()-1)*p;const auto lo=size_t(x);
+        return samples[lo]+(samples[std::min(lo+1,samples.size()-1)]-samples[lo])*(x-lo);};
+    std::printf("BENCH history work=2144x1344 guides=1536x960 synthetic_flat=true samples=%zu p50_ms=%.6f p95_ms=%.6f min_ms=%.6f max_ms=%.6f\n",
+        samples.size(),percentile(.5),percentile(.95),samples.front(),samples.back());
+    for(size_t i=0;i<samples.size();++i)std::printf("BENCH sorted_sample=%zu gpu_ms=%.6f\n",i,samples[i]);
 }
 
 static void StabilityOwnership()
@@ -915,18 +1056,26 @@ static void StabilityOwnership()
     auto a=world.Frame(first,1);Check(DetailHistory::Before(a).active,"stabilizer runs independently of long duration");
     Capture(world,a);
     Check(DetailHistory::stability[0]&&DetailHistory::stability[1],"only enabled stabilizer allocates two residual textures");
+    Check(DetailHistory::stabilityContext[0]&&DetailHistory::stabilityContext[1],
+          "enabled stabilizer owns adjacent-appearance textures independently of long-detail birth");
     Check(world.pass.calls.back().resources[10]==DetailHistory::stability[DetailHistory::activeWrite],
           "one production dispatch writes the exact retained stabilization target");
+    Check(world.pass.calls.back().resources[12]==DetailHistory::stabilityContext[DetailHistory::activeWrite],
+          "same production dispatch writes the exact adjacent-appearance target");
     world.Execute(first);world.Reset(first);
     auto b=world.Frame(second,2);Check(DetailHistory::Before(b).historyUsable,"published adjacent source feeds both histories");
-    Capture(world,b);world.Execute(second);
+    Capture(world,b);
+    Check(world.pass.calls.back().resources[11]==DetailHistory::stabilityContext[DetailHistory::publishedWrite],
+          "next source reads the published predecessor's appearance with the same history identity");
+    world.Execute(second);
     auto use=DetailHistory::recordings.current.resourceUse;
     Check(!use->GpuComplete(),"real queue gate blocks stabilization execution too");
     DetailHistory::Release();Check(DetailHistory::stability[0],"release cannot free blocked stabilization operands");
     world.Reset(second);Check(!use->Complete(),"Reset alone never retires stabilization state");
     gate.Open();world.Drain();DetailHistory::Collect();DetailHistory::Release();TickRetired();
-    Check(!DetailHistory::stability[0]&&!DetailHistory::stability[1]&&releasedResources==7,
-          "all seven resources retire only after exact queue completion and Reset");
+    Check(!DetailHistory::stability[0]&&!DetailHistory::stability[1]&&
+          !DetailHistory::stabilityContext[0]&&!DetailHistory::stabilityContext[1]&&releasedResources==9,
+          "all nine resources retire only after exact queue completion and Reset");
 }
 static const char* cases[] {
     "stability-ownership",
@@ -938,6 +1087,16 @@ static const char* cases[] {
 };
 int main(int argc, char** argv)
 {
+    if(argc==3&&std::string(argv[1])=="--benchmark-history")
+    {
+        try {BenchmarkHistory(std::string(argv[2])=="current"?nullptr:argv[2]);return 0;}
+        catch(const std::exception& error){std::fprintf(stderr,"FAIL benchmark-history: %s\n",error.what());return 1;}
+    }
+    if(argc==3&&std::string(argv[1])=="--old-appearance-negative")
+    {
+        try {FinishedNativeDxil(argv[2],NativePixelScenario::AdjacentAppearance);std::puts("Unexpected old appearance pixel test success");return 0;}
+        catch(const std::exception& error){std::fprintf(stderr,"FAIL old-appearance-negative: %s\n",error.what());return 1;}
+    }
     if(argc==3&&std::string(argv[1])=="--old-dxil-negative")
     {
         try {FinishedNativeDxil(argv[2]);std::puts("Unexpected old DXIL pixel test success");return 0;}
@@ -947,7 +1106,9 @@ int main(int argc, char** argv)
         for (const auto* name : cases) std::puts(name);
         return 0;
     }
-    if(argc==2&&std::string(argv[1])=="--list-hardware") {std::puts("finished-native-dxil");std::puts("stability-native-dxil");return 0;}
+    if(argc==2&&std::string(argv[1])=="--list-hardware") {
+        std::puts("finished-native-dxil");std::puts("stability-native-dxil");std::puts("stability-appearance-native-dxil");return 0;
+    }
     if (argc != 3 || std::string(argv[1]) != "--case") {
         std::fprintf(stderr, "Usage: DetailHistoryRuntime.exe --list | --case NAME\n"); return 2;
     }
@@ -963,7 +1124,8 @@ int main(int argc, char** argv)
         else if (name == "private-rotation") PrivateRotation();
         else if (name.starts_with("recovery-")) RecoveryRefusals(name.substr(9));
         else if (name == "finished-native-dxil") FinishedNativeDxil();
-        else if (name == "stability-native-dxil") FinishedNativeDxil(nullptr,true);
+        else if (name == "stability-native-dxil") FinishedNativeDxil(nullptr,NativePixelScenario::SignedNoise);
+        else if (name == "stability-appearance-native-dxil") FinishedNativeDxil(nullptr,NativePixelScenario::AdjacentAppearance);
         else if (name == "pending") Pending();
         else if (name == "completion-only") CompletionOnly();
         else if (name == "wrong-queue" || name == "history-signal" || name == "registry-signal" || name == "replay") Fault(name);
@@ -975,7 +1137,8 @@ int main(int argc, char** argv)
         else if (name == "dispatch-failure") DispatchFailure();
         else return 2;
         std::printf("PASS %s: %u checks (production module/lifetime; %s)\n", name.c_str(), checks,
-                    (name=="finished-native-dxil"||name=="stability-native-dxil")?"physical GPU, embedded production DXIL and actual FP16 pixels":"real WARP, shader seam");
+                    (name=="finished-native-dxil"||name=="stability-native-dxil"||name=="stability-appearance-native-dxil")?
+                        "physical GPU, embedded production DXIL and actual FP16 pixels":"real WARP, shader seam");
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL %s after %u checks: %s\n", name.c_str(), checks, error.what()); return 1;

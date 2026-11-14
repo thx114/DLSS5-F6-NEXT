@@ -2230,7 +2230,8 @@ void ReportSkipOnce(const char* reason)
 // The shared preview owns immutable completed copies and renderer read leases.
 void CaptureHistoryDebug(const DetailReuse::Frame& f, const DlssNrDetailReuseConstants& params,
                          const DetailHistory::Recording& recording, ID3D12Resource* fresh,
-                         ID3D12Resource* oldResidual, ID3D12Resource* oldContext, ID3D12Resource* oldStability)
+                         ID3D12Resource* oldResidual, ID3D12Resource* oldContext, ID3D12Resource* oldStability,
+                         ID3D12Resource* oldStabilityContext)
 {
     auto*& scratch=g_nr.historyDebug;
     auto*& queue=g_nr.historyDebugQueue;
@@ -2259,7 +2260,7 @@ void CaptureHistoryDebug(const DetailReuse::Frame& f, const DlssNrDetailReuseCon
     device=f.device;queue=f.temporalQueue;
     auto inspect=params;inspect.Mode=DlssNrDetailReuse_FeedbackInspect;inspect.DebugView=view;
     if(!f.pass->DispatchDetailReuse(f.cmdList,inspect,f.workWidth,f.workHeight,
-        f.modelInput,fresh,oldResidual,oldContext,f.motion,scratch,nullptr,f.depth,nullptr,oldStability,nullptr))
+        f.modelInput,fresh,oldResidual,oldContext,f.motion,scratch,nullptr,f.depth,nullptr,oldStability,nullptr,oldStabilityContext))
     {GuideCapture::PreviewUnavailable("History inspector shader dispatch unavailable");return;}
     Barrier(f.cmdList,scratch,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     GuideCapture::Inputs input;input.independentRecording=true;input.historyDiagnostic=true;input.historyView=view;
@@ -2933,7 +2934,8 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
                                       ID3D12Resource* In2, ID3D12Resource* In3, ID3D12Resource* In4,
                                       ID3D12Resource* OutTarget, ID3D12Resource* OutSecond,
                                       ID3D12Resource* InHistoryDistrust, ID3D12Resource* OutContext,
-                                      ID3D12Resource* InStability, ID3D12Resource* OutStability)
+                                      ID3D12Resource* InStability, ID3D12Resource* OutStability,
+                                      ID3D12Resource* InStabilityContext, ID3D12Resource* OutStabilityContext)
 {
     if (!DetailReuseReady() || InCmdList == nullptr || _device == nullptr || In0 == nullptr ||
         OutTarget == nullptr || Width == 0 || Height == 0)
@@ -2943,8 +2945,11 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
         return false;
 
     if (InConstants.Mode == DlssNrDetailReuse_FeedbackResolve && InConstants.FeedbackStabilitySeconds > 0 &&
-        (!InStability || !OutStability || InStability == OutStability ||
-         OutStability == OutTarget || OutStability == OutSecond || OutStability == OutContext)) return false;
+        (!InStability || !OutStability || !InStabilityContext || !OutStabilityContext ||
+         InStability == OutStability || InStabilityContext == OutStabilityContext ||
+         OutStability == OutTarget || OutStability == OutSecond || OutStability == OutContext ||
+         OutStabilityContext == OutTarget || OutStabilityContext == OutSecond ||
+         OutStabilityContext == OutContext || OutStabilityContext == OutStability)) return false;
 
     const bool inspect = InConstants.Mode == DlssNrDetailReuse_FeedbackInspect;
     if (inspect && !HistoryInspectReady()) return false;
@@ -2966,6 +2971,7 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
         In4 != nullptr ? In4 : In0,
         InHistoryDistrust != nullptr ? InHistoryDistrust : In0,
         InStability != nullptr ? InStability : In0,
+        InStabilityContext != nullptr ? InStabilityContext : In0,
     };
 
     for (uint32_t i = 0; i < kSrvCount; ++i)
@@ -2974,7 +2980,8 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
     ID3D12Resource* const uavs[kUavCount] = {
         OutTarget, OutSecond != nullptr ? OutSecond : OutTarget,
         OutContext != nullptr ? OutContext : OutTarget,
-        OutStability != nullptr ? OutStability : OutTarget };
+        OutStability != nullptr ? OutStability : OutTarget,
+        OutStabilityContext != nullptr ? OutStabilityContext : OutTarget };
 
     for (uint32_t i = 0; i < kUavCount; ++i)
         CreateUnorderedAccessView(_device, uavs[i] ? uavs[i] : uavs[0], currentHeap.GetUavCPU(i), 0);
@@ -2987,7 +2994,8 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
 
     if (!DlssNrGpuLifetime::Retain(use, { currentHeap.GetHeapCSU(), constants,
             _rootSignature, _detailReusePipelineState, In0, In1, In2, In3, In4,
-            OutTarget, OutSecond, InHistoryDistrust, OutContext, InStability, OutStability })) return false;
+            OutTarget, OutSecond, InHistoryDistrust, OutContext, InStability, OutStability,
+            InStabilityContext, OutStabilityContext })) return false;
 
     ID3D12DescriptorHeap* heaps[] = { currentHeap.GetHeapCSU() };
     InCmdList->SetDescriptorHeaps(_countof(heaps), heaps);
@@ -5686,7 +5694,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // Keep BeforeModel/AfterModel's existing pending-fence lifecycle intact.
         reusePlan = DetailReuse::BeforeModel(reuseFrame);
     }
-    DetailHistory::Before(reuseFrame);
+    const auto feedbackPlan = DetailHistory::Before(reuseFrame);
     ID3D12Resource* const actualModelMotion = spatial || sceneModelMotionCanonical ? modelMotion : reusePlan.motion;
     const unsigned actualModelMotionBaseX = spatial || sceneModelMotionCanonical ? 0u : reusePlan.motionBaseX;
     const unsigned actualModelMotionBaseY = spatial || sceneModelMotionCanonical ? 0u : reusePlan.motionBaseY;
@@ -5714,13 +5722,15 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 "previousPhaseVerifiedEpoch={} serialDelta={} phaseAuthority={} phaseReason={} modelReset={} realignReset={} "
                 "coordinateKey={} depthRowsFlip={} motionRowsFlip={} vectorYNegated={} normalized={} "
                 "jitterKnown={} mvJitterKnown={} mvJittered={} lowres={} jitter=({}, {}) phase=({}, {}) "
-                "historyUsable={} captureHistory={}", frame.SourceCaptureSerial, frame.SourceCaptureEpoch,
+                "legacyHistoryUsable={} legacyCaptureHistory={} feedbackActive={} feedbackHistoryUsable={}",
+                frame.SourceCaptureSerial, frame.SourceCaptureEpoch,
                 frame.SubmissionEpoch, previousPhaseVerifiedSerial, previousPhaseVerifiedEpoch, delta, nativePhase.verified,
                 nativePhase.reason, reuseFrame.modelReset, reusePlan.resetModel, coordinateKey, depthTextureFlipY,
                 motionTextureFlipY, invertMotionY, coordinateGuidesReadable, frame.NativeCurrentJitterKnown,
                 frame.NativeMotionJitterKnown, frame.NativeMotionVectorsJittered, frame.MotionVectorsLowResolution,
                 frame.NativeJitterX, frame.NativeJitterY, nativePhase.motionX, nativePhase.motionY,
-                DetailReuse::decision.historyUsable, DetailReuse::decision.captureHistory);
+                DetailReuse::decision.historyUsable, DetailReuse::decision.captureHistory,
+                feedbackPlan.active, feedbackPlan.historyUsable);
             lastPhaseLogEpoch=frame.SubmissionEpoch; lastPhaseKey=coordinateKey; lastPhaseReason=nativePhase.reason;
         }
         if (nativePhase.verified)
