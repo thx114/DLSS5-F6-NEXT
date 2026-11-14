@@ -8,6 +8,7 @@
 #include <vector>
 #include <limits>
 #include <initializer_list>
+#include <runtime/D3D12DeviceIdentity.h>
 
 // NR mutex required. Completion of one Execute is not closure of an executable
 // recording. Every parked resource and descriptor slot shares this generation token.
@@ -91,9 +92,8 @@ inline bool SameDevice(ID3D12DeviceChild* a, ID3D12DeviceChild* b)
 {
     if (!a || !b) return false;
     Microsoft::WRL::ComPtr<ID3D12Device> da, db;
-    Microsoft::WRL::ComPtr<IUnknown> ia, ib;
-    return SUCCEEDED(a->GetDevice(IID_PPV_ARGS(&da))) && SUCCEEDED(b->GetDevice(IID_PPV_ARGS(&db))) &&
-        SUCCEEDED(da.As(&ia)) && SUCCEEDED(db.As(&ib)) && ia.Get() == ib.Get();
+    return a->GetDevice(IID_PPV_ARGS(&da)) == S_OK && b->GetDevice(IID_PPV_ARGS(&db)) == S_OK &&
+        D3D12DeviceIdentity::Same(da.Get(), db.Get());
 }
 inline ID3D12CommandQueue* SelectProducerQueue(bool authenticated, ID3D12CommandQueue* current,
                                               ID3D12CommandQueue* observed)

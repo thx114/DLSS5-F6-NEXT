@@ -294,10 +294,7 @@ ID3D12CommandList* RealSubmittedCommands(ID3D12CommandList* cmd)
 }
 bool SameDevice(ID3D12DeviceChild* a, ID3D12DeviceChild* b)
 {
-    if (a == nullptr || b == nullptr) return false;
-    Microsoft::WRL::ComPtr<ID3D12Device> da, db;
-    if (a->GetDevice(IID_PPV_ARGS(&da)) != S_OK || b->GetDevice(IID_PPV_ARGS(&db)) != S_OK) return false;
-    return D3D12DeviceIdentity::Same(da.Get(), db.Get());
+    return DlssNrGpuLifetime::SameDevice(a, b);
 }
 ID3D12CommandQueue* ProvenProducerQueue(ID3D12GraphicsCommandList* cmd, ID3D12CommandQueue* hint)
 {

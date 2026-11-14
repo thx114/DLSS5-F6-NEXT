@@ -61,7 +61,8 @@ def main():
              ROOT / "OptiScaler/hooks/FGQueueIdleGate.h",
              ROOT / "OptiScaler/framegen/FGHookRetirement.h",
              HERE / "fg_device_identity.cpp", HERE / "device-identity-stubs/d3d12.h",
-             ROOT / "OptiScaler/shaders/dlssnr/DlssNr_DetailReuse.inl"]
+             ROOT / "OptiScaler/shaders/dlssnr/DlssNr_DetailReuse.inl",
+             ROOT / "OptiScaler/shaders/dlssnr/DlssNr_RecordingLifetime.h"]
     snapshot = {path: path.read_bytes() for path in paths}
     source = snapshot[paths[0]].decode("utf-8-sig")
     adapters = {
@@ -70,12 +71,16 @@ def main():
         "STRICT": block(source, "bool SameComObject(IUnknown* a, IUnknown* b)"),
         "IO": block(source, "struct FGQueueIo") + ";",
         "COMPLETE": block(source, "FGHookRetirementResult CompleteFGQueue("),
+        "NR_RECORDING_IDENTITY": "namespace DlssNrGpuLifetime {\n" + block(snapshot[paths[7]].decode("utf-8-sig"),
+            "inline bool SameDevice(ID3D12DeviceChild* a, ID3D12DeviceChild* b)") + "\n}",
         "NR_IDENTITY": "namespace DetailReuse {\n" + block(snapshot[paths[6]].decode("utf-8-sig"),
             "bool SameDevice(ID3D12DeviceChild* a, ID3D12DeviceChild* b)") + "\n}",
     }
     if args.negative_nr_identity_control:
         check(args.cpu, "NR identity negative requires CPU execution")
-        adapters["NR_IDENTITY"] = adapters["NR_IDENTITY"].replace("D3D12DeviceIdentity::Same(", "SameComObject(")
+        original = adapters["NR_RECORDING_IDENTITY"]
+        adapters["NR_RECORDING_IDENTITY"] = original.replace("D3D12DeviceIdentity::Same(", "SameComObject(")
+        check(adapters["NR_RECORDING_IDENTITY"] != original, "NR identity negative changes production resolver")
     device_status = block(adapters["IO"], "HRESULT DeviceStatus() const")
     check(device_status.count("D3D12DeviceIdentity::Same(") == 2,
           "production validates queue and fence against the bound device")
