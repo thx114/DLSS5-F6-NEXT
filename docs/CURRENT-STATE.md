@@ -1,20 +1,22 @@
 # F6 当前状态
 
-## 当前：恢复旧 NR 与兼容修复（2026-11-15）
+## 当前：桥接 DLSS 与 ReShade 持续反馈（2026-11-15）
 
-用户要求只处理 ReShade／GIMI 兼容，恢复兼容改动前的 NR 细节逻辑。源码保存点 `088aced` 已撤销后续短稳定器、外观纹理、深度复用、SDR 单写和历史恢复准入改动；11 个算法／shader 文件与 `5d0f0ae` 字节相同，历史运行入口与 `2052553` 相同并保留公共 GPU 退休容器接口。没有恢复已废弃的内部原神 FSR 捕获链。原有残影及性能问题没有因此获得游戏验收。
+长期性能 goal 已核实为 **paused**。当前仅处理用户报告的“桥＋F6 检测不到 DLSS”和“桥＋F6＋ReShade 细节持续反馈拒绝”；不继续历史算法优化或已归档的 Execute／Reset 生命周期重写。用户手动启动、操作和退出游戏，不改启动器选项、配置、profiles 或 ASI，不催测。
 
-兼容源码保存点 `17c8aa2`：嵌套 SDK factory 返回现在接入既有物理输出 wrapper，只在实际创建域和 DIRECT queue／device 认证通过时包装，保留 ReShade／Streamline 输入代理。物理输出强持有自己的 queue，Release、Fullscreen 和 Resize 不再进入源 FG 的停用、锁和捕获状态变更；成功 ResizeBuffers1 后才提交新队列。不能认证的分队列输出撤销预览写入，原始 Present 继续转发。菜单输入侧仍拒绝污染 FG 输入的预览。生产物理 Resize 的真实 WARP 回归25项、嵌套 factory114项、原有预览像素与 shared 公共回归通过；尚无新局预览画面验收。
+**NR 持续反馈尚未修复。** 已保存 PID251972、F6 `17c8aa2` 的同局原始日志及 SHA256：模型 NGX Evaluate 日志2293行，FG成功派发日志2269行；dispatch600／1200／1800均有1个pending历史记录，拒绝理由为 `recording-awaits-completion-and-reset`。最后发布源停在12，不能把发布者12认定为阻塞记录。GPU计时完成及Reset仍增长，但旧日志没有该记录的list、token、真实queue／fence和私有slot身份，不能据此认定全体Reset漏报、ReShade reader未归还或深度滤镜是根因。无ReShade的PID255468仅保留启动约36秒快照，桥日志被后局覆盖，不能证明整局零NGX。
 
-**不选择 ReShade 无法启动已离线复现并修桥。** PID205228／215708 的 `GetFeatureLevel` 跳零在实际安装桥 `4BC59AD0…` 的独立 WARP、NVIDIA 宿主中复现，未加载 F6／ReShade 也失败。系统公开槽37还会读取私有槽69；旧桥按69个公开槽克隆，破坏私有转发。外桥现改为在原表只补丁需要的方法，保留逐实现 original，并在后续设备创建期间绕行业务策略。新桥真实 WARP／硬件各16轮、桥＋F6宿主及 NGX ON／OFF各19项通过；这仍不是游戏启动验收。
+F6产品保存点 **`899d7cae378a73e7bcefcd816455a77b26d83bd5`**，嵌入 `899d7ca`：只在既有受限cadence闸门内、确实发生该拒绝时，输出阻塞历史记录的token、实际execution fence及匹配Late私有owner状态；不授予复用，不调用Reset／Collect。恢复的11个算法／shader文件与 `5d0f0ae` 哈希仍相同，DetailHistory／DetailReuse与恢复保存点 `088aced` 仍一致。Release x64 exit0／86秒，18个独立DetailHistory生产生命周期用例通过；shared未全量重跑。
 
-桥仓库 `D:/CODE/DLSS5_NEXT-workers/fsr-bridge-sync-20261114` 的 `e061e2def63684bc3a303ee8311f8587922c8e6b` 已推送 `thx114/genshin_fsr_brigde:main`；本次 fetch 确认包含上游 `2db978753eb82ae8e4f90b8a0a13023db832b721`。桥 **816,640 B / SHA256 `D1AF6D5D5BE501C6901D34B03B285306629AC259A32219A09B1431045F206799`** 已原位部署 `temp3/Dx11FsrBridge (2).dll`，保持原 FileId 和2条硬链接，没有改桥或启动器配置。
+桥产品保存点 **`19bc2c68341cad8b33231b59477b3fda760e80bd`**：修复创建接口只返回device、随后才获取immediate context时漏装Draw捕获；同时补全context-only的配对device，并释放临时getter引用，不改变调用者输出或既有代理。旧安装DLL真实WARP负控像素正确但hook／候选捕获失败，新候选NGX ON、OFF各25项回归通过，涵盖WARP／硬件、device-only／context-only／combined和完整RGBA像素。候选日志回执只证明捕获，不能等同NGX派发或实际游戏根因。测试文件流等待失败记录保留；最终在隔离宿主截获既有debugger sink实际生产消息，退出前等待event回执，没有修改生产logger。最终桥＋F6独立硬件宿主两种加载顺序通过。
 
-F6 **`17c8aa2256be35b521cae6b2ff25bfd5f16d0c23`** Release x64 exit0／6分25秒，嵌入标记`17c8aa2`，**32,586,240 B / SHA256 `881A0D68A5FBFEDF766E9F76B7674BB32BEF784E75729F0B1C40978320919104`**，mtime UTC `2026-11-14T19:20:39.4509864Z`。已通过 `Deploy-F6.ps1 -BuildId local/F6-ASI` 原位覆盖安装DLL，原FileId `0x000000000000000000020000001b42ff`、6条硬链接和核对的6份配置保持，无`.next`。旧编译缓存失败日志保留；只重新生成失效PCH/PDB并降低编译并行数。C4744／LNK4098在上一构建日志中也存在，没有当作本轮新回归或顺手改动。当前F6＋新桥的独立真实设备宿主通过，**尚无本候选游戏加载／画面／性能验收**。
+本次成功fetch上游 `2db978753eb82ae8e4f90b8a0a13023db832b721`，确认是桥提交祖先；非强推至 `thx114/genshin_fsr_brigde:main`，ls-remote已确认 `19bc2c68341cad8b33231b59477b3fda760e80bd`。未改或发布额外运行包。
 
-当前只处理用户指出的恢复和兼容，**不继续下方历史所列的 Execute／Reset 生命周期重写**；其未构建部署补丁已归档 `build/code-followup-20261115/deferred-submission-lifetime/source.zip`，不混入本次候选。用户游戏启动／选项／退出仍完全手动；不催测。实际画面、GIMI模组、FPS与完整Reflex≤60ms均待本轮新局证据，旧约101–113ms仍未达标。保留 `Invoke-ExactGameEntry.ps1`、`pelican_bicycle.html` 既有dirty。
+**两DLL均已原位部署，实际游戏加载尚未验证。** F6：32,592,896B／SHA256 `B6E031EC6CF61F119329F688D8DEE0AA2EA5157821EB4461E2E56E6E8C12FB42`，mtime UTC `2026-11-14T20:23:33.693983+00:00`，既有 `local/F6-ASI/OptiScaler.dll` 保持原FileId及6条硬链接。桥：800,768B／SHA256 `14FCC37DA53916A82E2F53F4BD9EA2CE06D84A37C4C7421C38C9849789C78039`，mtime UTC `2026-11-14T20:36:59.733436+00:00`，既有 `temp3/Dx11FsrBridge (2).dll` 保持原FileId及2条硬链接。两部署回执均 `DEPLOYED_IN_PLACE`，无`.next`；核对的9个配置、ReShade及受保护源码文件哈希未变。部署核对首次把正反斜杠路径直接比较而误报，规范化完整路径后匹配；失败记录保留，DLL未回滚或再次覆盖。
 
-本轮恢复／兼容、故障复现、部署和回归证据统一在 `build/code-followup-20261115/compatibility-restoration/`。下方各节为历史，不能覆盖本节的任务范围与部署身份。
+上一阶段旧NR恢复 `088aced`、物理输出预览兼容 `17c8aa2`、桥私有COM槽保留 `e061e2d` 仍保留。它们的离线通过不代表用户画面验收。下一自然新局读取 `899d7ca` 的精确blocker日志，再定位并修复实际断链；当前无新局，不能宣布持续反馈、无ReShade DLSS接入、预览画面或性能已恢复。完整Reflex≤60ms及FPS仍未验收，旧约101–113ms仍未达标。
+
+本轮不可变原日志、最终构建、测试、部署及保护核对在 `build/code-followup-20261115/compatibility-restoration/sr-feedback-investigation/`，桥测试与失败留痕在桥仓库 `build-package-bridge/`。证据总回执 `delivery-result.json`。保留 `tools/runtime/Invoke-ExactGameEntry.ps1` 与 `pelican_bicycle.html` 既有dirty；本轮只读Sol high均已关闭。
 
 ## 历史：轮廓稳定与线程归属修复（2026-11-15）
 
