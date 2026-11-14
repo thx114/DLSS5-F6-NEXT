@@ -1,66 +1,82 @@
 # F6 当前状态
 
-更新：2026-11-14（UTC+08）。阶段 1 重构已完成源码与离线验证，并已原位部署；本候选尚无新局画面、稳定性或性能验收。用户已撤销暂停和编写交接的要求，本轮没有更新 `F6-HANDOFF.md`。
+更新：2026-11-14。BeforeSR 深度效果、LAUNCHPAD / MXAO、内置 GIMI 公共入口与 loader 修复已完成源码集成、离线验证和 DLL 原位部署。**尚无新候选的游戏加载、Rocket 稳定性、画面或性能验收。** 用户撤销了暂停和编写交接的要求，本轮没有修改 `F6-HANDOFF.md`。
 
-当前产品树为 `D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。阶段 0 保存点为 `5d0f0aebd5cfe690703d89a5012c6c52a5226079`；阶段 1 源码保存点见包含本文件的提交及本地 `phase1-result.json`，未推送。游戏由用户手动测试；AI 未启停或操作游戏，未修改启动器选择、配置、profiles 或 ASI。
+产品树：`D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。最终构建源码保存点为 `44380f86f4611f51e9c08de77e8668eab0f4f3f4`（`Fix BeforeSR depth effects and native hook coexistence`）；后续维护文档提交不改变该构建身份。游戏由用户手动操作；未修改启动器选择、用户 INI / preset / profiles 或 ASI，未推送远端。
 
-## 阶段 1 实现
+## 本轮实现
 
-- 整体删除废弃的内部原神 FSR 捕获、私有 transport／receipt／父子输出票据及其专用菜单、配置与测试。原神继续经外部 `genshin_fsr_brigde` 接入普通 NGX；保留实际使用的 `DlssNr_GenshinPresentation.inl`、公共 native producer、普通 FSR 输入和 SR／NR／FG 功能。
-- 将共享 Hook 所有权／事务、CPU 计时、游戏识别、COM 身份和深度 shader 能力迁到公共模块。Hook 计时移除旧捕获链维度，收敛为 5 个 Hook、3 条路径、18 个阶段，共 33 桶；保留真实调用、发布及退出时序。
-- GIMI context hooks 由统一入口验证和补装，覆盖初始及晚启用；原神 interop Present NR 路径恢复恰好一次 `GenericDepthDx11::OnPresent`，继续关闭观察并准备 MOD 接入。仍需按游戏与加载顺序实测兼容性。
-- DLSSG 拆成主流程、`DLSSG_Dx12_Inputs.cpp` 和 `DLSSG_Dx12_Lifetime.cpp`；多个编译单元共享同一个 teardown quarantine 状态。
-- NR 新增 `NrGpuExecutionLifetime`，统一持有 recording registry 与待退休 feature／parameters／resource。保持原 mutex 锁域、实际每条 queue／fence、Reset 门和 feature 先于 parameters 的释放顺序；未知完成状态继续保留资源。
-- 保留 DX11-w-DX12 共享输入的早归还、实际 reader retirement 与 unfenced quarantine。不恢复内置 PersistentSR；崩铁 SR 对象复用仍由用户自备 `NgxFeatureCache.asi` 负责。
-- 工程清单核对：774 个编译／头文件条目无缺失、无重复；相对阶段 0 的 89 个 Vulkan 相关条目全部保留。Release 编译覆盖 Vulkan 原生及 Vulkan-w-DX12；没有本候选 Vulkan GPU 实测。
+- `Enabled=auto, Stage=BeforeSR` 正确启用，显式 `false` 优先。外部原神桥继续直连普通 NGX；没有恢复内部原神 FSR 捕获链。
+- BeforeSR 接入同源帧 / 代次的颜色与深度，保留真实 producer / reader queue-fence 交接。私有深度 copy / SRV 按尺寸和格式复用，源 A/B 轮换不重建绑定。自然 Present 在登记的源链和物理输出链持续去重，覆盖 worker，不永久修改用户 effects。
+- 修复私有 runtime 首次 preset reload 前写深度宏导致 `MXAO_USE_LAUNCHPAD_NORMALS=1` 丢失的问题；等待真实 reload、核对有效定义，避免反射 graph 计数触发重复编译。LAUNCHPAD → MXAO 首批在私有 scratch 预热 IPC，保留实际 completion fence，随后才允许写回 SR 输入。缺深度 / 错帧不写回。
+- 内置 GIMI 独立开发提交 `a76896977d3e28a4e58bd71f45dcd261d5bebc8b` 已集成为 `06b0724`。主树补齐 native device / context / swapchain 源代次、晚 HWND 登记、选源与确认共用 owner 锁、可撤销 token，以及嵌套 proxy → native 的 shader / factory 观察。辅助链只退休，不能冒充游戏源；interop global PRE / POST 仍未支持。
+- Loader 保留 Win32 / native 原参数、实际初始化状态、last-error / NTSTATUS；仅成功 Hook 才记 applied，目标模块 pin，失败由单个延时 worker 重试。修复 FSR3 重复安装和 OTA 角色漏观察；新增 queue-create / interop / hidden DX11 创建边界日志，为 Rocket 新局定位提供证据。
+- 保留 SR / NR / FG、普通 FSR、DX11 / DX12 / DX11-w-DX12 / Vulkan / Vulkan-w-DX12，以及真实 queue / fence、Reset、资源退休和 quarantine。崩铁 SR 对象缓存仍由用户自备 `NgxFeatureCache.asi` 负责。
 
-## 构建与部署
+LAUNCHPAD 为本机 MXAO 提供基础 / 平滑法线，需要当前深度。它也能按请求估计图像光流；F6 当前没有读取其 flow，也没有向 ReShade 发布游戏 motion semantic。API20 可反射该纹理，但图像光流不能直接当成 SR / FG 的游戏几何运动矢量。完整范围与路径限制见 [兼容性评估](F6-RESHADE-COMPATIBILITY.md)。
 
-证据统一位于 `build/fg-runtime-followup-20261113/`。
+## 最终构建与部署
 
-| 项目 | 本次结果 |
+本轮证据：`build/genshin-reshade-20261114/`。
+
+| 项目 | 已确认结果 |
 |---|---|
-| 最终构建 | `phase1-build11-console.log`，Release x64，exit 0，76 秒；已有编译／链接警告仍在 |
-| 产物 | `build/out/OptiScaler.dll`，32,426,496 字节 |
-| SHA256 | `E454F55C1A8E185F0B6703BBA6AF1E10F6AED310B2D4931DF91BEECD8E051418` |
-| mtime UTC | `2026-11-13T18:26:25.8379165Z` |
-| `local/F6-StarRail-GapPacing` | `DEPLOYED_IN_PLACE`，FileId `0x000000000000000000070000001df2d3`，原 2 个硬链接保留 |
-| `local/F6-ASI` | `DEPLOYED_IN_PLACE`，FileId `0x000000000000000000020000001b42ff`，原 6 个硬链接保留 |
+| Release x64 | `f6-build-release-final.log`，MSBuild exit 0，3 分 35 秒；已有 C4744 / LNK4098 / u8path 警告仍在 |
+| 产物 | `build/out/OptiScaler.dll`，32,540,672 B |
+| SHA256 | `082361809BA0256E1AD898CFE280AC21610F9601E59AB680B11191E8380A5F49` |
+| mtime UTC | `2026-11-13T23:57:44.4550690Z` |
+| `local/F6-StarRail-GapPacing` | `DEPLOYED_IN_PLACE`，FileId `0x000000000000000000070000001df2d3`，2 硬链接保留 |
+| `local/F6-ASI` | `DEPLOYED_IN_PLACE`，FileId `0x000000000000000000020000001b42ff`，6 硬链接保留 |
 
-两目标及完整硬链接集合中的内容均已核对为上述 SHA256；本轮没有 `.next` 待替换候选。部署仅依据目标实际可写状态，没有查询游戏进程或修改构建选择。部署前身份为旧 `AB0B37E0…`，前后 FileId 与硬链接集合一致。回执为 `phase1-predeploy-current.json`、`phase1-deployment.json`、`phase1-installed-after.json`。
+两个既有目标已原位覆盖，实际安装哈希均与候选一致；本轮没有产生 `.next` 待替换。部署只判断目标实际文件可写状态，没有查询游戏进程。前后 FileId、完整硬链接集合、核对的用户 INI 和 ReShade 核心哈希均未变。回执：`f6-build-identity-final.json`、`f6-installed-before-final.json`、`f6-deployment-final.json`、`f6-installed-after-final.json`。
 
-这些结果确认磁盘部署，不确认当前进程加载；需要用户手动重开游戏后，绑定新 PID、加载身份和本局日志再验收。
+这是磁盘部署证据。需用户手动重开游戏后，用新 PID / 时间 / 加载身份和本局日志验证实际运行。
 
-## 验证证据
+## 最终验证
 
-| 范围 | 结果及日志 |
+| 范围 | 日志与结果 |
 |---|---|
-| 公共 CPU／WARP 套件 | 初轮各执行套件通过，`phase1-common-tests.log`；随后停于旧私有链静态断言，该断言已迁移并由最终共享回归覆盖 |
-| 最终共享回归 | `Run-CommonCoreTests.ps1 -SuiteName NrGpuExecutionLifetime` exit 0，`phase1-confirmed-shared.log`；包含新 owner CPU 测试及共享 FG／调度／Reflex／互操作回归 |
-| 实际 NR owner／recording 退休 | `phase1-module-lifetime-tests.log`：18 个隔离 DetailHistory WARP runtime 场景；NR 重配置 30 场景／191 检查；GPU 未完成、pending 和 Reset 失败负控均按预期拒绝 |
-| FG／共享输入 | WARP handoff 30 场景／1186 检查、bridge retirement 15 场景／494 检查及对应负控通过；模块拆分后定向回归见 `phase1-final-regression.log`，该轮后续过期 scheduling 提取锚点已修复并在最终共享回归通过 |
-| 计时与真实 Hook | `phase1-final-hook-tests.log`；SDK 计时 49 条连接与 57 条 CPU 检查、帧延迟适配 780 条与调度 1065 条检查在最终共享回归再次通过 |
-| NGX 生命周期 | `phase1-final-ngx.log`：15 个 router suites、7 个 release suites 通过 |
-| UI／输入 | `phase1-ui-localization.log`：6019 检查；`phase1-final-menu-input.log`：51959 检查；对应负控通过 |
-| 工程闭包 | 公共 FSR／Vulkan、direct DLSS、设置读取与清退入口检查通过；最终生产输入不晚于 DLL，差异空白检查通过 |
+| 完整 CommonCore | `common-final3.log`，exit 0；CPU / WARP 主套件及最后的 FG / Reflex / interop / 设置共享回归通过 |
+| 真实固定 ReShade 核心颜色 BeforeSR | `real-core-color-final.log`，270,405 检查；含自然链与 worker 去重 / 恢复 |
+| 同帧深度与 reader 退休 | `real-core-depth-final.log`，221,337 检查；双源轮换、方向、错帧拒绝与 reader completion |
+| 原样 LAUNCHPAD + MXAO | `real-core-launchpad7.log`，75,588 检查；首批不写回、MXAO 改色、真实法线随深度变化、缺深度 / 错帧拒绝 |
+| GIMI 公共入口 | `gimi-present-final2.log`，真实双 WARP 设备 / 三条 chain、晚 HWND、源确认锁交错和嵌套 VS / PS；`gimi-routing-final2.log`，93 内容检查、100,000 次并发发布 |
+| 真实 Windows loader | `loader-final5.log`，20 个参数 / 嵌套场景、生产 observer、自动失败重试与 OTA |
+| MethodHooks | `method-hooks-final.log`，实际 original、native / proxy、嵌套 factory 返回观察、rollback / reinstall；本专项显式跳过 shared，完整 shared 由 CommonCore 覆盖 |
+| NGX 生命周期 | `ngx-final.log`，15 router suites、7 release suites，通过 |
+| UI / Menu input | `ui-final.log`：6,019 检查；`menu-final2.log`：51,959 检查、8 个执行负控被检出 |
+| 工程闭包 | 784 个编译 / 头文件条目，无缺失或重复；最终 Release 编译覆盖全部保留后端，未执行 Vulkan GPU 验收 |
 
-WARP、CPU fixture、源码连接检查及构建分别说明其覆盖范围；它们没有执行实际游戏 SDK／显示链，也不能证明残影或排队已改善。独立只读审查提出的 Hook、GIMI 晚启用和 Present 漏入口问题均已修复；最终生命周期复核未发现 P0／P1 回退。
+完整 CommonCore 开始后补充的 GIMI token 与嵌套 factory 修改，另由表中最终 GIMI / MethodHooks 专项覆盖；没有将开始时间不同的套件伪称为同一瞬时源码的全量重跑。日志中预期失败的 mutation / negative control 用于检出不安全改动，不是未处理的测试失败。早期 `menu-final.log` 的 vcvars 超时已由 `menu-final2.log` 实际重跑通过覆盖。
 
-## ReShade 兼容性
+以上固定核心、Windows / WARP、CPU fixture 与源码检查各自说明覆盖范围，不能证明实际 NGX SDK / 游戏显示、Rocket 稳定性或 FPS / 延迟改善。
 
-完整评估见 [F6-RESHADE-COMPATIBILITY.md](F6-RESHADE-COMPATIBILITY.md)。本机指定 HoYoShade 核心满足 F6 的固定路径、哈希与 API 条件；这不代表任意同版本 ReShade 可以替换，也不证明当前游戏已连接并执行效果。
+## FSR Bridge PR15 与上游
 
-- 原神默认 Present NR 缺少 BeforeNR 入口。
-- 普通 DX12 NGX 在无独立 recording 提交权时不支持 BeforeSR。
-- Vulkan 两条路线没有 F6 的 HoYoShade 阶段调度闭包；普通 ReShade 自然效果共存另行验收。
-- 当前阶段执行仅支持指定 SDR 8-bit 颜色，BeforeSR 没有深度输入；FG 物理端点存在格式、创建域、线程和 Present 参数条件。
+最终 GitHub API 复核时间为 `2026-11-14T00:09:01.7895314Z`，回执 `upstream-final-recheck.json`：main `c37d3a54ee736595bd9d461e11ab475dd137a00e`；PR15 head `97d2b06af415a6e8b4d4660b3dd6b5c1ae23db95`，仍 open / 未合并。PR head 缺 main 分叉后 10 个提交。
 
-本轮完成评估，没有把这些已有阶段限制标记为修复。后续按文档中的手动矩阵逐路径验证。
+没有整包合入 PR15：其清除低分辨率 MV 标志但继续提交低分辨率纹理，违反 F6 FG 输入契约，新增字段默认值 / 测试也未闭合；预测合并候选的真实 NgxParamMap 测试为 3,657 检查、18 失败。安装器改配置、复制 ReShade、自签和信任根行为不在集成范围。
 
-## 实机待验收与后续
+实际采用 main 加独立 `Ffx12SingleInstance` 接管配置控制，隔离源码保存点 `3ec47e3de096fd7f64872f819d108a0535938884`，归档 `bridge-source-3ec47e3.zip`。Release x64、NGX ON、release runtime ON、diagnostics OFF；4/4 CTest 及 NgxParamMap 的全部 3,657 检查通过。
 
-本轮不据重构、DLL 减小或离线检查推导性能提升。继续优先复测关闭预览时的崩铁 FG 卡顿和 GPU 排队；原神与绝区零分开记录。阶段 0 及更早 PID 的性能与画面反馈属于历史证据，不能代表当前 `E454F55C…` 候选。
+已原位部署既有 `temp3/Dx11FsrBridge (2).dll`：SHA256 `B5966CFF7A7A54D9B8471FDC7F956A0D7AA409F01D16BD37DCAAE6F31D22B240`，662,528 B，FileId `0x000000000000000000040000001d8630` 和 2 硬链接保持；桥 INI / ReShade core 未改。回执 `bridge-deployment.json`、`bridge-installed-after.json`。未推送或评论 PR；新局加载 / 画面仍待验收。
 
-[AGENTS.md](../AGENTS.md) 与 [README.md](../README.md) 中的 9 项已知问题、7 项 TODO 均继续保留，包括 FG／NR 残影、HUDless、GPU 排队、深度分层细节保留、SR／NR 耗时和计时归属错误。GIMI、ReShade BeforeSR、XeFG、AMD／Intel NR、设备自动配置和 UI 重构仍须继续实施或验收。
+## 已锁定游戏证据与待验收
 
-后续读取本局新日志、加载身份与用户画面反馈，分别区分 SR 输入空档、复制槽实际退休等待、SDK Present 和 Reflex 排队。不得用旧帧、假 guides、删同步或扩池掩盖问题。
+下述会话时间为记录中的 UTC+08，不再追加八小时；均为本轮部署之前的旧候选，不能代替新版本验收。完整统计和 SHA 清单见兼容性文档及 `locked-files.json`。
+
+| 会话 | 已确认事实 |
+|---|---|
+| 普通局 `20261114-024410_YuanShen_57172` | 1,446 个 Evaluate 入口；816 个前台且 Opti 菜单关闭的源间隔，P50 / P95 47.408 / 58.934 ms，中位源间隔倒数约 21.1 FPS |
+| ReShade 局 `20261114-024706_YuanShen_230352` | 1,571 个 Evaluate 入口；341 个对应源间隔，P50 / P95 59.198 / 72.326 ms，约 16.9 源 FPS；旧 F6 `auto + BeforeSR` 实际关闭 |
+| Rocket 局 `20261114-042258_YuanShen_228728` | 约 38.3 秒退出 `0xC0000135`，SR / NR / FG 入口全 0；XXMI 的主动 `DoubleBeepExit()` 也使用此码，未定位实际退出分支，无对应 dump / WER |
+
+没有这些会话的 Display / PresentMon 数据，不能报 FG 后显示 FPS。两局场景和设置不同，不能把差值直接归因 ReShade。新源码修复和测试不等于 Rocket 崩溃已实机修好。
+
+下一轮由用户手动验证 Rocket / GIMI 进入场景、BeforeSR 的 LAUNCHPAD + MXAO 画面、SR / NR / FG 与实际性能；AI 读取同局新证据。[AGENTS.md](../AGENTS.md) 和 [README.md](../README.md) 的 9 项已知问题、7 项 TODO 继续保留，不据本轮源码或离线测试划掉。
+
+## 历史保存点
+
+- 阶段 0：`5d0f0aebd5cfe690703d89a5012c6c52a5226079`。
+- 阶段 1：`2052553`，整体移除内部原神捕获链，将 Hook / 身份 / 计时移至公共模块，拆分 DLSSG Inputs / Lifetime 和 NR GPU execution lifetime。实际 queue / fence 退休保护保留，Vulkan 两条后端完整保留。
+- 阶段 1 DLL `E454F55C1A8E185F0B6703BBA6AF1E10F6AED310B2D4931DF91BEECD8E051418` 已被上述 `08236180…` 候选原位覆盖。历史构建 / 回归 / 部署证据保留在 `build/fg-runtime-followup-20261113/phase1-*.json` 与日志中，不代表当前安装内容。
