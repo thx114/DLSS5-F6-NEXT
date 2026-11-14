@@ -12,6 +12,7 @@ param(
     [string]$Output,
     [ValidateRange(1, 256)][int]$SampleLimit = 64,
     [switch]$Latency,
+    [ValidateRange(1, 1000)][double]$TotalReflexTargetMs = 60,
     [ValidateRange(1, 2147483647)][int]$LatencyFirstLine = 1,
     [ValidateRange(1, 2147483647)][int]$LatencyLastLine = [int]::MaxValue
 )
@@ -69,8 +70,10 @@ if ($LatencyFirstLine -gt $LatencyLastLine) { throw 'Invalid latency line range.
 $reflexRows = [Collections.Generic.List[object]]::new()
 $reflexReports = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 $partitionRows = [Collections.Generic.List[object]]::new()
+$sourcePacingRows = [Collections.Generic.List[object]]::new()
 $cpuLongest = @{}
-$latencyCounts = [ordered]@{ ReflexRows = 0; RejectedReflexRows = 0; DuplicateReflexRows = 0; NrPartitionRows = 0; RejectedNrPartitions = 0 }
+$latencyCounts = [ordered]@{ ReflexRows = 0; RejectedReflexRows = 0; DuplicateReflexRows = 0; NrPartitionRows = 0; RejectedNrPartitions = 0
+    SourcePacingRows = 0; RejectedSourcePacingRows = 0 }
 $nrFields = @('before_encode_ms', 'encode_ms', 'model_prepare_ms', 'model_ms', 'history_ms', 'resolve_ms', 'finish_ms')
 
 function Read-ReflexIntervals($Fields, [int]$Number) {
@@ -85,11 +88,64 @@ function Read-ReflexIntervals($Fields, [int]$Number) {
         $ends[$i++] = $v
     }
     # Subtract validated endpoints, never two rounded log durations.
+    $active = $null
+    $value = 0.0
+    if ($Fields['gpu_active_valid'] -eq 'true' -and
+        [double]::TryParse($Fields['gpu_active_ms'], [Globalization.CultureInfo]::InvariantCulture, [ref]$value) -and
+        [double]::IsFinite($value) -and $value -ge 0) { $active = $value }
     [pscustomobject]@{
         Line = $Number; ReportFrame = $Fields.frame; ReportMs = ($ends[5] - $ends[0]) / 1000.0
         PreQueueReportMs = ($ends[1] - $ends[0]) / 1000.0
         PreGpuQueueMs = ($ends[2] - $ends[1]) / 1000.0; GpuSpanMs = ($ends[3] - $ends[2]) / 1000.0
         PostGpuReportMs = ($ends[5] - $ends[3]) / 1000.0
+        GpuActiveMs = $active
+    }
+}
+function Read-SourcePacing($Fields, [int]$Number) {
+    if ($Fields['source_role'] -ne 'direct_dlss' -or $Fields['observation_only'] -ne 'true' -or
+        $Fields['sdk_call_known'] -ne 'true' -or $Fields['thread'] -notmatch '^[1-9]\d*$' -or
+        $Fields['sc'] -notmatch '^[0-9a-fA-F]+$' -or $Fields['sc'] -match '^0+$') { return }
+    $frequency = [long]0
+    if (![long]::TryParse($Fields['qpc_hz'], [ref]$frequency) -or $frequency -le 0) { return }
+    $ticks = [ordered]@{}
+    $previous = [long]0
+    foreach ($key in 'sdk_begin_qpc','sdk_end_qpc','marker_end_qpc','cleanup_end_qpc','unlock_end_qpc','tail_end_qpc') {
+        $value = [long]0
+        if (![long]::TryParse($Fields[$key], [ref]$value) -or $value -le 0 -or $value -lt $previous) { return }
+        $ticks[$key] = $value; $previous = $value
+    }
+    $waits = @{}
+    $observedWaitMs = 0.0
+    $previous = $ticks.unlock_end_qpc
+    foreach ($wait in 'reflex','limiter') {
+        $called = $Fields[$wait + '_called']
+        $begin = [long]0; $end = [long]0
+        if ($called -notin 'true','false' -or
+            ![long]::TryParse($Fields[$wait + '_begin_qpc'], [ref]$begin) -or
+            ![long]::TryParse($Fields[$wait + '_end_qpc'], [ref]$end)) { return }
+        if ($called -eq 'true') {
+            if ($begin -lt $previous -or $end -lt $begin -or $end -gt $ticks.tail_end_qpc) { return }
+            $waits[$wait] = 1000.0 * ($end - $begin) / $frequency
+            $observedWaitMs += $waits[$wait]
+            $previous = $end
+        } elseif ($begin -ne 0 -or $end -ne 0) { return }
+    }
+    $sleepResult = $null
+    if ($Fields['reflex_called'] -eq 'true') {
+        $code = [uint32]0
+        if ($Fields['original_token_lease'] -ne 'true' -or $Fields['token_frame'] -notmatch '^[1-9]\d*$' -or
+            ![uint32]::TryParse($Fields['reflex_result'], [ref]$code)) { return }
+        $sleepResult = $code
+    }
+    [pscustomobject]@{
+        Line = $Number; Thread = $Fields['thread']; Swapchain = $Fields['sc']; TokenFrame = $Fields['token_frame']
+        SdkMs = 1000.0 * ($ticks.sdk_end_qpc - $ticks.sdk_begin_qpc) / $frequency
+        PresentTailMs = 1000.0 * ($ticks.tail_end_qpc - $ticks.sdk_end_qpc) / $frequency
+        PostSdkToMarkerMs = 1000.0 * ($ticks.marker_end_qpc - $ticks.sdk_end_qpc) / $frequency
+        CleanupMs = 1000.0 * ($ticks.cleanup_end_qpc - $ticks.marker_end_qpc) / $frequency
+        DecisionUnlockMs = 1000.0 * ($ticks.unlock_end_qpc - $ticks.cleanup_end_qpc) / $frequency
+        ReflexMs = $waits['reflex']; ReflexResult = $sleepResult; LimiterMs = $waits['limiter']
+        UnattributedAfterUnlockMs = 1000.0 * ($ticks.tail_end_qpc - $ticks.unlock_end_qpc) / $frequency - $observedWaitMs
     }
 }
 function Read-NrPartition($Fields, [int]$Number) {
@@ -115,8 +171,9 @@ function Read-NrPartition($Fields, [int]$Number) {
 }
 function Measure-Rows($Rows, [string]$Property) {
     if (!$Rows.Count) { return $null }
-    $values = @($Rows | ForEach-Object { $_.$Property } | Sort-Object)
+    $values = @($Rows | ForEach-Object { if ($null -ne $_.$Property) { $_.$Property } } | Sort-Object)
     $n = $values.Count
+    if (!$n) { return $null }
     $low = [int][Math]::Floor(($n - 1) / 2)
     $high = [int][Math]::Floor($n / 2)
     [ordered]@{ Samples = $n; MedianMs = ($values[$low] + $values[$high]) / 2.0
@@ -194,7 +251,7 @@ try {
                 $fields = Read-Fields $line
                 $row = Read-ReflexIntervals $fields $lineNumber
                 if ($row) {
-                    $identity = [string]::Join(':', @($fields.pid, $fields.frame, $fields.report_begin_us,
+                    $identity = [string]::Join(':', @($fields.pid, $fields['report_device'], $fields.frame, $fields.report_begin_us,
                         $fields.queue_begin_us, $fields.gpu_begin_us, $fields.gpu_end_us,
                         $fields.queue_end_us, $fields.report_end_us))
                     if ($reflexReports.Add($identity)) { $reflexRows.Add($row) }
@@ -204,6 +261,10 @@ try {
                 ++$latencyCounts.NrPartitionRows
                 $row = Read-NrPartition (Read-Fields $line) $lineNumber
                 if ($row) { $partitionRows.Add($row) } else { ++$latencyCounts.RejectedNrPartitions }
+            } elseif ($line.Contains('F6 source pacing:')) {
+                ++$latencyCounts.SourcePacingRows
+                $row = Read-SourcePacing (Read-Fields $line) $lineNumber
+                if ($row) { $sourcePacingRows.Add($row) } else { ++$latencyCounts.RejectedSourcePacingRows }
             } elseif ($line.Contains('CallerCPU span op=')) {
                 $f = Read-Fields $line
                 $ms = 0.0
@@ -276,7 +337,18 @@ $result = [ordered]@{
 }
 if ($Latency) {
     $reflexSummary = [ordered]@{}
-    foreach ($key in 'ReportMs','PreQueueReportMs','PreGpuQueueMs','GpuSpanMs','PostGpuReportMs') { $reflexSummary[$key] = Measure-Rows $reflexRows $key }
+    foreach ($key in 'ReportMs','PreQueueReportMs','PreGpuQueueMs','GpuSpanMs','GpuActiveMs','PostGpuReportMs') { $reflexSummary[$key] = Measure-Rows $reflexRows $key }
+    $sourceByThreadChain = @(
+        foreach ($group in ($sourcePacingRows | Group-Object -Property Thread,Swapchain)) {
+            $phases = [ordered]@{}
+            foreach ($key in 'SdkMs','PresentTailMs','PostSdkToMarkerMs','CleanupMs','DecisionUnlockMs','ReflexMs','LimiterMs','UnattributedAfterUnlockMs') {
+                $phases[$key] = Measure-Rows $group.Group $key
+            }
+            [ordered]@{ Thread = $group.Group[0].Thread; Swapchain = $group.Group[0].Swapchain; Phases = $phases
+                FailedReflexCalls = @($group.Group | Where-Object { $null -ne $_.ReflexResult -and $_.ReflexResult -ne 0 }).Count
+                PeakPresentTail = $group.Group | Sort-Object PresentTailMs -Descending | Select-Object -First 1 }
+        }
+    )
     $nrByQueue = [ordered]@{}
     foreach ($group in ($partitionRows | Group-Object -Property Queue)) {
         $phases = [ordered]@{}
@@ -286,6 +358,13 @@ if ($Latency) {
     $result.Latency = [ordered]@{
         FirstLine = $LatencyFirstLine; LastLine = [Math]::Min($LatencyLastLine, $lineNumber); Counts = $latencyCounts
         Reflex = $reflexSummary; NrGpuPartitionByQueue = $nrByQueue; CpuThresholdedSpans = $cpuLongest
+        TotalReflexTarget = [ordered]@{ Ms = $TotalReflexTargetMs; UniqueReports = $reflexRows.Count
+            AtOrBelow = @($reflexRows | Where-Object ReportMs -LE $TotalReflexTargetMs).Count
+            Above = @($reflexRows | Where-Object ReportMs -GT $TotalReflexTargetMs).Count
+            MedianAtOrBelow = if ($reflexSummary.ReportMs) { $reflexSummary.ReportMs.MedianMs -le $TotalReflexTargetMs } else { $null }
+            GameAcceptance = 'UNKNOWN; scene/focus and matching runtime identity require independent evidence' }
+        SourcePacingByThreadSwapchain = $sourceByThreadChain
+        SourcePacingBoundary = 'Paired QPC wall intervals from sampled source Presents, grouped by thread/swapchain. PresentTailMs includes its marker/cleanup/unlock/wait children; do not add them again. UnattributedAfterUnlockMs excludes observed Reflex and limiter calls only. Skipped calls have no duration samples. No Reflex report or GPU clock join; snapshots of requested FG do not prove generated output.'
         PeakReport = $reflexRows | Sort-Object -Property ReportMs -Descending | Select-Object -First 1
         PeakPreGpuQueue = $reflexRows | Sort-Object -Property PreGpuQueueMs -Descending | Select-Object -First 1
         Boundary = 'Reflex ranges are non-estimated reported endpoints, not input-to-photon; duplicate endpoint reports are counted separately and excluded from statistics. PreQueueReportMs + PreGpuQueueMs + GpuSpanMs + PostGpuReportMs reconstruct each ReportMs; only PreGpuQueueMs is the GPU-before-start queue span. CPU spans are thresholded and may nest. NR partitions are disjoint within a single recording only. No join across CPU/Reflex/GPU clocks; no A/B or display claim.'

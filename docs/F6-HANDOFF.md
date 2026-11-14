@@ -1,6 +1,20 @@
 # F6 项目交接
 
-## 0. 当前续接（2026-11-14 16:58，UTC+08）
+## 0. 当前续接（2026-11-14 17:21，UTC+08）
+
+当前产品源码保存点 **`c5901203eff7f466964029c607536f0f1f5118b5`**，嵌入标记 `c590120`。下述稳定修复已包含，并复用 `DhEvaluateDetail()` 的当前规范深度，删除短稳定器第二次 t5 读取。候选对前版 927 dispatch、u0…u4 共 8,464,384 原始 GPU 存储字节逐位一致，3861 检查零失败；u4-only 负控准确拒绝。28 生命周期与 3 实卡生产 DXIL / FP16 用例重跑通过，Vulkan 字节码重生成不变，独立 Sol high 复核无阻断。共享回归未全量重跑。
+
+Release x64 exit 0，50 秒，DLL **32,566,784 B / SHA256 `B780EB543B4EE2B43A1497B76D3B215A62025DEF8808D3509CCC5146609A36EC`**，mtime UTC `2026-11-14T09:19:29.6803385Z`。17:21 原位覆盖既有 `local/F6-ASI`；原 FileId 和 6 条硬链接保持，包含原神及崩铁 cache 别名，核对配置哈希不变，无 `.next`。此部署身份覆盖后面的 16:58 记录；没有创建包或修改启动器选择。
+
+同条件合成阶段候选 / 旧 / 候选的 GPU P50 **2.741760 / 2.777600 / 2.741248 ms**，各80样本，收益约0.036 ms；不代表游戏 FPS 或总 Reflex。模型链只读审计未发现重复调用，旧日志单有效层 10,800 dispatch / 10,800 modelCalls；尚未实施的 SDR encode 重复全图保存优化仅涉及 P50 0.209 ms 的整个 encode 区间。旧局约 101–113 ms 的整体差距仍需真实 GPU 工作及排队定位。
+
+证据在原总目录的 `depth-reuse/`：`validation.json`、`bitwise-warp.log`、`comparator-negative/result.log`、`runtime.log`、`benchmark/identity.json`、`build.json`、`deployment.json`、`installed-identity.json`、`protected-{before,after}.json`。最新活动日志仍为 UTC08:06:43、60,804,125 B，**没有本候选新局加载、画面或整体 ≤60 ms 验收**。下一局确认加载 `c590120`；仅用户操作游戏，AI 构建 / 原位部署 / 读日志。两位本轮审计智能体均已完成并关闭，不复用。
+
+后续工具更新：`Get-F6RunEvidence.ps1 -Latency` 新增总 Reflex 默认60 ms阈值、有效 GPU active、按线程 / swapchain 的 source pacing QPC统计。22项合成检查通过，独立复核无阻断；旧全日志1299份唯一报告中83份≤60 ms、1216份超标，仍不是固定场景候选验收。旧32条pacing缺字段，不推测各等待耗时。报告为 `depth-reuse/old-pid225400-evidence.json`，解析回归为 `latency-parser.log`。诊断文档同步纠正旧“坏运动可退回屏幕位置”的错误描述，并补齐独立相邻颜色纹理；没有改变用户选项或已部署DLL。
+
+后续队列审计：当前 `DxgiFactory_Hooks.cpp:947/977`、`IFeature_Dx11wDx12.cpp:1200` 和 `DLSSG_Dx12.cpp:1289` 确认共用 WithDx12 queue 与 `eBlockPresentingClientQueue`。下一候选是完整分离 SR / interop 生产与 presenting 所有权，尚未实施，收益未证。SDK 的 no-client-blocking 仅支持 Vulkan，不能在 D3D 直接切枚举。已有 shared writer 返回 Signal / DX11 Wait 早于本帧 NR / FG，不能删；仍须闭合双向依赖、UntilPresent / SDK backbuffer 和各真实 queue/fence 退休。四位本轮只读智能体均已完成并关闭，统一复核记录 `depth-reuse/read-only-reviews.md`。
+
+### 16:58 的稳定修复与旧局定位记录
 
 先读 [CURRENT-STATE](CURRENT-STATE.md) 顶部。本节覆盖后续所有历史操作条件和旧部署身份。
 

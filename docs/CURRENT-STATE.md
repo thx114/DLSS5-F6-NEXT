@@ -1,5 +1,18 @@
 # F6 当前状态
 
+更新：**2026-11-14 17:21（UTC+08）**。当前产品源码保存点 **`c5901203eff7f466964029c607536f0f1f5118b5`**，在下述细节稳定修复上复用已经验证的当前深度，避免短稳定器第二次读取同一深度纹理。Release x64 exit 0，50 秒；DLL **32,566,784 B / SHA256 `B780EB543B4EE2B43A1497B76D3B215A62025DEF8808D3509CCC5146609A36EC`**，嵌入标记 `c590120`，mtime UTC `2026-11-14T09:19:29.6803385Z`。17:21 已原位部署至既有 `local/F6-ASI`，原 FileId、全部 6 条硬链接与核对的配置哈希保持，无 `.next`。这些别名包括原神和崩铁 cache；未创建包、切换选择或改动用户选项。此处部署身份覆盖下述 16:58 条目的身份。
+
+- 候选与保存的前版 HLSL 在 927 次真实 WARP dispatch 的 u0…u4 **8,464,384 个原始 GPU 存储字节完全一致**，覆盖现有 FP16 / FP32、跨帧、无效输入、深度和 inspector 场景；3861 检查零失败。只改 u4 的独立负控于 dispatch 1 被准确检出。28 个生命周期和 3 个实卡 / 嵌入生产 DXIL / FP16 用例重跑通过；CSO / 嵌入头字节一致，重新生成的 Vulkan 字节码不变。只读 Sol high 复核无源码阻断，已关闭回收；未全量重跑 shared，也未做 Vulkan 实卡验收。
+- 同宿主 / 同资源 / 平坦合成输入，候选 / 旧 / 候选各 80 个 GPU 时间样本的 P50 为 **2.741760 / 2.777600 / 2.741248 ms**，本次减少约 **0.036 ms**；debug errors=0，GPU-based validation 关闭。仅为细节阶段，不是游戏 FPS 或整体 Reflex 改善；仍包含正常历史到期分支。
+- 模型链只读审计未发现重复模型调用：旧 PID225400 日志为单有效层，10,800 dispatch / 10,800 modelCalls / 0 failures。SDR passthrough 存在两张同格式全图的重复 encode 写入，可考虑统一物理输出；尚未实施，整个 encode 阶段 P50 仅约 0.209 ms，不能把它当几十毫秒差距的解释。
+- **整体 Reflex ≤60 ms 与细节游戏画面仍待验收。** 原神活动日志仍是 UTC08:06:43 的旧局，不能拿旧 PID225400 或旧两段 101.489 / 113.347 ms 当本候选结果。继续沿 source pacing 和实际 GPU 工作定位，不改 SR / NR / FG 参数，不控制游戏。
+
+本轮证据：`build/genshin-reshade-20261114/detail-feedback-20261114-140355/depth-reuse/`，含 `validation.json`、`bitwise-warp.log`、`comparator-negative/result.log`、`runtime.log`、`benchmark/identity.json`、`build.json`、`deployment.json`、`installed-identity.json` 和前后配置指纹。下方细节稳定修复、旧局定位、ReShade 与桥的未闭环项仍保留。
+
+`Get-F6RunEvidence.ps1 -Latency` 现可统计有效 GPU active、完整 Reflex 的默认 60 ms 阈值，并按线程 / swapchain 分组解析新 source pacing 的成对 QPC；等待子项不与包含它们的收尾区间重复相加。22 项合成解析回归通过，覆盖不同线程 / 链、同设备重复报告与异设备保留；独立只读复核无阻断。旧 PID225400 的完整保存日志复核为 1299 份唯一报告，83 份 ≤60 ms、1216 份超标；全日志混有不同场景，不能取代前台窗口或候选验收。旧32条 pacing 缺新字段，全部保持不可解析而非填零。该工具和文档更新不改变已部署 DLL；使用方法见 `F6-GUIDE-DIAGNOSTICS.md`。
+
+当前源码的队列复核确认 SR 和 DLSSG presenting 共用 WithDx12 queue，且 DLSSG 选择 `eBlockPresentingClientQueue`；这是下一项待证的串行瓶颈，尚未拆分，不能把旧 allocator 27.970 ms 等待直接认作可回收成本。shared writer 的返回 Signal / DX11 Wait 已在本帧 NR / FG 前提交，必须保留；完整拆分还需闭合生产→reader、独立 writer 返回 fence、SDK backbuffer / UntilPresent 与各实际队列退休。主会话核对了源码及随树 SDK，不以历史建议代替证据。四位本轮只读审计智能体均已完成并关闭，结论汇总于 `depth-reuse/read-only-reviews.md`。
+
 更新：**2026-11-14 16:58（UTC+08）**。当前优先级是细节稳定；整体 Reflex **60 ms 为及格线**。下面的 15:26 及更早条目均为历史，不能覆盖本节。
 
 ## 当前：稳定修复已部署，游戏画面和整体延迟待验收
