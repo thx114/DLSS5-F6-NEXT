@@ -60,6 +60,7 @@ $suites = @(
     @{ Name = 'FeatureTransition'; Source = 'OptiScaler/upscalers/tests/FeatureTransitionTests.cpp' },
     @{ Name = 'NgxDx12ResourceView'; Source = 'OptiScaler/upscalers/tests/NgxDx12ResourceViewTests.cpp' },
     @{ Name = 'InteropSwapchainPolicy'; Source = 'OptiScaler/with_dx12/tests/InteropSwapchainPolicyTests.cpp' },
+    @{ Name = 'InteropSwapchainWarp'; Source = 'OptiScaler/with_dx12/tests/InteropSwapchainWarpTests.cpp'; Libraries = 'd3d11.lib d3d12.lib dxgi.lib user32.lib' },
     @{ Name = 'ProducerProgress'; Source = 'OptiScaler/runtime/tests/ProducerProgressTests.cpp' },
     @{ Name = 'NativeProducerCpuTiming'; Source = 'OptiScaler/runtime/tests/NativeProducerCpuTimingTests.cpp' },
     @{ Name = 'NativePrepGpuTiming'; Source = 'OptiScaler/runtime/tests/NativePrepGpuTimingTests.cpp'; Libraries = 'd3d12.lib dxgi.lib' },

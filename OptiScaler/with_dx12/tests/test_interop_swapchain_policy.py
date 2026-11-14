@@ -32,11 +32,13 @@ def body(signature, text=source):
     return text[start:end]
 
 
-adapter = body("Dx11InteropSwapchain::ResizeArgs ResizeArgsForFg(")
-check(adapter.index("PresenterResizeArgs(") < adapter.index("GameQuirk::XeFGBridgeResizeAsCreated"),
+adapter = body("HRESULT PreparePresenterResize(")
+check(adapter.index("GetDesc(&desc)") < adapter.index("PresenterResizeArgs(") < adapter.index("GameQuirk::XeFGBridgeResizeAsCreated"),
       "format/count normalization applies before any XeFG-only game quirk")
 check("args.flags = desc.Flags" in adapter and "activeFgOutput == FGOutput::XeFG" in adapter,
       "XeFG flag preservation remains limited to its existing quirk")
+check("flags, desc.Flags)" in adapter and "Dx11InteropSwapchain::Matches(desc, args, width, height)" in adapter,
+      "adaptation and unchanged detection share the same actual presenter descriptor")
 
 present = body("HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(")
 failure = present.index("_fgResizeStatus.Failure()")
@@ -56,6 +58,8 @@ for method, native_call in (
     check(native_call in resize, f"{method}: native arguments retain original sRGB/count/queues")
     check("const bool skipFgResize = _fgResizeStatus.CanSkipResize() &&" in resize,
           f"{method}: equivalent GetDesc cannot suppress actual recovery resize")
+    check(resize.index("PreparePresenterResize(") < resize.index("PrepareForSwapchainChange()"),
+          f"{method}: presenter descriptor failure leaves native resources and ownership intact")
     check(resize.index("_fgResizeStatus.RecoveryFailure(Config::Instance()->FGSkipResizeBuffers.value_or_default())") <
           resize.index("PrepareForSwapchainChange()"),
           f"{method}: failed presenter never enters lower-hook optional skip/index-reset calls")

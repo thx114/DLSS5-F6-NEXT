@@ -32,18 +32,18 @@ void PresenterArguments()
     for (const auto& format : formats)
         for (const auto count : counts)
         {
-            const auto args = Dx11InteropSwapchain::PresenterResizeArgs(count, format.native, flags);
+            const auto args = Dx11InteropSwapchain::PresenterResizeArgs(count, format.native, flags, flags);
             Check(args.format == format.presenter, "only sRGB presenter storage becomes UNORM");
             Check(args.bufferCount == (count == 1 ? 0u : count), "single native buffer preserves provider ring");
             Check(args.flags == flags, "normalization does not invent or erase flags");
-            const auto repeated = Dx11InteropSwapchain::PresenterResizeArgs(args.bufferCount, args.format, args.flags);
+            const auto repeated = Dx11InteropSwapchain::PresenterResizeArgs(args.bufferCount, args.format, args.flags, flags);
             Check(repeated.format == args.format && repeated.bufferCount == args.bufferCount && repeated.flags == args.flags,
                   "nested resize adaptation is idempotent");
         }
 
     // PID124564: native count=1 / sRGB=29; provider created with two buffers
     // and expanded its internal ring to six. Preserve either provider count.
-    const auto repro = Dx11InteropSwapchain::PresenterResizeArgs(1, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 2);
+    const auto repro = Dx11InteropSwapchain::PresenterResizeArgs(1, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 2, 2);
     constexpr UINT providerCounts[] = { 2, 6 };
     for (const UINT providerCount : providerCounts)
     {
@@ -51,6 +51,32 @@ void PresenterArguments()
         Check(actualCount == providerCount && repro.format == DXGI_FORMAT_R8G8B8A8_UNORM,
               "reported resize cannot pass sRGB or shrink the provider ring");
     }
+}
+
+void PresenterCreationFlags()
+{
+    constexpr UINT immutable = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT |
+                               DXGI_SWAP_CHAIN_FLAG_FOREGROUND_LAYER;
+    constexpr UINT choices[] = { 0, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
+        DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, immutable };
+    for (const auto native : choices) for (const auto provider : choices)
+    {
+        const auto args = Dx11InteropSwapchain::PresenterResizeArgs(1, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+            native | DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH | DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE, provider);
+        Check((args.flags & immutable) == provider, "presenter creation flags retain their actual owner in both directions");
+        Check((args.flags & DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE) == 0, "DX11 GDI capability never reaches the DX12 presenter");
+        Check((args.flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH) != 0, "mutable resize flags retain the request");
+    }
+    DXGI_SWAP_CHAIN_DESC provider {};
+    provider.BufferCount = 6; provider.BufferDesc.Width = 2560; provider.BufferDesc.Height = 1600;
+    provider.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    provider.Flags = 2 | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    const auto args = Dx11InteropSwapchain::PresenterResizeArgs(1, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 2, provider.Flags);
+    Check(Dx11InteropSwapchain::Matches(provider, args, 2560, 1600), "PID227276 native descriptor matches the healthy presenter after adaptation");
+    Check(!Dx11InteropSwapchain::Matches(provider, args, 0, 0), "zero extents must be resolved by the real window resize");
+    Check(!Dx11InteropSwapchain::Matches(provider, args, 1920, 1080), "a real size change still resizes the presenter");
+    auto old = args; old.flags = 2;
+    Check(!Dx11InteropSwapchain::Matches(provider, old, 2560, 1600), "old native flags force an unnecessary incompatible provider resize");
 }
 
 void FailedResizeCannotAuthenticateProxyBuffers()
@@ -92,6 +118,7 @@ void FailedResizeCannotAuthenticateProxyBuffers()
 int main()
 {
     PresenterArguments();
+    PresenterCreationFlags();
     FailedResizeCannotAuthenticateProxyBuffers();
     std::printf("PASS %u interop swapchain CPU policy checks; no D3D/SDK/display execution\n", checks);
 }

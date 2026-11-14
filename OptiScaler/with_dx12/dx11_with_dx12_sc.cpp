@@ -164,46 +164,28 @@ DXGI_FORMAT ResolveBufferFormat(IDXGISwapChain* swapchain, IDXGISwapChain1* swap
     return DXGI_FORMAT_UNKNOWN;
 }
 
-bool IsSame(IDXGISwapChain* swapchain, UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags)
-{
-    if (swapchain == nullptr)
-        return false;
-
-    DXGI_SWAP_CHAIN_DESC desc {};
-    if (FAILED(swapchain->GetDesc(&desc)))
-        return false;
-
-    const UINT resolvedBufferCount = bufferCount != 0 ? bufferCount : desc.BufferCount;
-    const UINT resolvedWidth = width != 0 ? width : desc.BufferDesc.Width;
-    const UINT resolvedHeight = height != 0 ? height : desc.BufferDesc.Height;
-    const DXGI_FORMAT resolvedFormat = format != DXGI_FORMAT_UNKNOWN ? format : desc.BufferDesc.Format;
-
-    return resolvedBufferCount == desc.BufferCount && resolvedWidth == desc.BufferDesc.Width &&
-           resolvedHeight == desc.BufferDesc.Height && resolvedFormat == desc.BufferDesc.Format && flags == desc.Flags;
-}
-
 // Match PrepareDx12InteropDesc/Desc1 for every DX12 presenter, including DLSSG.
 // Only XeFG's flag preservation remains a game quirk. The native resize below
 // always receives the game's untouched arguments.
-Dx11InteropSwapchain::ResizeArgs ResizeArgsForFg(IDXGISwapChain* fgSwapChain, UINT bufferCount,
-                                                DXGI_FORMAT format, UINT flags)
+HRESULT PreparePresenterResize(IDXGISwapChain* fgSwapChain, UINT bufferCount, UINT width, UINT height,
+                               DXGI_FORMAT format, UINT flags, Dx11InteropSwapchain::ResizeArgs& args,
+                               bool& unchanged)
 {
-    auto args = Dx11InteropSwapchain::PresenterResizeArgs(bufferCount, format, flags);
-
-    if (!State::Instance().gameQuirks[GameQuirk::XeFGBridgeResizeAsCreated])
-        return args;
-
+    if (!fgSwapChain) return DXGI_ERROR_DEVICE_REMOVED;
     DXGI_SWAP_CHAIN_DESC desc {};
-    if (State::Instance().activeFgOutput == FGOutput::XeFG && fgSwapChain != nullptr &&
-        SUCCEEDED(fgSwapChain->GetDesc(&desc)))
-    {
+    const auto result = fgSwapChain->GetDesc(&desc);
+    if (FAILED(result)) return result;
+    args = Dx11InteropSwapchain::PresenterResizeArgs(bufferCount, format, flags, desc.Flags);
+    if (State::Instance().gameQuirks[GameQuirk::XeFGBridgeResizeAsCreated] &&
+        State::Instance().activeFgOutput == FGOutput::XeFG)
         args.flags = desc.Flags;
-    }
-
-    LOG_INFO("XeFG bridge resize as created: count {} -> {}, format {} -> {}, flags {:X} -> {:X}", bufferCount,
-             args.bufferCount, (UINT) format, (UINT) args.format, flags, args.flags);
-
-    return args;
+    unchanged = Dx11InteropSwapchain::Matches(desc, args, width, height);
+    LOG_INFO("DX12 presenter resize plan: native_count={} native_format={} native_flags={:X} "
+             "presenter_count={} presenter_format={} presenter_flags={:X} "
+             "resize_count={} resize_format={} resize_flags={:X} unchanged={}",
+             bufferCount, (UINT)format, flags, desc.BufferCount, (UINT)desc.BufferDesc.Format, desc.Flags,
+             args.bufferCount, (UINT)args.format, args.flags, unchanged);
+    return S_OK;
 }
 } // namespace
 
@@ -753,10 +735,12 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::HookResizeBuffers(UINT BufferCount, UINT 
 
     auto lifecycleOwner = State::Instance().currentFG;
     auto lifecycleExecution = lifecycleOwner != nullptr ? lifecycleOwner->GuardExecution(FGExecutionScope::Lifecycle) : FGExecutionGuard {};
-    auto fgArgs = ResizeArgsForFg(_fgSwapChain, BufferCount, NewFormat, SwapChainFlags);
-
-    const bool skipFgResize = _fgResizeStatus.CanSkipResize() &&
-        IsSame(_fgSwapChain, fgArgs.bufferCount, Width, Height, fgArgs.format, fgArgs.flags);
+    Dx11InteropSwapchain::ResizeArgs fgArgs {};
+    bool unchanged = false;
+    const auto planResult = PreparePresenterResize(_fgSwapChain, BufferCount, Width, Height, NewFormat,
+                                                    SwapChainFlags, fgArgs, unchanged);
+    if (FAILED(planResult)) return planResult;
+    const bool skipFgResize = _fgResizeStatus.CanSkipResize() && unchanged;
     if (!skipFgResize && lifecycleOwner != nullptr && !lifecycleOwner->PrepareForSwapchainChange())
         return DXGI_ERROR_WAS_STILL_DRAWING;
 
@@ -1062,10 +1046,12 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
 
     auto lifecycleOwner = State::Instance().currentFG;
     auto lifecycleExecution = lifecycleOwner != nullptr ? lifecycleOwner->GuardExecution(FGExecutionScope::Lifecycle) : FGExecutionGuard {};
-    auto fgArgs = ResizeArgsForFg(_fgSwapChain, BufferCount, Format, SwapChainFlags);
-
-    const bool skipFgResize = _fgResizeStatus.CanSkipResize() &&
-        IsSame(_fgSwapChain, fgArgs.bufferCount, Width, Height, fgArgs.format, fgArgs.flags);
+    Dx11InteropSwapchain::ResizeArgs fgArgs {};
+    bool unchanged = false;
+    const auto planResult = PreparePresenterResize(_fgSwapChain, BufferCount, Width, Height, Format,
+                                                    SwapChainFlags, fgArgs, unchanged);
+    if (FAILED(planResult)) return planResult;
+    const bool skipFgResize = _fgResizeStatus.CanSkipResize() && unchanged;
     if (!skipFgResize && lifecycleOwner != nullptr && !lifecycleOwner->PrepareForSwapchainChange())
         return DXGI_ERROR_WAS_STILL_DRAWING;
 

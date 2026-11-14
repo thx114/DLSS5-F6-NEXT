@@ -14,17 +14,36 @@ struct ResizeArgs
 
 // Only the DX12 presenter is normalized. The game's DX11 descriptor, buffers
 // and views retain their original format (including sRGB) and buffer count.
-constexpr ResizeArgs PresenterResizeArgs(UINT count, DXGI_FORMAT format, UINT flags) noexcept
+constexpr ResizeArgs PresenterResizeArgs(UINT count, DXGI_FORMAT format, UINT flags, UINT presenterFlags) noexcept
 {
     if (format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
         format = DXGI_FORMAT_R8G8B8A8_UNORM;
     else if (format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
         format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
+    // The presenter and the game's hidden DX11 chain have different creation
+    // flags. DXGI forbids changing tearing/waitable ownership during resize;
+    // in particular DLSSG adds ALLOW_TEARING even when the game did not ask for it.
+    constexpr UINT creationFlags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING |
+                                   DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT |
+                                   DXGI_SWAP_CHAIN_FLAG_FOREGROUND_LAYER;
+    flags = (flags & ~(creationFlags | DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE)) |
+            (presenterFlags & creationFlags);
+
     // Zero preserves the existing presenter count, including provider-owned
     // rings. A single DX11 buffer must never shrink a flip chain to one buffer.
     // UNKNOWN likewise keeps the presenter's current format.
     return { count == 1 ? 0 : count, format, flags };
+}
+
+constexpr bool Matches(const DXGI_SWAP_CHAIN_DESC& desc, const ResizeArgs& args, UINT width, UINT height) noexcept
+{
+    // DXGI resolves zero extents from the current window client area, not the
+    // previous buffer size. Leave those calls to DXGI even for a healthy chain.
+    return (args.bufferCount == 0 || args.bufferCount == desc.BufferCount) &&
+           width != 0 && width == desc.BufferDesc.Width &&
+           height != 0 && height == desc.BufferDesc.Height &&
+           (args.format == DXGI_FORMAT_UNKNOWN || args.format == desc.BufferDesc.Format) && args.flags == desc.Flags;
 }
 
 // Presenter validity only: this state grants no GPU completion or retirement.
