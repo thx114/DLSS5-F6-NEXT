@@ -2,6 +2,7 @@
 
 #include <framegen/IFGFeature_Dx12.h>
 #include <framegen/DlssgStateSample.h>
+#include <framegen/Dx12InputPresent.h>
 #include "DlssgInputContinuity.h"
 #include "DlssgOptionsPolicy.h"
 #include "ZzzFrameScope.h"
@@ -86,6 +87,20 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         std::make_shared<framegen::DlssgPacingLifetime>();
     dlssg::InputContinuity<BUFFER_COUNT> _inputContinuity;
     uint64_t _inputOwnerEpoch = 1;
+    framegen::input_present::Domain _inputPresentDomain;
+    uint64_t _inputBufferEpoch=1;
+    ULONGLONG _inputPresentSampleAt=0;
+    struct InputPresentObservation
+    {
+        framegen::input_present::Binding binding;
+        Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+        bool refused=false;
+    };
+    InputPresentObservation PrepareInputPresentObservation(IDXGISwapChain* chain,UINT flags);
+    framegen::input_present::Binding CurrentInputPresentBinding(IDXGISwapChain* chain,ID3D12Resource* input);
+    sl::Result QueryInputPresentCompletion(framegen::Dx12InputFence& fence,framegen::DlssgStateSample& sample);
+    void RecordInputPresentObservation(const InputPresentObservation& observation,
+        const framegen::input_present::Result& result,const framegen::DlssgStateSample& sample) noexcept;
     // Successful SDK input tags, never GPU-completion or pixel receipts. Borrowed
     // source pointers are compared as identity only after eOnlyValidNow; do not
     // late-AddRef/dereference them after the producer's recording scope expires.
@@ -382,6 +397,59 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     // CPU refusal classification, never a resource-retirement or budget receipt.
 
     bool Present() override final;
+    // Sample the real SDK boundary, outside its CPU timer and before teardown.
+    // Same-queue behavior remains; a sample grants no production reuse/retirement.
+    template<class Present>
+    HRESULT ObserveInputPresent(IDXGISwapChain* chain,UINT flags,framegen::input_present::Api api,Present&& present)
+    {
+        struct ErrorBoundary {DWORD error=GetLastError();~ErrorBoundary(){SetLastError(error);}} boundary;
+        const auto forward=[&]() -> HRESULT {
+            try
+            {
+                const auto result=std::forward<Present>(present)();
+                boundary.error=GetLastError();
+                return result;
+            }
+            catch (...) {boundary.error=GetLastError();throw;}
+        };
+        {
+            auto observation=PrepareInputPresentObservation(chain,flags);
+            SetLastError(boundary.error);
+            if (observation.refused) return DXGI_ERROR_WAS_STILL_DRAWING;
+            if (!observation.buffer)
+            {
+                return forward();
+            }
+            framegen::DlssgStateSample sample;
+            // Detect reentry throughout Present+query. Only the actual SDK
+            // Present phase can consume the one opposite-entry forwarding ticket.
+            framegen::input_present::Forwarding forwarding(_inputPresentDomain,observation.binding.chain,api);
+            const auto invokeRaw=[&]() -> HRESULT {
+                auto phase=forwarding.EnterPresent();
+                return forward();
+            };
+            auto result=framegen::input_present::Invoke(_inputPresentDomain,observation.binding,observation.buffer.Get(),
+                invokeRaw,
+                [&]{return CurrentInputPresentBinding(chain,observation.buffer.Get());},
+                [&](auto& fence,auto& queried) {
+                    const auto status=QueryInputPresentCompletion(fence,queried);
+                    sample=queried;
+                    return status;
+                });
+            if (!result.forwarded)
+            {
+                // Sampling preflight cannot swallow the caller's real Present.
+                // It produced no receipt, so forward once without a query join.
+                SetLastError(boundary.error);
+                result.presentResult=invokeRaw();
+                result.forwarded=true;
+            }
+            RecordInputPresentObservation(observation,result,sample);
+            return result.presentResult;
+        }
+    }
+    // Called before an actual proxy-buffer rebuild attempt, even if it fails.
+    bool BeginInputBufferRebuild();
     ID3D12GraphicsCommandList* GetSCCommandList(int index = -1) override final;
     FGExecutionGuard GuardExecution(FGExecutionScope scope) override final;
     bool CanSubmitInputs() override final;

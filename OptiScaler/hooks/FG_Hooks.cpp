@@ -3,6 +3,7 @@
 #include <runtime/SourcePresent.h>
 #include <runtime/ModuleLifetime.h>
 #include <runtime/D3D12DeviceIdentity.h>
+#include <runtime/ComIdentity.h>
 #include <framegen/FinalOutputEndpoint.h>
 #include <framegen/FgSourcePacing.h>
 #include <upscalers/CallerCpuTrace.h>
@@ -89,6 +90,23 @@ bool GenshinFgTimingRequested(UINT flags) noexcept
     SetLastError(error);
     return genshin;
 }
+
+bool AdmitInputPresentForward(IDXGISwapChain* chain,UINT flags,framegen::input_present::Api api) noexcept
+{
+    if ((flags & DXGI_PRESENT_TEST) || !framegen::input_present::Forwarding::Active()) return true;
+    const auto error=GetLastError();
+    const bool admitted=framegen::input_present::Forwarding::Admit(ComIdentity::Get(chain),api);
+    SetLastError(error);
+    return admitted;
+}
+
+struct ScopedPresentSkip
+{
+    bool& flag;
+    bool previous;
+    explicit ScopedPresentSkip(bool& value):flag(value),previous(std::exchange(value,true)) {}
+    ~ScopedPresentSkip() {flag=previous;}
+};
 
 // Only these hook lifecycle operations use this mutex. They never wait for it while inside a provider.
 // Recursive entry is needed for preserve-create -> ResizeBuffers and DXGI's ResizeBuffers1 forwarding.
@@ -1392,6 +1410,8 @@ HRESULT FGHooks::hkResizeBuffers(IDXGISwapChain* This, UINT BufferCount, UINT Wi
     {
         ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
         ScopedFGResizeForward forwarding(This, false);
+        if (auto* dlssg=dynamic_cast<DLSSG_Dx12*>(fgDx12);dlssg && !dlssg->BeginInputBufferRebuild())
+            return DXGI_ERROR_WAS_STILL_DRAWING;
         result = o_FGSCResizeBuffers(This, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     }
 
@@ -1605,7 +1625,8 @@ HRESULT FGHooks::hkResizeBuffers1(IDXGISwapChain3* This, UINT BufferCount, UINT 
     {
         ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
         ScopedFGResizeForward forwarding(This, true);
-
+        if (auto* dlssg=dynamic_cast<DLSSG_Dx12*>(fgDx12);dlssg && !dlssg->BeginInputBufferRebuild())
+            return DXGI_ERROR_WAS_STILL_DRAWING;
         result = o_FGSCResizeBuffers1(This, BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask,
                                       ppPresentQueue);
 
@@ -1678,6 +1699,8 @@ void FGHooks::DrainStarRailAttribution() noexcept
 
 HRESULT FGHooks::hkFGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags)
 {
+    if (!AdmitInputPresentForward(This,Flags,framegen::input_present::Api::Present))
+        return DXGI_ERROR_WAS_STILL_DRAWING;
     if (HoYoShade::ColorConsumers(This) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
     // Skip XeFG's internal call
     if (_skipPresent)
@@ -1704,9 +1727,8 @@ HRESULT FGHooks::hkFGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags
 
     LOG_DEBUG("SyncInterval: {}, Flags: {:X}", SyncInterval, Flags);
 
-    _skipPresent1 = true;
+    ScopedPresentSkip skip(_skipPresent1);
     auto result = FGPresent(This, SyncInterval, Flags, nullptr);
-    _skipPresent1 = false;
 
     return result;
 }
@@ -1714,6 +1736,8 @@ HRESULT FGHooks::hkFGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags
 HRESULT FGHooks::hkFGPresent1(IDXGISwapChain1* This, UINT SyncInterval, UINT Flags,
                               const DXGI_PRESENT_PARAMETERS* pPresentParameters)
 {
+    if (!AdmitInputPresentForward(This,Flags,framegen::input_present::Api::Present1))
+        return DXGI_ERROR_WAS_STILL_DRAWING;
     if (HoYoShade::ColorConsumers(This) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
     // Skip XeFG's internal call
     if (_skipPresent1)
@@ -1739,9 +1763,8 @@ HRESULT FGHooks::hkFGPresent1(IDXGISwapChain1* This, UINT SyncInterval, UINT Fla
     }
 
     LOG_DEBUG("SyncInterval: {}, Flags: {:X}", SyncInterval, Flags);
-    _skipPresent = true;
+    ScopedPresentSkip skip(_skipPresent);
     auto result = FGPresent(This, SyncInterval, Flags, pPresentParameters);
-    _skipPresent = false;
 
     return result;
 }
@@ -1757,8 +1780,9 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 
     if (state.isShuttingDown)
     {
-
-
+        const auto error=GetLastError();
+        framegen::input_present::Forwarding::Revoke(ComIdentity::Get(This));
+        SetLastError(error);
         if (pPresentParameters == nullptr)
             return ObserveFgSdkPresent(GenshinFgTimingRequested(Flags),[&]{return o_FGSCPresent(This, SyncInterval, Flags);});
         else
@@ -2303,7 +2327,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         result = DXGI_ERROR_INVALID_CALL; // Unknown input cannot consume stale guides.
     else
         result = dlssg::zzz::RunPresent(nativeZzzAction,DXGI_ERROR_INVALID_CALL,[&]() -> HRESULT {
-            return ObserveFgSdkPresent(collectSdkPresent,[&]() -> HRESULT {
+            const auto forward=[&]() -> HRESULT {return ObserveFgSdkPresent(collectSdkPresent,[&]() -> HRESULT {
                 if (starRailTimingRoute)
                     starRailSdkCpu.emplace(CallerCpuTrace::Op::FgSdkPresent, This, sourcePacingTokenFrame,
                                           pacingPresentFrame, Flags);
@@ -2319,7 +2343,11 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
                 }
                 SetLastError(apiLastError);
                 return apiResult;
-            },&starRailSdkWall);
+            },&starRailSdkWall);};
+            auto* inputOwner=willPresent && state.currentFG==fg && state.activeFgOutput==FGOutput::DLSSG ?
+                dynamic_cast<DLSSG_Dx12*>(fg):nullptr;
+            return inputOwner ? inputOwner->ObserveInputPresent(This,Flags,
+                pPresentParameters?framegen::input_present::Api::Present1:framegen::input_present::Api::Present,forward) : forward();
         });
     const auto starRailSdkResult=static_cast<uint32_t>(result); // Freeze the actual SDK return before postwork.
     // Flush bounded CPU counters after the SDK timing adapter has stopped.

@@ -103,21 +103,31 @@ struct GamePluginLoadScope
 
 sl::Result StreamlineHooks::QueryDlssgState(decltype(&slDLSSGGetState) getState,
     const sl::ViewportHandle& viewport, sl::DLSSGState& state, const sl::DLSSGOptions* options,
-    framegen::DlssgStateQueryReason reason, framegen::DlssgStateSample* observed)
+    framegen::DlssgStateQueryReason reason, framegen::DlssgStateSample* observed,
+    framegen::Dx12InputFence* ownedFence)
 {
+    DWORD sdkLastError=GetLastError();
+    // Owning capture is deliberately opt-in. Ordinary/game queries retain the
+    // numeric-only ABI path, including unknown pointers they must not touch.
+    if (ownedFence) ownedFence->Reset();
+    framegen::Dx12InputFence capturedFence;
     if (getState == &hkslDLSSGGetState || getState==&hkslDLSSGGetStateSerial) getState = o_slDLSSGGetState;
     sl::Result result = sl::Result::eErrorInvalidState;
     framegen::DlssgStateSample sample;
     bool queried=false;
-    DWORD sdkLastError=GetLastError();
     const auto requestVersion=state.structVersion;
     const bool requestTypeKnown=state.structType==sl::DLSSGState::s_structType;
+    const bool captureRequested=ownedFence && !options && !state.next &&
+        reason==framegen::DlssgStateQueryReason::CompletionFence && requestTypeKnown &&
+        requestVersion>=3 && requestVersion<=4 &&
+        !state.inputsProcessingCompletionFence && !state.lastPresentInputsProcessingCompletionFenceValue;
     try {queried = g_dlssgStateQueries.Query(reinterpret_cast<uintptr_t>(getState),
         static_cast<uint32_t>(viewport), reason, sample, [&](auto& value) {
             // This is the only actual SDK GetState invocation in the hooks.
             // No callbacks into a provider, lifecycle or FG mutex are allowed.
             value.queryThreadId=GetCurrentThreadId();
             value.requestVersion=requestVersion;
+            SetLastError(sdkLastError); // Releasing an older owning output may have changed it.
             try { result = getState(viewport, state, options); }
             catch (...) { sdkLastError=GetLastError(); throw; }
             sdkLastError=GetLastError();
@@ -138,6 +148,9 @@ sl::Result StreamlineHooks::QueryDlssgState(decltype(&slDLSSGGetState) getState,
                 value.inputCompletionFieldsObserved=true;
                 value.inputCompletionFenceAddress=reinterpret_cast<uintptr_t>(state.inputsProcessingCompletionFence);
                 value.inputCompletionFenceValue=state.lastPresentInputsProcessingCompletionFenceValue;
+                if (captureRequested && !state.next)
+                    capturedFence.CaptureBorrowed(state.inputsProcessingCompletionFence,
+                        state.lastPresentInputsProcessingCompletionFenceValue);
             }
             if (knownLayout && requestVersion>=2 && state.structVersion>=2) {
                 value.maxGenerated = state.numFramesToGenerateMax;
@@ -148,6 +161,7 @@ sl::Result StreamlineHooks::QueryDlssgState(decltype(&slDLSSGGetState) getState,
         });}
     catch(...) {
         // Query's RAII gate has unwound before any passive callback.
+        capturedFence.Reset();
         ObserveDlssgState(sample,false);
         if(observed)*observed=sample;
         SetLastError(sdkLastError);
@@ -156,6 +170,7 @@ sl::Result StreamlineHooks::QueryDlssgState(decltype(&slDLSSGGetState) getState,
     // Query has returned and released BOTH its SDK/query gate and sample lock.
     if(queried)ObserveDlssgState(sample,true);
     if (observed) *observed = sample;
+    if (ownedFence) *ownedFence=std::move(capturedFence);
     SetLastError(sdkLastError);
     return queried ? result : sl::Result::eErrorInvalidState;
 }

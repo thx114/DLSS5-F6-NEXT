@@ -71,7 +71,7 @@ bool DLSSG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
         _hookRetiredEpoch = 0;
     }
     Kcd2Hdr::ApplyQuirk();
-    if (!PrepareForSwapchainChange()) return false;
+    if (!PrepareForSwapchainChange() || !BeginInputBufferRebuild()) return false;
     {
         std::lock_guard continuityLock(_inputContinuityMutex);
         _ownerChanging = _continuityOwner;
@@ -201,7 +201,7 @@ bool DLSSG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmd
         _hookRetiredEpoch = 0;
     }
     Kcd2Hdr::ApplyQuirk();
-    if (!PrepareForSwapchainChange()) return false;
+    if (!PrepareForSwapchainChange() || !BeginInputBufferRebuild()) return false;
     {
         std::lock_guard continuityLock(_inputContinuityMutex);
         _ownerChanging = _continuityOwner;
@@ -706,6 +706,97 @@ void DLSSG_Dx12::InvalidateProviderCapabilities()
     _generationState.InvalidateCapability();
     _maxInterpolationCount = 0;
     _supportsDMFG = false;
+}
+
+framegen::input_present::Binding DLSSG_Dx12::CurrentInputPresentBinding(IDXGISwapChain* chain,ID3D12Resource* input)
+{
+    const auto& state=State::Instance();
+    const auto owner=CurrentProviderOwner();
+    if (!chain || !input || state.currentFG!=this || state.isShuttingDown || state.externalFrameGeneration ||
+        state.activeFgOutput!=FGOutput::DLSSG || !_presentExecutionDepth ||
+        _ownerChanging || _hookRetiring || _teardownPending || _teardownCompleting || _teardownQuarantined ||
+        !owner.Known() || !StreamlineProxy::IsD3D12Inited()) return {};
+    const auto identity=ComIdentity::Get(chain);
+    if (!identity || identity!=ComIdentity::Get(_swapChain)) return {};
+    // The current SDK index normally advances when Present returns. Retain the
+    // actual pre-Present input identity; authenticate its epoch, not the next index.
+    return {owner.instance,owner.lifecycle,_inputBufferEpoch,_inputOwnerEpoch,identity,ComIdentity::Get(input),
+        owner.getState,owner.viewport,GetCurrentThreadId()};
+}
+
+DLSSG_Dx12::InputPresentObservation DLSSG_Dx12::PrepareInputPresentObservation(IDXGISwapChain* chain,UINT flags)
+{
+    // Caller already holds the real Present execution guard. Never acquire FG
+    // Mutex here: source->FG Mutex->continuity is the existing lock order.
+    InputPresentObservation observation;
+    if (flags & DXGI_PRESENT_TEST) return observation;
+    if (_inputPresentDomain.Active())
+    {
+        _inputPresentDomain.Revoke();
+        observation.refused=true;
+        return observation;
+    }
+    if (!_isActive || _providerStateQueryActive || _dispatchOptions.InFlight())
+        return observation;
+    const auto now=GetTickCount64();
+    if (_inputPresentSampleAt && now-_inputPresentSampleAt<5000) return observation;
+    if (!chain || !_presentExecutionDepth) return observation;
+    Microsoft::WRL::ComPtr<IDXGISwapChain3> chain3;
+    if (chain->QueryInterface(IID_PPV_ARGS(&chain3))!=S_OK || !chain3 ||
+        chain->GetBuffer(chain3->GetCurrentBackBufferIndex(),IID_PPV_ARGS(&observation.buffer))!=S_OK)
+    {
+        observation.buffer.Reset();
+        return observation;
+    }
+    observation.binding=CurrentInputPresentBinding(chain,observation.buffer.Get());
+    if (!observation.binding.Known()) observation.buffer.Reset();
+    else _inputPresentSampleAt=now;
+    return observation;
+}
+
+sl::Result DLSSG_Dx12::QueryInputPresentCompletion(framegen::Dx12InputFence& fence,
+    framegen::DlssgStateSample& sample)
+{
+    if (_providerStateQueryActive || _dispatchOptions.InFlight()) return sl::Result::eErrorInvalidState;
+    _providerStateQueryActive=true;
+    struct Finish {bool& active;~Finish(){active=false;}} finish{_providerStateQueryActive};
+    sl::DLSSGState state{};
+    const auto result=StreamlineHooks::QueryDlssgState(StreamlineProxy::DLSSGGetState(),viewport,state,nullptr,
+        framegen::DlssgStateQueryReason::CompletionFence,&sample,&fence);
+    // GetState consumes this interval even when no usable completion is returned.
+    // Preserve that observation without treating a presented count as a multiplier.
+    if (result==sl::Result::eOk) framegen::DlssgTelemetry::RecordState(state.numFramesActuallyPresented);
+    return result;
+}
+
+void DLSSG_Dx12::RecordInputPresentObservation(const InputPresentObservation& observation,
+    const framegen::input_present::Result& result,const framegen::DlssgStateSample& sample) noexcept
+{
+    try
+    {
+        using Retirement=framegen::input_present::Completion::Retirement;
+        const auto retirement=result.completion.Poll();
+        const char* status=retirement==Retirement::Complete?"complete":retirement==Retirement::Pending?"pending":
+            retirement==Retirement::DeviceLost?"device-lost":"unavailable";
+        LOG_INFO("F6 SDK input Present observation: pid={} thread={} provider_instance={} sdk_epoch={} buffer_epoch={} input_epoch={} sc={:X} buffer={:X} api={:X} viewport={} present_serial={} present_forwarded={} present_result={} query_sequence={} query_thread={} query_result={} request_version={} state_version={} fields_observed={} raw_fence={:X} raw_target={} owning_status={} joined={} input_status={} phase=after_sdk_present queue_separated=false receipt_usable_for_retirement=false",
+            GetCurrentProcessId(),observation.binding.thread,observation.binding.provider,observation.binding.sdkEpoch,
+            observation.binding.bufferEpoch,observation.binding.inputEpoch,observation.binding.chain,observation.binding.buffer,observation.binding.api,
+            observation.binding.viewport,result.completion.PresentSerial(),result.forwarded,
+            static_cast<uint32_t>(result.presentResult),sample.querySequence,sample.queryThreadId,sample.result,
+            sample.requestVersion,sample.stateVersion,sample.inputCompletionFieldsObserved,
+            sample.inputCompletionFenceAddress,sample.inputCompletionFenceValue,
+            result.fenceStatus,static_cast<bool>(result.completion),status);
+    }
+    catch (...) {}
+}
+
+bool DLSSG_Dx12::BeginInputBufferRebuild()
+{
+    std::lock_guard continuityLock(_inputContinuityMutex);
+    if (_inputPresentDomain.Active() || _inputBufferEpoch>=UINT64_MAX-1) return false;
+    ++_inputBufferEpoch;
+    _inputPresentSampleAt=0;
+    return true;
 }
 
 sl::Result DLSSG_Dx12::QueryProviderState(sl::DLSSGState& actualState, framegen::DlssgStateQueryReason reason)

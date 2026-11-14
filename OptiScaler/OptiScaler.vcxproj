@@ -1439,6 +1439,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="framegen\dlssg\DLSSG_Dx12_Internal.h" />
+    <ClInclude Include="framegen\DlssgInputPresent.h" />
+    <ClInclude Include="framegen\Dx12InputFence.h" />
+    <ClInclude Include="framegen\Dx12InputPresent.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="shaders\dlssnr\NrGpuExecutionLifetime.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>

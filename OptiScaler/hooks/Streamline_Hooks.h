@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <framegen/DlssgStateSample.h>
+#include <framegen/Dx12InputFence.h>
 #include <framegen/FrameLatencyOwnership.h>
 #include <framegen/DlssgPacingLifetime.h>
 
@@ -153,7 +154,8 @@ class StreamlineHooks
     // goes through this gate. It never acquires a provider/continuity/FG lock.
     static sl::Result QueryDlssgState(decltype(&slDLSSGGetState) getState,
         const sl::ViewportHandle& viewport, sl::DLSSGState& state, const sl::DLSSGOptions* options,
-        framegen::DlssgStateQueryReason reason, framegen::DlssgStateSample* sample = nullptr);
+        framegen::DlssgStateQueryReason reason, framegen::DlssgStateSample* sample = nullptr,
+        framegen::Dx12InputFence* ownedFence = nullptr);
     // Nonconsumptive observation only. Numeric addresses never own a fence.
     static bool ReadDlssgStateSample(decltype(&slDLSSGGetState) getState,
         const sl::ViewportHandle& viewport, framegen::DlssgStateSample& sample);
