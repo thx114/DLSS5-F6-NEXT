@@ -1,10 +1,12 @@
 # F6 与 ReShade / GIMI 兼容性
 
-更新：2026-11-14（UTC+08）。桥 + F6 白屏局 PID227276 已绑定 F6 `44380f8`；最新 `d0ca697` 包含显示链 resize flags 修复 `ec1fead` 和原神 BeforeNR 公共滤镜事务接线，已于 12:53 原位部署到 `local/F6-ASI`，SHA256 `8970947E…`。固定核心 / WARP 专项通过；新 DLL 的加载、画面与性能仍待用户新局验收，不更新 `F6-HANDOFF.md`。
+更新：2026-11-14（UTC+08）。用户新局 PID240456 加载 `d0ca697` 后白屏退出，转储和原样 ReShade / WARP 宿主均定位到 On12 内部 adapter 被包装后调用 `SetPrivateData` 的 DXGI 断点。`8ca0623` 已补内部 factory 返回边界，并于 13:49:33 原位部署到 `local/F6-ASI`，SHA256 `BF6B85E9…`，原 6 个硬链接保持、原神 alias 同 SHA，无 `.next`；新候选的实际游戏加载 / 画面 / 性能待用户验收。显示链 resize flags 修复和原神 BeforeNR 公共事务均保留。
+
+内部工厂边界只作用于当前线程的 On12 创建作用域及观察到的内部 flag；系统 DXGI 与 ReShade export 分别保存真实 original，覆盖 ReShade 在外层返回后再包装的顺序。内部返回使用逐层持有的 native-object QI 和原请求 IID，普通游戏工厂继续保留代理。真实核心两种顺序各 104 检查、GPU 读回和两个崩溃负控已完成；On12 独立路由 Domain 的嵌套创建另由实际 Detours 测试覆盖。细节和准确产物身份见 [当前状态](CURRENT-STATE.md#最新白屏后退出与-d3d11on12-内部工厂)。这次崩溃发生在阶段滤镜执行之前，不能作为 BeforeNR 已运行或画面已验收的证据。
 
 此前纠正：用户已确认仅 Rocket / GIMI 可启动。10:54 PID242576 的 Rocket 插件启用值为 `1|0|0`（桥开、F6 / ReShade 关），12.4 秒后 `0xC0000005`，没有本局 F6 / ReShade 加载证据；不能套用 08:54 PID240612 混合局的异常栈。外部桥创建边界候选 `5ce2efb` 已于 11:23 原位部署，SHA256 `4BC59AD0…`，18/18 离线回归通过，游戏验收仍待新局。完整身份见 [当前状态](CURRENT-STATE.md#最新仅桥失败局与-gimi-创建边界)。
 
-此前源码 `44380f8` 的 BeforeSR / GIMI Release x64 为 `08236180…`，32,540,672 B，当时部署到 `local/F6-StarRail-GapPacing`、`local/F6-ASI`。最新显示链 / BeforeNR 修复只原位覆盖当前 `local/F6-ASI`，FileId 和 6 个硬链接不变，原神 runtime alias 哈希已核对，未产生 `.next`；INI、Rocket 配置、桥和 ReShade core 哈希未变。新回执为 `before-nr-deployment.json` / `before-nr-installed-after.json`；完整构建身份、专项验证与实际加载边界见 [当前状态](CURRENT-STATE.md)。
+此前源码 `44380f8` 的 BeforeSR / GIMI Release x64 为 `08236180…`，32,540,672 B，当时部署到 `local/F6-StarRail-GapPacing`、`local/F6-ASI`；12:53 的 `d0ca697` 为 `8970947E…`，保留其 `before-nr-deployment.json` / `before-nr-installed-after.json` 历史回执。最新 On12 修复仅原位覆盖既有 `local/F6-ASI`，未切换构建或改配置；新回执在 `white-screen-exit-20261114-130257/`。完整构建身份、专项验证与实际加载边界见 [当前状态](CURRENT-STATE.md)。
 
 ## 当前实现
 

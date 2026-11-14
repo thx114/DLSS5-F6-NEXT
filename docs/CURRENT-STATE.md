@@ -1,10 +1,32 @@
 # F6 当前状态
 
-更新：2026-11-14。桥 + F6 白屏局的显示链 resize flags 错误已修复；原神默认 Present NR 的 BeforeNR 滤镜也已接入公共事务，补齐源链 / 物理链去重与不确定提交的 FG 阻断。最新源码 `d0ca697` 的 DLL 已于 12:53（UTC+08）原位覆盖当前 `local/F6-ASI`，SHA256 `8970947E…`，原 6 个硬链接保留。**新 DLL 的加载、白屏、滤镜效果与性能仍待用户手动重开游戏验收。** 本轮没有修改 `F6-HANDOFF.md`。
+更新：2026-11-14。用户新局 PID240456 确认加载 `d0ca697`，白屏后以 `0x80000003` 退出；其崩溃发生在 D3D11On12 创建阶段，尚未执行 SR / NR / 阶段滤镜。已固定转储并在原样 ReShade / WARP 宿主复现同址断点，补齐内部 factory 的原生接口返回边界。新源码 `8ca0623` 已构建，并于 13:49:33（UTC+08）原位部署到 `local/F6-ASI`，SHA256 `BF6B85E9…`、原 FileId / 6 硬链接保持，无 `.next`。**这次新候选的游戏加载、白屏、滤镜效果与性能仍待用户手动重开验收。**
 
-产品树：`D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。当前构建源码保存点为 `d0ca697148bef6b1727ec4f32872aed567e6ecd8`（`Wire Genshin BeforeNR filters through shared presentation transaction`），包含此前显示链修复 `ec1fead`；此前 BeforeSR / GIMI 构建为 `44380f8`。后续维护文档提交不改变 DLL 构建身份。游戏由用户手动操作；未修改启动器选择、用户 INI / preset / profiles 或 ASI，未推送远端。
+产品树：`D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。当前构建源码保存点为 `8ca06235bc66ca8ee1fe1b503c4a6d8cddcd8e78`（`Preserve native D3D11On12 factory boundaries across ReShade hooks`），保留 `d0ca697` 的原神 BeforeNR 接线和 `ec1fead` 的显示链 resize 修复。后续维护文档提交不改变 DLL 构建身份。游戏由用户手动操作；未修改启动器选择、用户 INI / preset / profiles、桥 DLL、ReShade core 或 ASI，未推送远端。
 
-## 最新：原神 BeforeNR 接线与部署（2026-11-14）
+## 最新：白屏后退出与 D3D11On12 内部工厂（2026-11-14）
+
+新局 `20261114-130257_YuanShen_240456`：13:02:54 加载 F6 `d0ca697`，ReShade `6.8.0.2155` 真实加载，桥路径由转储确认是 `temp3/Dx11FsrBridge (2).dll`；本局三个 Rocket 插件均开启，不能沿用此前 ReShade 关闭局的状态。13:03:37.823912 触发异常，13:04:05 收尾记录退出码 `-2147483645`。本局没有 NGX Evaluate、BeforeSR / BeforeNR 或实际 Present 入口，不以初始化的 NGX cache fallback 或 NR 架构警告替代退出根因。
+
+实际转储 unwind 为 `D3D11On12 → 内部 factory EnumAdapterByLuid → ReShade 适配器构造 → 内部 adapter SetPrivateData → dxgi.dll+0x95512`，末端是实际 `int3`。ReShade 在没有 D3D12 proxy 时直接转发 On12，内部 `CreateDXGIFactory2(flags=0x80000000)` 因而进入普通代理链。独立宿主先证明原生 WARP On12 / GPU 读回成功，再加载当前原样 ReShade，复现相同地址和异常；只在系统层补返回边界仍会复现。
+
+F6 现在用可嵌套线程 scope 与本局观察到的内部 flag 共同区分内部 factory。系统 factory2 与 ReShade 自身 factory2 export 的返回分别处理，复用按真实 callable 保存 original 的 MethodHooks，覆盖两种 hook 顺序。按已知 native-object QI 契约逐层持有引用，最终重新 QI 原请求 IID 并转移一个调用者引用；失败清空输出，内部工厂不执行普通包装 / spoof / Luma 策略。On12 使用独立但继承原 Returned 观察的路由 Domain，避免普通 D3D11 创建内嵌套 On12 时漏执行 scope。没有改变公共工厂、队列 / fence 或资源退休契约。
+
+真实宿主另检出了既有 owner 校验对加载后 NT ImageBase 的误拒绝：现在只接受磁盘 preferred base 或精确映射模块地址，其他头字段 / export / 代码仍逐字节验证；错误 ImageBase 负控被拒绝。没有修改 ReShade 核心实现或安装文件。
+
+| 项目 | 本轮证据与边界 |
+|---|---|
+| 固定核心 / 真实 WARP | `on12-factory-final/results.json`：两项负控均按预期 `0x80000003`；两种加载顺序各 104 检查通过，含重复 On12、GPU buffer 读回、普通代理保留、并发 scope 与 owner 错误 ImageBase 拒绝 |
+| CPU / Detours | `boundary-cpu-final.log`：3,026 项 COM 所有权 / 偏移 IID / 失败 / 环 / 线程 / 嵌套创建；MethodHooks 与 HookOwnership 回归通过 |
+| 公共设备身份 | `device-identity.log`：814 检查 / 46 场景与 59 项快照 / 接线检查通过；native-object GUID 抽取未改语义 |
+| Release x64 | `f6-build.log`，exit 0，1 分 42 秒；保留后端参与编译，既有 C4744 / LNK4098 警告仍在，未做 Vulkan GPU 验收 |
+| DLL | 32,555,008 B，SHA256 `BF6B85E99A976F54236116B7730E75EC72F64AE8C1DAA31FDBBD78B69F278755`；mtime UTC `2026-11-14T05:48:45.3595959Z`，含 `8ca0623` |
+| 原位部署 | `DEPLOYED_IN_PLACE`；`local/F6-ASI` 与原神 runtime alias 同 SHA，原 FileId `0x000000000000000000020000001b42ff` 和 6 硬链接保持，无 `.next`；核对的用户 INI / Rocket / 桥 / ReShade core 哈希未变 |
+| 游戏验收 | `PENDING_USER_TEST`；本轮没有启动 / 操作游戏，没有新候选的实际加载或视觉成功证据；旧局 loaded-memory 完整 SHA 未测 |
+
+新局全部固定证据在 `build/genshin-reshade-20261114/white-screen-exit-20261114-130257/`：原 session / dump、`provenance.json`、`dump-unwind.json`、`run-evidence.json`、`validation.json`、`build-identity.json` 和部署前后回执。真实核心宿主为 `OptiScaler/hooks/tests/on12-factory/`；这些检查不执行 NVIDIA SR / NR / FG，也不能替代游戏画面和性能。全量 CommonCore 的历史结果仍属于下面对应源码，本轮完成的是表内定向回归。
+
+## 原神 BeforeNR 接线与部署（2026-11-14，12:53 历史）
 
 目标顺序已接入 `SR → 游戏最终合成 → ReShade BeforeNR → NR → FG`。先确认本次 source / metadata / slot，再领取单次 source；冻结原 capture serial / epoch 后，在真实 present queue 等待捕获 fence，并以 BridgeScope 原始队列身份进入 `slot.nrFilter.BeforeNr`。该事务先于 NR 私有 allocator / list Reset；公共路径与原神共用 `FilterDepthCapture`，继续使用真实深度 snapshot / reader fence 退休。原神 BeforeNR 不再绕过公共入口。
 
