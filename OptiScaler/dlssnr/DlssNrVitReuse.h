@@ -245,25 +245,34 @@ class Filter
     // (the last launch of a skipped run was there, or is there when it is kept), or -1 when that launch was not in this call.
     // True when the call needs that treatment (something dropped, or a barrier to record); false = launch the call unchanged.
     // `roleOf(launch)` gives a launch's std::pair<Role, KernelSet>.
+    // A call that goes out unchanged never copies launches or allocates `kept`.
     template <class T, class RoleOfLaunch>
     bool Split(const T* launches, size_t count, RoleOfLaunch roleOf, std::vector<T>& kept, std::ptrdiff_t& gap)
     {
         bool any = false;
+        kept.clear();
+        gap = -1;
 
         for (size_t i = 0; i < count; ++i)
         {
             const std::pair<Role, KernelSet> rs = roleOf(launches[i]);
             const bool drop = Drop(rs.first, rs.second);
 
-            if (TakeGap())
+            const bool barrier = TakeGap();
+            if (!any && (drop || barrier))
             {
+                // Materialize only when the original call really changes.
+                // Drop/TakeGap still visit EVERY launch on the passthrough path.
+                kept.reserve(count);
+                kept.insert(kept.end(), launches, launches + i);
                 any = true;
+            }
+            if (barrier)
+            {
                 gap = (std::ptrdiff_t) kept.size();
             }
 
-            if (drop)
-                any = true;
-            else
+            if (any && !drop)
                 kept.push_back(launches[i]);
         }
 

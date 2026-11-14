@@ -1472,6 +1472,124 @@ void TestStabilizerIndependentAppearance(Fixture& gpu, Checks& checks)
     }
 }
 
+void TestStabilizerSilhouette(Fixture& gpu, Checks& checks)
+{
+    for (const bool fp16 : {false, true})
+        for (const bool longDetail : {false, true})
+            for (const float floor : {0.0f, 0.65f, 1.0f})
+                for (unsigned axis = 0; axis < 3; ++axis)
+                {
+                    auto c = FeedbackConstants();
+                    c.FeedbackStabilitySeconds = .2f;
+                    c.FeedbackStabilityFloor = floor;
+                    c.FeedbackStabilityClamp = .08f;
+                    if (!longDetail) c.FeedbackDurationSeconds = c.FeedbackStrength = 0;
+                    auto inputs = FlatInputs();
+                    for (UINT y=0; y<kHeight; ++y)
+                        for (UINT x=0; x<kWidth; ++x)
+                        {
+                            const float v=((axis==1 ? y : x)&1u) ? .2f : .6f;
+                            inputs[0].At(x,y)={v,.5f,.6f,1};
+                            inputs[1].At(x,y)={v+.06f,.5f,.6f,.73f};
+                        }
+                    c.FeedbackHistoryValid = 0;
+                    const auto seed = gpu.Run(inputs,c,fp16);
+                    inputs[2]=seed.secondary; inputs[3]=seed.birthContext;
+                    inputs[6]=seed.stability; inputs[7]=seed.stabilityContext;
+                    // Bilinear means match exactly; only source structure reveals
+                    // the vanished silhouette. This is real adjacent-frame history.
+                    Fill(inputs[0],{.4f,.5f,.6f,1});
+                    Fill(inputs[1],{.4f,.5f,.6f,.73f});
+                    Motion(inputs,axis==1 ? 0.0f : .5f,axis==0 ? 0.0f : .5f);
+                    c.FeedbackHistoryValid = 1;
+                    const auto result = gpu.Run(inputs,c,fp16);
+                    const std::string name="short stabilizer rejects vanished fractional silhouette"+
+                        std::string(fp16 ? " FP16" : " FP32")+" long="+std::to_string(longDetail)+
+                        " floor="+std::to_string(floor)+" axis="+std::to_string(axis);
+                    checks.Expect(std::abs(result.primary.Probe().r-inputs[1].Probe().r)<.0003f,name);
+                    checks.Expect(result.stability.Probe().a==0,name+" starts fresh lag");
+
+                    // A genuine correctly reprojected edge must still carry the
+                    // short residual, including with long-detail birth rejected.
+                    for (UINT y=0; y<kHeight; ++y)
+                        for (UINT x=0; x<kWidth; ++x)
+                        {
+                            const float coordinate=axis==0 ? float(x)-kProbeX : axis==1 ? float(y)-kProbeY :
+                                .5f*(float(x)-kProbeX+float(y)-kProbeY);
+                            const float old=std::clamp(.4f+.1f*coordinate,.1f,.8f);
+                            const float next=std::clamp(.4f+.1f*(coordinate+1),.1f,.8f);
+                            inputs[7].At(x,y)={old,.5f,.6f,1};
+                            inputs[0].At(x,y)={.5f*(old+next),.5f,.6f,1};
+                            inputs[1].At(x,y)={.5f*(old+next),.5f,.6f,.73f};
+                        }
+                    Motion(inputs,axis==1 ? 0.0f : .5f,axis==0 ? 0.0f : .5f);
+                    Fill(inputs[3],{.9f,.5f,.6f,.4f}); // Unrelated long birth is NOT short appearance.
+                    if (longDetail && floor==0)
+                    {
+                        inputs[3]=inputs[7];
+                        for (auto& pixel:inputs[3].pixels) pixel.a=.4f;
+                    }
+                    const auto edge=gpu.Run(inputs,c,fp16);
+                    checks.Expect(edge.primary.Probe().r>inputs[1].Probe().r+.01f,
+                        "short stabilizer preserves supported fractional edge independently of long birth");
+                    checks.Expect(edge.stability.Probe().a>0,"supported short edge carries real lag");
+                }
+
+    // Valid bilinear reprojection also includes 2D corners and single pixels,
+    // whose contrast is attenuated on both axes. Seed actual adjacent history
+    // and resample the source independently on the CPU, rather than hand-pick
+    // a centre colour that can hide an incorrect spatial gate.
+    const std::array<std::pair<float,float>,8> motions {{
+        {.25f,0.0f}, {0.0f,.75f}, {.5f,.5f}, {.25f,.75f}, {.75f,.25f},
+        {-.25f,-.75f}, {-.5f,.5f}, {.4f,.4f}
+    }};
+    for (const bool fp16 : {false,true})
+        for (const float floor : {0.0f,.65f,1.0f})
+            for (const bool point : {false,true})
+                for (const auto [dx,dy] : motions)
+                {
+                    auto c=FeedbackConstants();
+                    c.FeedbackDurationSeconds=c.FeedbackStrength=0;
+                    c.FeedbackStabilitySeconds=.2f;
+                    c.FeedbackStabilityFloor=floor;c.FeedbackStabilityClamp=.08f;
+                    auto inputs=FlatInputs();
+                    const int anchorX=int(kProbeX)+(dx>0 ? 1 : 0);
+                    const int anchorY=int(kProbeY)+(dy>0 ? 1 : 0);
+                    const auto source=[&](int x,int y) {
+                        const bool high=point ? x==anchorX && y==anchorY :
+                            (dx<0 ? x<=anchorX : x>=anchorX) && (dy<0 ? y<=anchorY : y>=anchorY);
+                        return high ? .6f : .2f;
+                    };
+                    for(UINT y=0;y<kHeight;++y)for(UINT x=0;x<kWidth;++x)
+                    {
+                        const auto value=source(int(x),int(y));
+                        inputs[0].At(x,y)={value,.5f,.6f,1};
+                        inputs[1].At(x,y)={value+.06f,.5f,.6f,.73f};
+                    }
+                    c.FeedbackHistoryValid=0;
+                    const auto seed=gpu.Run(inputs,c,fp16);
+                    inputs[2]=seed.secondary;inputs[3]=seed.birthContext;
+                    inputs[6]=seed.stability;inputs[7]=seed.stabilityContext;
+                    for(UINT y=0;y<kHeight;++y)for(UINT x=0;x<kWidth;++x)
+                    {
+                        const float px=float(x)+dx,py=float(y)+dy;
+                        const int ix=int(std::floor(px)),iy=int(std::floor(py));
+                        const float fx=px-ix,fy=py-iy;
+                        const float value=(1-fy)*((1-fx)*source(ix,iy)+fx*source(ix+1,iy))+
+                            fy*((1-fx)*source(ix,iy+1)+fx*source(ix+1,iy+1));
+                        inputs[0].At(x,y)={value,.5f,.6f,1};
+                        inputs[1].At(x,y)={value,.5f,.6f,.73f};
+                    }
+                    Motion(inputs,dx,dy);c.FeedbackHistoryValid=1;
+                    const auto result=gpu.Run(inputs,c,fp16);
+                    const std::string name="short stabilizer preserves correctly reprojected "+
+                        std::string(point?"point":"corner")+" motion="+std::to_string(dx)+","+std::to_string(dy)+
+                        " floor="+std::to_string(floor)+(fp16?" FP16":" FP32");
+                    checks.Expect(result.primary.Probe().r>inputs[1].Probe().r+.01f,name);
+                    checks.Expect(result.stability.Probe().a>0,name+" carries adjacent lag");
+                }
+}
+
 void TestStabilizerSurfaceAdmission(Fixture& gpu, Checks& checks)
 {
     const float nan=std::numeric_limits<float>::quiet_NaN();
@@ -1574,17 +1692,23 @@ int main(int argc, char** argv)
     try
     {
         std::filesystem::path shaderPath, referenceShaderPath;
-        bool appearanceOnly = false;
+        bool appearanceOnly = false, silhouetteOnly = false;
         for (int i = 1; i < argc; ++i)
         {
             const std::string arg = argv[i];
             if (arg == "--shader" && i + 1 < argc) shaderPath = argv[++i];
             else if (arg == "--reference-shader" && i + 1 < argc) referenceShaderPath = argv[++i];
             else if (arg == "--stability-appearance-only") appearanceOnly = true;
+            else if (arg == "--stability-silhouette-only") silhouetteOnly = true;
             else throw std::runtime_error("Unknown or incomplete test argument: " + arg);
         }
         Fixture gpu(shaderPath, referenceShaderPath);
         Checks checks;
+        if (silhouetteOnly)
+        {
+            TestStabilizerSilhouette(gpu,checks);
+            return checks.Finish();
+        }
         if (appearanceOnly)
         {
             TestStabilizerIndependentAppearance(gpu,checks);
@@ -1611,6 +1735,7 @@ int main(int argc, char** argv)
         TestTunableThresholds(gpu,checks);
         TestIndependentStabilizer(gpu,checks);
         TestStabilizerIndependentAppearance(gpu,checks);
+        TestStabilizerSilhouette(gpu,checks);
         TestStabilizerSurfaceAdmission(gpu,checks);
         gpu.ReportComparison();
         return checks.Finish();

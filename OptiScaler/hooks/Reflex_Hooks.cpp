@@ -2,6 +2,7 @@
 #include <runtime/ReflexQueueTiming.h>
 #include <runtime/ReflexReportPolicy.h>
 #include "Reflex_Hooks.h"
+#include "ReflexForwarding.h"
 #include <Config.h>
 #include <Util.h>
 
@@ -294,13 +295,12 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_Sleep(IUnknown* pDev)
     if (gameCall)
         _gameCalledReflex = true;
 
-    static thread_local bool skip = false;
     if (gameCall && State::Instance().activeFgOutput == FGOutput::DLSSG &&
         Config::Instance()->FGEnabled.value_or_default() &&
         Config::Instance()->FGDLSSGUseGamesReflexMarkers.value_or_default() && State::Instance().currentFG &&
         State::Instance().currentFG->IsActive() && !State::Instance().currentFG->IsPaused())
     {
-        if (!skip)
+        if (!reflex::forwarding::sleeping)
         {
             uint32_t frameCount = (uint32_t) _lastFrameId[SIMULATION_START] + 1;
 
@@ -311,9 +311,10 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_Sleep(IUnknown* pDev)
             {
                 LOG_TRACE("Sleep for frame {}", frameCount);
 
-                skip = true;
-                sleep(*frameToken);
-                skip = false;
+                {
+                    const auto forwarding = reflex::forwarding::Scope::Sleep();
+                    sleep(*frameToken);
+                }
 
                 // Once SL Sleep ran, never append another native Sleep, even
                 // if SL returned a failure. Preserve the existing return policy.
@@ -405,8 +406,6 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
 
     noteMarker(pSetLatencyMarkerParams->frameID, pSetLatencyMarkerParams->markerType, pDev);
 
-    static bool skip[20] = {};
-
     if (State::Instance().activeFgOutput == FGOutput::DLSSG && StreamlineProxy::IsD3D12Inited() &&
         Config::Instance()->FGEnabled.value_or_default() &&
         Config::Instance()->FGDLSSGUseGamesReflexMarkers.value_or_default() && State::Instance().currentFG &&
@@ -473,9 +472,7 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
             noMarker = true;
         }
 
-        auto index = (UINT) marker;
-
-        if (!noMarker && !skip[index])
+        if (!noMarker && !reflex::forwarding::Active(marker))
         {
             if (pSetLatencyMarkerParams->markerType == PRESENT_START && State::Instance().currentFG != nullptr)
             {
@@ -550,12 +547,13 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
                     markerStamp.markerFrame=static_cast<uint64_t>(*frameToken);markerStamp.markerFrameKnown=true;
                 }
             }
-            skip[index] = true;
             HookCpuTiming::Scope markerTiming(HookCpuTiming::Stage::FgPclMarker,collectMarker);
             const auto actualPclFrame=static_cast<uint32_t>(*frameToken);
-            const auto markerResult=StreamlineProxy::PCLSetMarker()(marker, *frameToken);
+            const auto markerResult=[&] {
+                const auto forwarding = reflex::forwarding::Scope::Marker(marker);
+                return StreamlineProxy::PCLSetMarker()(marker, *frameToken);
+            }();
             const auto markerWall=markerTiming.Finish();
-            skip[index] = false;
             if (zzzFrame)
             {
                 static std::atomic<unsigned> rows { 0 };

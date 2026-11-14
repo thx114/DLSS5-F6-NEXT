@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "FrameLimit.h"
+#include "FrameLimitTimer.h"
 
 #include "Config.h"
 // #include "hooks/D3D11Hooks.h"
@@ -17,21 +18,7 @@ inline uint64_t FrameLimit::get_timestamp()
 // https://learn.microsoft.com/en-us/windows/win32/sync/using-waitable-timer-objects
 inline int FrameLimit::timer_sleep(int64_t hundred_ns)
 {
-    static HANDLE timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-    LARGE_INTEGER due_time;
-
-    due_time.QuadPart = -hundred_ns;
-
-    if (!timer)
-        return 1;
-
-    if (!SetWaitableTimerEx(timer, &due_time, 0, NULL, NULL, NULL, 0))
-        return 2;
-
-    if (WaitForSingleObject(timer, 1000) != WAIT_OBJECT_0)
-        return 3;
-
-    return 0;
+    return frame_limit::TimerSleep(hundred_ns);
 };
 
 inline int FrameLimit::busywait_sleep(int64_t ns)
