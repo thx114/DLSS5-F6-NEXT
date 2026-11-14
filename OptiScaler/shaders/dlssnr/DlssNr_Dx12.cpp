@@ -2412,14 +2412,30 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
 
     ID3D12Resource* const uavs[kUavCount] = {
         OutTarget,
-        OutKeep != nullptr ? OutKeep : OutTarget,
+        OutKeep,
         OutTarget,
     };
 
     for (uint32_t i = 0; i < kUavCount; ++i)
-        CreateUnorderedAccessView(_device, uavs[i] ? uavs[i] : uavs[0], currentHeap.GetUavCPU(i), 0);
+    {
+        if (uavs[i]) CreateUnorderedAccessView(_device, uavs[i], currentHeap.GetUavCPU(i), 0);
+        else
+        {
+            // The kept-original slot is optional. A typed null view avoids
+            // binding a second writable view of the actual output.
+            D3D12_UNORDERED_ACCESS_VIEW_DESC view {};
+            view.Format=TranslateTypelessFormats(OutTarget->GetDesc().Format);
+            view.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;
+            _device->CreateUnorderedAccessView(nullptr,nullptr,&view,currentHeap.GetUavCPU(i));
+        }
+    }
 
-    if (!UploadNrConstants(_device, _constantBuffers[slot], InConstants))
+    // Keep the caller's encoding contract unchanged; this mode only removes
+    // the unused physical write when no independent original is requested.
+    auto dispatchConstants=InConstants;
+    if (InConstants.Mode==DlssNrMode_Encode && InConstants.Passthrough!=0 && OutKeep==nullptr)
+        dispatchConstants.Mode=DlssNrMode_EncodeProxyOnly;
+    if (!UploadNrConstants(_device, _constantBuffers[slot], dispatchConstants))
     {
         LOG_ERROR("[{0}] Failed to create a constants buffer", _name);
         return false;
@@ -4745,6 +4761,16 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     encodeParams.Width = width;
     encodeParams.Height = height;
 
+    // Passthrough writes identical values to proxy and kept original. Share
+    // only identical storage; decoded HDR and non-UAV copy-back keep their
+    // separate formats and destination. colorCopy stays read-only until reset.
+    const bool shareEncodedOriginal=encodeParams.Passthrough!=0 && targetSupportsUav &&
+        g_nr.colorCopy->GetDesc().Format==g_nr.hdrCopy->GetDesc().Format;
+    ID3D12Resource* const encodedOriginal=shareEncodedOriginal?g_nr.colorCopy:g_nr.hdrCopy;
+    const auto TransitionKeptOriginal=[&](D3D12_RESOURCE_STATES before,D3D12_RESOURCE_STATES after) {
+        if (!shareEncodedOriginal) Barrier(cmdList,g_nr.hdrCopy,before,after);
+    };
+
     TransitionTarget(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     if(frame.IndependentCommands) {
         GuideCapture::SampleToken token;
@@ -4762,7 +4788,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     }
     if (g_gpuTime) g_gpuTime->Mark(cmdList, DlssNrGpuTime::Point::EncodeBegin);
     if (!DispatchPass(cmdList, encodeParams, target, nullptr, nullptr, nullptr, exposureTex,
-                      g_nr.colorCopy, g_nr.hdrCopy))
+                      g_nr.colorCopy, shareEncodedOriginal?nullptr:g_nr.hdrCopy))
     {
         // Busy descriptors/upload failure recorded no current proxy. Never run
         // the model on the previous source left in persistent scratch textures.
@@ -4799,9 +4825,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // (Calibration pass removed: it produced only a menu suggestion nothing consumed, at the cost
     // of a 4096-thread dispatch, a readback and an nth_element every frame.)
 
-    Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    CalibrationCopyInput(cmdList, device, g_nr.hdrCopy);
+    TransitionKeptOriginal(D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    CalibrationCopyInput(cmdList, device, encodedOriginal);
 
     // Frame statistics diagnostic: on the frame it queued a sample, meter the proxy the encode just wrote (an
     // sRGB-encoded picture, so the tile means are of encoded luma) and queue that readback too. What the model
@@ -4887,8 +4913,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             {
                 Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                TransitionKeptOriginal(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 FinishColor(false);
                 g_nr.reset = true;
                 ReportSkipOnce("the current model input resize could not be recorded");
@@ -4965,8 +4990,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             // Never fall back to the wrong coordinate contract after a requested correction fails.
             ReportSkipOnce("guide coordinate normalization unavailable; leaving this picture unchanged");
             RestoreGuideInputs();
-            Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            TransitionKeptOriginal(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             if (reduced && (!spatial || replaceCorrection) && g_nr.colorSmall)
@@ -5131,8 +5155,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             // The frame is given up, not NR: put everything back as the next frame finds it, and run it ordinary.
             EdgeCompression::TurnOff(DlssNr::Spatial::Status::TurnedOffDispatch);
             g_nr.reset = true;
-            Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            TransitionKeptOriginal(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
@@ -5206,8 +5229,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         }
 
         RestoreGuideInputs();
-        Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        TransitionKeptOriginal(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Barrier(cmdList, g_nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         if (reduced && g_nr.colorSmall)
@@ -6522,7 +6544,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         // Pre-SR Color is not guaranteed to have UAV support. Write directly when legal; otherwise
         // resolve into hdrCopy while the original Color remains readable, then copy the result back.
-        ID3D12Resource* resolveOriginal = targetSupportsUav ? g_nr.hdrCopy : target;
+        ID3D12Resource* resolveOriginal = targetSupportsUav ? encodedOriginal : target;
         resolveParams.OriginalIsGameColour = targetSupportsUav ? 0u : 1u;
         ID3D12Resource* resolveTarget = targetSupportsUav ? target : g_nr.hdrCopy;
 
@@ -6532,8 +6554,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         }
         else
         {
-            Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            TransitionKeptOriginal(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
 
         composed = DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer, resolveOriginal, motionIn,
@@ -6648,8 +6669,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     DetailReuse::AfterResolve(cmdList);
     DetailHistory::AfterResolve(cmdList);
 
-    Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    TransitionKeptOriginal(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     if (spatial)
     {

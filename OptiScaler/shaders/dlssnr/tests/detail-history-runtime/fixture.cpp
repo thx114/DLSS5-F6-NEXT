@@ -1048,6 +1048,132 @@ static void BenchmarkHistory(const char* shader)
     for(size_t i=0;i<samples.size();++i)std::printf("BENCH sorted_sample=%zu gpu_ms=%.6f\n",i,samples[i]);
 }
 
+static void BenchmarkEncode(bool single,const char* shader)
+{
+    ComPtr<ID3D12Debug> debug;Hr(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)));debug->EnableDebugLayer();
+    World world(true,2144,1344,8,4);LoadComparisonShader(world.pass,shader);
+    Check(!world.pass.shaderOverride.empty(),"encode benchmark uses explicit production DXIL");
+    ComPtr<ID3D12Resource> keep;keep.Attach(CreateScratch(world.device.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT,2144,1344));
+    world.pass.buffers.push_back(keep);
+    D3D12_DESCRIPTOR_RANGE ranges[] {{D3D12_DESCRIPTOR_RANGE_TYPE_SRV,6,0,0,0},
+        {D3D12_DESCRIPTOR_RANGE_TYPE_UAV,3,0,0,6},{D3D12_DESCRIPTOR_RANGE_TYPE_CBV,1,0,0,9}};
+    D3D12_ROOT_PARAMETER parameter {};parameter.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    parameter.DescriptorTable={3,ranges};
+    D3D12_STATIC_SAMPLER_DESC sampler {};sampler.Filter=D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU=sampler.AddressV=sampler.AddressW=D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MaxLOD=D3D12_FLOAT32_MAX;sampler.ComparisonFunc=D3D12_COMPARISON_FUNC_ALWAYS;
+    D3D12_ROOT_SIGNATURE_DESC rootDesc {1,&parameter,1,&sampler,D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    ComPtr<ID3DBlob> rootCode,errors;Hr(D3D12SerializeRootSignature(&rootDesc,D3D_ROOT_SIGNATURE_VERSION_1,&rootCode,&errors));
+    Hr(world.device->CreateRootSignature(0,rootCode->GetBufferPointer(),rootCode->GetBufferSize(),IID_PPV_ARGS(&world.pass.root)));
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline {};pipeline.pRootSignature=world.pass.root.Get();
+    pipeline.CS={world.pass.shaderOverride.data(),world.pass.shaderOverride.size()};
+    Hr(world.device->CreateComputePipelineState(&pipeline,IID_PPV_ARGS(&world.pass.pipeline)));
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc {};heapDesc.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.NumDescriptors=11;heapDesc.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    ComPtr<ID3D12DescriptorHeap> heap,cpuClear;Hr(world.device->CreateDescriptorHeap(&heapDesc,IID_PPV_ARGS(&heap)));
+    heapDesc.NumDescriptors=1;heapDesc.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    Hr(world.device->CreateDescriptorHeap(&heapDesc,IID_PPV_ARGS(&cpuClear)));
+    world.pass.heaps.push_back(heap);world.pass.heaps.push_back(cpuClear);
+    const auto stride=world.device->GetDescriptorHandleIncrementSize(heapDesc.Type);
+    const auto handle=[&](unsigned slot){return D3D12_CPU_DESCRIPTOR_HANDLE{heap->GetCPUDescriptorHandleForHeapStart().ptr+SIZE_T(slot)*stride};};
+    for(unsigned i=0;i<6;++i)world.device->CreateShaderResourceView(world.input.Get(),nullptr,handle(i));
+    world.device->CreateUnorderedAccessView(world.fresh.Get(),nullptr,nullptr,handle(6));
+    D3D12_UNORDERED_ACCESS_VIEW_DESC nullView {};nullView.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
+    nullView.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;
+    world.device->CreateUnorderedAccessView(single?nullptr:keep.Get(),nullptr,single?&nullView:nullptr,handle(7));
+    world.device->CreateUnorderedAccessView(world.fresh.Get(),nullptr,nullptr,handle(8));
+    world.device->CreateUnorderedAccessView(world.input.Get(),nullptr,nullptr,cpuClear->GetCPUDescriptorHandleForHeapStart());
+    world.device->CopyDescriptorsSimple(1,handle(10),cpuClear->GetCPUDescriptorHandleForHeapStart(),heapDesc.Type);
+    DlssNrConstants InConstants {};InConstants.Mode=DlssNrMode_Encode;InConstants.Passthrough=1;
+    InConstants.Width=2144;InConstants.Height=1344;InConstants.WhitePoint=1;
+    const void* OutKeep=single?nullptr:keep.Get();
+#include "../../../../../build/common-core-tests/colour-dispatch-constants.inl"
+    D3D12_HEAP_PROPERTIES upload {};upload.Type=D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC bufferDesc {};bufferDesc.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Width=sizeof(dispatchConstants);bufferDesc.Height=bufferDesc.DepthOrArraySize=bufferDesc.MipLevels=1;
+    bufferDesc.SampleDesc.Count=1;bufferDesc.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ComPtr<ID3D12Resource> constants;Hr(world.device->CreateCommittedResource(&upload,D3D12_HEAP_FLAG_NONE,&bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(&constants)));world.pass.buffers.push_back(constants);
+    void* mapped=nullptr;Hr(constants->Map(0,nullptr,&mapped));std::memcpy(mapped,&dispatchConstants,sizeof(dispatchConstants));constants->Unmap(0,nullptr);
+    D3D12_CONSTANT_BUFFER_VIEW_DESC cbv {constants->GetGPUVirtualAddress(),UINT(sizeof(dispatchConstants))};
+    world.device->CreateConstantBufferView(&cbv,handle(9));
+    D3D12_QUERY_HEAP_DESC queryDesc {};queryDesc.Type=D3D12_QUERY_HEAP_TYPE_TIMESTAMP;queryDesc.Count=2;
+    ComPtr<ID3D12QueryHeap> queries;Hr(world.device->CreateQueryHeap(&queryDesc,IID_PPV_ARGS(&queries)));
+    world.pass.queryHeaps.push_back(queries);upload.Type=D3D12_HEAP_TYPE_READBACK;bufferDesc.Width=16;
+    ComPtr<ID3D12Resource> timestamps;Hr(world.device->CreateCommittedResource(&upload,D3D12_HEAP_FLAG_NONE,&bufferDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&timestamps)));world.pass.buffers.push_back(timestamps);
+    UINT64 frequency=0;Hr(world.queue->GetTimestampFrequency(&frequency));Check(frequency!=0,"encode timestamp clock known");
+    std::array<Recording,3> pool {world.New(),world.New(),world.New()};std::vector<double> samples;
+    for(unsigned n=0;n<100;++n)
+    {
+        auto& recording=pool[n%pool.size()];if(n>=pool.size())world.Reset(recording);
+        ID3D12DescriptorHeap* heaps[] {heap.Get()};recording.list->SetDescriptorHeaps(1,heaps);
+        if(!n)
+        {
+            const float value[] {.4f,.5f,.6f,1.f};
+            const D3D12_GPU_DESCRIPTOR_HANDLE gpu {heap->GetGPUDescriptorHandleForHeapStart().ptr+UINT64(10)*stride};
+            recording.list->ClearUnorderedAccessViewFloat(gpu,cpuClear->GetCPUDescriptorHandleForHeapStart(),world.input.Get(),value,0,nullptr);
+            Barrier(recording.list.Get(),world.input.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
+        recording.list->SetComputeRootSignature(world.pass.root.Get());recording.list->SetPipelineState(world.pass.pipeline.Get());
+        recording.list->SetComputeRootDescriptorTable(0,heap->GetGPUDescriptorHandleForHeapStart());
+        recording.list->EndQuery(queries.Get(),D3D12_QUERY_TYPE_TIMESTAMP,0);
+        recording.list->Dispatch((InConstants.Width+7)/8,(InConstants.Height+7)/8,1);
+        Barrier(recording.list.Get(),world.fresh.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        if(!single)Barrier(recording.list.Get(),keep.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        recording.list->EndQuery(queries.Get(),D3D12_QUERY_TYPE_TIMESTAMP,1);
+        recording.list->ResolveQueryData(queries.Get(),D3D12_QUERY_TYPE_TIMESTAMP,0,2,timestamps.Get(),0);
+        Barrier(recording.list.Get(),world.fresh.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        if(!single)Barrier(recording.list.Get(),keep.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        world.Execute(recording);world.Drain();
+        const D3D12_RANGE range {0,16};Hr(timestamps->Map(0,&range,&mapped));UINT64 ticks[2] {};
+        std::memcpy(ticks,mapped,sizeof(ticks));timestamps->Unmap(0,nullptr);
+        Check(ticks[1]>ticks[0],"encode interval comes from this completed submission");
+        if(n>=20)samples.push_back(1000.0*double(ticks[1]-ticks[0])/double(frequency));
+    }
+    // Validate actual production DXIL output after the timed samples. Input,
+    // proxy and optional original have the same FP16 stored bytes, not merely
+    // similar CPU colours. Exclude row padding from the comparison.
+    auto pixelRecording=world.New();const auto textureDesc=world.input->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};UINT64 planeBytes=0;
+    world.device->GetCopyableFootprints(&textureDesc,0,1,0,&footprint,nullptr,nullptr,&planeBytes);
+    planeBytes=(planeBytes+511)&~UINT64(511);bufferDesc.Width=planeBytes*(single?2u:3u);
+    ComPtr<ID3D12Resource> pixels;Hr(world.device->CreateCommittedResource(&upload,D3D12_HEAP_FLAG_NONE,&bufferDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&pixels)));world.pass.buffers.push_back(pixels);
+    ID3D12Resource* textures[] {world.input.Get(),world.fresh.Get(),keep.Get()};
+    for(unsigned i=0;i<(single?2u:3u);++i)
+    {
+        Barrier(pixelRecording.list.Get(),textures[i],i?D3D12_RESOURCE_STATE_UNORDERED_ACCESS:D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+        D3D12_TEXTURE_COPY_LOCATION from {};from.pResource=textures[i];from.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        D3D12_TEXTURE_COPY_LOCATION to {};to.pResource=pixels.Get();to.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        to.PlacedFootprint=footprint;to.PlacedFootprint.Offset=planeBytes*i;
+        pixelRecording.list->CopyTextureRegion(&to,0,0,0,&from,nullptr);
+    }
+    world.Execute(pixelRecording);world.Drain();Hr(pixels->Map(0,nullptr,&mapped));
+    const auto* data=static_cast<const unsigned char*>(mapped);
+    for(unsigned i=1;i<(single?2u:3u);++i)for(unsigned y=0;y<InConstants.Height;++y)
+        Check(std::memcmp(data+SIZE_T(y)*footprint.Footprint.RowPitch,
+            data+planeBytes*i+SIZE_T(y)*footprint.Footprint.RowPitch,SIZE_T(InConstants.Width)*8)==0,
+            "production encode preserves exact FP16 input storage");
+    pixels->Unmap(0,nullptr);
+    world.Reset(pixelRecording);for(auto& recording:pool)world.Reset(recording);
+    ComPtr<ID3D12InfoQueue> info;Hr(world.device.As(&info));
+    for(UINT64 i=0;i<info->GetNumStoredMessagesAllowedByRetrievalFilter();++i)
+    {
+        SIZE_T bytes=0;Hr(info->GetMessage(i,nullptr,&bytes));std::vector<unsigned char> storage(bytes);
+        auto* message=reinterpret_cast<D3D12_MESSAGE*>(storage.data());Hr(info->GetMessage(i,message,&bytes));
+        if(message->Severity==D3D12_MESSAGE_SEVERITY_CORRUPTION||message->Severity==D3D12_MESSAGE_SEVERITY_ERROR)
+            throw std::runtime_error(std::string("D3D12 encode validation: ")+message->pDescription);
+    }
+    for(size_t i=0;i<samples.size();++i)std::printf("BENCH encode source=%zu gpu_ms=%.6f\n",i+21,samples[i]);
+    std::sort(samples.begin(),samples.end());
+    const auto percentile=[&](double p){const double x=(samples.size()-1)*p;const auto lo=size_t(x);
+        return samples[lo]+(samples[std::min(lo+1,samples.size()-1)]-samples[lo])*(x-lo);};
+    std::printf("BENCH encode single=%u mode=%u work=2144x1344 format=FP16 synthetic_flat=true samples=%zu p50_ms=%.6f p95_ms=%.6f min_ms=%.6f max_ms=%.6f includes_readable_barriers=true d3d12_debug_layer=true gpu_based_validation=false errors=0 pixels_bitwise=true\n",
+        unsigned(single),dispatchConstants.Mode,samples.size(),percentile(.5),percentile(.95),samples.front(),samples.back());
+}
+
 static void StabilityOwnership()
 {
     World world;world.config.DlssNrPresentedTemporalStabilityMs.value=200;
@@ -1087,6 +1213,12 @@ static const char* cases[] {
 };
 int main(int argc, char** argv)
 {
+    if(argc==4&&std::string(argv[1])=="--benchmark-encode")
+    {
+        const std::string mode=argv[2];if(mode!="single"&&mode!="dual")return 2;
+        try {BenchmarkEncode(mode=="single",argv[3]);return 0;}
+        catch(const std::exception& error){std::fprintf(stderr,"FAIL benchmark-encode: %s\n",error.what());return 1;}
+    }
     if(argc==3&&std::string(argv[1])=="--benchmark-history")
     {
         try {BenchmarkHistory(std::string(argv[2])=="current"?nullptr:argv[2]);return 0;}

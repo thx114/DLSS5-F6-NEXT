@@ -1693,14 +1693,15 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
         return;
     }
 
-    if (gMode == 0)
+    if (gMode == 0 || gMode == 15)
     {
         float4 source = gSource.Load(int3(id.xy, 0));
         // Into the pass's working domain first (the Colour encoding override; nothing for Auto).
         float3 frame = max(DecodeGameColour(source.rgb), float3(0.0, 0.0, 0.0));
 
         // Kept so the resolve has the frame as it was, rather than having to reconstruct it.
-        gKeep[id.xy] = float4(frame, source.a);
+        if (gMode == 0)
+            gKeep[id.xy] = float4(frame, source.a);
 
         // Some games hand DLSS a frame that has already been through their tonemapper. The game says
         // which in its own DLSS creation flags, and converting one that needs no conversion is pure

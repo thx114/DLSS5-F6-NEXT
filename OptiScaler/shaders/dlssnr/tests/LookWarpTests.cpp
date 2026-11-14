@@ -45,6 +45,8 @@ struct Image
 {
     UINT width, height;
     std::vector<Pixel> pixels;
+    DXGI_FORMAT format=DXGI_FORMAT_R32G32B32A32_FLOAT;
+    std::vector<unsigned char> stored;
 
     Image(Pixel value = {}, UINT w = kWidth, UINT h = kHeight)
         : width(w), height(h), pixels(static_cast<size_t>(w) * h, value)
@@ -56,6 +58,52 @@ struct Image
     const Pixel& Probe() const { return At(kProbeX, kProbeY); }
 };
 using Inputs = std::array<Image, 6>;
+
+UINT PixelBytes(DXGI_FORMAT format)
+{
+    switch(format)
+    {
+    case DXGI_FORMAT_R32G32B32A32_FLOAT:return 16;
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:return 8;
+    case DXGI_FORMAT_R8G8B8A8_UNORM:case DXGI_FORMAT_R10G10B10A2_UNORM:return 4;
+    default:throw std::runtime_error("Unsupported fixture storage format");
+    }
+}
+float HalfFloat(uint16_t half)
+{
+    uint32_t sign=(uint32_t(half)&0x8000u)<<16;
+    uint32_t exponent=(half>>10)&31u,mantissa=half&1023u,bits;
+    if(exponent==0)
+    {
+        if(!mantissa)bits=sign;
+        else
+        {
+            int shift=0;while((mantissa&1024u)==0){mantissa<<=1;++shift;}
+            bits=sign|(uint32_t(127-14-shift)<<23)|((mantissa&1023u)<<13);
+        }
+    }
+    else if(exponent==31)bits=sign|0x7F800000u|(mantissa<<13);
+    else bits=sign|((exponent+112u)<<23)|(mantissa<<13);
+    float value;std::memcpy(&value,&bits,sizeof(value));return value;
+}
+Pixel StoredPixel(const unsigned char* bytes,DXGI_FORMAT format)
+{
+    if(format==DXGI_FORMAT_R32G32B32A32_FLOAT){Pixel value;std::memcpy(&value,bytes,sizeof(value));return value;}
+    if(format==DXGI_FORMAT_R16G16B16A16_FLOAT)
+    {
+        uint16_t half[4];std::memcpy(half,bytes,sizeof(half));
+        return {HalfFloat(half[0]),HalfFloat(half[1]),HalfFloat(half[2]),HalfFloat(half[3])};
+    }
+    if(format==DXGI_FORMAT_R8G8B8A8_UNORM)
+        return {bytes[0]/255.f,bytes[1]/255.f,bytes[2]/255.f,bytes[3]/255.f};
+    uint32_t packed;std::memcpy(&packed,bytes,sizeof(packed));
+    return {(packed&1023u)/1023.f,((packed>>10)&1023u)/1023.f,((packed>>20)&1023u)/1023.f,(packed>>30)/3.f};
+}
+struct RunOptions
+{
+    DXGI_FORMAT outputFormat=DXGI_FORMAT_R32G32B32A32_FLOAT;
+    bool encodeKeep=true,nullKeepUav=false,shareResolveOriginal=false;
+};
 
 bool Near(float a, float b)
 {
@@ -139,6 +187,7 @@ struct DispatchResult
 {
     Image primary;
     Image colourDepth;
+    unsigned executedMode=0;
 };
 
 class Fixture
@@ -167,8 +216,9 @@ public:
         // declaration. All production branch bodies/resources remain intact.
         // The unspecialized multi-mode CS faults this Windows WARP build on
         // first dispatch; these are the same mode-14 and resolve pixel paths.
-        for (unsigned mode : {1u, 14u})
+        for (unsigned mode : {0u,1u,2u,14u,15u})
         {
+            if(mode==15 && text.find("gMode == 15")==std::string::npos)continue;
             auto specialized = text;
             const auto anchor = specialized.find("float SkinColourWeight(");
             if (anchor == std::string::npos) throw std::runtime_error("Production mode anchor missing");
@@ -181,7 +231,7 @@ public:
                 std::cerr.write(static_cast<const char*>(errors->GetBufferPointer()),
                                 static_cast<std::streamsize>(errors->GetBufferSize()));
             RequireHr(result, "Compile production HLSL");
-            auto& shader = mode == 14 ? layerShader : resolveShader;
+            auto& shader = shaders[mode];
             RequireHr(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &shader),
                       "Create production compute shader");
             std::cout << "Production mode " << mode << " ready (" << code->GetBufferSize() << " bytes)" << std::endl;
@@ -194,7 +244,7 @@ public:
         RequireHr(device->CreateSamplerState(&desc, &sampler), "Create linear clamp sampler");
     }
 
-    DispatchResult Run(const Inputs& inputs, const Constants& constants)
+    DispatchResult Run(const Inputs& inputs, const Constants& constants,const RunOptions& options={})
     {
         if (!reportedFirstDispatch)
         {
@@ -206,18 +256,28 @@ public:
         std::array<ID3D11ShaderResourceView*, 6> rawViews {};
         for (size_t i = 0; i < inputs.size(); ++i)
         {
+            if(i==2 && options.shareResolveOriginal)
+            {
+                if(inputs[0].width!=inputs[2].width || inputs[0].height!=inputs[2].height ||
+                    inputs[0].format!=inputs[2].format)
+                    throw std::runtime_error("Shared resolve source must have identical storage");
+                textures[i]=textures[0];views[i]=views[0];rawViews[i]=views[i].Get();continue;
+            }
             const auto& input = inputs[i];
             auto desc = TextureDesc(input.width, input.height);
+            desc.Format=input.format;
             desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
             D3D11_SUBRESOURCE_DATA data {};
-            data.pSysMem = input.pixels.data();
-            data.SysMemPitch = input.width * static_cast<UINT>(sizeof(Pixel));
+            data.pSysMem = input.format==DXGI_FORMAT_R32G32B32A32_FLOAT?
+                static_cast<const void*>(input.pixels.data()):static_cast<const void*>(input.stored.data());
+            data.SysMemPitch = input.width * PixelBytes(input.format);
             RequireHr(device->CreateTexture2D(&desc, &data, &textures[i]), "Upload input texture");
             RequireHr(device->CreateShaderResourceView(textures[i].Get(), nullptr, &views[i]), "Create input SRV");
             rawViews[i] = views[i].Get();
         }
 
         auto desc = TextureDesc(constants.Width, constants.Height);
+        desc.Format=options.outputFormat;
         desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
         std::array<ComPtr<ID3D11Texture2D>, 2> outputs;
         std::array<ComPtr<ID3D11UnorderedAccessView>, 2> uavs;
@@ -230,17 +290,24 @@ public:
             context->ClearUnorderedAccessViewFloat(uavs[i].Get(), clear);
             rawUavs[i] = uavs[i].Get();
         }
+        if(options.nullKeepUav)rawUavs[1]=nullptr;
+
+        const auto& InConstants=constants;
+        const void* OutKeep=options.encodeKeep?this:nullptr;
+#include "colour-dispatch-constants.inl"
 
         D3D11_BUFFER_DESC bufferDesc {};
         bufferDesc.ByteWidth = static_cast<UINT>(sizeof(constants));
         bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         D3D11_SUBRESOURCE_DATA bufferData {};
-        bufferData.pSysMem = &constants;
+        bufferData.pSysMem = &dispatchConstants;
         ComPtr<ID3D11Buffer> buffer;
         RequireHr(device->CreateBuffer(&bufferDesc, &bufferData, &buffer), "Create constants buffer");
         auto* rawBuffer = buffer.Get();
         auto* rawSampler = sampler.Get();
-        context->CSSetShader(constants.Mode == 14 ? layerShader.Get() : resolveShader.Get(), nullptr, 0);
+        if(dispatchConstants.Mode>=shaders.size() || !shaders[dispatchConstants.Mode])
+            throw std::runtime_error("Fixture shader mode unavailable");
+        context->CSSetShader(shaders[dispatchConstants.Mode].Get(), nullptr, 0);
         context->CSSetConstantBuffers(0, 1, &rawBuffer);
         context->CSSetSamplers(0, 1, &rawSampler);
         context->CSSetShaderResources(0, static_cast<UINT>(rawViews.size()), rawViews.data());
@@ -249,8 +316,9 @@ public:
         context->ClearState();
 
         DispatchResult result;
+        result.executedMode=dispatchConstants.Mode;
         result.primary = Readback(outputs[0].Get());
-        if (constants.Mode == DlssNrMode_Encode)
+        if (constants.Mode == DlssNrMode_Encode || constants.Mode == DlssNrMode_EncodeProxyOnly)
             result.colourDepth = Readback(outputs[1].Get());
         return result;
     }
@@ -281,17 +349,24 @@ private:
         // Blocking Map observes real WARP output rather than a CPU reference.
         RequireHr(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Map WARP output");
         Image result({}, desc.Width, desc.Height);
+        result.format=desc.Format;
+        const auto pixelBytes=PixelBytes(desc.Format);
+        result.stored.resize(static_cast<size_t>(desc.Width)*desc.Height*pixelBytes);
         for (UINT y = 0; y < desc.Height; ++y)
-            std::memcpy(result.pixels.data() + static_cast<size_t>(y) * desc.Width,
+        {
+            auto* row=result.stored.data()+static_cast<size_t>(y)*desc.Width*pixelBytes;
+            std::memcpy(row,
                         static_cast<const char*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch,
-                        static_cast<size_t>(desc.Width) * sizeof(Pixel));
+                        static_cast<size_t>(desc.Width) * pixelBytes);
+            for(UINT x=0;x<desc.Width;++x)result.pixels[static_cast<size_t>(y)*desc.Width+x]=StoredPixel(row+x*pixelBytes,desc.Format);
+        }
         context->Unmap(staging.Get(), 0);
         return result;
     }
 
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
-    ComPtr<ID3D11ComputeShader> layerShader, resolveShader;
+    std::array<ComPtr<ID3D11ComputeShader>,16> shaders;
     ComPtr<ID3D11SamplerState> sampler;
     bool reportedFirstDispatch = false;
 };
@@ -405,6 +480,69 @@ bool ProductionResolveUav(bool sourceUav, bool separateInput, bool outputUav, bo
 #include "colour-destination.inl"
     return targetSupportsUav;
 }
+void SharedEncodedOriginal(Fixture& f,Fixture& baseline,Checks& checks)
+{
+    const float values[]={-0.125f,0.f,0.000000059604645f,0.00006103515625f,0.0039215686f,
+        0.499755859375f,0.500244140625f,0.99951171875f,1.f,1.125f,40.f,65504.f};
+    for(const auto format:{DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_FORMAT_R10G10B10A2_UNORM,
+                          DXGI_FORMAT_R16G16B16A16_FLOAT,DXGI_FORMAT_R32G32B32A32_FLOAT})
+    for(unsigned frame=0;frame<4;++frame)
+    {
+        Image source({},25,17);
+        for(size_t i=0;i<source.pixels.size();++i)
+            source.pixels[i]={values[(i+frame)%std::size(values)],values[(i*3+frame)%std::size(values)],
+                values[(i*5+frame)%std::size(values)],float((i+frame)%13)/12.f};
+        auto encode=Settings(0,true);encode.Mode=DlssNrMode_Encode;
+        encode.Width=source.width;encode.Height=source.height;
+        Inputs inputs {source,Image(),Image(),Image(),Image(),Image()};
+        RunOptions dualOptions;dualOptions.outputFormat=format;
+        auto sharedOptions=dualOptions;sharedOptions.encodeKeep=false;
+        const auto old=baseline.Run(inputs,encode,dualOptions);
+        const auto shared=f.Run(inputs,encode,sharedOptions);
+        const auto label="shared encode format="+std::to_string(format)+" source="+std::to_string(frame);
+        checks.Expect(old.primary.stored==old.colourDepth.stored,label+" old proxy/original bytes identical");
+        checks.Expect(shared.primary.stored==old.primary.stored,label+" candidate output matches old storage bitwise");
+        checks.Expect(shared.executedMode==DlssNrMode_EncodeProxyOnly && encode.Mode==DlssNrMode_Encode,
+            label+" optimized dispatch keeps original encoding contract");
+        checks.Expect(std::all_of(shared.colourDepth.stored.begin(),shared.colourDepth.stored.end(),
+            [](auto value){return value==0;}),label+" unused original UAV is not written");
+        auto aliasOptions=sharedOptions;aliasOptions.nullKeepUav=true;
+        checks.Expect(f.Run(inputs,encode,aliasOptions).primary.stored==old.primary.stored,
+            label+" production null keep UAV preserves pixels");
+
+        for(bool resized:{false,true})for(bool applyModel:{false,true})
+        {
+            auto oldProxy=old.primary,sharedProxy=shared.primary;
+            if(resized)
+            {
+                auto down=encode;down.Mode=DlssNrMode_Downsample;down.Width=13;down.Height=9;
+                auto downInputs=inputs;downInputs[0]=oldProxy;
+                oldProxy=f.Run(downInputs,down,dualOptions).primary;
+                downInputs[0]=sharedProxy;
+                sharedProxy=f.Run(downInputs,down,dualOptions).primary;
+                checks.Expect(oldProxy.stored==sharedProxy.stored,label+" reduced model input bytes match");
+            }
+            Image answer({0.17f+frame*0.03f,0.31f,0.53f,0.75f},oldProxy.width,oldProxy.height);
+            Inputs oldInputs {oldProxy,answer,old.colourDepth,Image(),Image(),Image()};
+            auto newInputs=oldInputs;newInputs[0]=sharedProxy;newInputs[2]=shared.primary;
+            auto resolve=encode;resolve.Mode=DlssNrMode_Resolve;resolve.ApplyModel=applyModel?1u:0u;
+            resolve.ModelWorkScale=resized?0.5f:1.f;
+            const auto previous=f.Run(oldInputs,resolve);
+            RunOptions resolveOptions;resolveOptions.shareResolveOriginal=!resized;
+            const auto current=f.Run(newInputs,resolve,resolveOptions);
+            checks.Expect(previous.primary.stored==current.primary.stored,
+                label+" resolve bytes match resized="+std::to_string(resized)+" model="+std::to_string(applyModel));
+        }
+    }
+    // Non-passthrough must keep two meanings, even if a caller omits OutKeep.
+    auto hdr=Settings(0,false);hdr.Mode=DlssNrMode_Encode;
+    Inputs inputs {Image({4.f,2.f,0.25f,0.37f}),Image(),Image(),Image(),Image(),Image()};
+    RunOptions requestedSingle;requestedSingle.encodeKeep=false;
+    const auto separate=f.Run(inputs,hdr,requestedSingle);
+    checks.Expect(separate.executedMode==DlssNrMode_Encode && separate.primary.stored!=separate.colourDepth.stored,
+        "HDR proxy and preserved original retain separate storage semantics");
+}
+
 void CurrentSourceResolve(Fixture& f, Checks& checks)
 {
     for (unsigned path = 0; path < 4; ++path) for (bool hdr : {false, true})
@@ -425,6 +563,7 @@ void CurrentSourceResolve(Fixture& f, Checks& checks)
             // is encoded separately, so raw game colour equals saved working colour.
             const Image gameCurrent = inputs[2];
             const struct { const Image* hdrCopy; } g_nr {&inputs[2]};
+            const Image* encodedOriginal=g_nr.hdrCopy;
             const Image* target = separateInput ? &stale : &gameCurrent;
             const bool targetSupportsUav = ProductionResolveUav(sourceUav, separateInput, outputUav, false);
 #include "colour-bindings.inl"
@@ -625,7 +764,9 @@ int main(int argc, char** argv)
             {
                 Fixture baseline(ReadSource(argv[1]));
                 FinalCompatibility(current, baseline, checks);
+                SharedEncodedOriginal(current,baseline,checks);
             }
+            else SharedEncodedOriginal(current,current,checks);
         }
         return checks.Finish();
     }

@@ -111,7 +111,7 @@ if ('NrReconfiguration' -in $suites.Name) {
     & $Python -B (Join-Path $root 'OptiScaler/dlssnr/tests/nr-reconfiguration/prepare.py') --emit
     if ($LASTEXITCODE -ne 0) { throw 'Cannot extract current NR reconfiguration implementation' }
 }
-if ('NrColourTransaction' -in $suites.Name -or 'NrLayerLookWarp' -in $suites.Name) {
+if ('NrColourTransaction' -in $suites.Name -or 'NrLayerLookWarp' -in $suites.Name -or 'NrDetailHistoryRuntime' -in $suites.Name) {
     & $Python -B (Join-Path $root 'OptiScaler/shaders/dlssnr/tests/colour-transaction/prepare.py')
     if ($LASTEXITCODE -ne 0) { throw 'Cannot extract current colour transaction implementation' }
 }
