@@ -1,6 +1,20 @@
 # F6 项目交接
 
-## 0. 当前续接：DLSS接入与持续反馈（2026-11-15）
+## 0. 当前续接：设备身份适配已部署（2026-11-15）
+
+先读 CURRENT-STATE 顶端。长期性能 goal 保持 **paused**；仅继续用户所报兼容问题，不重写 NR 细节算法或恢复已搁置生命周期项目。用户手动启动、操作和退出游戏，不改选择／配置／profiles／ASI，不催测。
+
+- 产品 `150f59008a837634d912b606a3888ba40d143750`／标记 `150f590`：公共录制和历史设备匹配统一为现有 native 身份适配，严格 `GetDevice == S_OK`；实际 queue/fence、Reset、代次、隔离守卫保持。841/47 COM CPU、18个独立WARP生命周期、30/191重配置和负控通过；shared未全跑。Release exit0／201秒，既有两项链接警告保持。
+- 已原位部署既有 `local/F6-ASI`，32,592,384 B／SHA256 `9B7D2154F0DF63DF524EF59BF4CAC414586141833624B07A9D85387D4CAABDD1`，mtime UTC `2026-11-14T21:28:05.8983606Z`；原FileId、6硬链接、9份受保护内容哈希不变，无.next。证据 `build/code-followup-20261115/device-identity-repair/delivery-result.json`。实际新局／画面尚未验证。
+- PID257628／`899d7ca` 已证明实际execution及私有槽GPU完成、源深度读者已完成，但阻塞token未关闭。04:55:46.187657参数变化要求模型重建，旧代次未退休后NR连续无写。用户确认调整位置“好像是结构强度”。身份修复消除已复现的源码误拒绝，但现场唯一根因及恢复仍待实机，不能把Completed替代Closed。
+- MXAO本局先被BeforeSR颜色门拒绝，尚未到深度绑定；实际低分辨率Color为TYPELESS，桥没传播原SRV视图／transfer语义。非HDR不证明G22，最终swapchain也不能授权此输入。后续先建立实际源视图→复制→本次共享输入的契约，再查深度通路；不改ReShade core，不把生成帧与源帧深度混用。
+- 无ReShade DLSS仍未解决。246464的F6日志无NGX，桥日志丢失；其目录的bridge-live-snapshot实际属于257628。257436桥创建成功而无Draw，但该局F6加载未知，不能据目录名下结论。桥产品仍19bc2c6、已含并推送当时核实的上游2db9787，本轮未改产品。缓存真实Draw入口的独立硬件探针像素正常却漏捕获，普通调用对照通过；不能据此断言游戏走缓存路径或盲加detour。探针在桥 `build-package-bridge/cached-context-probe/`。
+- 旧混合启动宿主未Draw／建交换链，不能证明绘制兼容。新 `compatibility-restoration/forhwnd-capture-20261115/` 使用同局配置副本（私有日志、ASI关闭），已证实两加载顺序及device-only后getter均实际创建F6 ForHwnd interop、保留RGBA像素并进入桥捕获；A/E/B接口本机同址。没有Present／FG／用户ASI或游戏验收。初始0xE06D7363异常仍未归因，失败留痕不删除；后续通过仅覆盖最终夹具相应路径。继续核对实际游戏创建与绘制入口，不扩大为整体无ReShade兼容结论。
+- 卡顿仍有长尾，连续NR段Reflex报告P50/P95=72.57/119.37ms；它不是完整含FG显示延迟。NR停写后变快不算优化；显示FPS、≤60ms均未验收。原始日志与统计在 `pid257628-reshade-final/`。
+
+下一自然新局读取150f590：确认实际Reset后token关闭、反馈发布推进、结构参数重建出现新ready。保留既有dirty `tools/runtime/Invoke-ExactGameEntry.ps1`、`pelican_bicycle.html`。当前构建和回归已完成，不因没有新局重复构建、重跑或切换用户配置。
+
+## 历史续接：DLSS接入与持续反馈（2026-11-15）
 
 先读 CURRENT-STATE 顶端。长期性能goal为 **paused**，仅处理用户最新两项兼容问题；不要恢复已归档生命周期重写，不改NR细节算法，不改用户选项／profile，不操控或启停游戏，不催测。
 

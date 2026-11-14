@@ -1,6 +1,26 @@
 # F6 当前状态
 
-## 当前：桥接 DLSS 与 ReShade 持续反馈（2026-11-15）
+## 当前：ReShade 设备身份适配已部署，游戏验收待定（2026-11-15）
+
+用户最新反馈仍为：无 ReShade 的桥＋F6 无 DLSS 输入；加 ReShade 后进入大世界细节反馈失效、调整“结构强度”附近滑条后 NR 掉效、卡顿、MXAO 无深度。长期性能 goal 保持 **paused**；本轮只处理上述兼容链与现存同局证据，不恢复已搁置的 Execute／Reset 重写、不改 NR 细节算法。游戏仍由用户手动启动、操作和退出，不改启动器选择、配置、profiles 或 ASI，不催测。
+
+**本轮产品保存点 `150f59008a837634d912b606a3888ba40d143750`，标记 `150f590`，已原位部署。** 公共 NR `SameDevice` 统一使用现有 `D3D12DeviceIdentity::Same`：支持已知 ReShade／Streamline 包装设备的实际 native 身份，两个 `GetDevice` 必须严格返回 `S_OK`；未知、空、异设备仍拒绝。历史路径委托同一实现，不改历史算法、队列、实际 execution fence、成功 Reset 或隔离条件。
+
+- **现场与候选的边界：** PID257628／`899d7ca` 的阻塞记录 source395（后为1395）、私有 group0/slot2：实际 execution fence 与私有槽 done 都已完成，`pending=false`、`sourceDepthFinished=true`，但 `tokenClosed=false`。源码退休 helper 原用严格 COM 身份，可能把包装设备与同一 native 设备误判不同；这是已复现的身份判断缺陷，尚不能把它认定为该局唯一根因。04:55:46.187657 的 `tuningChanged=true` 后等待旧 NR 代次，直到结束没有新模型 ready，符合用户所报滑条掉效。不得删除退休守卫或把 GPU 完成直接视为录制关闭。
+- **验证：** 新测试在产品修复前准确失败；修复后真实 COM／WRL 的 CPU 身份测试 841 检查／47 场景通过，恢复严格 COM 的负控失败；18 个独立 WARP DetailHistory 生产生命周期用例、NR 重配置 30 场景／191 检查通过，三个不安全退休负控均检出。shared 未全量重跑。独立只读复核无阻断。Release x64 exit0／201 秒，既有 C4744 和 LNK4098 警告仍在，未宣称零警告。
+- **部署：** DLL 32,592,384 B；SHA256 `9B7D2154F0DF63DF524EF59BF4CAC414586141833624B07A9D85387D4CAABDD1`；mtime UTC `2026-11-14T21:28:05.8983606Z`。`local/F6-ASI` 回执 `DEPLOYED_IN_PLACE`，原 FileId、6 条硬链接、核对的9份受保护文件哈希保持，无 `.next`。没有构建选择／配置调用，也没有查询或终止游戏进程。证据 `build/code-followup-20261115/device-identity-repair/delivery-result.json`。
+
+**仍未修复／验收的独立链：** PID257628 的6次 BeforeSR 都在深度绑定前以 `color-transfer-unknown-or-hdr`、`sdr=false` 拒绝，不能据此认定深度复制失败。桥的 `forced-off / flags=0xA` 只声明非 HDR；颜色为 RGBA8 TYPELESS，原 Color SRV 的 typed-view/transfer 语义没有随原值复制传到 NGX/F6。当前既无明确低分辨率颜色声明，也不满足现有 typed-format 门。不能用最终 swapchain 的 G22 声明授权低分辨率输入，不能直接设 `sdr=true`；应沿实际生产视图、复制和本次共享输入建立契约，再验证已有深度绑定。未改 ReShade core 或 FinalOutput/生成帧深度。
+
+无 ReShade：PID246464 已确认 F6 加载但完整 F6 日志无 NGX 调用；其目录内 `bridge-live-snapshot.log` 的 header 实为 **PID257628**，不得用于246464。PID257436 桥创建成功但无 `draw_hook_active`，该局没有 F6/ReShade 日志，组合及实际 F6 加载未知，目录名称不能作证明。桥仍为已推送的 `19bc2c6`；本轮未改桥产品代码。新隔离硬件探针证实：预先缓存真实 Draw callable 后，像素正常但绕过当前 vtable 捕获；普通调用对照通过。它证明现有测试覆盖缺口，**不证明游戏走此路径**。禁止据此盲目加函数 detour、截获 wrapper 外层或恢复内部 FSR 捕获。
+
+此前混合 `StartupDeviceProbe` 只有设备／QI／复制，没有 Draw 或交换链，不能作为绘制兼容证明。本轮新增隔离 ForHwnd 夹具，使用246464配置副本（只将日志指向私有目录并关闭控制台／异步日志／ASI，不改安装配置）；实际调用硬件 D3D11CreateDevice→2560×1600、SRGB、单缓冲、Flags2的CreateSwapChainForHwnd。PID252156（F6先）、189948（device-only后getter）、177164（桥先）均确认加载150f590、创建真实Dx11wDx12SC HWND、两次RGBA绘制和桥候选捕获通过。返回A、高版本E、往返base B在本机同址且Draw槽均属于桥，没有复现接口别名漏接。此夹具不加载用户ASI，不做Present/FG派发、显示FPS或游戏验收。初始两次并发及一次顺序运行在F6日志前以0xE06D7363退出；后续夹具增加异常报告后各目标路径通过，初始异常根因仍未知，失败记录与工具回执保留，不能据后续通过抹去。证据 `build/code-followup-20261115/compatibility-restoration/forhwnd-capture-20261115/summary.json`。
+
+同局卡顿统计：04:54:35.979–04:55:46.188 的1560个源调用间隔 P50/P95 为43.77/56.77 ms、最大268.06 ms，7次超过100 ms；128份去重 Reflex 报告 P50/P95 为72.57/119.37 ms。24份 NR 队列分段 P50 总段27.678 ms／模型26.108 ms，不含 SR/FG，不能当独占 GPU 活跃成本。重建后间隔缩短时 NR 已停在等待，不能作为同功能性能改善。显示 FPS、完整含 FG 延迟及≤60 ms 目标仍未验收。统计明细 `build/code-followup-20261115/pid257628-reshade-final/log-timing-analysis.json`。
+
+下一自然新局先确认 `150f590`，核对私有 token 实际关闭、反馈发布继续推进及结构参数重建后出现新 ready；没有新局不得宣布反馈、滑条、预览或性能恢复。保留 `Invoke-ExactGameEntry.ps1`、`pelican_bicycle.html` 既有 dirty。
+
+## 历史：桥接 DLSS 与 ReShade 持续反馈（2026-11-15）
 
 长期性能 goal 已核实为 **paused**。当前仅处理用户报告的“桥＋F6 检测不到 DLSS”和“桥＋F6＋ReShade 细节持续反馈拒绝”；不继续历史算法优化或已归档的 Execute／Reset 生命周期重写。用户手动启动、操作和退出游戏，不改启动器选项、配置、profiles 或 ASI，不催测。
 
