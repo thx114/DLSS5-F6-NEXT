@@ -1,0 +1,306 @@
+diff --git a/Dx11FsrBridge/CMakeLists.txt b/Dx11FsrBridge/CMakeLists.txt
+index 13270a6..f858884 100644
+--- a/Dx11FsrBridge/CMakeLists.txt
++++ b/Dx11FsrBridge/CMakeLists.txt
+@@ -390,7 +390,7 @@ if(DX11FSRBRIDGE_BUILD_TESTS)
+     add_executable(CreateRouteIntegrationTest tests/create-routing/Host.cpp)
+     fsrbridge_configure_test(CreateRouteIntegrationTest)
+     foreach(mode IN ITEMS independent nested success nested-success swapchain swapchain4
+-        resize-routing resize-routing-reversed warp)
++        resize-routing resize-routing-reversed warp wrapping-boundary wrapping-boundary-combined wrapping-boundary-retry)
+         add_test(NAME CreateRouteIntegration-${mode} COMMAND CreateRouteIntegrationTest
+             "$<TARGET_FILE:Dx11FsrBridge>"
+             "$<TARGET_FILE:CreateRouteProviderFirst>" "$<TARGET_FILE:CreateRouteProviderSecond>"
+diff --git a/Dx11FsrBridge/D3D11CreationScope.h b/Dx11FsrBridge/D3D11CreationScope.h
+new file mode 100644
+index 0000000..ba2f717
+--- /dev/null
++++ b/Dx11FsrBridge/D3D11CreationScope.h
+@@ -0,0 +1,25 @@
++#pragma once
++
++// 2026-11-14：实际 DLL 宿主检出 proxy 返回前内层对象已被装钩。两个创建 API
++// 共用一次观察事务，等包装器完成后再接入；不改变对象身份或每帧绘制路径。
++class D3D11CreationScope
++{
++    inline static thread_local const D3D11CreationScope *active_ = nullptr;
++    const D3D11CreationScope *previous_;
++
++public:
++    D3D11CreationScope() noexcept : previous_(active_)
++    {
++        active_ = this;
++    }
++
++    ~D3D11CreationScope()
++    {
++        active_ = previous_;
++    }
++
++    D3D11CreationScope(const D3D11CreationScope &) = delete;
++    D3D11CreationScope &operator=(const D3D11CreationScope &) = delete;
++
++    bool outermost() const noexcept { return previous_ == nullptr; }
++};
+diff --git a/Dx11FsrBridge/Dx11FsrBridge.cpp b/Dx11FsrBridge/Dx11FsrBridge.cpp
+index 540a1df..ad14dab 100644
+--- a/Dx11FsrBridge/Dx11FsrBridge.cpp
++++ b/Dx11FsrBridge/Dx11FsrBridge.cpp
+@@ -14,6 +14,7 @@
+ #include "CreateFunctionRoutes.h"
+ #include "ComMethodRoutes.h"
+ #include "InterfaceVtableLayout.h"
++#include "D3D11CreationScope.h"
+ #include "Fsr2FamilyTakeover.h"
+ #include "Il2CppCallSiteHook.h"
+ #include "TransparentJitterHook.h"
+@@ -15043,6 +15044,14 @@ void install_factory_hooks_from_device(ID3D11Device *device)
+     dxgi_device->Release();
+ }
+ 
++void observe_created_device(ID3D11Device *device, ID3D11DeviceContext *context)
++{
++    install_device_hooks(device);
++    install_factory_hooks_from_device(device);
++    install_context_hooks(context);
++    route_from_d3d11_device(device);
++}
++
+ HRESULT WINAPI hooked_create_device_and_swapchain(
+     IDXGIAdapter *adapter,
+     D3D_DRIVER_TYPE driver_type,
+@@ -15058,9 +15067,10 @@ HRESULT WINAPI hooked_create_device_and_swapchain(
+     ID3D11DeviceContext **context)
+ {
+     // 旧 On12 引导移除（旧方案隔离）。
++    D3D11CreationScope creation;
+     DXGI_SWAP_CHAIN_DESC effective_swapchain_desc {};
+     const DXGI_SWAP_CHAIN_DESC *effective_desc = swapchain_desc;
+-    if (g_config.native_ldr_swapchain_unorm && swapchain_desc != nullptr &&
++    if (creation.outermost() && g_config.native_ldr_swapchain_unorm && swapchain_desc != nullptr &&
+         swapchain_desc->BufferDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
+     {
+         effective_swapchain_desc = *swapchain_desc;
+@@ -15083,12 +15093,9 @@ HRESULT WINAPI hooked_create_device_and_swapchain(
+         feature_level,
+         context);
+ 
+-    if (SUCCEEDED(hr))
++    if (creation.outermost() && SUCCEEDED(hr))
+     {
+-        install_device_hooks(device != nullptr ? *device : nullptr);
+-        install_factory_hooks_from_device(device != nullptr ? *device : nullptr);
+-        install_context_hooks(context != nullptr ? *context : nullptr);
+-        route_from_d3d11_device(device != nullptr ? *device : nullptr); // 设备级路由补检
++        observe_created_device(device != nullptr ? *device : nullptr, context != nullptr ? *context : nullptr);
+         if (swapchain != nullptr && *swapchain != nullptr)
+         {
+             DXGI_SWAP_CHAIN_DESC created_desc {};
+@@ -15115,6 +15122,7 @@ HRESULT WINAPI hooked_create_device(
+     ID3D11DeviceContext **context)
+ {
+     // 旧 On12 引导移除（旧方案隔离）。
++    D3D11CreationScope creation;
+     const HRESULT hr = DeviceCreateRoutes::original()(
+         adapter,
+         driver_type,
+@@ -15127,12 +15135,9 @@ HRESULT WINAPI hooked_create_device(
+         feature_level,
+         context);
+ 
+-    if (SUCCEEDED(hr))
++    if (creation.outermost() && SUCCEEDED(hr))
+     {
+-        install_device_hooks(device != nullptr ? *device : nullptr);
+-        install_factory_hooks_from_device(device != nullptr ? *device : nullptr);
+-        install_context_hooks(context != nullptr ? *context : nullptr);
+-        route_from_d3d11_device(device != nullptr ? *device : nullptr); // 设备级路由补检
++        observe_created_device(device != nullptr ? *device : nullptr, context != nullptr ? *context : nullptr);
+         LOG_INFO(blog::cat::core, "hooked D3D11CreateDevice");
+     }
+     return hr;
+diff --git a/Dx11FsrBridge/tests/create-routing/Host.cpp b/Dx11FsrBridge/tests/create-routing/Host.cpp
+index d39a514..38121b7 100644
+--- a/Dx11FsrBridge/tests/create-routing/Host.cpp
++++ b/Dx11FsrBridge/tests/create-routing/Host.cpp
+@@ -95,11 +95,13 @@ int wmain(int argc, wchar_t **argv)
+         return EXCEPTION_EXECUTE_HANDLER;
+     });
+     const std::wstring mode = argv[6];
+-    const bool nested = mode == L"nested" || mode == L"nested-success";
+     const bool resize_routing = mode == L"resize-routing" || mode == L"resize-routing-reversed";
+     const bool hdr_swapchain = mode == L"swapchain4" || resize_routing;
+     const bool swapchain_mode = mode == L"swapchain" || hdr_swapchain;
+-    const bool success = mode == L"success" || mode == L"nested-success" || swapchain_mode;
++    const bool creation_boundary = mode == L"wrapping-boundary" || mode == L"wrapping-boundary-combined" ||
++        mode == L"wrapping-boundary-retry";
++    const bool nested = mode == L"nested" || mode == L"nested-success" || creation_boundary;
++    const bool success = mode == L"success" || mode == L"nested-success" || swapchain_mode || creation_boundary;
+     const HMODULE first = LoadLibraryW(argv[2]);
+     const HMODULE second = LoadLibraryW(argv[3]);
+     const HMODULE imports1 = LoadLibraryW(argv[4]);
+@@ -158,7 +160,56 @@ int wmain(int argc, wchar_t **argv)
+         belongs_to(bridge, reinterpret_cast<void *>(device2)) &&
+         belongs_to(bridge, reinterpret_cast<void *>(combined1)) &&
+         belongs_to(bridge, reinterpret_cast<void *>(combined2)), "both creation APIs actually enter production bridge");
+-    if (resize_routing)
++    if (creation_boundary)
++    {
++        if (mode == L"wrapping-boundary-retry")
++        {
++            for (const HMODULE provider : {first, second})
++                reinterpret_cast<void(WINAPI *)(BOOL)>(GetProcAddress(provider, "SetSuccess"))(FALSE);
++            expect(call_device(device2) == E_INVALIDARG, "failed nested creation retains exact failure");
++            for (const HMODULE provider : {first, second})
++                reinterpret_cast<void(WINAPI *)(BOOL)>(GetProcAddress(provider, "SetSuccess"))(TRUE);
++        }
++        ID3D11Device *device = nullptr;
++        ID3D11DeviceContext *context = nullptr;
++        HRESULT result = E_UNEXPECTED;
++        if (mode == L"wrapping-boundary-combined")
++        {
++            reinterpret_cast<void(WINAPI *)(BOOL)>(GetProcAddress(second, "SetCombinedUsesDevice"))(TRUE);
++            result = reinterpret_cast<decltype(&D3D11CreateDeviceAndSwapChain)>(combined2)(nullptr,
++                D3D_DRIVER_TYPE_NULL, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, nullptr,
++                nullptr, &device, nullptr, &context);
++        }
++        else
++            result = call_device(device2, &device, &context);
++        expect(result == S_OK && device && context, "outer wrapper creation succeeds");
++        const unsigned premature = reinterpret_cast<unsigned(WINAPI *)()>(
++            GetProcAddress(second, "GetEarlyObservation"))();
++        std::printf("methods changed before wrapper returned: %u\n", premature);
++        expect(premature == 0, "inner device, context and factory remain untouched during wrapping");
++        if (result != S_OK || !device || !context)
++            return 15;
++        expect(belongs_to(bridge, (*reinterpret_cast<void ***>(device))[3]),
++            "outer returned device is observed after wrapping");
++        D3D11_BUFFER_DESC desc {};
++        desc.ByteWidth = 16;
++        expect(device->CreateBuffer(&desc, nullptr, nullptr) == E_INVALIDARG,
++            "completed wrapper keeps matching receiver and original");
++        const auto native_context = reinterpret_cast<ID3D11DeviceContext *(WINAPI *)()>(
++            GetProcAddress(first, "GetContext"))();
++        expect(belongs_to(bridge, (*reinterpret_cast<void ***>(native_context))[13]) &&
++            !belongs_to(bridge, (*reinterpret_cast<void ***>(context))[13]),
++            "native execution is observed after return while proxy retains draw processing");
++        context->Draw(5, 1);
++        for (const HMODULE provider : {first, second})
++        {
++            expect(reinterpret_cast<unsigned(WINAPI *)()>(GetProcAddress(provider, "GetDraws"))() == 1,
++                "proxy and runtime each process the draw exactly once");
++            expect(reinterpret_cast<unsigned(WINAPI *)()>(GetProcAddress(provider, "GetWrongThis"))() == 0,
++                "construction boundary preserves exact COM receiver");
++        }
++    }
++    else if (resize_routing)
+     {
+         ID3D11Device *device = nullptr;
+         expect(call_device(device1, &device) == S_OK && device, "single provider creates device");
+diff --git a/Dx11FsrBridge/tests/create-routing/Provider.cpp b/Dx11FsrBridge/tests/create-routing/Provider.cpp
+index 7b3168d..bb07002 100644
+--- a/Dx11FsrBridge/tests/create-routing/Provider.cpp
++++ b/Dx11FsrBridge/tests/create-routing/Provider.cpp
+@@ -14,6 +14,8 @@ bool extended_context = false;
+ bool successful_swapchain = false;
+ bool hdr_swapchain = false;
+ bool return_wrapper_chain = false;
++bool combined_uses_device = false;
++std::atomic<unsigned> early_observation {};
+ struct Device
+ {
+     void **vtable;
+@@ -299,6 +301,29 @@ extern "C" __declspec(dllexport) void WINAPI SetInner(HMODULE module)
+     inner_module = module;
+ }
+ 
++extern "C" __declspec(dllexport) void WINAPI SetCombinedUsesDevice(BOOL enabled)
++{
++    combined_uses_device = enabled != FALSE;
++}
++
++extern "C" __declspec(dllexport) unsigned WINAPI GetMutatedMethods()
++{
++    return (device_object.vtable[3] != reinterpret_cast<void *>(&create_buffer)) +
++        (context_object.vtable[13] != reinterpret_cast<void *>(&draw)) +
++        (factory_object.vtable[10] != reinterpret_cast<void *>(&create_swapchain));
++}
++
++extern "C" __declspec(dllexport) unsigned WINAPI GetEarlyObservation()
++{
++    return early_observation.load();
++}
++
++void observe_before_wrapping()
++{
++    const auto mutated = reinterpret_cast<unsigned(WINAPI *)()>(GetProcAddress(inner_module, "GetMutatedMethods"));
++    early_observation += mutated();
++}
++
+ extern "C" __declspec(dllexport) unsigned WINAPI GetCalls()
+ {
+     return calls.load();
+@@ -317,6 +342,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI FixtureCreateDevice(
+         const HRESULT expected = successful ? S_OK : E_ABORT;
+         if (!inner || inner(adapter, driver, software, flags, levels, count, sdk, device, level, context) != expected)
+             return E_UNEXPECTED;
++        if (successful)
++            observe_before_wrapping();
+     }
+     if (successful)
+     {
+@@ -337,11 +364,34 @@ extern "C" __declspec(dllexport) HRESULT WINAPI FixtureCreateDeviceAndSwapChain(
+     ++calls;
+     if (inner_module != nullptr)
+     {
+-        const auto inner = reinterpret_cast<decltype(&D3D11CreateDeviceAndSwapChain)>(
+-            GetProcAddress(inner_module, "D3D11CreateDeviceAndSwapChain"));
+-        if (!inner || inner(adapter, driver, software, flags, levels, count, sdk,
+-            desc, swapchain, device, level, context) != E_ABORT)
++        HRESULT result = E_UNEXPECTED;
++        if (combined_uses_device)
++        {
++            const auto inner = reinterpret_cast<decltype(&D3D11CreateDevice)>(
++                GetProcAddress(inner_module, "D3D11CreateDevice"));
++            if (inner)
++                result = inner(adapter, driver, software, flags, levels, count, sdk, device, level, context);
++        }
++        else
++        {
++            const auto inner = reinterpret_cast<decltype(&D3D11CreateDeviceAndSwapChain)>(
++                GetProcAddress(inner_module, "D3D11CreateDeviceAndSwapChain"));
++            if (inner)
++                result = inner(adapter, driver, software, flags, levels, count, sdk,
++                    desc, swapchain, device, level, context);
++        }
++        if (result != (successful ? S_OK : E_ABORT))
+             return E_UNEXPECTED;
++        if (successful)
++            observe_before_wrapping();
++    }
++    if (successful)
++    {
++        if (device)
++            *device = reinterpret_cast<ID3D11Device *>(&device_object);
++        if (context)
++            *context = reinterpret_cast<ID3D11DeviceContext *>(&context_object);
++        return S_OK;
+     }
+     return static_cast<HRESULT>(FIXTURE_RESULT);
+ }
+diff --git a/docs/OPEN-ISSUES.md b/docs/OPEN-ISSUES.md
+index fb13352..c7bc365 100644
+--- a/docs/OPEN-ISSUES.md
++++ b/docs/OPEN-ISSUES.md
+@@ -13,6 +13,11 @@
+ 
+ - **DX11 FSR2 导出层路线**：是否把 FSR2 以导出层形式暴露，至今未定案。
+ - **OptiScaler `Dx11wDx12` 开启帧生成会闪退**：现象稳定复现，根因未定位。
++- **GIMI 与桥共同加载的启动退出**：用户已确认单独 GIMI 能启动，共同加载仍有启动退出，
++  本局尚无异常调用栈，不能沿用其他加载组合的归因。`D3D11CreationScope.h` 与两个创建入口
++  现将对象观察推迟至最外层包装返回；实际 DLL 宿主覆盖内层方法身份、跨 API 嵌套及失败重试，
++  但尚未通过真实 GIMI 新局。需要绑定同局 PID、实际模块身份与异常栈后继续定位，
++  不能用离线创建边界用例宣称稳定性或性能改善。
+ - **COM 对象同址重建的 Hook 身份与退休**：`Dx11FsrBridge.cpp` 的 `clone_and_patch_vtable` 和
+   `ensure_context_device_texture_hook` 只按裸地址记录安装成功，没有对象销毁的退休入口。设备、
+   context、factory 或 swapchain 销毁后复用地址，可能跳过新对象的安装，已发布的克隆表也一直保留。

@@ -1,6 +1,6 @@
 # F6 当前状态
 
-更新：2026-11-14。BeforeSR 深度效果、LAUNCHPAD / MXAO、内置 GIMI 公共入口与 loader 修复已完成源码集成、离线验证和 DLL 原位部署。用户新局已确认加载 `44380f8`，但启动仍有退出；外部 FSR 桥的提供者与 COM 转发修复现已原位部署。**新桥的 Rocket / GIMI 游戏稳定性、画面和性能仍待用户新局验收。** 本轮没有修改 `F6-HANDOFF.md`。
+更新：2026-11-14。BeforeSR 深度效果、LAUNCHPAD / MXAO、内置 GIMI 公共入口与 loader 修复已完成源码集成、离线验证和 DLL 原位部署。用户已确认仅 Rocket / GIMI 能启动，无需重复该对照。10:54 的仅桥勾选局仍退出，不能套用 08:54 混合局的 F6 / ReShade 调用栈；外部桥最新的创建边界修复已于 11:23（UTC+08）原位部署，SHA256 `4BC59AD0…`。**本候选的 Rocket / GIMI 游戏稳定性、画面和性能仍待用户新局验收。** 本轮没有修改 `F6-HANDOFF.md`。
 
 产品树：`D:/CODE/DLSS5_NEXT-workers/f6-rewrite`，分支 `codex/f6-rewrite`。最终构建源码保存点为 `44380f86f4611f51e9c08de77e8668eab0f4f3f4`（`Fix BeforeSR depth effects and native hook coexistence`）；后续维护文档提交不改变该构建身份。游戏由用户手动操作；未修改启动器选择、用户 INI / preset / profiles 或 ASI，未推送远端。
 
@@ -76,6 +76,16 @@ LAUNCHPAD 为本机 MXAO 提供基础 / 平滑法线，需要当前深度。它�
 08:54 局的真实 dump 已把该次访问冲突绑定到旧桥原方法 / receiver 错配，具体见下节；更早的 `0xC0000135` 仍无同等调用栈证据，不能归为相同根因。新桥加载及启动稳定性仍需用户手动新局。
 
 ## 已锁定游戏证据与待验收
+
+### 最新：仅桥失败局与 GIMI 创建边界
+
+2026-11-14 10:54:47（UTC+08）PID242576，12.4 秒后 `0xC0000005`。Rocket 配置的插件顺序为桥 / F6 / ReShade，启用值 `1|0|0`；本局无新的 F6 / ReShade 日志或加载证据，实际桥日志在本局截断为空。session 的 `mod` 清单为候选路径，不能据此声称 F6 实际加载。证据副本及逐文件 SHA 位于 `bridge-only-1054-20261114/`；此时磁盘桥为 `94D3B633…`，不等于已核对其加载内存身份。本局没有异常栈，根因仍未知。
+
+用户指定的 `thx114/genshin_fsr_brigde` 远端固定源码为 `2c8a91e98d8d93a7ea4a9375c1402c75b9aa4848`；本地历史树 HEAD 为 `366e778221f5b0521ba9c95838f1e731d9db26db`，另有 47 条状态，保持不动。只借鉴本地旧桥的嵌套创建隔离概念，未复制其实现、DLL 黑名单、全局 original、固定长度虚表、加载器或同步读回。旧树的卡顿体感与静态成本点不作为本候选性能结论。
+
+外部桥源码保存点 `5ce2efbf4651a4df7d5e3bd1b0ccfe6a1f45fd5b` 将两个 D3D11 创建 API 纳入同一线程 scope：嵌套调用保持原参数和返回值，最外层包装完成后统一观察返回的设备 / 工厂 / context。原有标准 QI 的执行 context 接入与代理绘制路径保留，未改变每帧路径。新宿主在包装器仍未返回时检查方法身份：旧 `94D3` 在三个用例中分别有 3 项提前改写，新候选均为 0；覆盖 Device → Device、Combined → Device 和失败后重试。combined 用例未创建真实 swapchain，代理 fixture 未执行真实 GIMI BeforeDraw / AfterDraw。首次编译的辅助函数声明顺序错误已修正，失败日志保留。
+
+`bridge-creation-boundary-final2.log` 确认实际重编生产 CPP 和新头，Release x64 / NGX ON / release runtime ON / diagnostics OFF，18/18 CTest 通过，包含此前 15 项。只读独立复核无已知源码阻断。最终 DLL 815,616 B，SHA256 `4BC59AD014795022A2E11A91F7E994A043507F76B68B87EBC114FBC17F3E4883`，11:23 原位覆盖既有 `temp3/Dx11FsrBridge (2).dll`，FileId `0x000000000000000000040000001d8630` 和两条硬链接保留，两别名哈希一致，无 `.next`。桥 INI、Rocket 配置、ReShade core 和 F6 DLL 哈希未变，未操作游戏。详见 `bridge-creation-boundary-result.json`、`bridge-creation-boundary-deployment.json` 与 installed-before / after；可重建差异为桥补丁目录的第二个补丁。此回归证明创建时机改正，不证明本次游戏启动崩溃已解决。
 
 下述会话时间为记录中的 UTC+08，不再追加八小时；均为本轮部署之前的旧候选，不能代替新版本验收。完整统计和 SHA 清单见兼容性文档及 `locked-files.json`。
 

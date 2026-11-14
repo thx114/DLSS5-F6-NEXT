@@ -2,6 +2,8 @@
 
 更新：2026-11-14（UTC+08）。本文以本机固定核心、当前 F6 源码、真实 Windows / WARP 测试和已锁定的用户游戏日志为依据。新候选的游戏画面、Rocket 退出与性能仍待用户新局验收；不更新 `F6-HANDOFF.md`。
 
+最新纠正：用户已确认仅 Rocket / GIMI 可启动。10:54 PID242576 的 Rocket 插件启用值为 `1|0|0`（桥开、F6 / ReShade 关），12.4 秒后 `0xC0000005`，没有本局 F6 / ReShade 加载证据；不能套用 08:54 PID240612 混合局的异常栈。外部桥创建边界候选 `5ce2efb` 已于 11:23 原位部署，SHA256 `4BC59AD0…`，18/18 离线回归通过，游戏验收仍待新局。完整身份见 [当前状态](CURRENT-STATE.md#最新仅桥失败局与-gimi-创建边界)。
+
 最终源码 `44380f86f4611f51e9c08de77e8668eab0f4f3f4` 的 Release x64 已构建并原位部署到既有 `local/F6-StarRail-GapPacing`、`local/F6-ASI`：SHA256 `082361809BA0256E1AD898CFE280AC21610F9601E59AB680B11191E8380A5F49`，32,540,672 B。两目标 FileId 和 2 / 6 个硬链接不变，核对的 INI / ReShade core 哈希不变，本轮没有 `.next`。磁盘回执为 `f6-installed-after-final.json`；完整验证与实际加载边界见 [当前状态](CURRENT-STATE.md)。
 
 ## 当前实现
