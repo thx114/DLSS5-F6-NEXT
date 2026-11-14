@@ -1,5 +1,19 @@
 # F6 项目交接
 
+## 0. 当前续接（2026-11-15）
+
+当前部署 **`1f07b0b464be381951cd9fe220507ccbe525f44e`** / `1f07b0b`，DLL **32,599,552 B / SHA256 `D6976017E368FEC38F6021C4EC2CED619202CFF741262E70398BE5AB05C908DD`**，mtime UTC `2026-11-14T17:13:38.9097987Z`。Release exit0 /98秒，UTC17:17已原位覆盖既有local/F6-ASI，原FileId、6硬链接和核对的6份配置/内容哈希保持，无.next；2084项构建输入及946导出名称核对通过。优先读CURRENT-STATE顶部，以下旧身份不能覆盖本条。
+
+本版修短稳定器双线性均值掩盖消失轮廓，同时以当前3×3范围/实际footprint最强tap保留正确重投影的corner和point；不改ABI、绑定或退休。Reflex marker共享skip改TLS+RAII，限帧timer归调用线程并退出关闭；ViT原样launch不复制/分配输出数组。生产HLSL正向4197、28生命周期及3实卡DXIL场景通过；cross-only负控准确检出96项有效细节误拒绝。定向Reflex/FG pacing/源调度、31转发、6712 ViT、48并发timer通过，shared未全量重跑。实卡平坦阶段当前/旧/当前GPU P50 2.475008/2.432512/2.478080ms，增加约0.044ms；不是游戏FPS或完整Reflex。
+
+**用户已答“稍后再测，先继续代码工作”。** 不重复隐藏FG宿主、不再催测；当前新局加载、细节画面、ReShade执行与完整Reflex≤60ms未验收，旧约101–113ms保持未达标。游戏启动/操作/退出仍仅用户完成，不改选项、profile、ASI或构建选择。当前goal继续active，不能因这次拒绝立即手测而设blocked或完成。
+
+下一代码项详见[F6-SUBMISSION-LIFETIME.md](F6-SUBMISSION-LIFETIME.md)：公共NR提交post错认Reset后的代次，以及CurrentOutput、Late capture、OrderedHistory、coverage、SceneCut等独立消费者的同一窗口，必须整体闭合。KernelProfile的90次evaluation完成假设仍未修，尚未添加局部fence胶水。不要只换factory queue，也不要先跨队列移动SR而漏掉BeforeSR、guides、source资源及共享cache所有权。审计发现不代表已确定旧局110ms根因。
+
+本轮证据`build/code-followup-20261115/`，身份与测试清单见CURRENT-STATE。保留`tools/runtime/Invoke-ExactGameEntry.ps1`及`pelican_bicycle.html`既有dirty；本轮所有只读Sol high均已关闭。本版产品代码已保存，不重复无改动的构建、已通过测试或部署。
+
+## 历史：BeforeNR授权部署
+
 ## 0. 当前续接（2026-11-14T12:53Z）
 
 当前部署产品 **`f4e65ad58ec3d09becbc8b0935fe4d1747ab7d67`** / `f4e65ad`，DLL **32,584,704 B / SHA256 `B0B5C60B44DF9BCC8DA74A32A9EFE8371B132DCF7D7EC5CFBC1C0701BD50AE15`**，mtime UTC `2026-11-14T12:50:26.7831915Z`；Release exit0 /67秒。12:52Z原位覆盖既有`local/F6-ASI`，原FileId和6硬链接、核对的6配置/内容哈希保持，无`.next`。保留此前细节稳定/深度复用/SDR单写与54b422f的owning SDK输入观察；详情优先读CURRENT-STATE顶部。

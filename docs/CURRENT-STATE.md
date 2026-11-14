@@ -1,5 +1,22 @@
 # F6 当前状态
 
+## 当前：轮廓稳定与线程归属修复（2026-11-15）
+
+产品保存点 **`1f07b0b464be381951cd9fe220507ccbe525f44e`**，嵌入标记 `1f07b0b`。Release x64 exit0 / 98秒；DLL **32,599,552 B / SHA256 `D6976017E368FEC38F6021C4EC2CED619202CFF741262E70398BE5AB05C908DD`**，mtime UTC `2026-11-14T17:13:38.9097987Z`。UTC17:17 原位覆盖既有 `local/F6-ASI`，部署回执 `DEPLOYED_IN_PLACE`；原 FileId `0x000000000000000000020000001b42ff`、6条硬链接和核对的6份配置/内容哈希保持，无 `.next`。构建前后2084项输入哈希一致，946个导出名称与先前安装DLL一致。本节覆盖下方历史部署身份。
+
+- **细节稳定：** 短稳定器现在检查紧邻源帧 t7 的实际采样跨度，拒绝双线性均值恰好相同的消失轮廓。floor 不覆盖结构失配。复用长历史已验证的当前四邻；cross 判据将拒绝时，再以当前3×3范围和本次footprint最强tap补足二维拐角/单像素的采样衰减。平坦路径不增加纹理读取；不改绑定、常量ABI或退休权限。DXIL/嵌入头字节一致，重新生成的Vulkan字节码不变。
+- **Reflex与调度：** PCL递归保护从进程共享数组改为按SDK枚举大小的TLS；Sleep和marker均以RAII恢复嵌套状态。限帧节拍和自动复位timer归同一线程，线程退出关闭HANDLE。ViT `Split` 仍逐项执行原有Drop/TakeGap，仅实际需要改链时物化输出数组；原样提交不分配、不复制launch。timer竞态仅在启用限帧且并发时成立，不能解释旧cap=0局。
+- **已验证：** 生产HLSL/WARP正向4197项检查通过，包含长历史开关、floor 0/.65/1、FP16/FP32、三轴消失轮廓及独立CPU双线性重投影的corner/point。单独恢复cross-only的负控336项中96项预期失败，准确捕获有效细节被误拒绝；此前只做cross的候选从未部署。28个历史生命周期场景与3个NVIDIA `10DE:28E0`/嵌入生产DXIL场景通过。Reflex保护31项、ViT等价与原样零分配6712项、真实并发timer48次、Reflex计时/报告与FG pacing/源调度定向回归通过；shared未全量重跑，未运行游戏或Vulkan实卡。
+- **阶段成本：** 同宿主、2144×1344工作图、1536×960 guides、平坦合成输入，当前/旧/当前各80样本GPU P50为 **2.475008 / 2.432512 / 2.478080 ms**；本夹具增加约 **0.044 ms**。D3D12 debug errors=0、GBV关闭，exe和两版CSO哈希前后绑定。不能将阶段成本当游戏FPS或完整Reflex改善。
+
+**用户已明确“稍后再测，先继续代码工作”。** 不再催测或运行隐藏FG宿主；只由用户操作游戏/选项。本版实际加载、细节画面、ReShade游戏执行、FPS与完整Reflex≤60ms仍未验收，旧约101–113ms保持未达标。保留SR/NR/FG、用户配置、ASI与既有dirty；没有拆分生产queue。
+
+下一代码项为 [Execute提交与录制代次闭包](F6-SUBMISSION-LIFETIME.md)：已确认公共post按当前裸list查找代次，Execute之后成功Reset但post迟到可能错认旧/新代次；各独立capture/readback也须同步处理。KernelProfile的“90次evaluation即完成”仍未修，不能先接一个不完整的fence判断后宣称安全。此问题未被证明是旧局延迟或残影根因，代码仍保持原行为，须完整实现和定向验证后另行构建。
+
+本轮证据 `build/code-followup-20261115/`：`artifact.json`、`shader-identity.json`、`source-before-build.json`、`build.log`、`deployment.json`、`installed-{before,after}.json`、`protected-{before,after}.json`、`history-corner-regression.log`、`history-runtime.log`、`history-hardware.log`、`pacing.log`、`source-scheduling.log`、`benchmark-*.log`及`benchmark-identity.json`。两项旧稳定器负控和新轮廓/拐角负控保存在`build/common-core-tests/NrDetailHistoryWarp/`。本轮只读Sol high均由当前主会话创建并关闭，未复用旧会话或过期实例。
+
+## 历史：BeforeNR同源颜色授权
+
 更新：**2026-11-14T12:53Z**。当前产品保存点 **`f4e65ad58ec3d09becbc8b0935fe4d1747ab7d67`**，保留细节稳定、深度复用、SDR 单写和 `54b422f` 的实际 SDK Present 后 owning fence 观察，补齐 BeforeNR 的同源颜色授权。Release x64 exit0，67秒；DLL **32,584,704 B / SHA256 `B0B5C60B44DF9BCC8DA74A32A9EFE8371B132DCF7D7EC5CFBC1C0701BD50AE15`**，嵌入标记 `f4e65ad`，mtime UTC `2026-11-14T12:50:26.7831915Z`。12:52Z 原位部署既有 `local/F6-ASI`；原 FileId `0x000000000000000000020000001b42ff`、6 条硬链接和核对的 6 份配置/内容哈希保持，无 `.next`。本节覆盖以下旧部署身份。
 
 - BeforeNR 原本已能取得最终颜色；缺口是滤镜授权，而非缺少私有颜色纹理。统一 `SwapchainColorSpace` 严格检查本链读取成功、长度精确且明确 G22/P709。桥的成功 SetColorSpace1 声明绑定实际 `_real` 源；BridgeScope 按本次原 buffer、child buffer、线程/epoch 与真实 copy queue/fence 核对后读取源声明。删除公共 BeforeNr 的格式推断 `sdr` 入参，不借 child 输出声明授权原图。

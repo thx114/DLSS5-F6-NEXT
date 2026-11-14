@@ -1,5 +1,7 @@
 # F6 运行状态
 
+2026-11-15 当前：`local/F6-ASI` 已原位部署 **`1f07b0b` / SHA256 `D6976017E368FEC38F6021C4EC2CED619202CFF741262E70398BE5AB05C908DD`**（32,599,552 B；构建mtime UTC2026-11-14T17:13:38Z）。修消失轮廓短稳定污染，保留正确双线性corner/point；Reflex与限帧保护归线程，ViT原样提交免数组复制。4197生产像素、28生命周期、3实卡DXIL及相关CPU定向回归通过，实卡阶段增加约0.044ms；原FileId/6硬链接与核对配置保持。**用户选择稍后手测，本版加载、画面、游戏FPS和完整Reflex≤60ms均未验收，旧约101–113ms仍超标。** 下一步继续[提交/Reset代次闭包](F6-SUBMISSION-LIFETIME.md)，产品尚未拆queue或修KernelProfile的90帧假设。当前详情以[当前状态](CURRENT-STATE.md)和[交接](F6-HANDOFF.md)顶部为准。
+
 2026-11-14T12:53Z 当前：`local/F6-ASI` 已原位部署产品 `f4e65ad` / SHA256 `B0B5C60B44DF9BCC8DA74A32A9EFE8371B132DCF7D7EC5CFBC1C0701BD50AE15`，原FileId、6硬链接及核对配置哈希保持，无`.next`。补齐BeforeNR同源显式SDR授权，桥与原生DX12真实核心像素检查通过；保留细节稳定和SDK Present后owning采样，生产queue未拆分。旧局约110ms保持不及格，**本版细节画面、BeforeNR游戏执行及完整Reflex≤60ms均待用户新局验收**；用户仍选BeforeSR，AI未改选项。完整部署、回归和边界优先见[当前状态](CURRENT-STATE.md)及[交接第0节](F6-HANDOFF.md)。下方均为历史，不能覆盖本条。
 
 2026-11-13 当前：三游戏的 `local/F6-ASI` 包及三个隔离 runtime 已部署 `A6D12031`，构建时源码为基于 `75d7a27` 的未提交快照，冻结身份见[当前状态](CURRENT-STATE.md)和[交接第 0 节](F6-HANDOFF.md)。用户配置、ASI、NR 与 6×请求保留；新版加载、画面和周期卡顿未验收，HDR 暂缓。下方“本轮／当前”按各自历史阶段解释。
