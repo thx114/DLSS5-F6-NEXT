@@ -308,6 +308,9 @@ if ($LASTEXITCODE -ne 0) { throw "SDK Present observation checks failed with exi
 & $Python -B (Join-Path $root 'OptiScaler/hooks/tests/test_fg_source_scheduling.py') --cpu
 if ($LASTEXITCODE -ne 0) { throw "FG source pacing/query/latency checks failed with exit $LASTEXITCODE" }
 
+& $Python -B (Join-Path $root 'OptiScaler/hooks/tests/test_dlssg_state_observation.py')
+if ($LASTEXITCODE -ne 0) { throw "DLSSG state observation ABI/LastError checks failed with exit $LASTEXITCODE" }
+
 & (Join-Path $root 'tools/tests/Test-F6DisplayTiming.ps1')
 if ($LASTEXITCODE -ne 0) { throw "Display event parser checks failed with exit $LASTEXITCODE" }
 

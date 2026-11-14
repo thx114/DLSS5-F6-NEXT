@@ -110,11 +110,16 @@ sl::Result StreamlineHooks::QueryDlssgState(decltype(&slDLSSGGetState) getState,
     framegen::DlssgStateSample sample;
     bool queried=false;
     DWORD sdkLastError=GetLastError();
+    const auto requestVersion=state.structVersion;
+    const bool requestTypeKnown=state.structType==sl::DLSSGState::s_structType;
     try {queried = g_dlssgStateQueries.Query(reinterpret_cast<uintptr_t>(getState),
         static_cast<uint32_t>(viewport), reason, sample, [&](auto& value) {
             // This is the only actual SDK GetState invocation in the hooks.
             // No callbacks into a provider, lifecycle or FG mutex are allowed.
-            result = getState(viewport, state, options);
+            value.queryThreadId=GetCurrentThreadId();
+            value.requestVersion=requestVersion;
+            try { result = getState(viewport, state, options); }
+            catch (...) { sdkLastError=GetLastError(); throw; }
             sdkLastError=GetLastError();
             value.result = static_cast<int32_t>(result);
             value.succeeded = result == sl::Result::eOk;
@@ -124,16 +129,28 @@ sl::Result StreamlineHooks::QueryDlssgState(decltype(&slDLSSGGetState) getState,
             value.actuallyPresented = state.numFramesActuallyPresented;
             value.minWidthOrHeight = state.minWidthOrHeight;
             value.estimatedVramBytes = state.estimatedVRAMUsageInBytes;
-            if (state.structVersion >= 2) {
+            const bool knownLayout=requestTypeKnown && state.structType==sl::DLSSGState::s_structType &&
+                requestVersion>=1 && requestVersion<=4 && state.structVersion>=1 && state.structVersion<=4;
+            // Preserve the caller's ABI bound even if the SDK rewrites its
+            // version. These are raw observations, never a usable receipt.
+            if (knownLayout && requestVersion>=3 && state.structVersion>=3)
+            {
+                value.inputCompletionFieldsObserved=true;
+                value.inputCompletionFenceAddress=reinterpret_cast<uintptr_t>(state.inputsProcessingCompletionFence);
+                value.inputCompletionFenceValue=state.lastPresentInputsProcessingCompletionFenceValue;
+            }
+            if (knownLayout && requestVersion>=2 && state.structVersion>=2) {
                 value.maxGenerated = state.numFramesToGenerateMax;
                 value.vsyncSupported = state.bIsVsyncSupportAvailable == sl::eTrue;
             }
-            if (state.structVersion >= 4) value.dynamicSupported = state.bIsDynamicMFGSupported == sl::eTrue;
+            if (knownLayout && requestVersion>=4 && state.structVersion>=4)
+                value.dynamicSupported = state.bIsDynamicMFGSupported == sl::eTrue;
         });}
     catch(...) {
         // Query's RAII gate has unwound before any passive callback.
         ObserveDlssgState(sample,false);
         if(observed)*observed=sample;
+        SetLastError(sdkLastError);
         throw;
     }
     // Query has returned and released BOTH its SDK/query gate and sample lock.

@@ -11,8 +11,8 @@ namespace framegen
 {
 enum class DlssgStateQueryReason : uint8_t { Provider, CapabilityCold, CompletionFence, Game, Other };
 
-// CPU observation of ONE real, consumptive GetState invocation. No fence or
-// resource pointer is cached here: this is never a resource-retirement receipt.
+// CPU observation of ONE real, consumptive GetState invocation. Addresses are
+// inert integers: no COM reference, dereference or resource-retirement receipt.
 struct DlssgStateSample
 {
     uintptr_t api = 0;
@@ -24,7 +24,13 @@ struct DlssgStateSample
     uintptr_t previousApi = 0;
     uint32_t previousViewport = 0;
     int32_t result = -1;
-    uint32_t stateVersion = 0, status = 0, actuallyPresented = 0;
+    uint32_t queryThreadId = 0, status = 0, actuallyPresented = 0;
+    uint64_t requestVersion = 0, stateVersion = 0;
+    uintptr_t inputCompletionFenceAddress = 0;
+    uint64_t inputCompletionFenceValue = 0;
+    // Only says the returned fields were readable, not that the SDK wrote
+    // them, their fence has completed, or which Present/buffer they describe.
+    bool inputCompletionFieldsObserved = false;
     uint32_t maxGenerated = 0, minWidthOrHeight = 0;
     uint64_t estimatedVramBytes = 0;
     bool succeeded = false, dynamicSupported = false, vsyncSupported = false;

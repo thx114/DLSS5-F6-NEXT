@@ -154,7 +154,7 @@ class StreamlineHooks
     static sl::Result QueryDlssgState(decltype(&slDLSSGGetState) getState,
         const sl::ViewportHandle& viewport, sl::DLSSGState& state, const sl::DLSSGOptions* options,
         framegen::DlssgStateQueryReason reason, framegen::DlssgStateSample* sample = nullptr);
-    // Nonconsumptive observation only. No SDK query and no cached fence.
+    // Nonconsumptive observation only. Numeric addresses never own a fence.
     static bool ReadDlssgStateSample(decltype(&slDLSSGGetState) getState,
         const sl::ViewportHandle& viewport, framegen::DlssgStateSample& sample);
     // Same SDK not-thread-safe SetOptions must share the innermost API gate.

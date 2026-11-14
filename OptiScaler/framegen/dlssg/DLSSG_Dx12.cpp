@@ -750,6 +750,25 @@ sl::Result DLSSG_Dx12::QueryProviderState(sl::DLSSGState& actualState, framegen:
     framegen::DlssgStateSample sample;
     const auto result = StreamlineHooks::QueryDlssgState(StreamlineProxy::DLSSGGetState(),
         viewport,actualState,nullptr,reason,&sample);
+    // Observe only this real call, before callbacks can change the owner. The
+    // query is currently BEFORE SDK Present; its fence must stay unbound.
+    const auto completionObservationLastError=GetLastError();
+    try
+    {
+        static thread_local ULONGLONG lastCompletionObservation=0;
+        const auto now=GetTickCount64();
+        if (sample.querySequence && (!lastCompletionObservation || now-lastCompletionObservation>=5000))
+        {
+            lastCompletionObservation=now;
+            LOG_INFO("F6 SDK input completion observation: pid={} thread={} api={:X} viewport={} query_sequence={} reason={} request_version={} state_version={} result={} fields_observed={} fence_address={:X} fence_value={} query_begin_ns={} query_end_ns={} provider_instance={} provider_lifecycle={} input_epoch={} sc={:X} queue={:X} source_frame_at_query={} owner_current={} phase=provider_state_query observation_only=true sdk_field_write=UNKNOWN present_thread_verified=UNKNOWN present_join=UNKNOWN buffer_join=UNKNOWN gpu_complete=UNKNOWN receipt_usable=false",
+                GetCurrentProcessId(),sample.queryThreadId,sample.api,sample.viewport,sample.querySequence,
+                static_cast<unsigned>(sample.reason),sample.requestVersion,sample.stateVersion,sample.result,
+                sample.inputCompletionFieldsObserved,sample.inputCompletionFenceAddress,sample.inputCompletionFenceValue,
+                sample.queryBeginNs,sample.queryEndNs,owner.instance,owner.lifecycle,_inputOwnerEpoch,
+                owner.swapchain,owner.queue,_frameCount,serial==_dispatchOptions.Serial() && owner==CurrentProviderOwner());
+        }
+    } catch (...) {}
+    SetLastError(completionObservationLastError);
     // Observe this existing consumptive query; never issue a diagnostics query.
     try
     {
@@ -1270,9 +1289,9 @@ bool DLSSG_Dx12::Dispatch()
 
     auto& state = State::Instance();
 
-    // Reuse the existing non-Genshin observation before selecting options, so
-    // a newly lowered raw maximum bounds this very submission. Genshin retains
-    // its post-Present reader; only an unknown/changed owner needs a cold retry.
+    // Observe the existing pre-Present query before selecting options, so a
+    // newly lowered raw maximum bounds this very submission. This is not a
+    // post-Present completion read or permission to reuse tagged resources.
     sl::DLSSGState actualState {};
     auto stateResult = sl::Result::eErrorInvalidState;
     stateResult = QueryProviderState(actualState);if (!CanSubmitInputs() || !_isActive || sourceFrameCount != _frameCount ||
