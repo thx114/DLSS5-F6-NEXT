@@ -1,6 +1,6 @@
 # F6 运行状态
 
-2026-11-14T12:15Z 当前：`local/F6-ASI` 已原位部署产品 `54b422f` / SHA256 `830DCD2B4E4AD17CC5F7739F546A443387B1588617A15768E6A28CCEF51AFBB8`。保留细节稳定修复；新增真实SDK Present后、teardown前的有独立引用输入完成样本，每5秒一次。实际生产queue未拆分、未取得新的复用/退休权限；旧局约110ms保持不及格，**本候选细节画面与完整Reflex≤60ms均待用户新局验收**。完整部署、回归和边界优先见[当前状态](CURRENT-STATE.md)及[交接第0节](F6-HANDOFF.md)。下方均为历史，不能覆盖本条。
+2026-11-14T12:53Z 当前：`local/F6-ASI` 已原位部署产品 `f4e65ad` / SHA256 `B0B5C60B44DF9BCC8DA74A32A9EFE8371B132DCF7D7EC5CFBC1C0701BD50AE15`，原FileId、6硬链接及核对配置哈希保持，无`.next`。补齐BeforeNR同源显式SDR授权，桥与原生DX12真实核心像素检查通过；保留细节稳定和SDK Present后owning采样，生产queue未拆分。旧局约110ms保持不及格，**本版细节画面、BeforeNR游戏执行及完整Reflex≤60ms均待用户新局验收**；用户仍选BeforeSR，AI未改选项。完整部署、回归和边界优先见[当前状态](CURRENT-STATE.md)及[交接第0节](F6-HANDOFF.md)。下方均为历史，不能覆盖本条。
 
 2026-11-13 当前：三游戏的 `local/F6-ASI` 包及三个隔离 runtime 已部署 `A6D12031`，构建时源码为基于 `75d7a27` 的未提交快照，冻结身份见[当前状态](CURRENT-STATE.md)和[交接第 0 节](F6-HANDOFF.md)。用户配置、ASI、NR 与 6×请求保留；新版加载、画面和周期卡顿未验收，HDR 暂缓。下方“本轮／当前”按各自历史阶段解释。
 

@@ -1,6 +1,10 @@
 # F6 与 ReShade / GIMI 兼容性
 
-更新：2026-11-14（UTC+08）。用户新局 PID240456 加载 `d0ca697` 后白屏退出，转储和原样 ReShade / WARP 宿主均定位到 On12 内部 adapter 被包装后调用 `SetPrivateData` 的 DXGI 断点。`8ca0623` 已补内部 factory 返回边界，并于 13:49:33 原位部署到 `local/F6-ASI`，SHA256 `BF6B85E9…`，原 6 个硬链接保持、原神 alias 同 SHA，无 `.next`；新候选的实际游戏加载 / 画面 / 性能待用户验收。显示链 resize flags 修复和原神 BeforeNR 公共事务均保留。
+更新：2026-11-14T12:53Z。产品 `f4e65ad` 已原位部署，完整身份优先见[当前状态](CURRENT-STATE.md)。BeforeNR 现从本次实际复制的 DX11 源或原生 DX12 本链严格读取颜色声明，只认成功、精确长度的 G22/P709；wrapper 成功转发的声明记录在实际源链，不借 child、格式默认值或全局输出状态授权。Native 的滤镜授权与 NR 算法颜色映射分离，未知/HDR 不执行当前 SDR 滤镜，NR 保持原行为。颜色467264、深度98517、不确定提交24688项真实核心/WARP检查通过，未执行游戏/native Acquire/真实SDK DLL/Vulkan GPU。用户选项仍是BeforeSR，其桥输入未知transfer未放行；本候选画面和完整Reflex≤60ms未验收。
+
+## 历史：On12 白屏与接入修复
+
+用户新局 PID240456 加载 `d0ca697` 后白屏退出，转储和原样 ReShade / WARP 宿主均定位到 On12 内部 adapter 被包装后调用 `SetPrivateData` 的 DXGI 断点。`8ca0623` 已补内部 factory 返回边界，并于当时 13:49:33（UTC+08）原位部署到 `local/F6-ASI`，SHA256 `BF6B85E9…`，原 6 个硬链接保持、原神 alias 同 SHA，无 `.next`。该产物现已被顶部候选覆盖；显示链 resize flags 修复和原神 BeforeNR 公共事务均保留。
 
 内部工厂边界只作用于当前线程的 On12 创建作用域及观察到的内部 flag；系统 DXGI 与 ReShade export 分别保存真实 original，覆盖 ReShade 在外层返回后再包装的顺序。内部返回使用逐层持有的 native-object QI 和原请求 IID，普通游戏工厂继续保留代理。真实核心两种顺序各 104 检查、GPU 读回和两个崩溃负控已完成；On12 独立路由 Domain 的嵌套创建另由实际 Detours 测试覆盖。细节和准确产物身份见 [当前状态](CURRENT-STATE.md#最新白屏后退出与-d3d11on12-内部工厂)。这次崩溃发生在阶段滤镜执行之前，不能作为 BeforeNR 已运行或画面已验收的证据。
 

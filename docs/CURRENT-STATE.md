@@ -1,14 +1,14 @@
 # F6 当前状态
 
-更新：**2026-11-14T12:15Z**。当前产品保存点 **`54b422fabacbf4dbae0680707893523c1d5e3a02`**，保留下述细节稳定、深度复用及 SDR 单写优化，并在真实 SDK Present 返回后、teardown 前取得有独立引用的输入完成 fence 样本。Release x64 exit0，75秒；DLL **32,585,216 B / SHA256 `830DCD2B4E4AD17CC5F7739F546A443387B1588617A15768E6A28CCEF51AFBB8`**，嵌入标记 `54b422f`，mtime UTC `2026-11-14T12:10:43.2617223Z`。12:13Z 已原位部署既有 `local/F6-ASI`；原 FileId `0x000000000000000000020000001b42ff`、6 条硬链接与核对的 6 份配置/内容哈希保持，无 `.next`。本节覆盖以下旧部署身份。
+更新：**2026-11-14T12:53Z**。当前产品保存点 **`f4e65ad58ec3d09becbc8b0935fe4d1747ab7d67`**，保留细节稳定、深度复用、SDR 单写和 `54b422f` 的实际 SDK Present 后 owning fence 观察，补齐 BeforeNR 的同源颜色授权。Release x64 exit0，67秒；DLL **32,584,704 B / SHA256 `B0B5C60B44DF9BCC8DA74A32A9EFE8371B132DCF7D7EC5CFBC1C0701BD50AE15`**，嵌入标记 `f4e65ad`，mtime UTC `2026-11-14T12:50:26.7831915Z`。12:52Z 原位部署既有 `local/F6-ASI`；原 FileId `0x000000000000000000020000001b42ff`、6 条硬链接和核对的 6 份配置/内容哈希保持，无 `.next`。本节覆盖以下旧部署身份。
 
-- 每5秒最多一次，在 provider 的既有 Present execution guard 内，将实际原缓冲、独立 buffer/input/SDK 代次、线程、API 和查询序号关联；SDK 正常推进 index 后仍认证之前的实际输入，不查询下一张缓冲来替代。QI 只在实际 GetState gate 内对 SDK 借出对象取得独立 fence 引用，旧 ABI 不访问尾部，普通查询保持数字观察。
-- Present↔Present1 的一次 SDK forwarding 使用线程内票据；重复、同入口或查询阶段重入撤销外层关联。跳过标志改为 thread_local 并在异常展开恢复；原始 Present 的 HRESULT/LastError 在 COM Release、日志和异常路径保持。实际 create/resize 尝试在调用 SDK 前推进缓冲代次，失败也不继承旧代次。成功的附加查询计数仍进入统一观察和 presented-interval telemetry。
-- **生产队列尚未拆分，没有新 GPU Wait，也未授予复用/退休权限。** 日志 `F6 SDK input Present observation` 明示 `queue_separated=false` / `receipt_usable_for_retirement=false`。样本随当前调用释放，不影响既有 host/SDK 生命周期。后续完整拆分还须按实际颜色 writer、SDK reader、星铁 UntilPresent 转换纹理及各 queue 的退休闭合；原神 ValidNow 快照的早期 DX11 handback 保留。
-- 实际生产查询与 provider 方法抽取夹具：**1471 检查 / 90 次脚本化 SDK 调用通过**，含真实 WARP fence、两真实 queue 的最终 writer→SDK reader→下一 producer 读回、D3D12 debug 无 error/corruption；GBV 关闭。5 项新增负控准确检出入口 LastError、owning ABI 越界、缺 reader Wait、查询期 forwarding 及异常 LastError 丢失。相关 SDK timer 49+57、源调度1065/延迟适配780、pacing323、telemetry53、options9204 检查通过。完整 shared 未重跑，未执行实际 SDK DLL/游戏或 Vulkan GPU。
-- 本轮只读 Sol high 审计发现的部分验证异常成功标记残留、资源析构污染异常错误码和查询阶段重入三项已修并加入生产抽取回归/负控；相关智能体已关闭。活动原神日志仍停在 UTC08:06:43 / 60,804,125 B，**当前加载、细节稳定与整体 Reflex ≤60 ms 均未验收，用户约110 ms仍不及格。** 用户手动操作游戏；已请求用户方便时同场景新局反馈，AI继续独立工作，不自行启停或改选项。
+- BeforeNR 原本已能取得最终颜色；缺口是滤镜授权，而非缺少私有颜色纹理。统一 `SwapchainColorSpace` 严格检查本链读取成功、长度精确且明确 G22/P709。桥的成功 SetColorSpace1 声明绑定实际 `_real` 源；BridgeScope 按本次原 buffer、child buffer、线程/epoch 与真实 copy queue/fence 核对后读取源声明。删除公共 BeforeNr 的格式推断 `sdr` 入参，不借 child 输出声明授权原图。
+- Native DX11/DX12 使用独立 `filterSdrAllowed`；保留 NR/光流原有 `colorSpace` 映射与用户选项。未知/HDR 仅拒绝当前 SDR 滤镜，继续现有 NR；源和深度分别用原真实 fence 退休。Vulkan 映射及默认滤镜拒绝保持，没有新增外桥 ABI。
+- 固定真实 ReShade 核心/WARP：颜色 **467264** 检查（含桥与原生 DX12 下游像素、缺失/失败/畸形/错链/HDR、实际 wrapper 方法抽取），深度 **98517**、不确定提交 **24688** 通过；颜色事务 8 路由/16 成败/4恢复、效果深度需求通过。测试局部全局配置的首次提示污染像素已修，失败日志保留且断言未放宽；未改用户配置或核心。两位只读 Sol high 已关闭，最终复核无具体阻断；shared 未全量重跑，未执行 native Acquire/实际 SDK DLL/游戏或 Vulkan GPU。
+- **生产队列仍未拆分，无新增 GPU Wait 或复用/退休权限。** `F6 SDK input Present observation` 仍每5秒最多一次，明确 `queue_separated=false` / `receipt_usable_for_retirement=false`；不把数字地址转成对象。上一轮 1471 检查/90 SDK 脚本调用及5项负控见 `owning-input-fence/`，无需重复。
+- 活动原神日志仍为 UTC08:06:43 / 60,804,125 B。**当前加载、细节稳定及完整 Reflex ≤60 ms 未验收，约110 ms仍不及格。** 用户选择仍为 BeforeSR，低分辨率桥输入的未知 transfer 不能借最终 backbuffer 声明放行；也没有本版 BeforeNR 游戏执行证据。下一新局核对 `f4e65ad`，不沿用先前请求中的旧候选标记；仅用户操作游戏和选项。
 
-证据：`build/genshin-reshade-20261114/detail-feedback-20261114-140355/owning-input-fence/`，含 `final-validation.log`、5项 `negative-*.log`、`sdk-timing.log`、`source-scheduling.log`、`common-targeted.log`、`build.json`、`deployment.json`、`installed-identity.json` 和 `protected-{before,after}.json`。新采样不构成性能收益；不得以准备接口或离线夹具冒称已解决110ms。
+证据：`build/genshin-reshade-20261114/detail-feedback-20261114-140355/before-nr-transfer/`，含 `validation.json`、`review.md`、三种真实核心模式的 `result.log`、`common-targeted.log`、`build.json`、`deployment.json`、`installed-identity.json` 和 `protected-{before,after}.json`。本次授权修复不构成性能改善，60ms目标仍未完成。
 
 ## 历史：共享 SDR 编码部署
 

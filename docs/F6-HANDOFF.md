@@ -1,16 +1,16 @@
 # F6 项目交接
 
-## 0. 当前续接（2026-11-14T12:15Z）
+## 0. 当前续接（2026-11-14T12:53Z）
 
-当前部署产品 **`54b422fabacbf4dbae0680707893523c1d5e3a02`** / `54b422f`，DLL **32,585,216 B / SHA256 `830DCD2B4E4AD17CC5F7739F546A443387B1588617A15768E6A28CCEF51AFBB8`**，mtime UTC `2026-11-14T12:10:43.2617223Z`；Release exit0 /75秒。12:13Z原位覆盖既有`local/F6-ASI`，原FileId和6硬链接、核对的6配置/内容哈希保持，无`.next`；保留此前细节稳定/深度复用/SDR单写。详情优先读CURRENT-STATE顶部。
+当前部署产品 **`f4e65ad58ec3d09becbc8b0935fe4d1747ab7d67`** / `f4e65ad`，DLL **32,584,704 B / SHA256 `B0B5C60B44DF9BCC8DA74A32A9EFE8371B132DCF7D7EC5CFBC1C0701BD50AE15`**，mtime UTC `2026-11-14T12:50:26.7831915Z`；Release exit0 /67秒。12:52Z原位覆盖既有`local/F6-ASI`，原FileId和6硬链接、核对的6配置/内容哈希保持，无`.next`。保留此前细节稳定/深度复用/SDR单写与54b422f的owning SDK输入观察；详情优先读CURRENT-STATE顶部。
 
-新增实际SDK Present返回后、teardown之前的owning输入完成采样，每5秒一次，绑定当次原buffer、buffer/input/SDK代次、线程、API和查询序号。SDK索引推进不改变原buffer身份；独立QI引用在查询gate内取得，未知/旧ABI保持拒绝。Present↔Present1一次forward的TLS票据覆盖整个Present+query，只有原始Present阶段能消费票据；COM释放/异常不丢HRESULT或LastError，create/resize实际尝试前推进独立buffer代次。
+BeforeNR颜色纹理已经接通；本次修复同源transfer授权。`runtime/SwapchainColorSpace.h`只认实际本链成功/精确长度的G22/P709声明，wrapper成功forward后写到实际DX11源。BridgeScope在本次原buffer/child/epoch/thread/copy receipt匹配后读源声明，移除格式推断sdr入参。Native DX11/DX12用filterSdrAllowed独立于NR算法colorSpace；Vulkan映射和默认拒绝不变。未知/HDR跳过滤镜仍继续NR，不改用户选项，不新增外桥ABI。
 
 **没有拆分生产/呈现queue，没有生产Wait或退休权限。** 下一步需先从用户新局查看 `F6 SDK input Present observation` 是否实际返回可用fence和目标，再完成实际buffer颜色writer、SDK reader、星铁UntilPresent纹理及多queue退休。SDK数字地址不能变回引用；copy槽不是SDK index；原神ValidNow早期shared Signal→DX11 Wait已经闭合，不要追加整帧SDK等待。完成样本只短暂持有本调用，不存在新的跨帧资源释放路线。
 
-1471项生产抽取检查/90脚本化SDK调用（实际WARP双queue依赖/读回、debug无错误），5项新增负控、相关SDK timer/源调度/延迟适配以及options9204/pacing323/telemetry53通过；shared未全量重跑，未执行真实SDK DLL/游戏/Vulkan GPU。审计发现的三项异常/重入问题已修并覆盖，智能体均关闭。证据在总目录`owning-input-fence/`，不重跑已通过的构建和部署。
+固定真实核心/WARP颜色467264（桥与原生DX12像素）、深度98517、不确定提交24688及颜色事务/效果需求回归通过；测试局部全局TutorialProgress=0曾污染自然Present像素，现初始化测试配置为4，保留失败日志和严格断言。两位新建只读Sol high已关闭，最终复核无具体阻断。证据在总目录`before-nr-transfer/`，上一轮SDK1471/90调用和5负控仍在`owning-input-fence/`；不重复已通过构建部署。shared未全量跑，未执行native Acquire/真实SDK DLL/游戏/Vulkan GPU。
 
-当前原神日志仍停在UTC08:06:43/60,804,125 B，**本候选实际加载、细节稳定及完整Reflex≤60ms仍待用户新局；约110ms保持未达标。** 已通过异步问题请求用户方便时手动进入原场景反馈；AI不操作游戏、不改启动器或profiles。不能把本次完成凭据接线当性能改善。ReShade前置滤镜和其它未闭环项保留下方记录；桥推送已完成，无需重复。
+当前原神日志仍停在UTC08:06:43/60,804,125 B，**本候选实际加载、细节稳定及完整Reflex≤60ms仍待用户新局；约110ms保持未达标。** 下一局核`f4e65ad`而非先前异步问题中的旧标记。当前用户仍选BeforeSR，其低分辨率桥输入的未知transfer不能借最终画面声明授权；本版BeforeNR游戏执行也未验证。AI不操作游戏或改选项，不把授权修复当性能改善。桥推送已完成，无需重复。保留Invoke-ExactGameEntry.ps1及pelican_bicycle.html既有dirty。
 
 ### 历史：共享SDR部署（2026-11-14T11:00Z）
 
