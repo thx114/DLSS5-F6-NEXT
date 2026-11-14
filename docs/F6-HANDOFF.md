@@ -1,6 +1,17 @@
 # F6 项目交接
 
-## 0. 当前续接（2026-11-15）
+## 0. 当前续接：旧 NR 恢复与兼容（2026-11-15）
+
+优先读 CURRENT-STATE 顶部。用户纠正范围为 ReShade／GIMI兼容，NR细节保留恢复旧逻辑；选项还在但没有预览，以及不选ReShade不能启动均是本轮问题。不要继续历史的算法改进或 Execute／Reset 重写。
+
+- `088aced`：旧NR恢复已提交，11个算法／shader文件与`5d0f0ae`字节相同，history入口与`2052553`相同，保留公共GPU退休容器适配。8项NR定向套件通过，不证明画面已验收。
+- `17c8aa2`：嵌套factory捕获实际SDK输出接入预览；物理Release／Resize／Fullscreen与源FG锁、停用和捕获状态分离，queue强引用与成功resize事务闭合。分队列不能认证则不写预览，真实Present继续。真实WARP物理方法25项、factory114项及预览/shared通过。Release x64 exit0／6分25秒，安装已原位覆盖为本候选。
+- 无ReShade启动退出已在实际桥`4BC59AD0…`离线复现：公开GetFeatureLevel槽37内部使用私有槽69，公开69槽clone破坏转发；桥单独加载也失败。桥`e061e2d`保留原表只改需要的槽，WARP／NVIDIA各16轮和桥＋F6、NGX ON／OFF各19项通过，未启动游戏。
+- 桥`e061e2def63684bc3a303ee8311f8587922c8e6b`已推送用户仓库main，本次fetch确认包含upstream`2db9787`。实际加载位置`temp3/Dx11FsrBridge (2).dll`已原位覆盖，816,640B／SHA256`D1AF6D5D5BE501C6901D34B03B285306629AC259A32219A09B1431045F206799`，原FileId／2硬链接保持。未改用户选项、配置或profiles。
+
+当前F6为 **32,586,240B／SHA256 `881A0D68A5FBFEDF766E9F76B7674BB32BEF784E75729F0B1C40978320919104`**，嵌入`17c8aa2`，mtime UTC `2026-11-14T19:20:39.4509864Z`。`Deploy-F6.ps1 -BuildId local/F6-ASI`回执`DEPLOYED_IN_PLACE`，原FileId`0x000000000000000000020000001b42ff`、6硬链接及6份配置哈希保持，无`.next`。当前F6＋新桥独立真实设备宿主通过，实际游戏加载仍未知；不重复无改动构建／已完成部署。下一新局只能按用户手动测试获得加载、启动、预览及NR画面证据，不能拿旧PID替代。完整Reflex≤60ms、FPS与残影仍未验收，不催测。证据`build/code-followup-20261115/compatibility-restoration/`。搁置的生命周期补丁归档`deferred-submission-lifetime/source.zip`，从未构建部署，不恢复混入；保留原有dirty两文件。当前goal继续active。
+
+## 历史：轮廓稳定与线程归属修复（2026-11-15）
 
 当前部署 **`1f07b0b464be381951cd9fe220507ccbe525f44e`** / `1f07b0b`，DLL **32,599,552 B / SHA256 `D6976017E368FEC38F6021C4EC2CED619202CFF741262E70398BE5AB05C908DD`**，mtime UTC `2026-11-14T17:13:38.9097987Z`。Release exit0 /98秒，UTC17:17已原位覆盖既有local/F6-ASI，原FileId、6硬链接和核对的6份配置/内容哈希保持，无.next；2084项构建输入及946导出名称核对通过。优先读CURRENT-STATE顶部，以下旧身份不能覆盖本条。
 

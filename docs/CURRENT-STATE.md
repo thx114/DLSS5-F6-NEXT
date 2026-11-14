@@ -1,6 +1,22 @@
 # F6 当前状态
 
-## 当前：轮廓稳定与线程归属修复（2026-11-15）
+## 当前：恢复旧 NR 与兼容修复（2026-11-15）
+
+用户要求只处理 ReShade／GIMI 兼容，恢复兼容改动前的 NR 细节逻辑。源码保存点 `088aced` 已撤销后续短稳定器、外观纹理、深度复用、SDR 单写和历史恢复准入改动；11 个算法／shader 文件与 `5d0f0ae` 字节相同，历史运行入口与 `2052553` 相同并保留公共 GPU 退休容器接口。没有恢复已废弃的内部原神 FSR 捕获链。原有残影及性能问题没有因此获得游戏验收。
+
+兼容源码保存点 `17c8aa2`：嵌套 SDK factory 返回现在接入既有物理输出 wrapper，只在实际创建域和 DIRECT queue／device 认证通过时包装，保留 ReShade／Streamline 输入代理。物理输出强持有自己的 queue，Release、Fullscreen 和 Resize 不再进入源 FG 的停用、锁和捕获状态变更；成功 ResizeBuffers1 后才提交新队列。不能认证的分队列输出撤销预览写入，原始 Present 继续转发。菜单输入侧仍拒绝污染 FG 输入的预览。生产物理 Resize 的真实 WARP 回归25项、嵌套 factory114项、原有预览像素与 shared 公共回归通过；尚无新局预览画面验收。
+
+**不选择 ReShade 无法启动已离线复现并修桥。** PID205228／215708 的 `GetFeatureLevel` 跳零在实际安装桥 `4BC59AD0…` 的独立 WARP、NVIDIA 宿主中复现，未加载 F6／ReShade 也失败。系统公开槽37还会读取私有槽69；旧桥按69个公开槽克隆，破坏私有转发。外桥现改为在原表只补丁需要的方法，保留逐实现 original，并在后续设备创建期间绕行业务策略。新桥真实 WARP／硬件各16轮、桥＋F6宿主及 NGX ON／OFF各19项通过；这仍不是游戏启动验收。
+
+桥仓库 `D:/CODE/DLSS5_NEXT-workers/fsr-bridge-sync-20261114` 的 `e061e2def63684bc3a303ee8311f8587922c8e6b` 已推送 `thx114/genshin_fsr_brigde:main`；本次 fetch 确认包含上游 `2db978753eb82ae8e4f90b8a0a13023db832b721`。桥 **816,640 B / SHA256 `D1AF6D5D5BE501C6901D34B03B285306629AC259A32219A09B1431045F206799`** 已原位部署 `temp3/Dx11FsrBridge (2).dll`，保持原 FileId 和2条硬链接，没有改桥或启动器配置。
+
+F6 **`17c8aa2256be35b521cae6b2ff25bfd5f16d0c23`** Release x64 exit0／6分25秒，嵌入标记`17c8aa2`，**32,586,240 B / SHA256 `881A0D68A5FBFEDF766E9F76B7674BB32BEF784E75729F0B1C40978320919104`**，mtime UTC `2026-11-14T19:20:39.4509864Z`。已通过 `Deploy-F6.ps1 -BuildId local/F6-ASI` 原位覆盖安装DLL，原FileId `0x000000000000000000020000001b42ff`、6条硬链接和核对的6份配置保持，无`.next`。旧编译缓存失败日志保留；只重新生成失效PCH/PDB并降低编译并行数。C4744／LNK4098在上一构建日志中也存在，没有当作本轮新回归或顺手改动。当前F6＋新桥的独立真实设备宿主通过，**尚无本候选游戏加载／画面／性能验收**。
+
+当前只处理用户指出的恢复和兼容，**不继续下方历史所列的 Execute／Reset 生命周期重写**；其未构建部署补丁已归档 `build/code-followup-20261115/deferred-submission-lifetime/source.zip`，不混入本次候选。用户游戏启动／选项／退出仍完全手动；不催测。实际画面、GIMI模组、FPS与完整Reflex≤60ms均待本轮新局证据，旧约101–113ms仍未达标。保留 `Invoke-ExactGameEntry.ps1`、`pelican_bicycle.html` 既有dirty。
+
+本轮恢复／兼容、故障复现、部署和回归证据统一在 `build/code-followup-20261115/compatibility-restoration/`。下方各节为历史，不能覆盖本节的任务范围与部署身份。
+
+## 历史：轮廓稳定与线程归属修复（2026-11-15）
 
 产品保存点 **`1f07b0b464be381951cd9fe220507ccbe525f44e`**，嵌入标记 `1f07b0b`。Release x64 exit0 / 98秒；DLL **32,599,552 B / SHA256 `D6976017E368FEC38F6021C4EC2CED619202CFF741262E70398BE5AB05C908DD`**，mtime UTC `2026-11-14T17:13:38.9097987Z`。UTC17:17 原位覆盖既有 `local/F6-ASI`，部署回执 `DEPLOYED_IN_PLACE`；原 FileId `0x000000000000000000020000001b42ff`、6条硬链接和核对的6份配置/内容哈希保持，无 `.next`。构建前后2084项输入哈希一致，946个导出名称与先前安装DLL一致。本节覆盖下方历史部署身份。
 
