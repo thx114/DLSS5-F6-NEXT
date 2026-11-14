@@ -10,6 +10,14 @@
 
 证据：`build/genshin-reshade-20261114/detail-feedback-20261114-140355/before-nr-transfer/`，含 `validation.json`、`review.md`、三种真实核心模式的 `result.log`、`common-targeted.log`、`build.json`、`deployment.json`、`installed-identity.json` 和 `protected-{before,after}.json`。本次授权修复不构成性能改善，60ms目标仍未完成。
 
+### 后续：真实 SDK 独立采样（2026-11-14T13:25Z）
+
+新增独立宿主保存点 `d043e65480b8260febc720dd328b5f42bef7c97a`，入口 `OptiScaler/framegen/dlssg/tests/input-completion-sdk/run.ps1`。**产品 DLL 仍为上方 f4e65ad，没有因工具提交重建或部署。** 真实 NVIDIA D3D12、自有 1920×1080 SDR/深度/MV/HUDless 及同帧 token/constants/Reflex/PCL，自动代理链上 24 次 Present 均 S_OK；每次紧随调用线程查询 ABI4，QI fence 与输入设备相同，但 target 全为0、实际呈现间隔计数全为1。SDK 明确记录 `DLSS-G disabled: window not focused`。结论为 **`NO_CONSUMED_INPUT_PROOF` / exit4**，不能授权队列拆分，也不能据此说 D3D 不支持完成回执。
+
+实际 GetState 位于 `C:/ProgramData/NVIDIA/NGX/models/sl_dlss_g_override_0/versions/134672/files/190_E658700.dll`，SHA256 `3ED9538D…` 与本轮 bundled `sl.dlss_g.dll` 完全一致；路径不同不等于内容不匹配。六份安装 SDK 哈希保持；三项 SDK disable/free/shutdown 均返回0。代理释放先于 SDK shutdown、DLL卸载最后；错误 GPU drain 或 SDK 清理以独立进程 exit5 结束，不能把先前成功样本冒报成功。
+
+宿主 `-Visible` 仅供用户手动启动/聚焦：显示自身窗口但不抢焦点或合成输入，45秒未获手动焦点即无证明退出；本轮**未执行可见模式**。原神活动日志仍停 UTC08:06:43，没有新局。已异步询问用户方便手动原场景还是独立窗口测试，不自动操作游戏或焦点。下一步需要真实活跃 FG 的非零递增回执与当前游戏画面/延迟；不要重复隐藏模式来冒充进展。证据 `build/genshin-reshade-20261114/detail-feedback-20261114-140355/real-sdk-input/` 的 `validation.json`、`result.json`、`result.log`、`runtime-{before,after}.json`、`review.md`。两位本轮只读 Sol high 已完成并关闭；一项 SDK 清理失败退出码漏报已修，未在硬件运行触发失败。
+
 ## 历史：共享 SDR 编码部署
 
 更新：**2026-11-14T11:00Z**。当前产品保存点 **`0e599810c053801451d323b047ed91a2d1b57b2e`**，包含下述细节稳定、深度复用与 SDK 观察修复，并让同格式 SDR passthrough 的原图与代理图共享编码输出。Release x64 exit 0，72 秒；DLL **32,572,416 B / SHA256 `9504586CDD1657DE018678AE00F437DAA2BF35F2CD4F7E210074CCAD649337EA`**，嵌入标记 `0e59981`，mtime UTC `2026-11-14T10:59:01.6915523Z`。10:59Z 已原位部署既有 `local/F6-ASI`，原 FileId、6 条硬链接和核对的 6 份配置哈希保持，无 `.next`；别名包括三游戏 cache。本节覆盖下方旧部署身份。

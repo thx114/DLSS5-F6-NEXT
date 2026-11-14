@@ -12,6 +12,12 @@ BeforeNR颜色纹理已经接通；本次修复同源transfer授权。`runtime/S
 
 当前原神日志仍停在UTC08:06:43/60,804,125 B，**本候选实际加载、细节稳定及完整Reflex≤60ms仍待用户新局；约110ms保持未达标。** 下一局核`f4e65ad`而非先前异步问题中的旧标记。当前用户仍选BeforeSR，其低分辨率桥输入的未知transfer不能借最终画面声明授权；本版BeforeNR游戏执行也未验证。AI不操作游戏或改选项，不把授权修复当性能改善。桥推送已完成，无需重复。保留Invoke-ExactGameEntry.ps1及pelican_bicycle.html既有dirty。
 
+### 后续诊断：真实 SDK 宿主（2026-11-14T13:25Z）
+
+工具保存点 `d043e65`；产品仍是f4e65ad，未重建部署。`OptiScaler/framegen/dlssg/tests/input-completion-sdk/run.ps1` 已跑真实硬件/真实SDK自动代理链、自有全套输入与Reflex/PCL，24次S_OK Present后取得同设备QI fence但target均0；SDK明确停用FG因窗口未聚焦，exit4/NO_CONSUMED_INPUT_PROOF。实际GetState加载NVIDIA缓存override，SHA与本机bundled sl.dlss_g.dll一致。六安装SDK哈希不变，三项实际清理返回0；错误drain/SDK清理不能吞成成功，exit5终止独立宿主。完整证据在总目录`real-sdk-input/`，勿重复隐藏模式或当成生产队列拆分证明。
+
+可选`-Visible`需用户手动启动并聚焦，宿主不抢焦点、不合成输入；本轮未运行。用户异步选择手动原神新局或独立窗口尚待回应；活动游戏日志仍旧UTC08:06:43。两只读Sol high已关闭。当前阻点是缺活跃FG消费回执与用户新局画面/Reflex采样；60ms保持未达标，不能用这套独立宿主替代。产品排队双向依赖与多queue退休尚未完成。
+
 ### 历史：共享SDR部署（2026-11-14T11:00Z）
 
 当前产品保存点 **`0e599810c053801451d323b047ed91a2d1b57b2e`**，嵌入标记 `0e59981`，包含原有细节稳定、深度复用和 SDK 观察修复。Release x64 exit0，72秒；DLL **32,572,416 B / SHA256 `9504586CDD1657DE018678AE00F437DAA2BF35F2CD4F7E210074CCAD649337EA`**，mtime UTC `2026-11-14T10:59:01.6915523Z`。10:59Z 原位部署 `local/F6-ASI`，原 FileId、6 条硬链接及核对的 6 配置哈希保持，无 `.next`；别名含三游戏 cache。
