@@ -1,5 +1,9 @@
 # F6 项目交接
 
+2026-11-16 最新接手入口：[单 runtime 交付报告](D:/CODE/DLSS5_NEXT-workers/f6-rewrite/docs/F6-SINGLE-RUNTIME-DELIVERY-20261116.md)。独立产品 `f88e219`／SHA `F37A8ECB…` 已原位部署 `local/F6-ASI`，无 `.next`，FileId 与 6 条硬链接保持；Release、真核颜色／深度／MXAO／生命周期、真实 DLL 9+1 项通过，未做游戏验收。完整公共回归 exit 0，工作树有并行修改，不能冒称精确独立源码回归。
+
+下一步先取得最终呈现颜色版本与 Neo 实际生产者编码证据：NR 闪烁严格红测尚失败，不能凭 SR token 缓存重放；Neo color_transfer 仍 unknown，单核宿主通过不证明游戏 MXAO 可用。保留并行 TAA 和全部未提交内容，不部署混合 `175c049` 或 probe DLL。崩铁 [TAA 只读研究](D:/CODE/DLSS5_NEXT-workers/f6-rewrite/docs/F6-STAR-RAIL-TAA-20261116.md) 尚不能确认 TAAU；本批不含该并行实现。长期性能任务保持暂停，下方为此前记录。
+
 ## 0. 当前续接：桥缓存工厂与预览候选已部署（2026-11-15）
 
 先读 CURRENT-STATE 顶端。本轮兼容修复已构建并原位部署，**游戏尚未验收；严重拖影、MXAO 和性能仍未解决**。长期性能 goal 保持 paused；不恢复已搁置的生命周期重写、不改旧 NR 细节算法或用户设置，游戏仍由用户手动启停和操作，不催测。

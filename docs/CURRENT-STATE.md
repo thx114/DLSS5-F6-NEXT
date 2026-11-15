@@ -1,5 +1,11 @@
 # F6 当前状态
 
+## 最新：单 runtime BeforeSR 已部署，NR 闪烁仍未修复（2026-11-16）
+
+独立产品保存点 `f88e219`，测试保存点 `87843d8`；Release x64、真实 DLL 九例及外部核心先加载组均通过，完整公共回归 exit 0（工作树存在并行修改，身份边界见报告）。已向既有 `local/F6-ASI` 原位部署，SHA256 `F37A8ECB414F6652D6CC42F0C6444A9F4DC1B749E2E9E5CCB237E8A8669141CD`，6 条硬链接、FileId 和 12 项受保护内容保持，无 `.next`。自管模式仅一个 DX12 效果 runtime，真实颜色／深度／Launchpad-MXAO／reload／resize 宿主通过；游戏效果尚未验收。
+
+NR 重复 Present 覆盖成品已用真模型像素复现，严格保持红测仍失败；缺最终内容版本，不交付猜测性重放。Neo 输入编码仍 unknown，游戏 BeforeSR/MXAO 仍有独立阻点。并行 TAA 实现未纳入本批；崩铁只读研究不能确认 TAAU。交付及后续条件见 [本批报告](D:/CODE/DLSS5_NEXT-workers/f6-rewrite/docs/F6-SINGLE-RUNTIME-DELIVERY-20261116.md)。下方为历史记录，长期性能继续暂停。
+
 ## 当前：桥缓存工厂与 ReShade 预览修复已部署（2026-11-15）
 
 用户最新确认：无 ReShade 的桥＋F6 仍无 DLSS 输入、画面模糊；加 ReShade 后 NR 细节严重拖影，FG／NR 深度、运动和细节调试无画面。**本次修复两个已复现的兼容缺口，尚未完成游戏验收；严重拖影、MXAO 深度和性能仍未解决。** 长期性能 goal 保持 paused，不恢复已搁置的生命周期重写，不改 NR 细节算法或用户设置。游戏由用户手动操作，不催测。

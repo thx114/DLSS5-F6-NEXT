@@ -1,5 +1,7 @@
 # F6 运行状态
 
+2026-11-16 最新：F6 自管单 DX12 效果 runtime／核心加载已完成隔离验证；独立 `f88e219`／SHA `F37A8ECB…` 已原位部署 `local/F6-ASI`，无 `.next`，6 硬链接及 12 项保护内容保持。真实 DLL 九例＋外部先加载组通过，Release 与完整公共回归 exit 0；公共回归的并行工作树边界、精确身份及证据见 [交付报告](D:/CODE/DLSS5_NEXT-workers/f6-rewrite/docs/F6-SINGLE-RUNTIME-DELIVERY-20261116.md)。游戏加载／深度／MXAO 未验收；NR 闪烁严格像素红测仍失败，Neo 编码 unknown 仍阻断游戏准入。崩铁 TAAU 未证实，并行 TAA 未纳入本批，长期性能保持暂停。下方为历史状态。
+
 2026-11-15 当前：`local/F6-ASI` 已原位部署 **`1f07b0b` / SHA256 `D6976017E368FEC38F6021C4EC2CED619202CFF741262E70398BE5AB05C908DD`**（32,599,552 B；构建mtime UTC2026-11-14T17:13:38Z）。修消失轮廓短稳定污染，保留正确双线性corner/point；Reflex与限帧保护归线程，ViT原样提交免数组复制。4197生产像素、28生命周期、3实卡DXIL及相关CPU定向回归通过，实卡阶段增加约0.044ms；原FileId/6硬链接与核对配置保持。**用户选择稍后手测，本版加载、画面、游戏FPS和完整Reflex≤60ms均未验收，旧约101–113ms仍超标。** 下一步继续[提交/Reset代次闭包](F6-SUBMISSION-LIFETIME.md)，产品尚未拆queue或修KernelProfile的90帧假设。当前详情以[当前状态](CURRENT-STATE.md)和[交接](F6-HANDOFF.md)顶部为准。
 
 2026-11-14T12:53Z 当前：`local/F6-ASI` 已原位部署产品 `f4e65ad` / SHA256 `B0B5C60B44DF9BCC8DA74A32A9EFE8371B132DCF7D7EC5CFBC1C0701BD50AE15`，原FileId、6硬链接及核对配置哈希保持，无`.next`。补齐BeforeNR同源显式SDR授权，桥与原生DX12真实核心像素检查通过；保留细节稳定和SDK Present后owning采样，生产queue未拆分。旧局约110ms保持不及格，**本版细节画面、BeforeNR游戏执行及完整Reflex≤60ms均待用户新局验收**；用户仍选BeforeSR，AI未改选项。完整部署、回归和边界优先见[当前状态](CURRENT-STATE.md)及[交接第0节](F6-HANDOFF.md)。下方均为历史，不能覆盖本条。
