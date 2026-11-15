@@ -6,7 +6,6 @@ param(
     [string]$OutputDirectory = ('build/f6-presentation-' + (Get-Date -Format 'yyyyMMdd-HHmmss')),
     [switch]$Sentinel,
     [switch]$RequireStableNr,
-    [switch]$ReferenceRuntime,
     [switch]$FrameGeneration
 )
 Set-StrictMode -Version Latest
@@ -18,14 +17,13 @@ if (Test-Path -LiteralPath $out) { throw 'Use a new fixture directory' }
 $null = [IO.Directory]::CreateDirectory($out)
 Copy-Item -LiteralPath $Artifact -Destination (Join-Path $out 'OptiScaler.dll')
 $runtimeRoot = [IO.Path]::GetFullPath($RuntimeDirectory, $root)
-$libraries = if ($ReferenceRuntime) { $runtimeRoot } else { $out }
 foreach ($name in @('nvngx_dlss.dll','nvngx_dlssnr.dll','nvngx.dll_dlssnr.dll')) {
     # Immutable vendor binaries; avoid duplicating multi-GB NR models for
     # each observation group. Failure is explicit, with no silent copy fallback.
-    if (!$ReferenceRuntime) { $null = New-Item -ItemType HardLink -Path (Join-Path $out $name) -Target (Join-Path $runtimeRoot $name) }
+    $null = New-Item -ItemType HardLink -Path (Join-Path $out $name) -Target (Join-Path $runtimeRoot $name)
 }
 $streamline = Join-Path $RuntimeDirectory 'streamline'
-if (!$ReferenceRuntime -and $FrameGeneration -and (Test-Path -LiteralPath $streamline)) {
+if ($FrameGeneration -and (Test-Path -LiteralPath $streamline)) {
     foreach ($file in Get-ChildItem -LiteralPath $streamline -File -Recurse) {
         $relative = [IO.Path]::GetRelativePath($RuntimeDirectory, $file.FullName)
         $destination = Join-Path $out $relative
@@ -58,10 +56,10 @@ Enabled=false
 Path=$out/plugins
 LoadAsiPlugins=false
 [Libraries]
-OptiDllPath=$libraries
-NvngxDlssPath=$libraries
-[Hotfix]
-DisableOverlays=true
+OptiDllPath=$out
+NvngxDlssPath=$out
+[Menu]
+DisableSplash=true
 [Log]
 LogLevel=0
 LogToFile=true
@@ -96,7 +94,7 @@ $result = [pscustomobject]@{
     Pass=($complete -and $p.ExitCode -eq 0 -and $stdout.Contains('PASS actual presentation observation'))
     PID=$p.Id; Exit=$p.ExitCode; Timeout=(!$complete); Sentinel=[bool]$Sentinel; RequireStableNr=[bool]$RequireStableNr; RequestedFG=[bool]$FrameGeneration
     ArtifactSHA256=(Get-FileHash -LiteralPath (Join-Path $out 'OptiScaler.dll')).Hash
-    Runtime=(Get-FileHash -LiteralPath (Join-Path $libraries 'nvngx_dlssnr.dll')).Hash
+    Runtime=(Get-FileHash -LiteralPath (Join-Path $out 'nvngx_dlssnr.dll')).Hash
     Path=$out; Scope='isolated wrapper FG-input readback; generated/display pixels unknown'
 }
 $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $out 'result.json')

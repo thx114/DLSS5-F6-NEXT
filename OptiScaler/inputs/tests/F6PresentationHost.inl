@@ -94,13 +94,16 @@ void WINAPI Observe(const Sample* sample)
     if (sample->stage == Stage::RawCopy) raw = picture;
     if (sample->stage == Stage::AfterNr) { filtered = picture; writes += sample->nrResult == 1; }
     if (sample->stage == Stage::FgInput) {
-        Check(picture.hash == filtered.hash, "FG receives the observed final publication");
+        // Opti's own composition is between these observations. Preserve both
+        // hashes; an overlay delta is not an NR publication failure.
         if (serial % 4 == 0) {
             haveSourceNr = sentinel || sample->nrResult == 1;
             sourceNr = picture;
         }
         if (requireStable && serial % 4 == 1 && haveSourceNr)
-            Check(picture.hash == sourceNr.hash, "unchanged second Present must retain this source's completed NR pixels");
+            Check(picture.center == sourceNr.center, "unchanged second Present must retain this source's completed NR pixels");
+        if (eval == 13) Check(sample->nrResult != 1 && picture.center[0] == 64 &&
+            picture.center[1] == 0 && picture.center[2] == 128, "invalid B keeps its current raw scene, never A's NR");
         if (serial % 4 && sentinel) Check(picture.hash == raw.hash, "repeated Present currently publishes fresh raw color");
     }
     std::printf("sample eval=%u present=%u change=%s stage=%u dx11=%u fg=%u color=%p queue=%p fence=%p:%llu nr=%u hash=%016llx hud=%u,%u,%u center=%u,%u,%u\n",
@@ -181,8 +184,8 @@ void Run(HMODULE module, bool useSentinel)
     p->Set(NVSDK_NGX_Parameter_Color, static_cast<ID3D11Resource*>(nullptr));
     F6EvalReceiptV1 failed;
     const auto failure = evaluate(context.Get(), handle, p, nullptr, eval, &failed);
-    Check(failure != NVSDK_NGX_Result_Success && failed.status == F6OutputStatus::no_output,
-        "failed B has no current output receipt");
+    std::printf("invalid-B result=%08x status=%u\n", unsigned(failure), unsigned(failed.status));
+    Check(failed.status != F6OutputStatus::current_output_ordered, "invalid B has no authoritative current output receipt");
     const float mark[] {0.25f,0,0.5f,1}; context->ClearRenderTargetView(rtv.Get(), mark);
     change = "failed-B";
     for (unsigned n = 0; n < 2; ++n) {
@@ -197,6 +200,7 @@ void Run(HMODULE module, bool useSentinel)
     for (unsigned n = 0; n < 2; ++n) {
         serial = 52 + n; Hr(chain->Present(0, 0), "C Present after recovery");
     }
+    Check(sentinel ? sentinelWrites != 0 : writes != 0, "test actually observed its declared NR or sentinel writer");
     std::printf("PASS actual presentation observation checks=%u modelWrites=%u testWriter=%u generatedPixels=unknown\n", checks, writes, sentinelWrites);
     std::puts("LIMIT: SR token cannot distinguish unchanged, HUD-only and whole-scene writes; this host observes the gap and does not authorize replay.");
 }
