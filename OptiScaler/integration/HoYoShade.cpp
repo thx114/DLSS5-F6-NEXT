@@ -1141,7 +1141,8 @@ struct NativeColorFacts
 bool AdmitColor(const ColorEndpoint& endpoint, StageResult& result, NativeColorFacts&) noexcept
 {
     result.nativeColor = NativeColorAdmission::NotRequested;
-    return endpoint.sdr;
+    return endpoint.sdr && (!endpoint.declaredInput ||
+        bool(ResolveColorFormats(endpoint, endpoint.declaredInput.formats.transport.endpoint)));
 }
 
 bool ToResourceUsage(D3D12_RESOURCE_STATES state, reshade::api::resource_usage &usage) noexcept
@@ -1197,7 +1198,7 @@ bool EnsureNativeBinding(uint64_t owner, ID3D12Device *device, ID3D12CommandQueu
         ReportDeviceFailure(endpoint, Site::Binding, evidence, {device, queueDevice.Get()}); return false;
     }
 
-    const auto format = ColorContract::Resolve(desc.Format).runtime;
+    const auto format = ResolveColorFormats(endpoint, desc.Format).runtime;
     // BUFFER dimensions describe the pixels processed by this runtime, not
     // unused allocation padding surrounding the selected SR input.
     const auto width = endpoint.width, height = endpoint.height;
@@ -1438,7 +1439,7 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
     const bool reuseGpuFacts = (selectionDonor ) && immutable.gpuCaptured && immutable.gpuColor.Get() == color &&
         immutable.gpuQueue.Get() == endpoint.queue;
     const auto nativeDesc = reuseGpuFacts ? immutable.gpuDesc : color->GetDesc();
-    const auto colorFormats = ColorContract::Resolve(nativeDesc.Format);
+    const auto colorFormats = ResolveColorFormats(endpoint, nativeDesc.Format);
     if (!colorFormats) return Reason::UnsupportedFormat;
     const auto linearFormat = colorFormats.linear, srgbFormat = colorFormats.srgb;
     const bool partialColor = endpoint.colorX || endpoint.colorY ||
@@ -3895,7 +3896,7 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
             result.reason = Reason::ExtentMismatch; return result;
         }
         reshade::api::resource_usage usage{};
-        if (!ColorContract::Resolve(desc.Format)) { result.reason = Reason::UnsupportedFormat; return result; }
+        if (!ResolveColorFormats(endpoint, desc.Format)) { result.reason = Reason::UnsupportedFormat; return result; }
         if (!ToResourceUsage(endpoint.state, usage)) { result.reason = Reason::StateUnknown; return result; }
         const auto& ready = endpoint.ready;
         if (!ready.queue || !ready.fence || !ready.value || ready.value == UINT64_MAX) {

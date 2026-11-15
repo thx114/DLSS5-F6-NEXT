@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <dxgiformat.h>
 #include "hoyoshade/sdk/reshade/reshade_api_format.hpp"
 
@@ -38,6 +39,60 @@ constexpr Formats Resolve(DXGI_FORMAT endpoint) noexcept
         return {};
     }
 }
+
+// The producer supplies the source storage and its actual typed view. The
+// retained bridge input supplies the transport allocation, which may remain
+// typeless. This tuple describes byte-compatible copies, never color transfer.
+struct InputFormats
+{
+    DXGI_FORMAT storage = DXGI_FORMAT_UNKNOWN, view = DXGI_FORMAT_UNKNOWN;
+    Formats transport;
+    constexpr explicit operator bool() const noexcept { return bool(transport); }
+};
+constexpr InputFormats ResolveInput(DXGI_FORMAT storage, DXGI_FORMAT view, DXGI_FORMAT transport) noexcept
+{
+    const auto typed = Resolve(view);
+    if (!typed) return {};
+    if (storage == DXGI_FORMAT_R8G8B8A8_TYPELESS) {
+        if (typed.runtime != DXGI_FORMAT_R8G8B8A8_UNORM ||
+            (transport != DXGI_FORMAT_R8G8B8A8_TYPELESS &&
+             transport != DXGI_FORMAT_R8G8B8A8_UNORM && transport != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)) return {};
+        auto formats = typed;
+        formats.endpoint = transport; // Preserve the actual allocation, not the producer's view.
+        return {storage, view, formats};
+    }
+    const auto formats = Resolve(storage);
+    if (!formats || formats.runtime != typed.runtime || transport != storage) return {};
+    return {storage, view, formats};
+}
+
+// Same-call value, bound after source identity and explicit SDR admission.
+// It owns no resource and cannot authorize readiness, submission or retirement.
+// The existing input owner keeps the actual API objects alive.
+struct DeclaredInput
+{
+    InputFormats formats;
+    const void* color = nullptr;
+    const void* queue = nullptr;
+    uint64_t stream = 0, generation = 0, frame = 0;
+    uint32_t x = 0, y = 0, width = 0, height = 0;
+    constexpr explicit operator bool() const noexcept { return bool(formats); }
+    template<class Endpoint>
+    static DeclaredInput Bind(const InputFormats& formats, const Endpoint& e) noexcept
+    {
+        if (!formats || !e.sdr) return {};
+        return {formats, e.color, e.queue, e.stream, e.generation, e.frame,
+            e.colorX, e.colorY, e.width, e.height};
+    }
+    template<class Endpoint>
+    bool Matches(const Endpoint& e, DXGI_FORMAT actual) const noexcept
+    {
+        return formats && color && queue && stream && generation && frame && width && height &&
+            formats.transport.endpoint == actual && color == e.color && queue == e.queue &&
+            stream == e.stream && generation == e.generation && frame == e.frame &&
+            x == e.colorX && y == e.colorY && width == e.width && height == e.height;
+    }
+};
 
 // Private DXGI swapchains use the base typed format, never typeless/sRGB.
 constexpr bool IsRuntimeFormat(DXGI_FORMAT format) noexcept

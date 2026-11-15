@@ -3,11 +3,13 @@
 param(
     [string]$CorePath = 'D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/HoYoShade/ReShade64.dll',
     [string]$OutputDirectory = 'build/genshin-reshade-20261114/real-core-test',
-    [ValidateSet('color','depth','launchpad','selection-cache','nr-color','nr-depth','nr-launchpad','nr-uncertain')][string]$Mode = 'color'
+    [ValidateSet('color','depth','launchpad','selection-cache','nr-color','nr-depth','nr-launchpad','nr-uncertain')][string]$Mode = 'color',
+    [switch]$TypelessInput
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+if ($TypelessInput -and $Mode.StartsWith('nr-')) { throw 'Typeless input contract is BeforeSR only' }
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
 $output = [IO.Path]::GetFullPath((Join-Path $root $OutputDirectory))
 $null = [IO.Directory]::CreateDirectory((Join-Path $output 'HoYoShade'))
@@ -76,8 +78,16 @@ Push-Location $output
 try {
     & cmd.exe /d /c (Join-Path $output 'compile.cmd') *> (Join-Path $output 'compile.log')
     if ($LASTEXITCODE -ne 0) { Get-Content (Join-Path $output 'compile.log') -Tail 24; throw 'Host compilation failed' }
-    & (Join-Path $output 'host.exe') $output $Mode *> (Join-Path $output 'result.log')
+    $hostArguments = @($output, $Mode)
+    if ($TypelessInput) { $hostArguments += 'typeless' }
+    & (Join-Path $output 'host.exe') @hostArguments *> (Join-Path $output 'result.log')
     $hostResult = $LASTEXITCODE
     Get-Content (Join-Path $output 'result.log') -Tail 15
     if ($hostResult -ne 0) { throw "Real-core test failed: $hostResult" }
+    if ($TypelessInput -and $Mode -eq 'color') {
+        & (Join-Path $output 'host.exe') $output $Mode 'typeless-partial' *> (Join-Path $output 'result-partial.log')
+        $partialResult = $LASTEXITCODE
+        Get-Content (Join-Path $output 'result-partial.log') -Tail 8
+        if ($partialResult -ne 0) { throw "Real-core partial-input test failed: $partialResult" }
+    }
 } finally { Pop-Location }

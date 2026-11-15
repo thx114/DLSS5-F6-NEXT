@@ -5,6 +5,7 @@
 #include "HoYoShadeColorSafety.h"
 #include "HoYoShadeOwnedRuntime.h"
 #include "HoYoShadeDepth.h"
+#include "HoYoShadeColorContract.h"
 #include <Windows.h>
 #include <d3d11.h>
 #include <d3d12.h>
@@ -202,6 +203,7 @@ struct ColorEndpoint
     uint32_t colorX = 0, colorY = 0;
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
     bool stateKnown = false, sdr = false;
+    ColorContract::DeclaredInput declaredInput; // exact BeforeSR source/view/transport, same call only
     ColorMode colorMode = ColorMode::TransferQualified;
     // Scheduling device entry and exact source buffer, NOT an SDK native
     // device alias. A synchronous typed proof resolves the resource owner.
@@ -218,6 +220,15 @@ struct ColorEndpoint
     PhysicalSource physicalSource;
     OutputToken outputToken;
 };
+inline ColorContract::Formats ResolveColorFormats(const ColorEndpoint& e, DXGI_FORMAT actual) noexcept
+{
+    if (!e.declaredInput) return ColorContract::Resolve(actual);
+    if (!e.sdr || e.stage != Stage::BeforeSr || e.output != OutputKind::Original ||
+        e.colorMode != ColorMode::TransferQualified ||
+        e.naturalContract != NaturalSourceContract::BeforeSrBridgeInput ||
+        !e.declaredInput.Matches(e, actual)) return {};
+    return e.declaredInput.formats.transport;
+}
 // Synchronous copyback observation for the next selected SR call. It carries
 // no ownership or GPU-completion authority; the existing owned transaction
 // retains the real inputs and scratch through its own queue/fence retirement.

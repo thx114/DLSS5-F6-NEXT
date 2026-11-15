@@ -50,21 +50,38 @@ struct TestDepthReader final : HoYoShade::Depth::Reader {
 struct Host {
     ComPtr<IDXGIFactory4> factory; ComPtr<IDXGIAdapter1> adapter;
     ComPtr<ID3D11Device> device11; ComPtr<ID3D11DeviceContext> context;
+    ComPtr<ID3D11Texture2D> inputColor11;
+    ComPtr<ID3D11ShaderResourceView> inputView11;
     ComPtr<IDXGISwapChain1> chain; HWND window = nullptr;
     ComPtr<ID3D12InfoQueue> info;
     ComPtr<ID3D12Device> device; ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12CommandAllocator> allocator; ComPtr<ID3D12GraphicsCommandList> list;
     ComPtr<ID3D12Resource> color, upload, readback, depth[2], depthUpload, observedNormals;
-    bool useDepth = false;
+    bool useDepth = false, typelessInput = false, partialInput = false;
+    unsigned char alpha = 255;
+    bool ownedFormatsTyped = true;
+    unsigned ownedFormatObservations = 0;
     unsigned pattern = 0; ComPtr<ID3D12Fence> done;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{}; uint64_t serial = 0;
     api::effect_runtime* natural = nullptr;
     using Update = void (*)(api::effect_runtime*); Update update = nullptr;
     using Destroy = void (*)(api::effect_runtime*); Destroy destroy = nullptr;
-    explicit Host(HMODULE core, const std::filesystem::path& config, bool depthEnabled = false) : useDepth(depthEnabled) {
+    explicit Host(HMODULE core, const std::filesystem::path& config, bool depthEnabled = false, bool typeless = false)
+        : useDepth(depthEnabled), typelessInput(typeless) {
         Hr(CreateDXGIFactory1(IID_PPV_ARGS(&factory))); Hr(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter)));
         constexpr D3D_FEATURE_LEVEL levels[]{D3D_FEATURE_LEVEL_11_0};
         Hr(D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, levels, 1, D3D11_SDK_VERSION, &device11, nullptr, &context));
+        if (typelessInput) {
+            D3D11_TEXTURE2D_DESC input{};
+            input.Width = Width; input.Height = Height;
+            input.MipLevels = input.ArraySize = input.SampleDesc.Count = 1;
+            input.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS; input.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            Hr(device11->CreateTexture2D(&input, nullptr, &inputColor11));
+            D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+            view.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            view.Texture2D.MipLevels = 1;
+            Hr(device11->CreateShaderResourceView(inputColor11.Get(), &view, &inputView11));
+        }
         ComPtr<ID3D12Debug> debug;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) debug->EnableDebugLayer();
         Hr(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
@@ -91,6 +108,7 @@ struct Host {
         D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC desc{}; desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; desc.Width = Width; desc.Height = Height;
         desc.DepthOrArraySize = desc.MipLevels = desc.SampleDesc.Count = 1; desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        if (typelessInput) desc.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
         desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
         Hr(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&color)));
         if (useDepth) {
@@ -123,7 +141,7 @@ struct Host {
     void Upload() {
         unsigned char* mapped = nullptr; Hr(upload->Map(0, nullptr, reinterpret_cast<void**>(&mapped)));
         for (unsigned y = 0; y < Height; ++y) for (unsigned x = 0; x < Width; ++x) {
-            auto* p = mapped + y * footprint.Footprint.RowPitch + x * 4; p[0] = p[1] = p[2] = 32; p[3] = 255;
+            auto* p = mapped + y * footprint.Footprint.RowPitch + x * 4; p[0] = p[1] = p[2] = 32; p[3] = alpha;
         }
         upload->Unmap(0, nullptr); Begin();
         D3D12_TEXTURE_COPY_LOCATION src{}, dst{}; src.pResource = upload.Get(); src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; src.PlacedFootprint = footprint;
@@ -147,12 +165,36 @@ struct Host {
         list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
         Submit();
         unsigned char* mapped = nullptr; Hr(readback->Map(0, nullptr, reinterpret_cast<void**>(&mapped))); const auto red = mapped[0];
-        for (unsigned y = 0; y < Height; ++y) for (unsigned x = 0; x < Width; ++x) Check(mapped[y * footprint.Footprint.RowPitch + x * 4] == red, "effect covers every SR input pixel");
+        for (unsigned y = 0; y < Height; ++y) for (unsigned x = 0; x < Width; ++x) {
+            auto* p = mapped + y * footprint.Footprint.RowPitch + x * 4;
+            Check(p[0] == red, "effect covers every SR input pixel");
+            if (typelessInput && !useDepth) Check(p[1] == 32 && p[2] == 32 && p[3] == alpha,
+                "typed working copies preserve untouched channels and source alpha");
+        }
         readback->Unmap(0, nullptr); return red;
+    }
+    void CheckPartialColor() {
+        Begin(); D3D12_TEXTURE_COPY_LOCATION src{}, dst{};
+        src.pResource = color.Get(); src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.pResource = readback.Get(); dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint = footprint; list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr); Submit();
+        unsigned char* mapped = nullptr; Hr(readback->Map(0, nullptr, reinterpret_cast<void**>(&mapped)));
+        for (unsigned y = 0; y < Height; ++y) for (unsigned x = 0; x < Width; ++x) {
+            auto* p = mapped + y * footprint.Footprint.RowPitch + x * 4;
+            const auto expected = x >= 8 && x < Width - 8 && y >= 3 && y < Height - 3 ? 64 : 32;
+            Check(p[0] == expected && p[1] == 32 && p[2] == 32 && p[3] == alpha,
+                "bounded typeless copyback touches only the selected rectangle and preserves alpha");
+        }
+        readback->Unmap(0, nullptr);
     }
     void ObserveTextures(api::effect_runtime* runtime, api::resource_view rtv) {
         if (!rtv.handle || runtime->get_device()->get_api() != api::device_api::d3d12 ||
             runtime->get_device()->get_native() != reinterpret_cast<uint64_t>(device.Get())) return;
+        if (typelessInput) {
+            const auto desc = runtime->get_device()->get_resource_desc(runtime->get_current_back_buffer());
+            ownedFormatsTyped &= desc.texture.format == api::format::r8g8b8a8_unorm;
+            ++ownedFormatObservations;
+        }
         runtime->enumerate_texture_variables(nullptr, [&](auto* r, auto variable) {
             char name[256]{}; r->get_texture_variable_name(variable,name);
             const std::string_view key(name);
@@ -233,7 +275,8 @@ struct Host {
         context->Unmap(staging.Get(), 0);
         std::printf("natural suppression=%d worker=%d red=%u\n", suppressed, worker, expected); std::fflush(stdout);
     }
-    enum class Input { Normal, MissingDepth, WrongFrame, WrongFormat, ReverseZ, UnknownColor };
+    enum class Input { Normal, MissingDepth, WrongFrame, WrongFormat, ReverseZ, UnknownColor,
+        WrongColorResource, WrongColorFrame, WrongColorView, MissingColorDeclaration };
     HoYoShade::StageResult Filter(uint64_t frame, Input fixture = Input::Normal) {
         HoYoShade::BeginBeforeSrSource(context.Get(), 1);
         HoYoShade::NaturalAssociation::Source::Scope source(HoYoShade::CaptureBridgeSource(device11.Get(), 1));
@@ -244,6 +287,22 @@ struct Host {
         endpoint.state = D3D12_RESOURCE_STATE_COMMON; endpoint.stream = 1; endpoint.generation = identity.generation; endpoint.frame = identity.frame;
         endpoint.naturalSource = source.Get(); endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrBridgeInput;
         endpoint.naturalDevice = identity.sourceDevice; endpoint.naturalBackbuffer = identity.buffer;
+        if (typelessInput) {
+            // Independent real-core fixture declaration. Producer query and
+            // SharedInputRead identity admission are covered by BeforeSrInputTests.
+            D3D11_TEXTURE2D_DESC storage{}; inputColor11->GetDesc(&storage);
+            D3D11_SHADER_RESOURCE_VIEW_DESC view{}; inputView11->GetDesc(&view);
+            if (fixture == Input::WrongColorView) view.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            const auto formats = HoYoShade::ColorContract::ResolveInput(storage.Format, view.Format, color->GetDesc().Format);
+            if (partialInput) {
+                endpoint.colorX = 8; endpoint.colorY = 3;
+                endpoint.width = Width - 16; endpoint.height = Height - 6;
+            }
+            if (fixture != Input::MissingColorDeclaration)
+                endpoint.declaredInput = HoYoShade::ColorContract::DeclaredInput::Bind(formats, endpoint);
+            if (fixture == Input::WrongColorResource) endpoint.declaredInput.color = upload.Get();
+            if (fixture == Input::WrongColorFrame) ++endpoint.declaredInput.frame;
+        }
         std::shared_ptr<TestDepthReader> reader;
         if (useDepth && fixture != Input::MissingDepth) {
             auto& input = endpoint.depth; input.resource = depth[pattern & 1].Get(); input.typedFormat = DXGI_FORMAT_R32_FLOAT;
@@ -277,10 +336,13 @@ bool ChangeOrder(api::effect_runtime* runtime, size_t count, api::effect_techniq
 }
 int main(int argc, char** argv) {
     try {
-        Check(argc == 2 || argc == 3, "sandbox path argument");
-        const bool depthMode = argc == 3 && std::string_view(argv[2]) == "depth";
-        const bool cacheMode = argc == 3 && std::string_view(argv[2]) == "selection-cache";
-        const bool launchpadMode = argc == 3 && std::string_view(argv[2]) == "launchpad"; const auto root = std::filesystem::absolute(argv[1]);
+        Check(argc >= 2 && argc <= 4, "sandbox path argument");
+        const bool depthMode = argc >= 3 && std::string_view(argv[2]) == "depth";
+        const bool cacheMode = argc >= 3 && std::string_view(argv[2]) == "selection-cache";
+        const bool launchpadMode = argc >= 3 && std::string_view(argv[2]) == "launchpad";
+        const bool partialInput = argc == 4 && std::string_view(argv[3]) == "typeless-partial";
+        const bool typelessInput = partialInput || (argc == 4 && std::string_view(argv[3]) == "typeless");
+        const auto root = std::filesystem::absolute(argv[1]);
         SetEnvironmentVariableW(L"RESHADE_DISABLE_GRAPHICS_HOOK", L"1");
         SetEnvironmentVariableW(L"RESHADE_DISABLE_LOADING_CHECK", L"1");
         SetEnvironmentVariableW(L"RESHADE_DISABLE_INPUT_HOOK", L"1");
@@ -289,7 +351,9 @@ int main(int argc, char** argv) {
         if (!core) std::printf("LoadLibrary error %lu\n", GetLastError());
         Check(core != nullptr, "load sandbox pinned core");
         Check(HoYoShade::Testing::ConnectHost(GetModuleHandleW(nullptr), (root / "natural.ini").string().c_str(), HoYoShade::Stage::BeforeSr), "real API20 identity handshake");
-        Host host(core, root / "natural.ini", depthMode || launchpadMode);
+        Host host(core, root / "natural.ini", depthMode || launchpadMode, typelessInput);
+        host.partialInput = partialInput;
+        if (typelessInput && !host.useDepth) host.alpha = 91;
         if (cacheMode) {
             const auto initialized = HoYoShade::Testing::ReadSelectionCache(host.natural);
             Check(initialized.available && initialized.revision && initialized.topology,
@@ -313,12 +377,27 @@ int main(int argc, char** argv) {
                 if (launchpadMode) { Check(warmupObserved,"LP/MXAO applied only after real warmup fence"); host.CheckMxaoPixels(); executed=true; break; }
                 if (depthMode) { host.CheckDepthPixels(); executed = true; break; }
                 const auto expected = cacheMode ? 128u : 64u;
-                const auto red = host.Read(); std::printf("filtered input red=%u expected=%u\n", red, expected);
-                Check(red == expected, "real ReShade effects copied back before SR"); executed = true; break;
+                if (partialInput) host.CheckPartialColor();
+                else {
+                    const auto red = host.Read(); std::printf("filtered input red=%u expected=%u\n", red, expected);
+                    Check(red == expected, "real ReShade effects copied back before SR");
+                }
+                executed = true; break;
             }
             Sleep(10);
         }
         Check(executed, "owned BeforeSR effect executed");
+        if (typelessInput) {
+            Check(host.ownedFormatObservations && host.ownedFormatsTyped &&
+                host.color->GetDesc().Format == DXGI_FORMAT_R8G8B8A8_TYPELESS,
+                "actual source stays typeless while real owned swapchain stays typed");
+            for (auto invalid : {Host::Input::UnknownColor, Host::Input::WrongColorResource,
+                Host::Input::WrongColorFrame, Host::Input::WrongColorView, Host::Input::MissingColorDeclaration}) {
+                host.update(host.natural); host.Upload(); const auto result = host.Filter(650, invalid);
+                Check(!result.Submitted() && !result.EffectsExecuted() && !result.depthAvailable && host.Read() == 32,
+                    "unqualified typeless input is untouched before effects or DEPTH binding");
+            }
+        }
         if (cacheMode) {
             const auto loaded = HoYoShade::Testing::ReadSelectionCache(host.natural);
             Check(loaded.available && loaded.reloadObserved && loaded.graphBuilds,

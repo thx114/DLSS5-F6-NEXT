@@ -935,9 +935,7 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
                 sharedRead->sourceColor11.Get(), sharedRead->sourceDepth11.Get(), dx11Mv.SourceTexture,
                 dx11Color.SourceDesc.Format, hoyoColor->GetDesc().Format,
                 endpoint.width, endpoint.height, endpoint.colorX, endpoint.colorY, depthX, depthY};
-            const auto producerColor = HoYoShade::AdmitBeforeSrInput(beforeSr, producerBinding);
-            if (producerColor != HoYoShade::BeforeSrColor::Legacy)
-                endpoint.sdr = producerColor == HoYoShade::BeforeSrColor::DeclaredSdr;
+            const auto producerColor = HoYoShade::BindBeforeSrInput(endpoint, beforeSr, producerBinding);
             const bool producerMatches = HoYoShade::MatchesBeforeSrInput(beforeSr, producerBinding);
             // Bounded evidence only. The NGX parameter is a resource, not the
             // producer's SRV or transfer declaration. Correlate it to the bridge
