@@ -897,11 +897,9 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             readBeforeSrRegion(endpoint);
             endpoint.state = D3D12_RESOURCE_STATE_COMMON; endpoint.stateKnown = true;
 
-                // Other games/routes retain the transfer-qualified contract.
-                endpoint.sdr = dx12Feature->GetFeatureFlagsKnown() &&
-                    (dx12Feature->GetFeatureFlags() & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) == 0 &&
-                    State::Instance().outputColorSpace.valid &&
-                    State::Instance().outputColorSpace.dxgiColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+            const auto outputSpace = State::Instance().outputColorSpace;
+            endpoint.sdr = beforeSrFlagsKnown && (beforeSrFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) == 0 &&
+                outputSpace.valid && outputSpace.dxgiColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
 
             // The actual source chain proves selection through proxy devices.
             // Its backbuffer is association evidence, never the low-resolution SR input.
@@ -921,6 +919,29 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             unsigned depthX = 0, depthY = 0;
             InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, &depthX);
             InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, &depthY);
+            // Bounded evidence only. The NGX parameter is a resource, not the
+            // producer's SRV or transfer declaration. Correlate it to the bridge
+            // observation by PID/thread/parameters/resource and the QPC interval.
+            static std::atomic<unsigned> inputReports { 0 };
+            if (inputReports.load(std::memory_order_relaxed) < 8 &&
+                inputReports.fetch_add(1, std::memory_order_relaxed) < 8) {
+                LARGE_INTEGER qpc {};
+                QueryPerformanceCounter(&qpc);
+                const auto effectiveFlags = beforeSrProvider->GetNativeDlssCreateFlags();
+                const auto& sourceDesc = dx11Color.SourceDesc;
+                LOG_INFO("HoYoShade BeforeSR input tid={} qpc={} params=0x{:x} source=0x{:x} "
+                         "source_format={} source_extent={}x{} source_samples={} bridge_format={} "
+                         "input_view=not-provided input_transfer=not-provided ngx_create_raw={:x} raw_known={} "
+                         "native_dlss_create_flags={:x} effective_known={} output_space={} output_space_known={} "
+                         "sdr={} stream={} generation={} frame={} cache_frame={} rect={},{},{}x{} depth_base={},{}",
+                         GetCurrentThreadId(), qpc.QuadPart, reinterpret_cast<uintptr_t>(InParameters),
+                         reinterpret_cast<uintptr_t>(restoreParamColor), static_cast<unsigned>(sourceDesc.Format),
+                         sourceDesc.Width, sourceDesc.Height, sourceDesc.SampleDesc.Count,
+                         static_cast<unsigned>(hoyoColor->GetDesc().Format), beforeSrFlags, beforeSrFlagsKnown,
+                         effectiveFlags.value_or(0), effectiveFlags.has_value(), static_cast<unsigned>(outputSpace.dxgiColorSpace),
+                         outputSpace.valid, endpoint.sdr, endpoint.stream, endpoint.generation, endpoint.frame,
+                         sharedRead->cacheFrame, endpoint.colorX, endpoint.colorY, endpoint.width, endpoint.height, depthX, depthY);
+            }
             if (beforeSrFlagsKnown && !endpoint.colorX && !endpoint.colorY && !depthX && !depthY)
                 endpoint.depth = HoYoShade::Depth::FromBridge(sharedRead, endpoint.width, endpoint.height,
                     (beforeSrFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0);

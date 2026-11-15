@@ -11,6 +11,7 @@ void IFeature::SetHandle(unsigned int InHandleId)
 bool IFeature::SetInitParameters(NVSDK_NGX_Parameter* InParameters)
 {
     _featureFlagsKnown = false;
+    _nativeDlssCreateFlags.reset();
     unsigned int width = 0;
     unsigned int outWidth = 0;
     unsigned int height = 0;

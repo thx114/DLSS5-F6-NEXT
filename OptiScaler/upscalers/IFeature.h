@@ -46,6 +46,7 @@ class IFeature
     bool _isInited = false;
     int _featureFlags = 0;
     bool _featureFlagsKnown = false;
+    std::optional<unsigned> _nativeDlssCreateFlags;
     InitFlags _initFlags = {};
 
     NVSDK_NGX_PerfQuality_Value _perfQualityValue;
@@ -73,6 +74,7 @@ class IFeature
     inline static ID3D12Device* _dx11on12Device = nullptr;
     inline static ID3D12Device* _localDx11on12Device = nullptr;
 
+    void RememberNativeDlssCreateFlags(unsigned flags) { _nativeDlssCreateFlags = flags; }
     bool _initParameters = false;
     NVSDK_NGX_Handle* _handle = nullptr;
 
@@ -121,6 +123,7 @@ class IFeature
     }
     int GetFeatureFlags() const { return _featureFlags; }
     bool GetFeatureFlagsKnown() const { return _featureFlagsKnown; }
+    std::optional<unsigned> GetNativeDlssCreateFlags() const { return _nativeDlssCreateFlags; }
 
     virtual bool IsWithDx12() = 0;
     virtual feature_version Version() = 0;

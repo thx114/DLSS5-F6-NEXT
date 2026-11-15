@@ -191,13 +191,13 @@ struct Host {
         for(unsigned y=0;y<Height;++y)for(unsigned x=0;x<Width;++x){const auto r=mapped[y*footprint.Footprint.RowPitch+x*4];changed+=r!=32;}
         readback->Unmap(0,nullptr); Check(changed>0,"actual MXAO changes SR input pixels with supplied depth");
     }
-    void CheckDepthPixels() {
+    void CheckDepthPixels(bool reversed = false) {
         Begin(); D3D12_TEXTURE_COPY_LOCATION src{}, dst{}; src.pResource = color.Get(); src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         dst.pResource = readback.Get(); dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; dst.PlacedFootprint = footprint;
         list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr); Submit();
         unsigned char* mapped = nullptr; Hr(readback->Map(0, nullptr, reinterpret_cast<void**>(&mapped)));
         for (unsigned y = 0; y < Height; ++y) for (unsigned x = 0; x < Width; ++x) {
-            const auto expected = (((x < Width/3) != (y < Height/2)) != bool(pattern & 1)) ? 64u : 191u;
+            const auto expected = ((((x < Width/3) != (y < Height/2)) != bool(pattern & 1)) != reversed) ? 64u : 191u;
             Check(mapped[y*footprint.Footprint.RowPitch+x*4] == expected, "same-frame asymmetric depth pixels and Y orientation");
         }
         readback->Unmap(0, nullptr);
@@ -233,25 +233,28 @@ struct Host {
         context->Unmap(staging.Get(), 0);
         std::printf("natural suppression=%d worker=%d red=%u\n", suppressed, worker, expected); std::fflush(stdout);
     }
-    HoYoShade::StageResult Filter(uint64_t frame, bool provideDepth = true, bool mismatch = false) {
+    enum class Input { Normal, MissingDepth, WrongFrame, WrongFormat, ReverseZ, UnknownColor };
+    HoYoShade::StageResult Filter(uint64_t frame, Input fixture = Input::Normal) {
         HoYoShade::BeginBeforeSrSource(context.Get(), 1);
         HoYoShade::NaturalAssociation::Source::Scope source(HoYoShade::CaptureBridgeSource(device11.Get(), 1));
         Check(source.Get() != nullptr, "current source proof"); HoYoShade::BindNaturalSource(source.Get());
         const auto& identity = source.Get()->Observation(); HoYoShade::ColorEndpoint endpoint;
         endpoint.stage = HoYoShade::Stage::BeforeSr; endpoint.color = color.Get(); endpoint.queue = queue.Get(); endpoint.ready = {queue.Get(), done.Get(), serial};
-        endpoint.width = Width; endpoint.height = Height; endpoint.stateKnown = endpoint.sdr = true;
+        endpoint.width = Width; endpoint.height = Height; endpoint.stateKnown = true; endpoint.sdr = fixture != Input::UnknownColor;
         endpoint.state = D3D12_RESOURCE_STATE_COMMON; endpoint.stream = 1; endpoint.generation = identity.generation; endpoint.frame = identity.frame;
         endpoint.naturalSource = source.Get(); endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrBridgeInput;
         endpoint.naturalDevice = identity.sourceDevice; endpoint.naturalBackbuffer = identity.buffer;
         std::shared_ptr<TestDepthReader> reader;
-        if (useDepth && provideDepth) {
+        if (useDepth && fixture != Input::MissingDepth) {
             auto& input = endpoint.depth; input.resource = depth[pattern & 1].Get(); input.typedFormat = DXGI_FORMAT_R32_FLOAT;
             input.width = Width; input.height = Height; input.stateKnown = input.directionKnown = true;
+            input.reversed = fixture == Input::ReverseZ;
+            if (fixture == Input::WrongFormat) input.typedFormat = DXGI_FORMAT_R16_UNORM;
             input.queue = queue.Get(); input.readyFence = done.Get(); input.readyValue = serial;
             input.owner = endpoint.stream; input.generation = endpoint.generation; input.frame = endpoint.frame; input.epoch = 1;
             reader = std::make_shared<TestDepthReader>(); reader->resource = input.resource; reader->expected = input;
             input.reader = reader;
-            if (mismatch) ++input.frame;
+            if (fixture == Input::WrongFrame) ++input.frame;
         }
         auto result = HoYoShade::RenderStage(endpoint);
         if (result.Submitted()) Wait(result.completion.fence.Get(), result.completion.value);
@@ -439,9 +442,9 @@ int main(int argc, char** argv) {
             const auto result=host.Filter(701); Check(result.EffectsExecuted() && result.depthAvailable,"LP/MXAO next frame current input");
             const auto next=host.ReadNormals(); Check(first!=next,"LP normals follow changed asymmetric depth");
             host.update(host.natural); host.Upload();
-            const auto missing=host.Filter(702,false); Check(!missing.EffectsExecuted() && host.Read()==32,"LP/MXAO missing depth leaves SR input unchanged");
+            const auto missing=host.Filter(702, Host::Input::MissingDepth); Check(!missing.EffectsExecuted() && host.Read()==32,"LP/MXAO missing depth leaves SR input unchanged");
             host.update(host.natural); host.Upload();
-            const auto mismatch=host.Filter(703,true,true); Check(!mismatch.EffectsExecuted() && host.Read()==32,"LP/MXAO mismatched frame rejected");
+            const auto mismatch=host.Filter(703, Host::Input::WrongFrame); Check(!mismatch.EffectsExecuted() && host.Read()==32,"LP/MXAO mismatched frame rejected");
             std::printf("PASS real LP/MXAO WARP: %u checks, normals=%llx/%llx; no game/performance acceptance\n",checks,first,next);return 0;
         }
         if (depthMode) {
@@ -450,6 +453,22 @@ int main(int argc, char** argv) {
                 const auto result = host.Filter(frame); Check(result.EffectsExecuted() && result.depthAvailable, "alternating source depth remains available");
                 host.CheckDepthPixels();
             }
+            host.update(host.natural); host.Upload();
+            const auto wrongFormat = host.Filter(249, Host::Input::WrongFormat);
+            Check(!wrongFormat.depthAvailable, "mismatched typed depth view cannot become DEPTH");
+            host.update(host.natural); host.Upload();
+            const auto unknown = host.Filter(250, Host::Input::UnknownColor);
+            Check(!unknown.Submitted() && host.Read() == 32, "unknown input transfer rejected before depth rendering");
+            bool reverseObserved = false;
+            for (unsigned frame = 251; frame < 600; ++frame) {
+                host.update(host.natural); host.Upload();
+                const auto result = host.Filter(frame, Host::Input::ReverseZ);
+                if (result.EffectsExecuted() && result.depthAvailable) {
+                    host.CheckDepthPixels(true); reverseObserved = true; break;
+                }
+                Sleep(10); // Allow the private core's depth-semantics reload to finish.
+            }
+            Check(reverseObserved, "real depth shader consumes reverse Z after private reload");
             std::printf("PASS real core same-frame depth: %u checks; WARP, no game/performance acceptance\n", checks); return 0;
         }
         // The natural runtime's startup splash is independent GUI work. Let

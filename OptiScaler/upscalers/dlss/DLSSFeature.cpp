@@ -56,6 +56,7 @@ void DLSSFeature::ProcessInitParams(NVSDK_NGX_Parameter* InParameters)
         featureFlags |= NVSDK_NGX_DLSS_Feature_Flags_DoSharpening;
 
     InParameters->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, featureFlags);
+    RememberNativeDlssCreateFlags(featureFlags);
 
     // Resolution -----------------------------
     if (Config::Instance()->OutputScalingEnabled.value_or_default() && (LowResMV() || RenderWidth() == DisplayWidth()))
