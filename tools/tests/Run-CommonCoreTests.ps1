@@ -22,6 +22,7 @@ $suites = @(
     @{ Name = 'FgHandoffWarp'; Source = 'OptiScaler/with_dx12/tests/fg-handoff/fixture.cpp'; StubInclude = 'build/common-core-tests'; Libraries = 'd3d11.lib d3d12.lib dxgi.lib' },
     @{ Name = 'BridgeRetirementWarp'; Source = 'OptiScaler/upscalers/tests/bridge-retirement/fixture.cpp'; StubInclude = 'build/common-core-tests'; Libraries = 'd3d12.lib dxgi.lib' },
     @{ Name = 'ReflexQueueTiming'; Source = 'OptiScaler/runtime/tests/ReflexQueueTimingTests.cpp' },
+    @{ Name = 'BeforeSrInput'; Source = 'OptiScaler/inputs/tests/BeforeSrInputTests.cpp'; Libraries = 'd3d11.lib' },
     @{ Name = 'ReflexReportPolicy'; Source = 'OptiScaler/runtime/tests/ReflexReportPolicyTests.cpp'; StubInclude = 'external/nvapi' },
     @{ Name = 'ReflexForwarding'; Source = 'OptiScaler/hooks/tests/ReflexForwardingTests.cpp' },
     @{ Name = 'FrameLimitTimer'; Source = 'OptiScaler/runtime/tests/FrameLimitTimerTests.cpp' },
@@ -229,6 +230,26 @@ foreach ($suite in $suites) {
                 throw "History birth-reference negative did not detect the original defect; inspect $negativeLog"
             }
             Write-Output 'NR history rolling-reference mutation: original drift defect detected as expected'
+            # Independently restore the short filter's birth-colour read. The
+            # three-frame test must fail even while long ancestry stays correct.
+            $adjacentRoot = Join-Path $suiteOutput 'adjacent-raw-negative'
+            $null = [IO.Directory]::CreateDirectory($adjacentRoot)
+            foreach ($file in @('dlssnr_detail_reuse.hlsl','dlssnr_detail_history.hlsli','dlssnr_replace_curve.hlsli')) {
+                Copy-Item -LiteralPath (Join-Path $shaderRoot $file) -Destination (Join-Path $adjacentRoot $file) -Force
+            }
+            $adjacentPath = Join-Path $adjacentRoot 'dlssnr_detail_history.hlsli'
+            $adjacentSource = [IO.File]::ReadAllText($adjacentPath)
+            $adjacentRead = 'const float3 adjacentRaw = t7.Load(int3(q, 0)).rgb;'
+            if (!$adjacentSource.Contains($adjacentRead)) { throw 'Adjacent-raw negative no longer matches production' }
+            [IO.File]::WriteAllText($adjacentPath, $adjacentSource.Replace($adjacentRead, 'const float3 adjacentRaw = context.rgb;'))
+            $adjacentLog = Join-Path $adjacentRoot 'result.log'
+            & $exe --shader (Join-Path $adjacentRoot 'dlssnr_detail_reuse.hlsl') *> $adjacentLog
+            if ($LASTEXITCODE -ne 1 -or
+                !(Select-String -LiteralPath $adjacentLog -SimpleMatch 'FAIL: short stability follows adjacent raw even when the long birth differs' -Quiet) -or
+                !(Select-String -LiteralPath $adjacentLog -SimpleMatch 'FAIL: return to birth colour does not hide an adjacent-frame appearance change' -Quiet)) {
+                throw "Adjacent-raw negative did not detect the original three-frame defect; inspect $adjacentLog"
+            }
+            Write-Output 'NR history adjacent-raw mutation: both three-frame regressions detected as expected'
         }
         if ($suite.Name -eq 'GuidePreviewWarp') {
             & $exe --producer-replay

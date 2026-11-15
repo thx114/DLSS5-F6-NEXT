@@ -3,7 +3,7 @@
 param(
     [string]$Artifact,
     [Parameter(Mandatory)][string]$DlssRuntime,
-    [ValidateSet('interop','skip','native','legacy-shutdown')][string[]]$Cases = @('interop','skip','native'),
+    [ValidateSet('interop','skip','native','before-sr','legacy-shutdown')][string[]]$Cases = @('interop','skip','native','before-sr'),
     [switch]$IncludeShutdown,
     [string]$DevCmd = 'D:/VS2022BuildTools/Common7/Tools/VsDevCmd.bat'
 )
@@ -32,6 +32,7 @@ foreach ($case in $Cases)
     Copy-Item -LiteralPath $runtimePath -Destination (Join-Path $path 'nvngx_dlss.dll')
     $backend = if ($case -eq 'native') { 'dlss' } else { 'dlss_12' }
     $skip = if ($case -eq 'skip') { '2' } else { 'auto' }
+    $beforeSrEnabled = if ($case -eq 'before-sr') { 'true' } else { 'false' }
     # Only this disposable host's settings. No installed profile is read or
     # changed; all feature DLL lookup paths remain within this fixture.
     $ini = @"
@@ -42,7 +43,8 @@ Enabled=false
 [DlssNr]
 Enabled=false
 [HoYoShade]
-Enabled=false
+Enabled=$beforeSrEnabled
+Stage=1
 [CAS]
 Enabled=false
 [OutputScaling]
@@ -79,7 +81,7 @@ LogFileName=./OptiScaler.log
         ArtifactSHA256=(Get-FileHash -LiteralPath (Join-Path $path 'OptiScaler.dll')).Hash
         RuntimeSHA256=(Get-FileHash -LiteralPath (Join-Path $path 'nvngx_dlss.dll')).Hash
         IniSHA256=(Get-FileHash -LiteralPath (Join-Path $path 'OptiScaler.ini')).Hash
-        Evidence=@($stdout -split '\r?\n' | Where-Object { $_ -match '^(receipt |target |PASS |FAIL:)' })
+        Evidence=@($stdout -split '\r?\n' | Where-Object { $_ -match '^(receipt |target |before_sr |PASS |FAIL:)' })
     }
     $process.Dispose()
     $rows | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $runRoot 'result.json') -Encoding utf8

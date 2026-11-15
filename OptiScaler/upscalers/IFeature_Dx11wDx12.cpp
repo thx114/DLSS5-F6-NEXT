@@ -3,6 +3,7 @@
 #include <integration/HoYoShade.h>
 #include <integration/HoYoShadeNaturalAssociation.h>
 #include <integration/HoYoShadeBridgeDepth.h>
+#include <integration/HoYoShadeBeforeSrInput.h>
 #include "IFeature_Dx11wDx12.h"
 #include <runtime/GuideCapture.h>
 #include <runtime/GuideSourceMetadataNgx.h>
@@ -682,7 +683,8 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
 }
 
 bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext,
-                                          NVSDK_NGX_Parameter* InParameters, ID3D11Resource** orderedOutput)
+                                          NVSDK_NGX_Parameter* InParameters, ID3D11Resource** orderedOutput,
+                                          const interop::BeforeSrInput* beforeSr)
 {
     if (orderedOutput) *orderedOutput = nullptr;
     HoYoShade::BeginBeforeSrSource(InDeviceContext, reinterpret_cast<uint64_t>(this));
@@ -929,6 +931,14 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
             unsigned depthX = 0, depthY = 0;
             InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, &depthX);
             InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, &depthY);
+            const HoYoShade::BeforeSrBinding producerBinding {InDeviceContext,
+                sharedRead->sourceColor11.Get(), sharedRead->sourceDepth11.Get(), dx11Mv.SourceTexture,
+                dx11Color.SourceDesc.Format, hoyoColor->GetDesc().Format,
+                endpoint.width, endpoint.height, endpoint.colorX, endpoint.colorY, depthX, depthY};
+            const auto producerColor = HoYoShade::AdmitBeforeSrInput(beforeSr, producerBinding);
+            if (producerColor != HoYoShade::BeforeSrColor::Legacy)
+                endpoint.sdr = producerColor == HoYoShade::BeforeSrColor::DeclaredSdr;
+            const bool producerMatches = HoYoShade::MatchesBeforeSrInput(beforeSr, producerBinding);
             // Bounded evidence only. The NGX parameter is a resource, not the
             // producer's SRV or transfer declaration. Correlate it to the bridge
             // observation by PID/thread/parameters/resource and the QPC interval.
@@ -941,20 +951,33 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
                 const auto& sourceDesc = dx11Color.SourceDesc;
                 LOG_INFO("HoYoShade BeforeSR input tid={} qpc={} params=0x{:x} source=0x{:x} "
                          "source_format={} source_extent={}x{} source_samples={} bridge_format={} "
-                         "input_view=not-provided input_transfer=not-provided ngx_create_raw={:x} raw_known={} "
+                         "input_query={} input_view={} input_transfer={} producer_frame={} producer_instance=0x{:x} "
+                         "producer_storage={} producer_render={}x{} producer_display={}x{} producer_flags={:x} "
+                         "producer_color={} ngx_create_raw={:x} raw_known={} "
                          "native_dlss_create_flags={:x} effective_known={} output_space={} output_space_known={} "
                          "sdr={} stream={} generation={} frame={} cache_frame={} rect={},{},{}x{} depth_base={},{}",
                          GetCurrentThreadId(), qpc.QuadPart, reinterpret_cast<uintptr_t>(InParameters),
                          reinterpret_cast<uintptr_t>(restoreParamColor), static_cast<unsigned>(sourceDesc.Format),
                          sourceDesc.Width, sourceDesc.Height, sourceDesc.SampleDesc.Count,
-                         static_cast<unsigned>(hoyoColor->GetDesc().Format), beforeSrFlags, beforeSrFlagsKnown,
+                         static_cast<unsigned>(hoyoColor->GetDesc().Format),
+                         beforeSr ? interop::Text(beforeSr->query) : "not-queried",
+                         beforeSr ? static_cast<unsigned>(beforeSr->frame.color_view_format) : 0,
+                         beforeSr ? static_cast<unsigned>(beforeSr->frame.color_transfer) : 0,
+                         beforeSr ? beforeSr->frame.frame : 0, beforeSr ? beforeSr->frame.instance : 0,
+                         beforeSr ? static_cast<unsigned>(beforeSr->frame.color_storage_format) : 0,
+                         beforeSr ? beforeSr->frame.render_width : 0, beforeSr ? beforeSr->frame.render_height : 0,
+                         beforeSr ? beforeSr->frame.display_width : 0, beforeSr ? beforeSr->frame.display_height : 0,
+                         beforeSr ? beforeSr->frame.flags : 0,
+                         HoYoShade::Text(producerColor), beforeSrFlags, beforeSrFlagsKnown,
                          effectiveFlags.value_or(0), effectiveFlags.has_value(), static_cast<unsigned>(outputSpace.dxgiColorSpace),
                          outputSpace.valid, endpoint.sdr, endpoint.stream, endpoint.generation, endpoint.frame,
                          sharedRead->cacheFrame, endpoint.colorX, endpoint.colorY, endpoint.width, endpoint.height, depthX, depthY);
             }
-            if (beforeSrFlagsKnown && !endpoint.colorX && !endpoint.colorY && !depthX && !depthY)
+            if (producerMatches || ((!beforeSr || !beforeSr->HasDeclaration()) && beforeSrFlagsKnown &&
+                !endpoint.colorX && !endpoint.colorY && !depthX && !depthY))
                 endpoint.depth = HoYoShade::Depth::FromBridge(sharedRead, endpoint.width, endpoint.height,
-                    (beforeSrFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0);
+                    producerMatches ? (beforeSr->frame.flags & neo::interop::k_before_sr_depth_inverted) != 0 :
+                        (beforeSrFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0);
             const auto filtered = HoYoShade::RenderStage(endpoint);
             if (filtered.Uncertain()) {
                 // No SR consumer may read a color with uncertain barriers or

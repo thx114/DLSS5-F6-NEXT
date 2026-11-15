@@ -5,6 +5,7 @@
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_params.h>
 #include "../F6EvalReceiptV1.h"
+#include "../NeoBeforeSrV1.h"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -16,6 +17,8 @@ using namespace neo::ngx;
 namespace
 {
 unsigned checks = 0;
+thread_local const neo::interop::BeforeSrFrameV1* beforeSrFrame = nullptr;
+unsigned beforeSrQueries = 0, beforeSrMismatches = 0;
 void Check(bool ok, const char* label)
 {
     ++checks;
@@ -114,12 +117,27 @@ struct Frame
 };
 }
 
+// This executable stands in for a renamed bridge and calls the real F6 DLL.
+extern "C" __declspec(dllexport) HRESULT WINAPI Dx11FsrBridge_QueryBeforeSrFrameV1(
+    ID3D11DeviceContext* context, ID3D11Resource* color, ID3D11Resource* depth,
+    neo::interop::BeforeSrFrameV1* out) noexcept
+{
+    ++beforeSrQueries;
+    if (!beforeSrFrame || beforeSrFrame->context != context || beforeSrFrame->color != color ||
+        beforeSrFrame->depth != depth || !out || out->size != sizeof(*out) || out->version != 1) {
+        ++beforeSrMismatches; return S_FALSE;
+    }
+    *out = *beforeSrFrame;
+    return S_OK;
+}
+
 int wmain(int argc, wchar_t** argv)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc != 3 && argc != 4) return 2;
     const bool skip = std::wstring_view(argv[2]) == L"skip";
     const bool native = std::wstring_view(argv[2]) == L"native";
+    const bool beforeSr = std::wstring_view(argv[2]) == L"before-sr";
     const bool legacyOnly = std::wstring_view(argv[2]) == L"legacy-shutdown";
     const bool includeShutdown = legacyOnly || (argc == 4 && std::wstring_view(argv[3]) == L"shutdown");
     const auto module = LoadLibraryW(argv[1]);
@@ -191,8 +209,18 @@ int wmain(int argc, wchar_t** argv)
             frame.Fill(context.Get(), rgb); frame.Bind(parameters);
             F6EvalReceiptV1 receipt; receipt.reserved = 0x99999999;
             ++request;
-            if (legacyOnly) Ngx(legacy(context.Get(), handle, parameters, nullptr), "legacy baseline Evaluate");
-            else Ngx(evaluate(context.Get(), handle, parameters, nullptr, request, &receipt), "V1 Evaluate");
+            neo::interop::BeforeSrFrameV1 input;
+            input.context = context.Get(); input.color = frame.color.Get(); input.depth = frame.depth.Get();
+            input.motion = frame.motion.Get(); input.render_width = input.render_height = size;
+            input.display_width = input.display_height = size * 2;
+            input.color_storage_format = input.color_view_format = DXGI_FORMAT_R10G10B10A2_UNORM;
+            input.frame = request; input.instance = reinterpret_cast<uintptr_t>(handle);
+            input.flags = neo::interop::k_before_sr_depth_inverted;
+            beforeSrFrame = beforeSr ? &input : nullptr;
+            const auto evaluated = legacyOnly ? legacy(context.Get(), handle, parameters, nullptr) :
+                evaluate(context.Get(), handle, parameters, nullptr, request, &receipt);
+            beforeSrFrame = nullptr;
+            Ngx(evaluated, "V1 Evaluate");
             const auto status = f6_output_status(receipt, request, handle, context.Get(), frame.output.Get());
             const bool skipped = skip && n == 0;
             Check(legacyOnly || status == (skipped ? F6OutputStatus::no_output : F6OutputStatus::current_output_ordered),
@@ -214,6 +242,10 @@ int wmain(int argc, wchar_t** argv)
         Ngx(release(handle), "release after real readback completion");
         Ngx(destroy(parameters), "destroy table after release");
     }
+    Check(beforeSrQueries == (beforeSr ? 6u : 0u) && beforeSrMismatches == 0,
+        "BeforeSR query receives this call's original DX11 resources only when requested");
+    std::printf("before_sr queries=%u mismatches=%u enabled=%u transfer=unknown\n",
+        beforeSrQueries, beforeSrMismatches, beforeSr ? 1u : 0u);
     if (includeShutdown) Ngx(shutdown(device.Get()), "shutdown after all handles and readbacks");
     else std::puts("LIMIT: vendor Shutdown1 not exercised; this suite proves Evaluate, pixels and per-handle Release only");
     std::printf("PASS actual F6 V1 ABI and %s provider pixels: %u checks\n", native ? "native" : "interop", checks);

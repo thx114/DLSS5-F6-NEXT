@@ -20,6 +20,8 @@
 #include <misc/IdentifyGpu.h>
 #include <runtime/GuideDiagnostics.h>
 #include "F6EvalReceiptV1.h"
+#include "BeforeSrInput.h"
+#include <intrin.h>
 
 static ID3D11Device* D3D11Device = nullptr;
 static ankerl::unordered_dense::map<unsigned int, ContextData<IFeature_Dx11>> Dx11Contexts;
@@ -759,7 +761,8 @@ static NVSDK_NGX_Result EvaluateDx11(ID3D11DeviceContext* InDevCtx,
                                     const NVSDK_NGX_Handle* InFeatureHandle,
                                     NVSDK_NGX_Parameter* InParameters,
                                     PFN_NVSDK_NGX_ProgressCallback InCallback,
-                                    neo::ngx::F6EvalReceiptV1* receipt)
+                                    neo::ngx::F6EvalReceiptV1* receipt,
+                                    const interop::BeforeSrInput* beforeSr = nullptr)
 {
     const auto noOutput = [receipt](NVSDK_NGX_Result result) {
         if (receipt) receipt->status = neo::ngx::F6OutputStatus::no_output;
@@ -862,7 +865,7 @@ static NVSDK_NGX_Result EvaluateDx11(ID3D11DeviceContext* InDevCtx,
 
     ID3D11Resource* orderedOutput = nullptr;
     const auto upscaleResult = receipt
-        ? deviceContext->EvaluateWithOutput(InDevCtx, InParameters, &orderedOutput)
+        ? deviceContext->EvaluateWithOutput(InDevCtx, InParameters, &orderedOutput, beforeSr)
         : deviceContext->Evaluate(InDevCtx, InParameters);
     if (receipt)
     {
@@ -913,7 +916,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
     return EvaluateDx11(context, handle, parameters, callback, nullptr);
 }
 
-extern "C" __declspec(dllexport) NVSDK_NGX_Result NVSDK_CONV F6_NGX_D3D11_EvaluateFeatureV1(
+extern "C" __declspec(dllexport) __declspec(noinline) NVSDK_NGX_Result NVSDK_CONV F6_NGX_D3D11_EvaluateFeatureV1(
     ID3D11DeviceContext* context, const NVSDK_NGX_Handle* handle, NVSDK_NGX_Parameter* parameters,
     PFN_NVSDK_NGX_ProgressCallback callback, uint64_t requestId, neo::ngx::F6EvalReceiptV1* receipt)
 {
@@ -929,7 +932,21 @@ extern "C" __declspec(dllexport) NVSDK_NGX_Result NVSDK_CONV F6_NGX_D3D11_Evalua
         parameters->Get(NVSDK_NGX_Parameter_Output, reinterpret_cast<void**>(&output));
     receipt->output = reinterpret_cast<uintptr_t>(output);
 
-    const auto result = EvaluateDx11(context, handle, parameters, callback, receipt);
+    interop::BeforeSrInput beforeSr;
+    const auto* config = Config::Instance();
+    if (context && parameters && config->HoYoShadeEnabled.value_or_default() &&
+        config->HoYoShadeStage.value_or_default() == 1) {
+        const auto readResource = [parameters](const char* name) {
+            ID3D11Resource* resource = nullptr;
+            if (parameters->Get(name, &resource) != NVSDK_NGX_Result_Success)
+                parameters->Get(name, reinterpret_cast<void**>(&resource));
+            return resource;
+        };
+        beforeSr = interop::QueryBeforeSrInput(_ReturnAddress(), context,
+            readResource(NVSDK_NGX_Parameter_Color), readResource(NVSDK_NGX_Parameter_Depth),
+            readResource(NVSDK_NGX_Parameter_MotionVectors));
+    }
+    const auto result = EvaluateDx11(context, handle, parameters, callback, receipt, &beforeSr);
     LOG_DEBUG("F6 evaluate receipt v1 request={} handle=0x{:x} context=0x{:x} output=0x{:x} provider_frame={} status={} result={:x}",
         requestId, receipt->handle, receipt->context, receipt->output, receipt->provider_frame,
         static_cast<unsigned>(receipt->status), static_cast<unsigned>(result));

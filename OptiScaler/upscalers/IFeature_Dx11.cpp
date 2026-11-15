@@ -46,7 +46,8 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Par
 }
 
 bool IFeature_Dx11::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext,
-                                      NVSDK_NGX_Parameter* InParameters, ID3D11Resource** orderedOutput)
+                                      NVSDK_NGX_Parameter* InParameters, ID3D11Resource** orderedOutput,
+                                      const interop::BeforeSrInput* /*beforeSr*/)
 {
     if (orderedOutput) *orderedOutput = nullptr;
     // The D3D11 depth finder only runs while the game is not calling an upscaler.

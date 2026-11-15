@@ -8,6 +8,8 @@
 #include <shaders/magnifier/Magnifier_Dx11.h>
 #include <gpu_time/GpuTime_Dx11.h>
 
+namespace interop { struct BeforeSrInput; }
+
 class IFeature_Dx11 : public virtual IFeature
 {
   private:
@@ -46,8 +48,10 @@ class IFeature_Dx11 : public virtual IFeature
 
     // Call-local delivery evidence, separate from legacy success/fallback.
     // Only audited providers and a complete final-output pass chain opt in.
+    // beforeSr is borrowed only during this evaluation, independently of output
+    // delivery; native providers keep their existing processing path.
     virtual bool EvaluateWithOutput(ID3D11DeviceContext* context, NVSDK_NGX_Parameter* parameters,
-                                    ID3D11Resource** orderedOutput);
+                                    ID3D11Resource** orderedOutput, const interop::BeforeSrInput* beforeSr = nullptr);
 
     // The native DX11 path keeps its normal destruction contract. Interop
     // providers must first prove their submitted DX12 work can be retired.

@@ -94,7 +94,7 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
     bool Init(ID3D11Device* InDevice, ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters) final;
     bool Evaluate(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters) final;
     bool EvaluateWithOutput(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters,
-                            ID3D11Resource** orderedOutput) final;
+                            ID3D11Resource** orderedOutput, const interop::BeforeSrInput* beforeSr = nullptr) final;
     bool IsWithDx12() final { return true; }
     API Api() const override { return API::DX12; }
 
