@@ -32,6 +32,86 @@ static inline std::atomic<uint64_t> _lastFrameId[20] = {};
 // Not a reference: dropped by forgetSleepDevice when the device goes
 static inline std::atomic<IUnknown*> _lastDev[20] = {};
 
+namespace
+{
+namespace Timing = ReflexMarkerTiming;
+std::mutex markerTimingMutex;
+Timing::Ledger markerTiming;
+thread_local auto markerSource = Timing::Source::Unknown;
+
+struct MarkerSourceScope
+{
+    Timing::Source previous;
+    explicit MarkerSourceScope(Timing::Source source) : previous(std::exchange(markerSource, source)) {}
+    ~MarkerSourceScope() { markerSource = previous; }
+};
+
+Timing::Device ReportDevice(Timing::Api api, const void* device, bool markerOnly)
+{
+    const auto address = reinterpret_cast<uintptr_t>(device);
+    // The emulation shim has a shared report array, not a per-device report.
+    // The query device is useful to log, but cannot authorize marker attribution.
+    if (markerOnly) return { api, address, 0 };
+    std::lock_guard lock(markerTimingMutex);
+    return markerTiming.Get(api, address);
+}
+void ForgetTimingDevice(Timing::Api api, const void* device)
+{
+    std::lock_guard lock(markerTimingMutex);
+    markerTiming.Forget(api, reinterpret_cast<uintptr_t>(device));
+}
+
+// Only an accepted endpoint on the report provider earns provenance. This lock
+// is never held while calling a driver, Streamline or the XeLL shim.
+template<class Forward>
+NvAPI_Status SendTimingMarker(Timing::Api api, const void* device, uint64_t frame,
+                              Timing::Point point, Timing::Source source, Forward&& forward)
+{
+    if (!device || !frame || point == Timing::Point::Count) return forward();
+    Timing::Device owner;
+    {
+        std::lock_guard lock(markerTimingMutex);
+        owner = markerTiming.Begin(api, reinterpret_cast<uintptr_t>(device));
+    }
+    const auto status = forward();
+    if (status == NVAPI_OK)
+    {
+        std::lock_guard lock(markerTimingMutex);
+        markerTiming.Accept(owner, frame, point, source);
+    }
+    return status;
+}
+
+Timing::Point PointFor(NV_LATENCY_MARKER_TYPE type)
+{
+    using enum Timing::Point;
+    switch (type)
+    {
+    case SIMULATION_START: return SimStart;
+    case SIMULATION_END: return SimEnd;
+    case RENDERSUBMIT_START: return SubmitStart;
+    case RENDERSUBMIT_END: return SubmitEnd;
+    case PRESENT_START: return PresentStart;
+    case PRESENT_END: return PresentEnd;
+    default: return Count;
+    }
+}
+Timing::Point PointFor(NV_VULKAN_LATENCY_MARKER_TYPE type)
+{
+    using enum Timing::Point;
+    switch (type)
+    {
+    case VULKAN_SIMULATION_START: return SimStart;
+    case VULKAN_SIMULATION_END: return SimEnd;
+    case VULKAN_RENDERSUBMIT_START: return SubmitStart;
+    case VULKAN_RENDERSUBMIT_END: return SubmitEnd;
+    case VULKAN_PRESENT_START: return PresentStart;
+    case VULKAN_PRESENT_END: return PresentEnd;
+    default: return Count;
+    }
+}
+}
+
 // #define LOG_REFLEX_CALLS
 
 void ReflexHooks::noteMarker(uint64_t frameId, uint32_t markerType, IUnknown* device)
@@ -347,14 +427,19 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_Sleep(IUnknown* pDev)
 
 NvAPI_Status ReflexHooks::hkNvAPI_D3D_GetLatency(IUnknown* pDev, NV_LATENCY_RESULT_PARAMS* pGetLatencyParams)
 {
-#ifdef LOG_REFLEX_CALLS
-    LOG_FUNC();
-#endif
+    return readD3DLatency(pDev, pGetLatencyParams);
+}
 
-    if (State::Instance().activeFgOutput == FGOutput::XeFG)
-        return nvapi_calls::NvAPI_D3D_GetLatency(pDev, pGetLatencyParams);
-
-    return o_NvAPI_D3D_GetLatency(pDev, pGetLatencyParams);
+NvAPI_Status ReflexHooks::readD3DLatency(IUnknown* device, NV_LATENCY_RESULT_PARAMS* params, ReportRoute* route)
+{
+    const bool xell = XefgOutput();
+    if (route)
+    {
+        const bool markerOnly = xell || fakenvapi::isUsingAsMainNvapi();
+        *route = { ReportDevice(Timing::Api::D3D, device, markerOnly), markerOnly };
+    }
+    if (xell) return nvapi_calls::NvAPI_D3D_GetLatency(device, params);
+    return o_NvAPI_D3D_GetLatency(device, params);
 }
 
 NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
@@ -364,21 +449,27 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
     LOG_FUNC();
 #endif
 
+    const bool gameCall = isGameCall(_ReturnAddress());
+    if (gameCall)
+        _gameCalledReflex = true;
+    const auto origin = markerSource != Timing::Source::Unknown ? markerSource :
+        (gameCall ? Timing::Source::Application : Timing::Source::Unknown);
+    const auto send = [&](auto&& forward) {
+        return SendTimingMarker(Timing::Api::D3D, pDev, pSetLatencyMarkerParams->frameID,
+                                PointFor(pSetLatencyMarkerParams->markerType), origin, forward);
+    };
+
     // Bracket the actual driver call, not entry into the forwarding hook.
     const auto forwardDriver = [&] {
         const bool collect = pSetLatencyMarkerParams->markerType == RENDERSUBMIT_START && GpuTimeline::Enabled();
         const double begin = collect ? GpuTimeline::QpcUs() : 0.0;
-        const auto result = o_NvAPI_D3D_SetLatencyMarker(pDev, pSetLatencyMarkerParams);
+        const auto result = send([&] { return o_NvAPI_D3D_SetLatencyMarker(pDev, pSetLatencyMarkerParams); });
         const double end = collect ? GpuTimeline::QpcUs() : 0.0;
         if (collect && result == NVAPI_OK)
             GpuTimeline::Marker(pSetLatencyMarkerParams->frameID, pDev, begin, end);
         return result;
     };
     _updatesWithoutMarker = 0;
-
-    const bool gameCall = isGameCall(_ReturnAddress());
-    if (gameCall)
-        _gameCalledReflex = true;
 
     // LOG_DEBUG("frameID: {}, markerType: {}", pSetLatencyMarkerParams->frameID,
     //           magic_enum::enum_name(pSetLatencyMarkerParams->markerType));
@@ -550,6 +641,9 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
             HookCpuTiming::Scope markerTiming(HookCpuTiming::Stage::FgPclMarker,collectMarker);
             const auto actualPclFrame=static_cast<uint32_t>(*frameToken);
             const auto markerResult=[&] {
+                // Preserve provenance only through synchronous forwarding to an
+                // actual endpoint. A PCL token isn't a driver report identity.
+                const MarkerSourceScope source(origin);
                 const auto forwarding = reflex::forwarding::Scope::Marker(marker);
                 return StreamlineProxy::PCLSetMarker()(marker, *frameToken);
             }();
@@ -594,6 +688,7 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
             auto previousThread = _lastSetSleepThread;
             _lastSetSleepThread = std::this_thread::get_id();
 
+            const MarkerSourceScope source(Timing::Source::Synthetic);
             newParams.markerType = RENDERSUBMIT_START;
             hkNvAPI_D3D_SetLatencyMarker(pDev, &newParams);
 
@@ -707,8 +802,16 @@ NvAPI_Status ReflexHooks::hkNvAPI_Vulkan_SetLatencyMarker(HANDLE vkDevice,
     LOG_FUNC();
 #endif
 
-    if (isGameCall(_ReturnAddress()))
+    const bool gameCall = isGameCall(_ReturnAddress());
+    if (gameCall)
         _gameCalledReflex = true;
+    const auto origin = markerSource != Timing::Source::Unknown ? markerSource :
+        (gameCall ? Timing::Source::Application : Timing::Source::Unknown);
+    const auto forwardDriver = [&] {
+        const auto point = PointFor(pSetLatencyMarkerParams->markerType);
+        return SendTimingMarker(Timing::Api::Vulkan, vkDevice, pSetLatencyMarkerParams->frameID, point, origin,
+                                [&] { return o_NvAPI_Vulkan_SetLatencyMarker(vkDevice, pSetLatencyMarkerParams); });
+    };
 
     _updatesWithoutMarker = 0;
 
@@ -719,13 +822,16 @@ NvAPI_Status ReflexHooks::hkNvAPI_Vulkan_SetLatencyMarker(HANDLE vkDevice,
         if (auto* xellDevice = vkForwardDevice())
         {
             xellMarker(xellDevice, pSetLatencyMarkerParams->frameID, (uint32_t) pSetLatencyMarkerParams->markerType);
-            return o_NvAPI_Vulkan_SetLatencyMarker(vkDevice, pSetLatencyMarkerParams);
+            return forwardDriver();
         }
     }
 
     State::Instance().reflexFrameId = pSetLatencyMarkerParams->frameID;
 
-    return o_NvAPI_Vulkan_SetLatencyMarker(vkDevice, pSetLatencyMarkerParams);
+    const auto result = forwardDriver();
+    if (result == NVAPI_OK && pSetLatencyMarkerParams->markerType == VULKAN_SIMULATION_START)
+        _vkTimingMarkerDevice.store(vkDevice, std::memory_order_relaxed);
+    return result;
 }
 
 NvAPI_Status ReflexHooks::hkNvAPI_Vulkan_SetSleepMode(HANDLE vkDevice,
@@ -786,6 +892,12 @@ NvAPI_Status ReflexHooks::hkNvAPI_Vulkan_Sleep(HANDLE vkDevice, NvU64 signalValu
 
 NvAPI_Status ReflexHooks::hkNvAPI_Vulkan_GetLatency(HANDLE vkDevice, NV_VULKAN_LATENCY_RESULT_PARAMS* pGetLatencyParams)
 {
+    return readVulkanLatency(vkDevice, pGetLatencyParams);
+}
+
+NvAPI_Status ReflexHooks::readVulkanLatency(HANDLE vkDevice, NV_VULKAN_LATENCY_RESULT_PARAMS* pGetLatencyParams,
+                                            ReportRoute* route)
+{
 #ifdef LOG_REFLEX_CALLS
     LOG_FUNC();
 #endif
@@ -802,6 +914,7 @@ NvAPI_Status ReflexHooks::hkNvAPI_Vulkan_GetLatency(HANDLE vkDevice, NV_VULKAN_L
             *d3dResults = {};
             d3dResults->version = NV_LATENCY_RESULT_PARAMS_VER;
 
+            if (route) *route = { ReportDevice(Timing::Api::D3D, xellDevice, true), true };
             const auto result = nvapi_calls::NvAPI_D3D_GetLatency(xellDevice, d3dResults);
 
             if (result != NVAPI_OK)
@@ -833,6 +946,11 @@ NvAPI_Status ReflexHooks::hkNvAPI_Vulkan_GetLatency(HANDLE vkDevice, NV_VULKAN_L
         }
     }
 
+    if (route)
+    {
+        const bool markerOnly = fakenvapi::isUsingAsMainNvapi();
+        *route = { ReportDevice(Timing::Api::Vulkan, vkDevice, markerOnly), markerOnly };
+    }
     return o_NvAPI_Vulkan_GetLatency(vkDevice, pGetLatencyParams);
 }
 
@@ -933,7 +1051,7 @@ bool ReflexHooks::updateTimingData(TimingReportSnapshot& snapshot)
         return false;
 
     auto processFrameReport = [&](const auto& frameReport, const ReflexReportPolicy::Selection& selection,
-                                  uintptr_t reportDeviceKey) -> bool
+                                  const ReportRoute& route) -> bool
     {
         TimingReportSnapshot report {};
         auto& timingData = report.timingData;
@@ -943,15 +1061,24 @@ bool ReflexHooks::updateTimingData(TimingReportSnapshot& snapshot)
         const auto start = selection.range.begin;
         const auto end = selection.range.end;
         const double rangeUs = static_cast<double>(end - start);
-        report.estimated = _timingEstimated.load(std::memory_order_relaxed);
-
+        report.markerOnly = route.markerOnly;
         // Monitor-only freshness: fgLastFrame does not advance with FG off.
         // Enrichment arrival/expiry cannot refresh a repeated report or cause
         // fallback to an older report when this selected report becomes stale.
         static ReflexReportPolicy::Freshness freshness;
         const auto reportTick=GetTickCount64();
-        if (!freshness.Observe(frameReport.frameID, selection.range, reportDeviceKey, report.estimated, reportTick))
+        if (!freshness.Observe(frameReport.frameID, selection.range, route.device, route.markerOnly, reportTick))
             return false;
+        const auto marks = [&] {
+            if (route.markerOnly || !route.device.generation) return Timing::Marks {};
+            std::lock_guard lock(markerTimingMutex);
+            return markerTiming.Read(route.device, frameReport.frameID);
+        }();
+        using Timing::Point;
+        report.simulation = marks.Span(Point::SimStart, Point::SimEnd);
+        report.renderSubmit = marks.Span(Point::SubmitStart, Point::SubmitEnd);
+        report.present = marks.Span(Point::PresentStart, Point::PresentEnd);
+
         // GpuTimeline caches frame/device IDs, but no report-instance receipt.
         // The same IDs may name a later report with different submit/endpoints,
         // including reuse not seen by this polling UI. Aligning an old anchor by
@@ -960,15 +1087,20 @@ bool ReflexHooks::updateTimingData(TimingReportSnapshot& snapshot)
         report.frameId = frameReport.frameID;
         if (validTimingInterval(frameReport.osRenderQueueStartTime, frameReport.osRenderQueueEndTime) &&
             validTimingInterval(frameReport.gpuRenderStartTime, frameReport.gpuRenderEndTime))
-            if (const auto queue = ReflexQueueTiming::Split(report.frameId, report.estimated,
+            if (const auto queue = ReflexQueueTiming::Split(report.frameId, report.markerOnly,
                 frameReport.osRenderQueueStartTime, frameReport.osRenderQueueEndTime,
                 frameReport.gpuRenderStartTime, frameReport.gpuRenderEndTime))
+            {
                 report.beforeGpuQueueMs = queue->beforeGpuMs;
+                timingData[TimingType::BeforeGpu] = TimingEntry {
+                    .position = static_cast<double>(frameReport.osRenderQueueStartTime - start) / rangeUs,
+                    .length = queue->beforeGpuMs * 1000.0 / rangeUs };
+            }
         // The current D3D SDK declares this field; the Vulkan report does not.
         // Never interpret reserved bytes or fakenvapi's synthetic GPU durations.
         if constexpr (requires { frameReport.gpuActiveRenderTimeUs; })
         {
-            if (!report.estimated && frameReport.gpuActiveRenderTimeUs != 0)
+            if (!report.markerOnly && frameReport.gpuActiveRenderTimeUs != 0)
                 report.gpuActiveRenderTimeUs = frameReport.gpuActiveRenderTimeUs;
         }
 
@@ -980,32 +1112,34 @@ bool ReflexHooks::updateTimingData(TimingReportSnapshot& snapshot)
                     return -1.0;
                 return static_cast<double>(finish - begin) / 1000.0;
             };
-            LOG_INFO("R858 Reflex raw: pid={} frame={} range_ms={:.4f} submit_ms={:.4f} present_ms={:.4f} driver_ms={:.4f} queue_ms={:.4f} gpu_ms={:.4f} estimated={} raw_units=us gpu_active_ms={:.4f} gpu_active_valid={} report_frame_valid={} report_begin_us={} report_end_us={} queue_valid={} queue_begin_us={} queue_end_us={} gpu_valid={} gpu_begin_us={} gpu_end_us={} selection=latest_valid_completed report_index={} newest_index={} newest_slot_frame={} skipped_invalid_slots={} report_device=0x{:x} report_unchanged_ms={} queue_nested_valid={} bridge_enriched=false nr_enriched=false enrichment=unknown_report_instance sample_age_ms=UNKNOWN physical_queue=UNKNOWN display_owner=UNKNOWN",
+            LOG_INFO("R858 Reflex raw: pid={} frame={} range_ms={:.4f} submit_ms={:.4f} present_ms={:.4f} driver_ms={:.4f} queue_ms={:.4f} gpu_ms={:.4f} estimated={} raw_units=us gpu_active_ms={:.4f} gpu_active_valid={} report_frame_valid={} report_begin_us={} report_end_us={} queue_valid={} queue_begin_us={} queue_end_us={} gpu_valid={} gpu_begin_us={} gpu_end_us={} selection=latest_valid_completed report_index={} newest_index={} newest_slot_frame={} skipped_invalid_slots={} report_device=0x{:x} report_unchanged_ms={} queue_nested_valid={} before_gpu_ms={:.4f} simulation_source={} submit_source={} present_source={} report_api={} report_device_generation={} bridge_enriched=false nr_enriched=false enrichment=unknown_report_instance sample_age_ms=UNKNOWN physical_queue=UNKNOWN display_owner=UNKNOWN",
                 GetCurrentProcessId(),report.frameId,rangeUs/1000.0,
                 duration(frameReport.renderSubmitStartTime,frameReport.renderSubmitEndTime),
                 duration(frameReport.presentStartTime,frameReport.presentEndTime),
-                duration(frameReport.driverStartTime,frameReport.driverEndTime),
-                duration(frameReport.osRenderQueueStartTime,frameReport.osRenderQueueEndTime),
-                duration(frameReport.gpuRenderStartTime,frameReport.gpuRenderEndTime),report.estimated,
+                report.markerOnly ? -1.0 : duration(frameReport.driverStartTime,frameReport.driverEndTime),
+                report.markerOnly ? -1.0 : duration(frameReport.osRenderQueueStartTime,frameReport.osRenderQueueEndTime),
+                report.markerOnly ? -1.0 : duration(frameReport.gpuRenderStartTime,frameReport.gpuRenderEndTime),report.markerOnly,
                 report.gpuActiveRenderTimeUs ? static_cast<double>(*report.gpuActiveRenderTimeUs)/1000.0 : -1.0,
                 report.gpuActiveRenderTimeUs.has_value(),report.frameId!=0,start,end,
-                validTimingInterval(frameReport.osRenderQueueStartTime,frameReport.osRenderQueueEndTime),
+                !report.markerOnly && validTimingInterval(frameReport.osRenderQueueStartTime,frameReport.osRenderQueueEndTime),
                 frameReport.osRenderQueueStartTime,frameReport.osRenderQueueEndTime,
-                validTimingInterval(frameReport.gpuRenderStartTime,frameReport.gpuRenderEndTime),
+                !report.markerOnly && validTimingInterval(frameReport.gpuRenderStartTime,frameReport.gpuRenderEndTime),
                 frameReport.gpuRenderStartTime,frameReport.gpuRenderEndTime,
                 selection.index,selection.newestIndex,selection.newestFrame,selection.newestIndex-selection.index,
-                reportDeviceKey,freshness.UnchangedMs(reportTick),report.beforeGpuQueueMs.has_value());
+                route.device.address,freshness.UnchangedMs(reportTick),report.beforeGpuQueueMs.has_value(),
+                report.beforeGpuQueueMs.value_or(-1.0),Timing::Name(report.simulation),Timing::Name(report.renderSubmit),
+                Timing::Name(report.present),route.device.api == Timing::Api::D3D ? "d3d" : "vulkan",route.device.generation);
         }
         timingData[TimingType::TimeRange] = TimingEntry { .position = 0, .length = rangeUs };
         UPDATE_TIMING_ENTRY(sim, Simulation)
         UPDATE_TIMING_ENTRY(renderSubmit, RenderSubmit)
         UPDATE_TIMING_ENTRY(present, Present)
-        UPDATE_TIMING_ENTRY(driver, Driver)
-        UPDATE_TIMING_ENTRY(osRenderQueue, OsRenderQueue)
-        UPDATE_TIMING_ENTRY(gpuRender, GpuRender)
-
-        if (frameReport.frameID != 0)
-            State::Instance().reflexFrameId = frameReport.frameID;
+        if (!report.markerOnly)
+        {
+            UPDATE_TIMING_ENTRY(driver, Driver)
+            UPDATE_TIMING_ENTRY(osRenderQueue, OsRenderQueue) // raw, overlaps GpuRender
+            UPDATE_TIMING_ENTRY(gpuRender, GpuRender)
+        }
 
         // Publish all timings, their report ID and provenance together before returning to the UI.
         snapshot = report;
@@ -1023,47 +1157,34 @@ bool ReflexHooks::updateTimingData(TimingReportSnapshot& snapshot)
             _lastSleepDev != nullptr ? _lastSleepDev : (_ownSleepDev != nullptr ? _ownSleepDev : markersDev);
         sleepDev && o_NvAPI_D3D_GetLatency)
     {
-        // With XeFG, hkNvAPI_D3D_GetLatency answers from XeFG's XeLL through fakenvapi
-        _timingEstimated = XefgOutput() || fakenvapi::isUsingAsMainNvapi();
-
-        // Not calling free on this but it's static so hopefully fine
-        static NV_LATENCY_RESULT_PARAMS* results = new NV_LATENCY_RESULT_PARAMS();
-        results->version = NV_LATENCY_RESULT_PARAMS_VER;
-
-        if (auto result = hkNvAPI_D3D_GetLatency(sleepDev, results); result != NVAPI_OK)
+        static NV_LATENCY_RESULT_PARAMS results;
+        results = {};
+        results.version = NV_LATENCY_RESULT_PARAMS_VER;
+        ReportRoute route;
+        if (const auto result = readD3DLatency(sleepDev, &results, &route); result != NVAPI_OK)
         {
             LOG_WARN("NvAPI_D3D_GetLatency failed: {}", magic_enum::enum_name(result));
             return false;
         }
-
-        // Choose once from NVAPI's completion order. Optional GPU data may
-        // enrich only this report; stale/failed processing never retries older IDs.
-        const auto selection = ReflexReportPolicy::LatestCompleted(results->frameReport);
-        return selection && processFrameReport(results->frameReport[selection->index], *selection,
-            reinterpret_cast<uintptr_t>(sleepDev));
+        // Selection follows completion order; never use the live marker ID.
+        const auto selection = ReflexReportPolicy::LatestCompleted(results.frameReport, route.markerOnly);
+        return selection && processFrameReport(results.frameReport[selection->index], *selection, route);
     }
 
-    if (_lastVkSleepDev && o_NvAPI_Vulkan_GetLatency)
+    const auto vkDevice = _lastVkSleepDev ? _lastVkSleepDev : _vkTimingMarkerDevice.load(std::memory_order_relaxed);
+    if (vkDevice && o_NvAPI_Vulkan_GetLatency)
     {
-        // Not calling free on this but it's static so hopefully fine
-        static NV_VULKAN_LATENCY_RESULT_PARAMS* results = new NV_VULKAN_LATENCY_RESULT_PARAMS();
-        results->version = NV_VULKAN_LATENCY_RESULT_PARAMS_VER;
-
-        const auto result = hkNvAPI_Vulkan_GetLatency(_lastVkSleepDev, results);
-
-        // Bridged, hkNvAPI_Vulkan_GetLatency answered from XeFG's XeLL through fakenvapi (asked after the call: it
-        // hands the game's Reflex over when the owner changed)
-        _timingEstimated = bridgedReflexForwarding() || fakenvapi::isUsingAsMainNvapi();
-
-        if (result != NVAPI_OK)
+        static NV_VULKAN_LATENCY_RESULT_PARAMS results;
+        results = {};
+        results.version = NV_VULKAN_LATENCY_RESULT_PARAMS_VER;
+        ReportRoute route;
+        if (const auto result = readVulkanLatency(vkDevice, &results, &route); result != NVAPI_OK)
         {
             LOG_WARN("NvAPI_Vulkan_GetLatency failed: {}", magic_enum::enum_name(result));
             return false;
         }
-
-        const auto selection = ReflexReportPolicy::LatestCompleted(results->frameReport);
-        return selection && processFrameReport(results->frameReport[selection->index], *selection,
-            reinterpret_cast<uintptr_t>(_lastVkSleepDev));
+        const auto selection = ReflexReportPolicy::LatestCompleted(results.frameReport, route.markerOnly);
+        return selection && processFrameReport(results.frameReport[selection->index], *selection, route);
     }
 
     return false;
@@ -1484,6 +1605,7 @@ void ReflexHooks::forgetSleepDevice(IUnknown* pDev)
 {
     std::scoped_lock lock(_sleepModeMutex);
 
+    ForgetTimingDevice(Timing::Api::D3D, pDev);
     if (pDev != nullptr && _lastSleepDev == pDev)
         _lastSleepDev = nullptr;
 
@@ -1505,9 +1627,11 @@ NvAPI_Status ReflexHooks::ownSleep(IUnknown* pDev)
     return hkNvAPI_D3D_Sleep(pDev);
 }
 
-NvAPI_Status ReflexHooks::ownSetLatencyMarker(IUnknown* pDev, NV_LATENCY_MARKER_PARAMS* pParams)
+NvAPI_Status ReflexHooks::ownSetLatencyMarker(IUnknown* pDev, NV_LATENCY_MARKER_PARAMS* pParams,
+                                               Timing::Source source)
 {
     OwnCallScope scope(_ownCall);
+    const MarkerSourceScope timing(source);
     return hkNvAPI_D3D_SetLatencyMarker(pDev, pParams);
 }
 
@@ -1521,6 +1645,9 @@ void ReflexHooks::forgetSleepDeviceVulkan(HANDLE vkDevice)
 {
     std::scoped_lock lock(_sleepModeMutex);
 
+    ForgetTimingDevice(Timing::Api::Vulkan, vkDevice);
+    if (auto expected = vkDevice; expected)
+        _vkTimingMarkerDevice.compare_exchange_strong(expected, nullptr, std::memory_order_relaxed);
     if (vkDevice != nullptr && _lastVkSleepDev == vkDevice)
         _lastVkSleepDev = nullptr;
 }
@@ -1543,9 +1670,11 @@ NvAPI_Status ReflexHooks::ownSleepVulkan(HANDLE vkDevice, NvU64 signalValue)
     return hkNvAPI_Vulkan_Sleep(vkDevice, signalValue);
 }
 
-NvAPI_Status ReflexHooks::ownSetLatencyMarkerVulkan(HANDLE vkDevice, NV_VULKAN_LATENCY_MARKER_PARAMS* pParams)
+NvAPI_Status ReflexHooks::ownSetLatencyMarkerVulkan(HANDLE vkDevice, NV_VULKAN_LATENCY_MARKER_PARAMS* pParams,
+                                                     Timing::Source source)
 {
     OwnCallScope scope(_ownCall);
+    const MarkerSourceScope timing(source);
     return hkNvAPI_Vulkan_SetLatencyMarker(vkDevice, pParams);
 }
 

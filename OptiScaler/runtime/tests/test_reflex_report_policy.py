@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Compile CPU policy tests and the extracted production monitor method only."""
+"""Compile CPU policy tests and extracted production report/marker code with mock APIs."""
 import argparse
+import os
 from pathlib import Path
 import subprocess
 
@@ -36,8 +37,10 @@ struct State {
     static State& Instance() { static State state; return state; }
 };
 static bool estimated = false;
-static bool XefgOutput() { return false; }
-namespace fakenvapi { static bool isUsingAsMainNvapi() { return estimated; } }
+namespace Timing = ReflexMarkerTiming;
+static Timing::Ledger markerTiming;
+static std::mutex markerTimingMutex;
+static uintptr_t vkBridgeReportDevice;
 namespace GpuTimeline {
     enum class Stream : unsigned { Bridge, Nr };
     struct Reading { uint64_t frame = 0, device = 0; double beginUs = 0, endUs = 0; };
@@ -66,15 +69,19 @@ CLASS_BODY = r'''
     inline static IUnknown* _lastSleepDev = reinterpret_cast<IUnknown*>(7);
     inline static IUnknown* _ownSleepDev = nullptr;
     inline static HANDLE _lastVkSleepDev = nullptr;
+    inline static std::atomic<HANDLE> _vkTimingMarkerDevice = nullptr;
     inline static bool o_NvAPI_D3D_GetLatency = true, o_NvAPI_Vulkan_GetLatency = true;
-    inline static std::atomic<bool> _timingEstimated = false;
     inline static std::recursive_mutex _sleepModeMutex;
-    static bool bridgedReflexForwarding() { return false; }
-    static NvAPI_Status hkNvAPI_D3D_GetLatency(IUnknown*, NV_LATENCY_RESULT_PARAMS* out) {
-        *out = d3d; return fixtureApiStatus;
+    struct ReportRoute { Timing::Device device; bool markerOnly = false; };
+    static NvAPI_Status readD3DLatency(IUnknown* dev, NV_LATENCY_RESULT_PARAMS* out, ReportRoute* route) {
+        *out = d3d; *route = {markerTiming.Get(Timing::Api::D3D, reinterpret_cast<uintptr_t>(dev)), estimated};
+        return fixtureApiStatus;
     }
-    static NvAPI_Status hkNvAPI_Vulkan_GetLatency(HANDLE, NV_VULKAN_LATENCY_RESULT_PARAMS* out) {
-        *out = vk; return fixtureApiStatus;
+    static NvAPI_Status readVulkanLatency(HANDLE dev, NV_VULKAN_LATENCY_RESULT_PARAMS* out, ReportRoute* route) {
+        *out = vk;
+        *route = vkBridgeReportDevice ? ReportRoute{markerTiming.Get(Timing::Api::D3D, vkBridgeReportDevice), true} :
+            ReportRoute{markerTiming.Get(Timing::Api::Vulkan, reinterpret_cast<uintptr_t>(dev)), estimated};
+        return fixtureApiStatus;
     }
     static bool updateTimingData(TimingReportSnapshot& snapshot);
 };
@@ -94,12 +101,36 @@ template<class Report> static void Fill(Report& report, uint64_t frame, uint64_t
     report.gpuRenderStartTime = begin + 600; report.gpuRenderEndTime = begin + 1000;
 }
 int main() {
+    using enum Timing::Point;
+    using enum Timing::Source;
     ReflexHooks::TimingReportSnapshot snapshot;
     Fill(d3d.frameReport[62], 10, 10000); Fill(d3d.frameReport[63], 11, 12000);
+    d3d.frameReport[63].gpuActiveRenderTimeUs = 325;
+    const auto device = markerTiming.Begin(Timing::Api::D3D, 7);
+    markerTiming.Accept(device, 11, SimStart, NativeBoundary);
+    markerTiming.Accept(device, 11, SimEnd, PresentFallback);
+    markerTiming.Accept(device, 11, SubmitStart, PresentFallback);
+    markerTiming.Accept(device, 11, SubmitEnd, NativeBoundary);
+    markerTiming.Accept(device, 12, SimStart, Application);
+    markerTiming.Accept(device, 12, SimEnd, FirstSubmit);
+    State::Instance().reflexFrameId = 12; // live, later than the report
+    _lastFrameId[SIMULATION_START] = 12;
+    _lastDev[SIMULATION_START] = reinterpret_cast<IUnknown*>(7);
     GpuTimeline::anchor = {10, 7, 5000, 5002};
     GpuTimeline::spans = {{{10, 7, 5101, 5301}, {10, 7, 5301, 5401}}};
     Check(ReflexHooks::updateTimingData(snapshot), "latest report accepted");
-    Check(snapshot.frameId == 11, "older paired report cannot win actual hook selection");
+    Check(snapshot.frameId == 11 && State::Instance().reflexFrameId == 12,
+          "monitor uses the completed report without writing the live marker ID");
+    Check(snapshot.simulation == PresentFallback && snapshot.renderSubmit == PresentFallback,
+          "delayed report keeps its fallback instead of using the current frame's first submit");
+    Check(!snapshot.markerOnly && snapshot.gpuActiveRenderTimeUs == 325u &&
+          snapshot.timingData[GpuRender] && snapshot.timingData[BeforeGpu],
+          "native CPU estimates never hide measured GPU data");
+    Check(snapshot.timingData[BeforeGpu]->length == .3 && snapshot.timingData[OsRenderQueue]->length == .7,
+          "graph's GPU-start prefix does not include GPU execution or replace the raw OS interval");
+    Check(raw.find("simulation_source=present-fallback") != std::string::npos &&
+          raw.find("before_gpu_ms=0.3000") != std::string::npos,
+          "raw receipt retains marker provenance and the split before GPU");
     Check(!snapshot.nrGpuMs && !snapshot.bridgeGpuMs, "old enrichment absent on latest snapshot");
     Check(snapshot.timingData[TimeRange]->length == 1000, "raw baseline range selected");
     Check(raw.find("report_index=63 newest_index=63") != std::string::npos, "selection metadata logged");
@@ -164,15 +195,79 @@ int main() {
     fixtureApiStatus = NVAPI_OK; d3d = {};
     Check(!ReflexHooks::updateTimingData(snapshot) && !snapshot.timingData[TimeRange], "empty API response stays unknown");
 
-    ReflexHooks::_lastSleepDev = nullptr; ReflexHooks::_lastVkSleepDev = reinterpret_cast<HANDLE>(8);
+    markerTiming.Forget(Timing::Api::D3D, 7);
+    const auto replacement = markerTiming.Begin(Timing::Api::D3D, 7);
+    Check(device != replacement, "destroyed and reused pointer has a new generation");
+    markerTiming.Accept(device, 11, SimStart, NativeBoundary); // old async acceptance
+    markerTiming.Accept(device, 11, SimEnd, PresentFallback);
+    Fill(d3d.frameReport[63], 11, 26000);
+    Check(ReflexHooks::updateTimingData(snapshot) && snapshot.simulation == Unknown,
+          "a new device at the same address cannot inherit marker provenance");
+    markerTiming.Accept(replacement, 2, SimStart, NativeBoundary);
+    markerTiming.Accept(replacement, 2, SimEnd, PresentFallback);
+    ReflexHooks::_lastSleepDev = nullptr; _lastDev[SIMULATION_START] = nullptr;
+    ReflexHooks::_vkTimingMarkerDevice = reinterpret_cast<HANDLE>(7);
     Fill(vk.frameReport[62], 1, 30000); Fill(vk.frameReport[63], 2, 32000);
-    Check(ReflexHooks::updateTimingData(snapshot) && snapshot.frameId == 2, "Vulkan uses same actual selection policy");
-    estimated = true;
-    Check(ReflexHooks::updateTimingData(snapshot) && snapshot.estimated && !snapshot.beforeGpuQueueMs &&
-          !snapshot.nrGpuMs && !snapshot.gpuActiveRenderTimeUs, "estimated route cannot publish measured queue/enrichment");
+    Check(ReflexHooks::updateTimingData(snapshot) && snapshot.frameId == 2 && snapshot.simulation == Unknown,
+          "native Vulkan cannot take D3D provenance from an equal address and frame ID");
+    const auto vkDevice = markerTiming.Begin(Timing::Api::Vulkan, 7);
+    markerTiming.Accept(vkDevice, 2, SimStart, Application);
+    markerTiming.Accept(vkDevice, 2, SimEnd, Application);
+    Check(ReflexHooks::updateTimingData(snapshot) && snapshot.simulation == Application,
+          "native Vulkan receives only its own marker provenance");
+    vkBridgeReportDevice = 7;
+    Check(ReflexHooks::updateTimingData(snapshot) && snapshot.markerOnly && snapshot.simulation == Unknown &&
+          !snapshot.beforeGpuQueueMs && !snapshot.timingData[GpuRender] && !snapshot.timingData[OsRenderQueue] &&
+          !snapshot.nrGpuMs && !snapshot.gpuActiveRenderTimeUs && snapshot.timingData[TimeRange]->length == 200,
+          "Vulkan bridge can return shared emulated rows: never borrow query-device markers or fake GPU");
     ReflexHooks::_inited = false;
     Check(!ReflexHooks::updateTimingData(snapshot) && snapshot.frameId == 0, "uninitialized hook clears snapshot");
     std::printf("Reflex production monitor: %u checks passed; extracted method, mocked APIs/clock/GPU metadata, CPU only\n", checks);
+}
+'''
+
+
+NATIVE_PRELUDE = r'''
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <vector>
+#include <runtime/ReflexMarkerTiming.h>
+enum class Api { D3D, Vulkan };
+enum class PresentSource { FrameGeneration, SwapChain };
+using MarkerSource = ReflexMarkerTiming::Source;
+struct IUnknown {};
+enum MarkerType { SIMULATION_END, RENDERSUBMIT_START, RENDERSUBMIT_END, PRESENT_START };
+struct ReflexHooks { static bool gameCalledReflex() { return false; } };
+static bool Ignored(PresentSource s) { return s == PresentSource::FrameGeneration; }
+static std::atomic<bool> g_running{true}, g_submitSent{false};
+static std::atomic<IUnknown*> g_device{};
+static std::atomic<Api> g_deviceApi{Api::D3D};
+static std::atomic<const void*> g_gameQueue{};
+static bool g_presentStarted=false;
+struct Note { MarkerType type; MarkerSource source; };
+static std::vector<Note> notes;
+static void Marker(Api, IUnknown*, MarkerType type, MarkerSource source=MarkerSource::NativeBoundary) {
+    notes.push_back({type,source});
+}
+'''
+
+NATIVE_CASES = r'''
+int main() {
+    IUnknown device;
+    PresentBegin(Api::D3D, &device, PresentSource::FrameGeneration);
+    if (!notes.empty()) return 2;
+    PresentBegin(Api::D3D, &device, PresentSource::SwapChain);
+    if (notes.size()!=4 || notes[0].type!=SIMULATION_END || notes[1].type!=RENDERSUBMIT_START) return 3;
+    if (notes[0].source!=MarkerSource::PresentFallback || notes[1].source!=MarkerSource::PresentFallback) {
+        std::puts("FAIL: missing submit reaches Present but SimEnd and SubmitStart have no fallback provenance");
+        return 1;
+    }
+    notes.clear(); g_submitSent=false;
+    OnFirstSubmit(nullptr);
+    PresentBegin(Api::D3D, &device, PresentSource::SwapChain);
+    if (notes.size()!=4 || notes[0].source!=MarkerSource::FirstSubmit || notes[1].source!=MarkerSource::FirstSubmit) return 4;
+    std::puts("PASS actual native fallback, first submit and ignored FG Present routes (CPU mock)");
 }
 '''
 
@@ -197,8 +292,16 @@ def main():
     fixture.write_text(PRELUDE + header[enum_start:enum_end] + '\nclass ReflexHooks { public:\n' +
                        header[snapshot_start:snapshot_end] + CLASS_BODY +
                        source[method_start:method_end] + CASES, encoding='utf-8')
+    native_source = (root / 'OptiScaler/native/NativeLowLatency.cpp').read_text(encoding='utf-8-sig')
+    def between(start, end):
+        offset = native_source.index(start)
+        return native_source[offset:native_source.index(end, offset)]
+    native_fixture = out / 'ReflexNativeMarkerExtracted.cpp'
+    native_fixture.write_text(NATIVE_PRELUDE + between('void PresentBegin(Api api,', 'void PresentEnd(Api api,') +
+                              between('void OnFirstSubmit(const void* queue)', 'void OnDeviceReleased(IUnknown* device)') +
+                              NATIVE_CASES, encoding='utf-8')
     suites = [root / 'OptiScaler/runtime/tests/ReflexReportPolicyTests.cpp',
-              root / 'OptiScaler/runtime/tests/ReflexQueueTimingTests.cpp', fixture]
+              root / 'OptiScaler/runtime/tests/ReflexQueueTimingTests.cpp', fixture, native_fixture]
     for test in suites:
         exe = out / (test.stem + '.exe')
         includes = [root / 'OptiScaler', root / 'external/nvapi', root / 'external/spdlog/include']
@@ -208,7 +311,8 @@ def main():
         # cmd.exe consumes its own quote grammar; list2cmdline would insert
         # backslash-escaped quotes into the batch invocation on Windows.
         for name, invocation in [('compile', f'cmd.exe /d /s /c "{command}"'), ('result', [str(exe)])]:
-            completed = subprocess.run(invocation, cwd=out, capture_output=True, text=True, encoding='oem', errors='replace')
+            completed = subprocess.run(invocation, cwd=out, capture_output=True, text=True, encoding='oem',
+                                       errors='replace', env={**os.environ, 'VSLANG': '1033'})
             log = completed.stdout + completed.stderr
             (out / f'{test.stem}-{name}.log').write_text(log, encoding='utf-8')
             print(log, end='', flush=True)

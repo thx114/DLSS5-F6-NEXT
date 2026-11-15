@@ -7,6 +7,7 @@
 #include "Hook_Utils.h"
 #include "low_latency/ll_util.h"
 #include <native/XefgReflexRule.h>
+#include <runtime/ReflexMarkerTiming.h>
 
 enum TimingType : uint32_t
 {
@@ -16,6 +17,7 @@ enum TimingType : uint32_t
     Present,
     Driver,
     OsRenderQueue,
+    BeforeGpu, // Only the non-overlapping prefix of the OS queue window.
     GpuRender,
 
     TimingTypeCOUNT
@@ -38,6 +40,7 @@ class ReflexHooks
 
     inline static NV_VULKAN_SET_SLEEP_MODE_PARAMS _lastVkSleepParams {};
     inline static HANDLE _lastVkSleepDev = nullptr;
+    inline static std::atomic<HANDLE> _vkTimingMarkerDevice = nullptr; // Not a cap/Sleep owner.
 
     inline static std::thread::id _lastSetSleepThread {};
 
@@ -62,7 +65,13 @@ class ReflexHooks
     // go through the same wrappers, so they take the same routing, but they are not "the game sends markers".
     inline static thread_local bool _ownCall = false;
     inline static std::atomic<bool> _gameCalledReflex = false;
-    inline static std::atomic<bool> _timingEstimated = false;
+    struct ReportRoute
+    {
+        ReflexMarkerTiming::Device device;
+        bool markerOnly = false; // Emulated/marker-only provider, NOT native marker estimates.
+    };
+    static NvAPI_Status readD3DLatency(IUnknown*, NV_LATENCY_RESULT_PARAMS*, ReportRoute* = nullptr);
+    static NvAPI_Status readVulkanLatency(HANDLE, NV_VULKAN_LATENCY_RESULT_PARAMS*, ReportRoute* = nullptr);
     inline static std::atomic<bool> _gameCalledSetSleepMode = false;
     // SetSleepMode and the stored device: the game's call and ours never interleave, and a released device is dropped
     inline static std::recursive_mutex _sleepModeMutex;
@@ -115,7 +124,10 @@ class ReflexHooks
         std::optional<uint32_t> gpuActiveRenderTimeUs;
         std::optional<double> beforeGpuQueueMs; // actual nested endpoints, same report; absent is unknown
         // fakenvapi reports marker times only; its driver/queue/GPU placeholders are not measurements.
-        bool estimated = false;
+        bool markerOnly = false;
+        ReflexMarkerTiming::Source simulation = ReflexMarkerTiming::Source::Unknown;
+        ReflexMarkerTiming::Source renderSubmit = ReflexMarkerTiming::Source::Unknown;
+        ReflexMarkerTiming::Source present = ReflexMarkerTiming::Source::Unknown;
         // Same report frame, calibrated GPU endpoints; absent is unknown.
         std::optional<TimingEntry> bridgeGpu, nrGpu;
         std::optional<double> bridgeGpuMs, nrGpuMs;
@@ -143,13 +155,15 @@ class ReflexHooks
     static bool ensureTable(PFN_NvApi_QueryInterface queryInterface);
     static NvAPI_Status ownSetSleepMode(IUnknown* pDev, NV_SET_SLEEP_MODE_PARAMS* pParams);
     static NvAPI_Status ownSleep(IUnknown* pDev);
-    static NvAPI_Status ownSetLatencyMarker(IUnknown* pDev, NV_LATENCY_MARKER_PARAMS* pParams);
+    static NvAPI_Status ownSetLatencyMarker(IUnknown* pDev, NV_LATENCY_MARKER_PARAMS* pParams,
+                                            ReflexMarkerTiming::Source source);
     static NvAPI_Status ownGetLatency(IUnknown* pDev, NV_LATENCY_RESULT_PARAMS* pParams);
     // Same four, for a native Vulkan game (native/NativeDriverVk.cpp): vkDevice is the game's VkDevice, reinterpreted as
     // the HANDLE the Vulkan Reflex entry points take.
     static NvAPI_Status ownSetSleepModeVulkan(HANDLE vkDevice, NV_VULKAN_SET_SLEEP_MODE_PARAMS* pParams);
     static NvAPI_Status ownSleepVulkan(HANDLE vkDevice, NvU64 signalValue);
-    static NvAPI_Status ownSetLatencyMarkerVulkan(HANDLE vkDevice, NV_VULKAN_LATENCY_MARKER_PARAMS* pParams);
+    static NvAPI_Status ownSetLatencyMarkerVulkan(HANDLE vkDevice, NV_VULKAN_LATENCY_MARKER_PARAMS* pParams,
+                                                  ReflexMarkerTiming::Source source);
     static NvAPI_Status ownGetLatencyVulkan(HANDLE vkDevice, NV_VULKAN_LATENCY_RESULT_PARAMS* pParams);
     // NvAPI_Vulkan_InitLowLatencyDevice: initialises the device as a low latency device and returns the timeline
     // semaphore its Sleep signals (the app has to wait for it). NVAPI_NO_IMPLEMENTATION when the interface is missing.

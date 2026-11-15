@@ -96,7 +96,9 @@ NV_VULKAN_LATENCY_MARKER_TYPE VulkanMarkerType(NV_LATENCY_MARKER_TYPE type)
     }
 }
 
-void Marker(Api api, IUnknown* device, NV_LATENCY_MARKER_TYPE type)
+using MarkerSource = ReflexMarkerTiming::Source;
+void Marker(Api api, IUnknown* device, NV_LATENCY_MARKER_TYPE type,
+            MarkerSource source = MarkerSource::NativeBoundary)
 {
     if (api == Api::Vulkan)
     {
@@ -104,7 +106,7 @@ void Marker(Api api, IUnknown* device, NV_LATENCY_MARKER_TYPE type)
         params.version = NV_VULKAN_LATENCY_MARKER_PARAMS_VER;
         params.frameID = g_frameId;
         params.markerType = VulkanMarkerType(type);
-        ReflexHooks::ownSetLatencyMarkerVulkan(reinterpret_cast<HANDLE>(device), &params);
+        ReflexHooks::ownSetLatencyMarkerVulkan(reinterpret_cast<HANDLE>(device), &params, source);
         return;
     }
 
@@ -112,7 +114,7 @@ void Marker(Api api, IUnknown* device, NV_LATENCY_MARKER_TYPE type)
     params.version = NV_LATENCY_MARKER_PARAMS_VER;
     params.frameID = g_frameId;
     params.markerType = type;
-    ReflexHooks::ownSetLatencyMarker(device, &params);
+    ReflexHooks::ownSetLatencyMarker(device, &params, source);
 }
 
 // `minimumIntervalUs`: the frame cap when we keep it (PlanCap), else 0 and OptiScaler's own limiter keeps it.
@@ -438,8 +440,8 @@ void PresentBegin(Api api, IUnknown* device, PresentSource source)
     // No submit hook fired (D3D12 sees it only where the queue hook is installed): the frame's work is all behind us
     if (!g_submitSent.exchange(true))
     {
-        Marker(api, device, SIMULATION_END);
-        Marker(api, device, RENDERSUBMIT_START);
+        Marker(api, device, SIMULATION_END, MarkerSource::PresentFallback);
+        Marker(api, device, RENDERSUBMIT_START, MarkerSource::PresentFallback);
     }
 
     Marker(api, device, RENDERSUBMIT_END);
@@ -611,8 +613,8 @@ void OnFirstSubmit(const void* queue)
     if (device == nullptr || ReflexHooks::gameCalledReflex())
         return;
 
-    Marker(Api::D3D, device, SIMULATION_END);
-    Marker(Api::D3D, device, RENDERSUBMIT_START);
+    Marker(Api::D3D, device, SIMULATION_END, MarkerSource::FirstSubmit);
+    Marker(Api::D3D, device, RENDERSUBMIT_START, MarkerSource::FirstSubmit);
 }
 
 void OnDeviceReleased(IUnknown* device)

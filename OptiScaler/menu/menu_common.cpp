@@ -2987,7 +2987,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                     drawTiming(timingData.present, "呈现", ImVec4(1.0f, 0.88f, 0.098f, 1.0f));
                     RenderOverlayGpuTiming(gpuTimings, nrDuration, timingPlot);
                     drawTiming(timingData.driver, "驱动", ImVec4(0.263f, 0.388f, 0.847f, 1.0f));
-                    drawTiming(timingData.osRenderQueue, "渲染队列", ImVec4(0.76f, 0.51f, 0.188f, 1.0f));
+                    drawTiming(timingData.osRenderQueue, "OS 渲染区间（非纯排队）", ImVec4(0.76f, 0.51f, 0.188f, 1.0f));
                     drawTiming(timingData.gpuRender, "GPU 渲染", ImVec4(0.569f, 0.117f, 0.705f, 1.0f));
                 }
                 else
@@ -3028,10 +3028,10 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                     timingPlot.Include(timingData[TimingType::Simulation], reportMs);
                     timingPlot.Include(timingData[TimingType::RenderSubmit], reportMs);
                     timingPlot.Include(timingData[TimingType::Present], reportMs);
-                    if (!timingReport.estimated)
+                    if (!timingReport.markerOnly)
                     {
                         timingPlot.Include(timingData[TimingType::Driver], reportMs);
-                        timingPlot.Include(timingData[TimingType::OsRenderQueue], reportMs);
+                        timingPlot.Include(timingData[TimingType::BeforeGpu], reportMs);
                         timingPlot.Include(timingData[TimingType::GpuRender], reportMs);
                     }
                 }
@@ -3045,37 +3045,45 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
 
                     MenuText::Text("计时报告编号：%llu", timingReport.frameId);
                     MenuText::Text("本批 FG 编号：%llu（独立计数，非计时报告绑定）", localFrameCount);
-                    // fakenvapi (XeFG's XeLL, Anti-Lag 2, LatencyFlex) has only the markers' times: its driver, queue
-                    // and GPU entries are made up, so they are not drawn
-                    const bool estimated = timingReport.estimated;
-
-                    if (estimated)
-                    {
-                        MenuText::Text("模拟至呈现延迟：%.1fms", rangeInUs / 1000.0);
-                        MenuText::TextDisabled("按帧标记计算（fakenvapi 不提供 GPU 计时）");
-                    }
+                    if (timingReport.markerOnly)
+                        MenuText::Text("CPU 帧标记覆盖范围：%.1fms（无 GPU 计时）", rangeInUs / 1000.0);
                     else
                     {
-                        MenuText::Text("整帧 Reflex 计时：%.1fms", rangeInUs / 1000.0);
-                        if (timingReport.beforeGpuQueueMs)
-                            MenuText::Text("GPU 开始前排队：%.1fms（同份报告）",*timingReport.beforeGpuQueueMs);
-                        else MenuText::TextDisabled("GPU 开始前排队：未知");
+                        MenuText::Text("Reflex 报告覆盖范围：%.1fms（非显示延迟）", rangeInUs / 1000.0);
+                        if (!timingReport.beforeGpuQueueMs) MenuText::TextDisabled("GPU 开始前区间：未知");
+                        if (const auto& os = timingData[TimingType::OsRenderQueue])
+                            MenuText::TextDisabled("OS 渲染区间：%.1fms（与 GPU 区间可重叠，不等于排队）", os->length * reportMs);
                     }
+                    const auto sourceLabel = [](ReflexMarkerTiming::Source source) {
+                        using enum ReflexMarkerTiming::Source;
+                        switch (source)
+                        {
+                        case Application: return "应用标记";
+                        case NativeBoundary: return "本地帧边界";
+                        case FirstSubmit: return "首提交估计";
+                        case PresentFallback: return "缺提交标记，Present 估计";
+                        case Synthetic: return "补标估计";
+                        default: return "来源未知";
+                        }
+                    };
+                    if (timingData[TimingType::Simulation] || timingData[TimingType::RenderSubmit] || timingData[TimingType::Present])
+                        MenuText::TextDisabled("标记来源：模拟 %s / 提交 %s / Present %s",
+                            sourceLabel(timingReport.simulation), sourceLabel(timingReport.renderSubmit), sourceLabel(timingReport.present));
 
                     const auto drawTiming = [&](const auto& timing, const char* desc, ImVec4 color)
                     {
                         timingPlot.DrawTiming(timing, desc, color, reportMs);
                     };
 
-                    drawTiming(timingData[TimingType::Simulation], "模拟", ImVec4(0.768f, 0.169f, 0.169f, 1.0f));
-                    drawTiming(timingData[TimingType::RenderSubmit], "渲染提交", ImVec4(0.235f, 0.705f, 0.294f, 1.0f));
-                    drawTiming(timingData[TimingType::Present], "呈现", ImVec4(1.0f, 0.88f, 0.098f, 1.0f));
+                    drawTiming(timingData[TimingType::Simulation], "模拟标记", ImVec4(0.768f, 0.169f, 0.169f, 1.0f));
+                    drawTiming(timingData[TimingType::RenderSubmit], "提交标记", ImVec4(0.235f, 0.705f, 0.294f, 1.0f));
+                    drawTiming(timingData[TimingType::Present], "Present 标记", ImVec4(1.0f, 0.88f, 0.098f, 1.0f));
                     RenderOverlayGpuTiming(gpuTimings, nrDuration, timingPlot);
 
-                    if (!estimated)
+                    if (!timingReport.markerOnly)
                     {
                         drawTiming(timingData[TimingType::Driver], "驱动", ImVec4(0.263f, 0.388f, 0.847f, 1.0f));
-                        drawTiming(timingData[TimingType::OsRenderQueue], "渲染队列", ImVec4(0.76f, 0.51f, 0.188f, 1.0f));
+                        drawTiming(timingData[TimingType::BeforeGpu], "GPU 开始前区间（同份报告）", ImVec4(0.76f, 0.51f, 0.188f, 1.0f));
                         drawTiming(timingData[TimingType::GpuRender], "GPU 起止跨度", ImVec4(0.569f, 0.117f, 0.705f, 1.0f));
                     }
 

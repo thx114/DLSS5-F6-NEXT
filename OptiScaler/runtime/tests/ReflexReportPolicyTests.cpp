@@ -86,6 +86,8 @@ void SelectionCases()
     Check(LatestCompleted(rows)->index == 63, "completion order wins over numeric marker ID");
     Fill(rows[62], 1, 10000);
     Check(LatestCompleted(rows)->index == 63, "duplicate marker IDs prefer newest array entry");
+    const auto markers = LatestCompleted(rows, true);
+    Check(markers && markers->range.end == 12250, "emulated GPU and OS placeholders do not extend marker range");
     rows[62] = {}; rows[63] = {};
     Check(!LatestCompleted(rows), "empty next poll cannot reuse previous selection");
 }
@@ -93,17 +95,21 @@ void SelectionCases()
 void FreshnessCases()
 {
     using namespace ReflexReportPolicy;
+    using namespace ReflexMarkerTiming;
+    const Device d3d {Api::D3D, 7, 1}, other {Api::D3D, 8, 1};
     Freshness freshness;
-    Check(freshness.Observe(11, {100, 200}, 7, false, 1000), "first report fresh");
-    Check(freshness.Observe(11, {100, 200}, 7, false, 3000), "duplicate valid at two-second boundary");
+    Check(freshness.Observe(11, {100, 200}, d3d, false, 1000), "first report fresh");
+    Check(freshness.Observe(11, {100, 200}, d3d, false, 3000), "duplicate valid at two-second boundary");
     Check(freshness.UnchangedMs(3000) == 2000, "duplicates do not reset unchanged time");
-    Check(!freshness.Observe(11, {100, 200}, 7, false, 3001), "unchanged report expires");
-    Check(!freshness.Observe(11, {100, 200}, 7, false, 9000), "expired duplicate cannot revive itself");
-    Check(freshness.Observe(12, {200, 300}, 7, false, 9001), "new completed report refreshes");
-    Check(freshness.Observe(12, {200, 301}, 7, false, 11002), "changed endpoints refresh same frame ID");
-    Check(freshness.Observe(12, {200, 301}, 8, false, 14003), "observed device change resets freshness");
-    Check(freshness.Observe(12, {200, 301}, 8, true, 17004), "real/estimated route change resets freshness");
-    Check(freshness.Observe(12, {200, 301}, 8, true, 1), "clock reversal restarts monitor interval");
+    Check(!freshness.Observe(11, {100, 200}, d3d, false, 3001), "unchanged report expires");
+    Check(!freshness.Observe(11, {100, 200}, d3d, false, 9000), "expired duplicate cannot revive itself");
+    Check(freshness.Observe(12, {200, 300}, d3d, false, 9001), "new completed report refreshes");
+    Check(freshness.Observe(12, {200, 301}, d3d, false, 11002), "changed endpoints refresh same frame ID");
+    Check(freshness.Observe(12, {200, 301}, other, false, 14003), "observed device change resets freshness");
+    Check(freshness.Observe(12, {200, 301}, other, true, 17004), "real/estimated route change resets freshness");
+    Check(freshness.Observe(12, {200, 301}, other, true, 1), "clock reversal restarts monitor interval");
+    Check(freshness.Observe(12, {200, 301}, {Api::Vulkan, 8, 1}, true, 3000), "same address on other API resets freshness");
+    Check(freshness.Observe(12, {200, 301}, {Api::Vulkan, 8, 2}, true, 6000), "same address on new generation resets freshness");
 }
 
 }
