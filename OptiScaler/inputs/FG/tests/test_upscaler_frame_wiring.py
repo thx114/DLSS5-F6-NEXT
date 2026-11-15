@@ -115,7 +115,7 @@ class FrameInputWiringTests(unittest.TestCase):
 
     def test_failed_selected_dx11_sr_cannot_publish_fg_guides(self):
         entry = function_body(read(PRODUCT / "inputs/NVNGX_DLSS_Dx11.cpp"),
-                              "NVSDK_NGX_D3D11_EvaluateFeature(")
+                              "static NVSDK_NGX_Result EvaluateDx11(")
         gate = entry.index("if (upscaleResult")
         self.assertLess(gate, entry.index("UpscalerInputsDx11wDx12::UpscaleStart"))
         self.assertLess(entry.index("deviceContext->Evaluate(InDevCtx, InParameters)"), gate)

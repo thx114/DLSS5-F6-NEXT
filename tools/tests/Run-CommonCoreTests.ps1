@@ -65,6 +65,7 @@ $suites = @(
     @{ Name = 'SourcePresent'; Source = 'OptiScaler/runtime/tests/SourcePresentTests.cpp' },
     @{ Name = 'FeatureTransition'; Source = 'OptiScaler/upscalers/tests/FeatureTransitionTests.cpp' },
     @{ Name = 'NgxDx12ResourceView'; Source = 'OptiScaler/upscalers/tests/NgxDx12ResourceViewTests.cpp' },
+    @{ Name = 'Dx11OutputCopy'; Source = 'OptiScaler/with_dx12/tests/output-copy/fixture.cpp'; StubInclude = 'build/common-core-tests' },
     @{ Name = 'InteropSwapchainPolicy'; Source = 'OptiScaler/with_dx12/tests/InteropSwapchainPolicyTests.cpp' },
     @{ Name = 'InteropSwapchainWarp'; Source = 'OptiScaler/with_dx12/tests/InteropSwapchainWarpTests.cpp'; Libraries = 'd3d11.lib d3d12.lib dxgi.lib user32.lib' },
     @{ Name = 'ProducerProgress'; Source = 'OptiScaler/runtime/tests/ProducerProgressTests.cpp' },
@@ -111,6 +112,10 @@ if ('FgHandoffWarp' -in $suites.Name) {
 if ('BridgeRetirementWarp' -in $suites.Name) {
     & $Python -B (Join-Path $root 'OptiScaler/upscalers/tests/bridge-retirement/prepare.py')
     if ($LASTEXITCODE -ne 0) { throw 'Cannot extract bridge recording retirement implementation' }
+}
+if ('Dx11OutputCopy' -in $suites.Name) {
+    & $Python -B (Join-Path $root 'OptiScaler/with_dx12/tests/output-copy/prepare.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot extract current DX11 output copy implementation' }
 }
 if ('NrReconfiguration' -in $suites.Name) {
     & $Python -B (Join-Path $root 'OptiScaler/dlssnr/tests/nr-reconfiguration/prepare.py') --emit

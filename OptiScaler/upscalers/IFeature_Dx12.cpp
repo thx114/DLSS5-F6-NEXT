@@ -56,9 +56,10 @@ bool IFeature_Dx12::Init(ID3D12Device* InDevice, ID3D12GraphicsCommandList* InCo
     return result;
 }
 
-bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
+bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters,
+                            ID3D12Resource** recordedOutput)
 {
-    const EvaluateContext context { this, InCommandList, std::nullopt, false };
+    const EvaluateContext context { this, InCommandList, std::nullopt, false, recordedOutput };
     return EvaluateWithContext(InCommandList, InParameters, context);
 }
 
@@ -88,6 +89,7 @@ void IFeature_Dx12::FinishRecordingSlotResources(UINT recordingSlot, bool execut
 bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList,
                                        NVSDK_NGX_Parameter* InParameters, const EvaluateContext& context)
 {
+    if (context.recordedOutput) *context.recordedOutput = nullptr;
     // Validate before any parameter, resource, descriptor or upload mutation.
     // The synchronous pass lambdas borrow this stack context only until return;
     // scope exit/unwinding discards it without installing any ambient slot state.
@@ -156,12 +158,14 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
         useRcas = true;
     }
 
+    bool outputGridPasses = !useRcas || RCAS->IsInit();
     if (!RCAS->IsInit())
         useRcas = false;
 
     bool useOutputScaling =
         Config::Instance()->OutputScalingEnabled.value_or_default() && (LowResMV() || RenderWidth() == DisplayWidth());
 
+    outputGridPasses &= !useOutputScaling || OutputScaler->IsInit();
     if (!OutputScaler->IsInit())
         useOutputScaling = false;
 
@@ -175,7 +179,6 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
 
     // Order is important as that's the order of shader dispatch
     std::vector<ShaderPass> pipeline;
-    bool outputGridPasses=true;
     bool passSetupFailed = false;
 
     if (useOutputScaling)
@@ -190,7 +193,7 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
                       OutputScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, passSlot);
                       return OutputScaler->Buffer(passSlot);
                   }
-                  if (passSlot) passSetupFailed = true;
+                  if (passSlot || context.recordedOutput) passSetupFailed = true;
                   return nullptr;
               },
 
@@ -229,7 +232,7 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
                       RCAS->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, passSlot);
                       return RCAS->Buffer(passSlot);
                   }
-                  if (passSlot) passSetupFailed = true;
+                  if (passSlot || context.recordedOutput) passSetupFailed = true;
                   return nullptr;
               },
 
@@ -296,7 +299,7 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
                       Magnifier->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, passSlot);
                       return Magnifier->Buffer(passSlot);
                   }
-                  if (passSlot) passSetupFailed = true;
+                  if (passSlot || context.recordedOutput) passSetupFailed = true;
 
                   return nullptr;
               },
@@ -305,7 +308,10 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
               [&](ID3D12Resource* input, ID3D12Resource* output) -> bool
               {
                   if (!Magnifier->CanRender(passSlot) || !paramMotion || !paramOutput)
+                  {
+                      outputGridPasses = false;
                       return !context.isolatePassResources;
+                  }
 
                   Magnifier->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, passSlot);
 
@@ -391,6 +397,14 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
     }
 
     InParameters->Set(NVSDK_NGX_Parameter_Output, paramOutput);
+
+    if (context.recordedOutput && outputGridPasses && SuccessfulEvaluateRecordsOutput() && paramOutput)
+    {
+        ID3D12Resource* restoredOutput = nullptr;
+        if (InParameters->Get(NVSDK_NGX_Parameter_Output, &restoredOutput) == NVSDK_NGX_Result_Success &&
+            restoredOutput == paramOutput)
+            *context.recordedOutput = paramOutput;
+    }
 
     return evalResult;
 }

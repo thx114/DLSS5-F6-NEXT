@@ -160,7 +160,19 @@ class Dx11WithDx12
     static bool SyncDx11ToDx12();
     static bool SyncDx12ToDx11(ID3D12CommandQueue* completedReaderQueue = nullptr);
     static void BlockFgGuideWrites() noexcept { FgGuideWritesBlocked.store(true, std::memory_order_release); }
-    static bool CopyUpscalerOutputToDx11(UINT frameIndex);
+    // Frozen after this call's successful preparation. Borrowed only until its
+    // synchronous copy returns; this is neither a resource owner nor a fence.
+    struct OutputCopy
+    {
+        UINT slot = 0;
+        UINT64 cacheFrame = 0;
+        ID3D11DeviceContext4* context = nullptr;
+        ID3D12CommandQueue* queue = nullptr;
+        ID3D11Resource* target = nullptr;
+        ID3D11Texture2D* shared = nullptr;
+        ID3D12Resource* source = nullptr;
+    };
+    static bool CopyUpscalerOutputToDx11(const OutputCopy& expected, bool writeTarget);
 
     static bool CheckMask(ResourceMask mask, ResourceMask resource);
 

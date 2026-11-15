@@ -19,6 +19,7 @@
 #include <imgui/ImGuiNotify.hpp>
 #include <misc/IdentifyGpu.h>
 #include <runtime/GuideDiagnostics.h>
+#include "F6EvalReceiptV1.h"
 
 static ID3D11Device* D3D11Device = nullptr;
 static ankerl::unordered_dense::map<unsigned int, ContextData<IFeature_Dx11>> Dx11Contexts;
@@ -754,28 +755,36 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_GetFeatureRequirements(
     return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
 }
 
-NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceContext* InDevCtx,
-                                                               const NVSDK_NGX_Handle* InFeatureHandle,
-                                                               NVSDK_NGX_Parameter* InParameters,
-                                                               PFN_NVSDK_NGX_ProgressCallback InCallback)
+static NVSDK_NGX_Result EvaluateDx11(ID3D11DeviceContext* InDevCtx,
+                                    const NVSDK_NGX_Handle* InFeatureHandle,
+                                    NVSDK_NGX_Parameter* InParameters,
+                                    PFN_NVSDK_NGX_ProgressCallback InCallback,
+                                    neo::ngx::F6EvalReceiptV1* receipt)
 {
+    const auto noOutput = [receipt](NVSDK_NGX_Result result) {
+        if (receipt) receipt->status = neo::ngx::F6OutputStatus::no_output;
+        return result;
+    };
     if (InFeatureHandle == nullptr)
     {
 
         LOG_DEBUG("InFeatureHandle is null");
-        return NVSDK_NGX_Result_FAIL_FeatureNotFound;
+        return noOutput(NVSDK_NGX_Result_FAIL_FeatureNotFound);
     }
     else
     {
-        LOG_DEBUG("Handle: {0}", InFeatureHandle->Id);
+        LOG_DEBUG("NVSDK_NGX_D3D11_EvaluateFeature Handle: {0}", InFeatureHandle->Id);
     }
 
     if (InDevCtx == nullptr)
     {
 
         LOG_ERROR("InDevCtx is null!!!");
-        return NVSDK_NGX_Result_Fail;
+        return noOutput(NVSDK_NGX_Result_Fail);
     }
+
+    if (!InParameters)
+        return noOutput(NVSDK_NGX_Result_FAIL_InvalidParameter);
 
     State& state = State::Instance();
     auto handleId = InFeatureHandle->Id;
@@ -801,7 +810,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
     {
 
         evaluateObservation.Result(NVSDK_NGX_Result_Success);
-        return NVSDK_NGX_Result_Success;
+        return noOutput(NVSDK_NGX_Result_Success);
     }
 
     if (InCallback)
@@ -820,11 +829,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
 
         if (activeContext->changeBackendCounter != 0 || !successfulPhase)
         {
-            // Only the internal Genshin receipt distinguishes a successful
-            // incomplete phase from failure; public NGX return semantics stay unchanged.
-
             evaluateObservation.Result(NVSDK_NGX_Result_Success);
-            return NVSDK_NGX_Result_Success;
+            return noOutput(NVSDK_NGX_Result_Success);
         }
     }
 
@@ -851,10 +857,20 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
 
         LOG_DEBUG("trying to use released handle, returning NVSDK_NGX_Result_Success");
         evaluateObservation.Result(NVSDK_NGX_Result_Success);
-        return NVSDK_NGX_Result_Success;
+        return noOutput(NVSDK_NGX_Result_Success);
     }
 
-    auto upscaleResult = deviceContext->Evaluate(InDevCtx, InParameters);
+    ID3D11Resource* orderedOutput = nullptr;
+    const auto upscaleResult = receipt
+        ? deviceContext->EvaluateWithOutput(InDevCtx, InParameters, &orderedOutput)
+        : deviceContext->Evaluate(InDevCtx, InParameters);
+    if (receipt)
+    {
+        receipt->provider_frame = static_cast<uint64_t>(deviceContext->FrameCount());
+        if (upscaleResult && orderedOutput &&
+            reinterpret_cast<uintptr_t>(orderedOutput) == receipt->output)
+            receipt->status = neo::ngx::F6OutputStatus::current_output_ordered;
+    }
 
 
     const auto upscaler = deviceContext->GetUpscalerType();
@@ -889,6 +905,35 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
 
     evaluateObservation.Result(NVSDK_NGX_Result_Success);
     return NVSDK_NGX_Result_Success;
+}
+
+NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceContext* context,
+    const NVSDK_NGX_Handle* handle, NVSDK_NGX_Parameter* parameters, PFN_NVSDK_NGX_ProgressCallback callback)
+{
+    return EvaluateDx11(context, handle, parameters, callback, nullptr);
+}
+
+extern "C" __declspec(dllexport) NVSDK_NGX_Result NVSDK_CONV F6_NGX_D3D11_EvaluateFeatureV1(
+    ID3D11DeviceContext* context, const NVSDK_NGX_Handle* handle, NVSDK_NGX_Parameter* parameters,
+    PFN_NVSDK_NGX_ProgressCallback callback, uint64_t requestId, neo::ngx::F6EvalReceiptV1* receipt)
+{
+    if (!receipt || receipt->size != sizeof(*receipt) || receipt->version != 1)
+        return NVSDK_NGX_Result_FAIL_InvalidParameter;
+
+    *receipt = {};
+    receipt->request_id = requestId;
+    receipt->handle = reinterpret_cast<uintptr_t>(handle);
+    receipt->context = reinterpret_cast<uintptr_t>(context);
+    ID3D11Resource* output = nullptr;
+    if (parameters && parameters->Get(NVSDK_NGX_Parameter_Output, &output) != NVSDK_NGX_Result_Success)
+        parameters->Get(NVSDK_NGX_Parameter_Output, reinterpret_cast<void**>(&output));
+    receipt->output = reinterpret_cast<uintptr_t>(output);
+
+    const auto result = EvaluateDx11(context, handle, parameters, callback, receipt);
+    LOG_DEBUG("F6 evaluate receipt v1 request={} handle=0x{:x} context=0x{:x} output=0x{:x} provider_frame={} status={} result={:x}",
+        requestId, receipt->handle, receipt->context, receipt->output, receipt->provider_frame,
+        static_cast<unsigned>(receipt->status), static_cast<unsigned>(result));
+    return result;
 }
 
 #pragma endregion

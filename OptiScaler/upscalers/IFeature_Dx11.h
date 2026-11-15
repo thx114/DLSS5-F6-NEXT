@@ -37,11 +37,17 @@ class IFeature_Dx11 : public virtual IFeature
 
     virtual bool InitInternal(ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters) = 0;
     virtual bool EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters) = 0;
+    virtual bool SuccessfulEvaluateRecordsOutput() const { return false; }
 
   public:
     // Only DX11 w/DX12 should be overriding those
     virtual bool Init(ID3D11Device* InDevice, ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters);
     virtual bool Evaluate(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters);
+
+    // Call-local delivery evidence, separate from legacy success/fallback.
+    // Only audited providers and a complete final-output pass chain opt in.
+    virtual bool EvaluateWithOutput(ID3D11DeviceContext* context, NVSDK_NGX_Parameter* parameters,
+                                    ID3D11Resource** orderedOutput);
 
     // The native DX11 path keeps its normal destruction contract. Interop
     // providers must first prove their submitted DX12 work can be retired.

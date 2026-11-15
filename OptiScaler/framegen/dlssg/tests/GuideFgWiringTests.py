@@ -194,7 +194,7 @@ assert "observation.fence=fence;observation.value=value;observation.submitted=tr
 assert "FrameTrace::Api::D3D12, handleId" in ngx and "InCmdList), nrUpscale)" in ngx
 assert "evaluateObservation.Result(optiResult)" in ngx and "evaluateObservation.Result(result)" in ngx
 assert ngx11.index("GuideDiagnostics::EvaluationScope evaluateObservation(") > ngx11.index(
-    "if (handleId < DLSS_MOD_ID_OFFSET)", ngx11.index("NVSDK_NGX_D3D11_EvaluateFeature("))
+    "if (handleId < DLSS_MOD_ID_OFFSET)", ngx11.index("static NVSDK_NGX_Result EvaluateDx11("))
 assert "evaluateObservation.Result(NVSDK_NGX_Result_Success)" in ngx11
 set_resource = body("bool DLSSG_Dx12::SetResource(")
 current = body("bool DLSSG_Dx12::UpscalerColourCurrent(")

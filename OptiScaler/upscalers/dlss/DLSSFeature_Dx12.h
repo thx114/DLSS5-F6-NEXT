@@ -11,6 +11,7 @@ class DLSSFeatureDx12 : public DLSSFeature, public IFeature_Dx12
     bool _routedRelease = false;
     NgxInput::NativeFeatureRelease _nativeRelease;
   protected:
+    bool SuccessfulEvaluateRecordsOutput() const override { return true; }
     bool InitDLSS(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters);
 
   public:

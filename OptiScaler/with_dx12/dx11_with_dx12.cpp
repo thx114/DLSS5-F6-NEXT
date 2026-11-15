@@ -1041,31 +1041,39 @@ Dx11WithDx12::PrepareResourcesResult Dx11WithDx12::PrepareUpscalerResources(cons
     return result;
 }
 
-bool Dx11WithDx12::CopyUpscalerOutputToDx11(UINT frameIndex)
+bool Dx11WithDx12::CopyUpscalerOutputToDx11(const OutputCopy& expected, bool writeTarget)
 {
     std::lock_guard cacheLock(InputReadMutex);
-    if (Dx11DeviceContext == nullptr)
+    if (!expected.context || !expected.queue || !expected.target || !expected.shared || !expected.source ||
+        !expected.cacheFrame || expected.cacheFrame == UINT64_MAX || expected.slot >= DX11_WITH_DX12_CACHED_FRAMES ||
+        Dx11DeviceContext != expected.context || Dx12CommandQueue != expected.queue)
     {
-        LOG_ERROR("CopyUpscalerOutputToDx11 called without resolved D3D11 context");
+        LOG_ERROR("CopyUpscalerOutputToDx11 rejected an incomplete or changed execution domain");
         return false;
     }
 
     auto& cache = GetUpscalerResourceCache();
-    const auto outputIndex = frameIndex % DX11_WITH_DX12_CACHED_FRAMES;
+    const auto outputIndex = expected.slot;
+    const auto& output = cache.Output[outputIndex];
 
-    if (cache.ParamOutput[outputIndex] == nullptr || cache.Output[outputIndex].SharedTexture == nullptr)
+    if (cache.frameId != expected.cacheFrame || LastPreparedUpscalerFrameId != expected.cacheFrame ||
+        UpscalerFrameIndex != outputIndex || !CheckMask(LastPreparedUpscalerMask, ResourceMask::Output) ||
+        output.LastPreparedFrame != expected.cacheFrame || output.Dx12Resource != expected.source ||
+        output.SharedTexture != expected.shared || cache.ParamOutput[outputIndex] != expected.target)
     {
-        LOG_ERROR("CopyUpscalerOutputToDx11 missing output resources for frame {}", outputIndex);
+        LOG_ERROR("CopyUpscalerOutputToDx11 rejected a changed output binding for frame {}", expected.cacheFrame);
         return false;
     }
 
-    if (!SyncDx12ToDx11())
+    // Signal the exact queue which executed this provider, then enqueue the
+    // shared-fence wait and target copy on the authenticated caller context.
+    if (!SyncDx12ToDx11(expected.queue))
     {
         LOG_ERROR("CopyUpscalerOutputToDx11 sync failed for frame {}", outputIndex);
         return false;
     }
 
-    Dx11DeviceContext->CopyResource(cache.ParamOutput[outputIndex], cache.Output[outputIndex].SharedTexture);
+    if (writeTarget) Dx11DeviceContext->CopyResource(expected.target, expected.shared);
     Dx11DeviceContext->Flush();
     return true;
 }

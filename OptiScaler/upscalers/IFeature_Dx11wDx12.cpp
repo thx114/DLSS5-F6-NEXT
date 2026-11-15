@@ -519,11 +519,10 @@ bool IFeature_Dx11wDx12::ProcessDx11Textures(const NVSDK_NGX_Parameter* InParame
     return true;
 }
 
-bool IFeature_Dx11wDx12::CopyBackOutput()
+bool IFeature_Dx11wDx12::CopyBackOutput(const Dx11WithDx12::OutputCopy& expected, bool writeTarget)
 {
     CallerCpuTrace::Scope callerCpuScope(CallerCpuTrace::Op::CopyBack, this, Handle() ? Handle()->Id : 0, _frameCount);
-    const auto resourceFrame = (UINT) (_frameCount % DX11_WITH_DX12_CACHED_FRAMES);
-    return Dx11WithDx12::CopyUpscalerOutputToDx11(resourceFrame);
+    return Dx11WithDx12::CopyUpscalerOutputToDx11(expected, writeTarget);
 }
 
 bool IFeature_Dx11wDx12::Init(ID3D11Device* InDevice, ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters)
@@ -679,6 +678,13 @@ bool IFeature_Dx11wDx12::Init(ID3D11Device* InDevice, ID3D11DeviceContext* InCon
 
 bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Parameter* InParameters)
 {
+    return EvaluateWithOutput(InDeviceContext, InParameters, nullptr);
+}
+
+bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext,
+                                          NVSDK_NGX_Parameter* InParameters, ID3D11Resource** orderedOutput)
+{
+    if (orderedOutput) *orderedOutput = nullptr;
     HoYoShade::BeginBeforeSrSource(InDeviceContext, reinterpret_cast<uint64_t>(this));
     const uint64_t nrSourceAttempt = nrSourceAttempts.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto presentSourceAttempt = DlssNr::BeginGenshinPresentSource();
@@ -689,7 +695,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
     CallerCpuTrace::Scope callerCpuScope(CallerCpuTrace::Op::Evaluate, this, Handle() ? Handle()->Id : 0, _frameCount, UINT64_MAX, 0, 0, true);
     LOG_FUNC();
 
-    if (!IsInited() || submissionUnfenced || !InParameters)
+    if (!IsInited() || submissionUnfenced || !InParameters || !InDeviceContext)
         return false;
 
     // Real bridge owner, before BeforeSR admission and any SDK work.
@@ -803,6 +809,8 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
     bool commandListRecording = false;
     bool commandListExecuted = false;
     bool commandListExecuteReturned = false;
+    Dx11WithDx12::OutputCopy outputCopy;
+    ID3D12Resource* recordedOutput = nullptr;
     try
     {
     do
@@ -818,6 +826,8 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             break;
         }
 
+        outputCopy = { resourceFrame, Dx11WithDx12::GetLastPreparedUpscalerFrameId(), Dx11DeviceContext,
+                       Dx12CommandQueue, restoreParamOutput, dx11Out.SharedTexture, dx11Out.Dx12Resource };
         commandListRecording = true;
 
 
@@ -1048,7 +1058,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             // Only the authenticated Genshin transport has acquired its
             // selected recording dependencies. Other routes retain their legacy entry.
             if (!beforeSrConsumerMatches()) {  return false; }
-            return HookCpuTiming::Call(HookCpuTiming::Stage::ProviderEvaluate,[&]{return dx12Feature->Evaluate(cmdList, InParameters);},HookCpuTiming::ResultKind::Boolean);
+            return HookCpuTiming::Call(HookCpuTiming::Stage::ProviderEvaluate,[&]{return dx12Feature->Evaluate(cmdList, InParameters, orderedOutput ? &recordedOutput : nullptr);},HookCpuTiming::ResultKind::Boolean);
         };
         dx12EvalResult = evaluateProvider();
         providerEvaluateCpu.Finish();
@@ -1147,13 +1157,19 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         if (!dx12EvalResult || !commandListExecuted)
             break;
 
-        if ( !CopyBackOutput())
+        const bool canDeliver = parametersRestored &&
+            (!orderedOutput || (recordedOutput && recordedOutput == outputCopy.source));
+        // Even an unproven output must return submitted reads to D3D11 before
+        // the caller continues its native draw. It may not copy stale pixels.
+        if (!CopyBackOutput(outputCopy, canDeliver))
         {
             LOG_ERROR("Can't copy output texture back!");
             break;
         }
+        if (!canDeliver) break;
 
         DlssNr::FinishedPictureDx11BridgeOutputHandoff(Dx12CommandQueue, cmdList);evalResult = true;
+        if (orderedOutput) *orderedOutput = restoreParamOutput;
 
     } while (false);
 

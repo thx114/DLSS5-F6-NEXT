@@ -42,6 +42,13 @@ bool IFeature_Dx11::Init(ID3D11Device* InDevice, ID3D11DeviceContext* InContext,
 
 bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Parameter* InParameters)
 {
+    return EvaluateWithOutput(InDeviceContext, InParameters, nullptr);
+}
+
+bool IFeature_Dx11::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext,
+                                      NVSDK_NGX_Parameter* InParameters, ID3D11Resource** orderedOutput)
+{
+    if (orderedOutput) *orderedOutput = nullptr;
     // The D3D11 depth finder only runs while the game is not calling an upscaler.
     GenericDepthDx11::NoteUpscalerCall();
 
@@ -115,12 +122,14 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Par
         useRcas = true;
     }
 
+    bool outputChainComplete = !useRcas || RCAS->IsInit();
     if (!RCAS->IsInit())
         useRcas = false;
 
     bool useOutputScaling =
         Config::Instance()->OutputScalingEnabled.value_or_default() && (LowResMV() || RenderWidth() == DisplayWidth());
 
+    outputChainComplete &= !useOutputScaling || OutputScaler->IsInit();
     if (!OutputScaler->IsInit())
         useOutputScaling = false;
 
@@ -145,6 +154,7 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Par
                   {
                       return OutputScaler->Buffer();
                   }
+                  outputChainComplete = false;
                   return nullptr;
               },
 
@@ -178,6 +188,7 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Par
                                  {
                                      return RCAS->Buffer();
                                  }
+                                 outputChainComplete = false;
                                  return nullptr;
                              },
 
@@ -185,7 +196,10 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Par
                              [&](ID3D11Resource* input, ID3D11Resource* output) -> bool
                              {
                                  if (!RCAS->CanRender() || !paramMotion || !paramOutput)
+                                 {
+                                     outputChainComplete = false;
                                      return true;
+                                 }
 
                                  RcasConstants rcasConstants {};
 
@@ -237,6 +251,7 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Par
                                  if (Magnifier->CreateBufferResource(Device, nextOutput))
                                      return Magnifier->Buffer();
 
+                                 outputChainComplete = false;
                                  return nullptr;
                              },
 
@@ -244,7 +259,10 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Par
                              [&](ID3D11Resource* input, ID3D11Resource* output) -> bool
                              {
                                  if (!Magnifier->CanRender() || !paramMotion || !paramOutput)
+                                 {
+                                     outputChainComplete = false;
                                      return true;
+                                 }
 
                                  return Magnifier->Dispatch(Device, InDeviceContext, (ID3D11Texture2D*) input,
                                                             (ID3D11Texture2D*) output);
@@ -266,6 +284,12 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Par
 
     // Upscaler will write to the first active shader, or just output
     InParameters->Set(NVSDK_NGX_Parameter_Output, currentTarget);
+    if (orderedOutput)
+    {
+        ID3D11Resource* bound = nullptr;
+        outputChainComplete &= InParameters->Get(NVSDK_NGX_Parameter_Output, &bound) == NVSDK_NGX_Result_Success &&
+                               bound == currentTarget;
+    }
 
     UpscalerTime->Start(InDeviceContext);
 
@@ -342,6 +366,21 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Par
     InDeviceContext->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rawRTVs, restoreDSV.Get());
 
     _frameCount++;
+
+    if (orderedOutput && evalResult && !pipelineFailed && outputChainComplete && paramOutput &&
+        SuccessfulEvaluateRecordsOutput() && InDeviceContext->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+    {
+        ID3D11Resource* restored = nullptr;
+        ComPtr<ID3D11Device> contextDevice, outputDevice;
+        ComPtr<IUnknown> contextIdentity, outputIdentity;
+        InDeviceContext->GetDevice(&contextDevice);
+        paramOutput->GetDevice(&outputDevice);
+        if (contextDevice && outputDevice && SUCCEEDED(contextDevice.As(&contextIdentity)) &&
+            SUCCEEDED(outputDevice.As(&outputIdentity)) && contextIdentity == outputIdentity &&
+            InParameters->Get(NVSDK_NGX_Parameter_Output, &restored) == NVSDK_NGX_Result_Success &&
+            restored == paramOutput)
+            *orderedOutput = paramOutput;
+    }
 
     return result;
 }
