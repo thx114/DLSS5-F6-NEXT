@@ -1,6 +1,25 @@
 # F6 当前状态
 
-## 当前：ReShade 设备身份适配已部署，游戏验收待定（2026-11-15）
+## 当前：桥缓存工厂与 ReShade 预览修复已部署（2026-11-15）
+
+用户最新确认：无 ReShade 的桥＋F6 仍无 DLSS 输入、画面模糊；加 ReShade 后 NR 细节严重拖影，FG／NR 深度、运动和细节调试无画面。**本次修复两个已复现的兼容缺口，尚未完成游戏验收；严重拖影、MXAO 深度和性能仍未解决。** 长期性能 goal 保持 paused，不恢复已搁置的生命周期重写，不改 NR 细节算法或用户设置。游戏由用户手动操作，不催测。
+
+### 当前源、构建与部署
+
+- **F6 产品保存点 `e4d535c326c805562d9d4ea8889b7dcab91fc5a2`／标记 `e4d535c`。** GuideCapture／GuidePreview 统一识别已知包装设备的实际 native 身份，严格要求 GetDevice 成功；输出 root、PSO、SRV heap 和 reader fence 在实际输出 list 的设备创建，immutable Display 由 worker 准备，每个实际 reader 独立持有，仍需实际 GPU 完成和成功 Reset 才退休。冻结时切换 historyView 立即撤销旧缓存资格。未放宽生产 queue/fence、Reset 或异设备拒绝。
+- **桥保存点 `f30747cdfba45b53c592b596a28e9e65ccbe68e4`，已同步并确认 `thx114/genshin_fsr_brigde:main`。** 仅补真实系统模块的两个 D3D11 factory 入口，覆盖先缓存地址、后加载桥的漏观察路径；与现有 provider／IAT 路由共用最外层创建观察，不添加 Draw 全局 detour。两个入口准备完后登记现存调用线程再提交；失败回滚，生产回调模块固定至进程退出，不在 DllMain 等待调用者或摘钩。已重新 fetch `upstream/main` 并确认 `2db978753eb82ae8e4f90b8a0a13023db832b721` 是提交祖先。普通 push 因连接中断失败；最终通过 Git data API 上传完全相同的 blob／tree／commit，以非强制 ref 更新发布，提交与源码树身份不变。远端读取确认及传输失败记录见 `bridge-push-result.json`／`bridge-api-publish.log`。
+- **两 DLL 已原位部署，无 `.next`。** F6 为 32,595,456 B／SHA256 `B5734531228320FA2610CE14E9E48B0401AA7F7E85DA4CF440F6E2F1FAE9F515`，mtime UTC `2026-11-14T23:25:57.3801115Z`；桥为 806,912 B／SHA256 `3380716A4BCD3870562CB21C6F2476726D1163703468D31C3592671F47C1BA2F`，mtime UTC `2026-11-14T23:58:20.5617564Z`。原 FileId、F6 的6条及桥的2条硬链接保持，9份受保护内容哈希不变。未更改启动器选择、profiles、INI、ASI 或 ReShade core，未查询或启停游戏。总回执 `build/code-followup-20261115/latest-compatibility/delivery-result.json`。
+
+### 验证与现场边界
+
+- 桥最终 NGX ON／OFF 均 **34/34**，覆盖并发缓存调用、借来事务的冲突保留、第二 Attach 失败后完整回滚及重试，以及 FreeLibrary 后真实 WARP／硬件绘制、像素和生产捕获回执。最终桥＋F6 的独立硬件宿主 PID264464／226772 两种加载顺序均确认 `e4d535c`、实际 ForHwnd、真实像素及 Draw 候选捕获。这不证明游戏实际使用缓存 factory，也不等同游戏 NGX 派发、Present／FG 或性能验收。
+- F6 真实 WARP 预览 **1,318,422** 检查、producer replay **58**、menu output **993**、相邻 GuideCapture **24,055** 通过。包装设备测试是转发 COM facade，并非真实 ReShade DLL；覆盖同 native 包装→原生输出的 NR／FG 深度、运动、历史像素与实际异适配器拒绝。完整 shared 未跑。F6 Release exit0／1分52秒，既有构建警告保持；桥最终 ON／OFF 构建 exit0。独立只读复核无确定阻断，标准 Detours allocator 条件限制未动态复现，不宣称已消除。
+- **本次用户游戏反馈对应旧 F6 `150f590`、PID213756。** 匹配桥日志证实 NGX Init／Create 成功，F6 有 Evaluate、桥有 DISPATCH_OK；反馈源推进3／600／1200／1800，dispatch1800 的 completed/reset=1798、awaitingReset=0。上次 token 长期未关闭没有复现，但不能把反馈推进当作无拖影。完整直接 F6 快照为 `opti-live-pid213756.log`（11,919,335 B）；Hub 快照较早。无 ReShade 的 PID224756 仅有06:11:34–06:12:20区间且无 NGX，对应桥日志已覆盖，不称整局零调用，也不能配213756桥日志。
+- **严重拖影尚未修复，保留旧算法。** 已记录两项待证实的数据对应问题：短稳定器的 previous RGB 来源为长历史出生颜色，和稳定残差时间来源不同；late Present 整张颜色配 earlier SR guides，metadata known 不证明 HUD／空间滤镜后的逐像素对应。尚无当前游戏 GPU 复现，不据静态审计宣布根因。BeforeSR 仍以 `color-transfer-unknown-or-hdr` 拒绝，MXAO 未修；不能绕过色彩合同或拿最终 swapchain 语义授权低分辨率源。
+
+本轮证据目录 `build/code-followup-20261115/latest-compatibility/`，详细发现见 `latest-run-findings.md`；保留所有失败记录。实际加载、新预览、严重拖影、结构参数变化、显示 FPS 及完整 Reflex≤60 ms 均待各自验收。保留既有 dirty `tools/runtime/Invoke-ExactGameEntry.ps1`、`pelican_bicycle.html`。后续自然新局先绑定两个新 DLL 身份及同局日志，不用旧加载或离线通过替代画面结论。
+
+## 历史：ReShade 设备身份适配已部署，游戏验收待定（2026-11-15）
 
 用户最新反馈仍为：无 ReShade 的桥＋F6 无 DLSS 输入；加 ReShade 后进入大世界细节反馈失效、调整“结构强度”附近滑条后 NR 掉效、卡顿、MXAO 无深度。长期性能 goal 保持 **paused**；本轮只处理上述兼容链与现存同局证据，不恢复已搁置的 Execute／Reset 重写、不改 NR 细节算法。游戏仍由用户手动启动、操作和退出，不改启动器选择、配置、profiles 或 ASI，不催测。
 

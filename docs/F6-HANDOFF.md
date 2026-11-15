@@ -1,6 +1,18 @@
 # F6 项目交接
 
-## 0. 当前续接：设备身份适配已部署（2026-11-15）
+## 0. 当前续接：桥缓存工厂与预览候选已部署（2026-11-15）
+
+先读 CURRENT-STATE 顶端。本轮兼容修复已构建并原位部署，**游戏尚未验收；严重拖影、MXAO 和性能仍未解决**。长期性能 goal 保持 paused；不恢复已搁置的生命周期重写、不改旧 NR 细节算法或用户设置，游戏仍由用户手动启停和操作，不催测。
+
+- **F6 `e4d535c326c805562d9d4ea8889b7dcab91fc5a2`／`e4d535c`** 修包装设备身份及实际输出域的预览绑定，worker 准备 immutable Display，实际 reader 持有至 GPU 完成＋成功 Reset；historyView 切换撤销旧缓存。不放宽生产队列、fence、Reset或异设备判据。真实 WARP：preview1,318,422、producer replay58、menu993、GuideCapture24,055通过，shared未全跑，包装 facade 不是实际 ReShade DLL 验证。
+- **桥 `f30747cdfba45b53c592b596a28e9e65ccbe68e4`** 补缓存系统工厂入口，沿用 provider／IAT 路由和最外层观察，无 Draw 全局 detour。双入口准备→登记现存调用线程→提交，失败回滚；生产模块固定到进程退出，不在 DllMain 等待／摘钩。最终 NGX ON／OFF 各34/34，含并发、借来事务冲突、第二Attach失败回滚重试和FreeLibrary后真实绘制。最终混合宿主两加载顺序通过真实F6 ForHwnd／像素／候选捕获，不等同游戏 NGX、FG或性能。最新fetch上游 `2db9787` 是祖先，已同步并确认origin/main为f30747c；普通push传输失败后，Git data API上传相同对象并非强制更新ref，commit／tree身份均与本地一致，证据见`bridge-push-result.json`。
+- **部署确认：** F6 32,595,456B／`B5734531228320FA2610CE14E9E48B0401AA7F7E85DA4CF440F6E2F1FAE9F515`，UTC `2026-11-14T23:25:57.3801115Z`；桥806,912B／`3380716A4BCD3870562CB21C6F2476726D1163703468D31C3592671F47C1BA2F`，UTC `2026-11-14T23:58:20.5617564Z`。两者DEPLOYED_IN_PLACE、无.next，FileId和6／2硬链接保持、9份保护哈希不变。没有配置或启动器选择调用、没有查询或启停游戏。F6已有构建警告不称零警告。
+- **新反馈原局不是新候选：** PID213756实际150f590，NGX Init/Create/Evaluate及DISPATCH_OK正常，feedback源3／600／1200／1800推进，completed/reset1798、awaitingReset0；旧token blocker未复现，不能说严重拖影已经修复。完整直接日志为`opti-live-pid213756.log`，Hub快照较早。无ReShade的224756只有启动区间快照、匹配桥日志丢失，不能当整局证据或配另一PID日志。
+- **后续优先定位实际输入对应关系：** 短稳定器previous RGB用长历史出生色、与稳定残差不同代；late Present颜色借earlier SR guides，metadata known不证明逐像素对应。这些是已读代码的线索，没有当前游戏GPU因果复现，未改算法。BeforeSR仍拒绝unknown/HDR颜色，MXAO无深度未修，不能删颜色门或借swapchain语义。显示FPS及完整Reflex≤60ms仍未验收。
+
+证据 `build/code-followup-20261115/latest-compatibility/`，部署总回执`delivery-result.json`，分析`latest-run-findings.md`。保留既有dirty `Invoke-ExactGameEntry.ps1`、`pelican_bicycle.html`。本轮只读子智能体已关闭。后续自然新局先确认新F6／桥加载身份，不重复无变化的构建／回归，不以离线通过代替用户画面验收。
+
+## 历史续接：设备身份适配已部署（2026-11-15）
 
 先读 CURRENT-STATE 顶端。长期性能 goal 保持 **paused**；仅继续用户所报兼容问题，不重写 NR 细节算法或恢复已搁置生命周期项目。用户手动启动、操作和退出游戏，不改选择／配置／profiles／ASI，不催测。
 
