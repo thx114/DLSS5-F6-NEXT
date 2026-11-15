@@ -22,11 +22,16 @@ unsigned checks = 0;
 thread_local const neo::interop::BeforeSrFrameV1* beforeSrFrame = nullptr;
 unsigned beforeSrQueries = 0, beforeSrMismatches = 0;
 std::atomic<bool> coreConnected {false};
+std::atomic<bool> coreManaged {false};
+std::atomic<unsigned> filteredStages {0};
 void NVSDK_CONV LogReceipt(const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature)
 {
     if (message && std::strstr(message, "HoYoShade live connection finished") &&
         std::strstr(message, "accepted=true"))
         coreConnected.store(true, std::memory_order_release);
+    if (message && std::strstr(message, "core_load=f6-managed-single")) coreManaged.store(true);
+    if (message && std::strstr(message, "HoYoShade stage owned render submitted") &&
+        std::strstr(message, "effects_executed=true")) ++filteredStages;
 }
 void Check(bool ok, const char* label)
 {
@@ -97,7 +102,7 @@ struct Frame
         context->ClearRenderTargetView(depthView.Get(), depthValue);
         context->ClearRenderTargetView(outputView.Get(), sentinel);
     }
-    void CheckPixels(ID3D11DeviceContext* context, const std::array<UINT,3>& rgb, bool sentinel)
+    bool CheckPixels(ID3D11DeviceContext* context, const std::array<UINT,3>& rgb, bool sentinel, bool required = true)
     {
         context->CopyResource(staging.Get(), output.Get());
         D3D11_MAPPED_SUBRESOURCE mapped {};
@@ -119,7 +124,8 @@ struct Frame
                 }
             }
         context->Unmap(staging.Get(), 0);
-        Check(good, sentinel ? "no-output preserves target pixels" : "ordered target contains this source color");
+        if (required) Check(good, sentinel ? "no-output preserves target pixels" : "ordered target contains this source color");
+        return good;
     }
     void Bind(NVSDK_NGX_Parameter* p) const
     {
@@ -157,6 +163,10 @@ extern "C" __declspec(dllexport) HRESULT WINAPI Dx11FsrBridge_QueryBeforeSrFrame
     return S_OK;
 }
 
+#if defined(F6_PRESENTATION_HOST)
+#include "F6PresentationHost.inl"
+#endif
+
 int wmain(int argc, wchar_t** argv)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -164,11 +174,12 @@ int wmain(int argc, wchar_t** argv)
     const bool skip = std::wstring_view(argv[2]) == L"skip";
     const bool native = std::wstring_view(argv[2]) == L"native";
     const std::wstring_view mode(argv[2]);
-    const bool typeless = mode == L"before-sr-typeless" || mode == L"before-sr-auto" || mode == L"before-sr-default";
+    const bool managed = mode == L"before-sr-managed";
+    const bool typeless = managed || mode == L"before-sr-typeless" || mode == L"before-sr-auto" || mode == L"before-sr-default";
     const bool beforeSr = std::wstring_view(argv[2]) == L"before-sr" || typeless;
     const bool legacyOnly = std::wstring_view(argv[2]) == L"legacy-shutdown";
     const bool includeShutdown = legacyOnly || (argc == 4 && std::wstring_view(argv[3]) == L"shutdown");
-    if (typeless) {
+    if (typeless && !managed) {
         // Match the independent true-core fixture: no graphics/input hooks
         // and no loading check in this isolated, non-game process.
         for (auto name : {L"RESHADE_DISABLE_GRAPHICS_HOOK", L"RESHADE_DISABLE_LOADING_CHECK",
@@ -177,6 +188,13 @@ int wmain(int argc, wchar_t** argv)
     }
     const auto module = LoadLibraryW(argv[1]);
     Check(module != nullptr, "load isolated F6 DLL");
+#if defined(F6_PRESENTATION_HOST)
+    if (mode == L"present" || mode == L"present-sentinel")
+    {
+        PresentationHost::Run(module, mode == L"present-sentinel");
+        ExitProcess(0);
+    }
+#endif
     const auto evaluate = legacyOnly ? nullptr : Entry<F6EvaluateV1>(module, k_f6_evaluate_v1);
     const auto legacy = Entry<decltype(&NVSDK_NGX_D3D11_EvaluateFeature)>(module, "NVSDK_NGX_D3D11_EvaluateFeature");
     using Init = NVSDK_NGX_Result (NVSDK_CONV *)(unsigned long long, const wchar_t*, ID3D11Device*,
@@ -189,7 +207,7 @@ int wmain(int argc, wchar_t** argv)
     const auto shutdown = Entry<decltype(&NVSDK_NGX_D3D11_Shutdown1)>(module, "NVSDK_NGX_D3D11_Shutdown1");
 
     // Invalid ABI must be rejected before touching arbitrary NGX arguments.
-    if (!legacyOnly)
+    if (!legacyOnly && !managed)
     {
     auto* invalidContext = reinterpret_cast<ID3D11DeviceContext*>(uintptr_t {1});
     auto* invalidHandle = reinterpret_cast<NVSDK_NGX_Handle*>(uintptr_t {2});
@@ -228,9 +246,11 @@ int wmain(int argc, wchar_t** argv)
         // Load after Init installs the callback, so even a fast connection
         // cannot publish its acceptance before the host can observe it.
         const auto corePath = std::filesystem::absolute(L"HoYoShade/ReShade64.dll");
-        const auto core = LoadLibraryW(corePath.c_str());
-        if (!core) std::fprintf(stderr, "ReShade LoadLibrary error=%lu\n", GetLastError());
-        Check(core != nullptr, "load fixture's pinned ReShade core");
+        if (!managed) {
+            const auto core = LoadLibraryW(corePath.c_str());
+            if (!core) std::fprintf(stderr, "ReShade LoadLibrary error=%lu\n", GetLastError());
+            Check(core != nullptr, "load fixture's pinned ReShade core");
+        }
         // Production selection pauses while the asynchronous core connection
         // runs. Wait for its actual receipt; a successful SR pixel check alone
         // would otherwise miss the BeforeSR admission branch entirely.
@@ -240,6 +260,13 @@ int wmain(int argc, wchar_t** argv)
               "production core connection accepted before typeless admission");
     }
     uint64_t request = 20;
+    if (managed) {
+        Check(GetEnvironmentVariableW(L"RESHADE_DISABLE_GRAPHICS_HOOK", nullptr, 0) == 0,
+            "F6 restored graphics-hook environment after loading core");
+        Check(GetModuleHandleW(L"ReShade64.dll") != nullptr, "F6 itself loaded the pinned core");
+        Check(coreManaged.load(), "first-load proof selected the managed single runtime");
+    }
+    unsigned expectedQueries = 0;
     for (UINT size : {512u, 384u, 512u})
     {
         Frame frame(device.Get(), size, typeless);
@@ -259,6 +286,8 @@ int wmain(int argc, wchar_t** argv)
         unsigned n = 0;
         for (const std::array<UINT,3> rgb : {std::array<UINT,3>{32,96,900}, {704,352,128}})
         {
+            const auto deadline = GetTickCount64() + 60000;
+            for (;;) {
             frame.Fill(context.Get(), rgb); frame.Bind(parameters);
             F6EvalReceiptV1 receipt; receipt.reserved = 0x99999999;
             ++request;
@@ -272,6 +301,7 @@ int wmain(int argc, wchar_t** argv)
             input.frame = request; input.instance = reinterpret_cast<uintptr_t>(handle);
             input.flags = neo::interop::k_before_sr_depth_inverted;
             beforeSrFrame = beforeSr ? &input : nullptr;
+            expectedQueries += beforeSr ? 1u : 0u;
             const auto evaluated = legacyOnly ? legacy(context.Get(), handle, parameters, nullptr) :
                 evaluate(context.Get(), handle, parameters, nullptr, request, &receipt);
             beforeSrFrame = nullptr;
@@ -287,7 +317,15 @@ int wmain(int argc, wchar_t** argv)
                 static_cast<unsigned long long>(request), static_cast<void*>(handle), static_cast<void*>(context.Get()),
                 static_cast<void*>(frame.output.Get()), static_cast<unsigned>(status),
                 static_cast<unsigned long long>(receipt.provider_frame), size, ++n);
-            frame.CheckPixels(context.Get(), rgb, skipped);
+            auto expectedRgb = rgb;
+            if (managed) expectedRgb[0] += 128; // Probe adds exactly 32/255 before SR.
+            if (!frame.CheckPixels(context.Get(), expectedRgb, skipped, !managed)) {
+                Check(GetTickCount64() < deadline, "managed core compiled and actually filtered the current input");
+                Sleep(10); continue;
+            }
+            if (managed) Check(filteredStages.load() != 0, "production recorded effects, not only producer admission");
+            break;
+            }
         }
         // Old ABI must still evaluate once and deliver the selected provider.
         const std::array<UINT,3> third {192,704,352};
@@ -297,7 +335,7 @@ int wmain(int argc, wchar_t** argv)
         Ngx(release(handle), "release after real readback completion");
         Ngx(destroy(parameters), "destroy table after release");
     }
-    Check(beforeSrQueries == (beforeSr ? 6u : 0u) && beforeSrMismatches == 0,
+    Check(beforeSrQueries == expectedQueries && beforeSrMismatches == 0,
         "BeforeSR query receives this call's original DX11 resources only when requested");
     std::printf("before_sr queries=%u mismatches=%u enabled=%u transfer=%s typeless=%u\n",
         beforeSrQueries, beforeSrMismatches, beforeSr ? 1u : 0u, typeless ? "srgb" : "unknown", typeless ? 1u : 0u);

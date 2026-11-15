@@ -3,8 +3,9 @@
 param(
     [string]$Artifact,
     [Parameter(Mandatory)][string]$DlssRuntime,
-    [ValidateSet('interop','skip','native','before-sr','before-sr-typeless','before-sr-auto','before-sr-default','before-sr-off','before-sr-other','legacy-shutdown')][string[]]$Cases = @('interop','skip','native','before-sr','before-sr-typeless','before-sr-auto','before-sr-default','before-sr-off','before-sr-other'),
+    [ValidateSet('interop','skip','native','before-sr','before-sr-typeless','before-sr-auto','before-sr-default','before-sr-managed','before-sr-off','before-sr-other','legacy-shutdown')][string[]]$Cases = @('interop','skip','native','before-sr','before-sr-typeless','before-sr-auto','before-sr-default','before-sr-off','before-sr-other'),
     [switch]$IncludeShutdown,
+    [string]$OutputDirectory,
     [string]$CorePath = 'D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/HoYoShade/ReShade64.dll',
     [string]$DevCmd = 'D:/VS2022BuildTools/Common7/Tools/VsDevCmd.bat'
 )
@@ -15,7 +16,8 @@ $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 if (!$Artifact) { $Artifact = Join-Path $root 'build/out/OptiScaler.dll' }
 $artifactPath = (Get-Item -LiteralPath $Artifact).FullName
 $runtimePath = (Get-Item -LiteralPath $DlssRuntime).FullName
-$runRoot = Join-Path $root ('build/f6-eval-v1-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+$runRoot = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory, $root) }
+    else { Join-Path $root ('build/f6-eval-v1-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff')) }
 $null = [IO.Directory]::CreateDirectory($runRoot)
 $exe = Join-Path $runRoot 'F6EvalReceiptHost.exe'
 $source = Join-Path $root 'OptiScaler/inputs/tests/F6EvalReceiptHost.cpp'
@@ -31,7 +33,7 @@ foreach ($case in $Cases)
     $null = [IO.Directory]::CreateDirectory($path)
     Copy-Item -LiteralPath $artifactPath -Destination (Join-Path $path 'OptiScaler.dll')
     Copy-Item -LiteralPath $runtimePath -Destination (Join-Path $path 'nvngx_dlss.dll')
-    $expectsAdmission = $case -in @('before-sr-typeless','before-sr-auto','before-sr-default')
+    $expectsAdmission = $case -in @('before-sr-typeless','before-sr-auto','before-sr-default','before-sr-managed')
     if ($expectsAdmission) {
         $coreHash = (Get-FileHash -LiteralPath $CorePath -Algorithm SHA256).Hash
         if ($coreHash -ne '0CEE63F9C9F13F3AC909C5B4903F4DBB4B719A7AB3B4F13B0DEAF83C814B94F7') {
@@ -39,13 +41,18 @@ foreach ($case in $Cases)
         }
         $null = [IO.Directory]::CreateDirectory((Join-Path $path 'HoYoShade'))
         Copy-Item -LiteralPath $CorePath -Destination (Join-Path $path 'HoYoShade/ReShade64.dll')
+        if ($case -eq 'before-sr-managed') {
+            Copy-Item -LiteralPath (Join-Path $root 'OptiScaler/integration/tests/before-sr/Probe.fx') -Destination $path
+            [IO.File]::WriteAllText((Join-Path $path 'preset.ini'), "Techniques=Probe@Probe.fx`nTechniqueSorting=Probe@Probe.fx`n")
+            [IO.File]::WriteAllText((Join-Path $path 'ReShade.ini'), "[GENERAL]`nEffectSearchPaths=$path`nPresetPath=$path/preset.ini`n[OVERLAY]`nTutorialProgress=4`n")
+        }
     }
     $backend = if ($case -eq 'native') { 'dlss' } else { 'dlss_12' }
     $skip = if ($case -eq 'skip') { '2' } else { 'auto' }
     $enabledLine = switch ($case) {
         'before-sr-default' { '' } # Absent key, not an explicit false.
         'before-sr-auto' { 'Enabled=auto' }
-        { $_ -in @('before-sr','before-sr-typeless','before-sr-other') } { 'Enabled=true' }
+        { $_ -in @('before-sr','before-sr-typeless','before-sr-other','before-sr-managed') } { 'Enabled=true' }
         default { 'Enabled=false' }
     }
     $stage = if ($case -eq 'before-sr-other') { 2 } else { 1 }
@@ -84,7 +91,12 @@ LogFileName=./OptiScaler.log
     [IO.File]::WriteAllText((Join-Path $path 'OptiScaler.ini'), $ini, [Text.UTF8Encoding]::new($false))
     $hostArguments = @('OptiScaler.dll', $case)
     if ($IncludeShutdown) { $hostArguments += 'shutdown' }
-    $process = Start-Process -FilePath $exe -ArgumentList $hostArguments -WorkingDirectory $path `
+    $caseExe = $exe
+    if ($case -eq 'before-sr-managed') {
+        $caseExe = Join-Path $path 'F6EvalReceiptHost.exe'
+        Copy-Item -LiteralPath $exe -Destination $caseExe
+    }
+    $process = Start-Process -FilePath $caseExe -ArgumentList $hostArguments -WorkingDirectory $path `
         -RedirectStandardOutput (Join-Path $path 'stdout.log') -RedirectStandardError (Join-Path $path 'stderr.log') `
         -WindowStyle Hidden -PassThru
     $null = $process.Handle
@@ -103,7 +115,7 @@ LogFileName=./OptiScaler.log
                 $_ -match 'HoYoShade BeforeSR input .*source_format=27 .*input_query=current-input input_view=28 .*producer_storage=27 .*producer_color=producer-sdr .*sdr=true '
             })
         }
-        $passed = $passed -and $admission.Count -eq 6
+        $passed = $passed -and $(if ($case -eq 'before-sr-managed') { $admission.Count -ge 6 } else { $admission.Count -eq 6 })
     }
     $rows += [pscustomobject]@{
         Case=$case; Path=$path; PID=$process.Id; Exit=$process.ExitCode; Timeout=(!$complete); Pass=$passed

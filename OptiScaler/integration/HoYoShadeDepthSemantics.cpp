@@ -93,6 +93,54 @@ struct Port {
     }
 };
 }
+void ObserveCompiled(CompiledDefinitions& compiled, reshade::api::effect_runtime* runtime, uint64_t reload) noexcept
+{
+    compiled = {};
+    try {
+        if (!runtime || !reload) return;
+        const Selection::CallBoundary call;
+        CompiledDefinitions next; next.runtime = runtime; next.reload = reload;
+        std::vector<reshade::api::effect_technique> handles;
+        Selection::CaptureReason reason; size_t count = 0;
+        if (!Selection::EnumerateTechniques(runtime, handles, count, reason, call)) return;
+        const auto read = [&](const char* effect, const char* name, bool& value) {
+            char text[32]{}; size_t size = sizeof(text); bool found = false;
+            if (!call.Invoke([&] { found = runtime->get_preprocessor_definition_for_effect(effect, name, text, &size); })) return false;
+            if (!found) {
+                size = sizeof(text);
+                if (!call.Invoke([&] { found = runtime->get_preprocessor_definition(name, text, &size); })) return false;
+            }
+            if (!found || size >= sizeof(text) || text[1] || (text[0] != '0' && text[0] != '1')) return false;
+            value = text[0] == '1'; return true;
+        };
+        for (auto technique : handles) {
+            char name[32768]{}; size_t size = sizeof(name);
+            if (!call.Invoke([&] { runtime->get_technique_effect_name(technique, name, &size); }) ||
+                !name[0] || size >= sizeof(name)) return;
+            if (std::any_of(next.effects.begin(), next.effects.end(), [&](const auto& effect) { return effect.name == name; })) continue;
+            auto& effect = next.effects.emplace_back(); effect.name = name;
+            effect.known = read(name, Reversed, effect.reversed) && read(name, UpsideDown, effect.flipped);
+        }
+        if (call.Current()) compiled = std::move(next);
+    } catch (...) { compiled = {}; }
+}
+Result InspectCurrent(const CompiledDefinitions& compiled, reshade::api::effect_runtime* runtime, const Selection::Source& source,
+                      const Access* input, ReloadCounter counter) noexcept
+{
+    try {
+        if (!runtime || !source.valid || !input || !input->reader || !input->resource ||
+            !input->directionKnown || !Compatible(input->resource->GetDesc(), *input) ||
+            !input->reader->Validate(*input) || !counter || compiled.runtime != runtime || !compiled.reload ||
+            counter(runtime) != compiled.reload) return {};
+        for (const auto& effect : source.effects) if (effect.enabled) {
+            const auto found = std::find_if(compiled.effects.begin(), compiled.effects.end(),
+                [&](const auto& value) { return value.name == effect.key; });
+            if (found == compiled.effects.end() || !found->known || found->reversed != input->reversed ||
+                found->flipped != input->yFlipped) return {};
+        }
+        return {Outcome::Ready};
+    } catch (...) { return {}; }
+}
 Result Project(State& state, reshade::api::effect_runtime* runtime, uint64_t generation,
     Selection::Source& source, const Access* input, ReloadCounter counter) noexcept
 {

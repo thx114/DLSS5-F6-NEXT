@@ -3,32 +3,33 @@
 param(
     [string]$CorePath = 'D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/HoYoShade/ReShade64.dll',
     [string]$OutputDirectory = 'build/genshin-reshade-20261114/real-core-test',
-    [ValidateSet('color','depth','launchpad','selection-cache','nr-color','nr-depth','nr-launchpad','nr-uncertain')][string]$Mode = 'color',
-    [switch]$TypelessInput
+    [ValidateSet('color','depth','launchpad','single-color','single-depth','single-mxao','single-selection','selection-cache','nr-color','nr-depth','nr-launchpad','nr-uncertain')][string]$Mode = 'color',
+    [switch]$TypelessInput,
+    [switch]$ReversedDepth
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 if ($TypelessInput -and $Mode.StartsWith('nr-')) { throw 'Typeless input contract is BeforeSR only' }
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
-$output = [IO.Path]::GetFullPath((Join-Path $root $OutputDirectory))
+$output = [IO.Path]::GetFullPath($OutputDirectory, $root)
 $null = [IO.Directory]::CreateDirectory((Join-Path $output 'HoYoShade'))
 $expected = '0CEE63F9C9F13F3AC909C5B4903F4DBB4B719A7AB3B4F13B0DEAF83C814B94F7'
 if ((Get-FileHash -LiteralPath $CorePath -Algorithm SHA256).Hash -ne $expected) { throw 'Pinned core identity differs' }
 Copy-Item -LiteralPath $CorePath -Destination (Join-Path $output 'HoYoShade/ReShade64.dll') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Probe.fx') -Destination (Join-Path $output 'Probe.fx') -Force
 $preset = "Techniques=Probe@Probe.fx`nTechniqueSorting=Probe@Probe.fx`n"
-if ($Mode -eq 'selection-cache') {
+if ($Mode -in @('selection-cache','single-selection')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'CacheProbe.fx') -Destination (Join-Path $output 'CacheProbe.fx') -Force
     $preset = "Techniques=Add@CacheProbe.fx,Scale@CacheProbe.fx`nTechniqueSorting=Add@CacheProbe.fx,Scale@CacheProbe.fx`n"
 }
-if ($Mode -in @('depth','nr-depth')) {
+if ($Mode -in @('depth','nr-depth','single-depth')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'DepthProbe.fx') -Destination (Join-Path $output 'DepthProbe.fx') -Force
     $preset = "Techniques=DepthProbe@DepthProbe.fx`nTechniqueSorting=DepthProbe@DepthProbe.fx`n"
 }
 $effects = $output
 $textures = $output
-if ($Mode -in @('launchpad','nr-launchpad')) {
+if ($Mode -in @('launchpad','nr-launchpad','single-mxao')) {
     $shaderRoot = Join-Path (Split-Path $CorePath -Parent) 'reshade-shaders/Shaders/iMMERSE'
     $effects = Join-Path $output 'shaders'
     $null = [IO.Directory]::CreateDirectory($effects)
@@ -50,11 +51,17 @@ SkipLoadingDisabledEffects=0
 [OVERLAY]
 TutorialProgress=4
 "@
+if ($Mode.StartsWith('single-')) {
+    $reverse = if ($ReversedDepth) { 1 } else { 0 }
+    $config = $config.Replace('[GENERAL]', "[GENERAL]`nPreprocessorDefinitions=RESHADE_DEPTH_INPUT_IS_REVERSED=$reverse,RESHADE_DEPTH_INPUT_IS_UPSIDE_DOWN=0")
+    [IO.File]::WriteAllText((Join-Path $output 'ReShade.ini'), $config)
+} else {
 [IO.File]::WriteAllText((Join-Path $output 'natural.ini'), $config)
 # The core gives process-global tutorial state precedence over runtime config.
 # Keep this isolated fixture's splash UI out of the exact pixel oracle, even
 # when a previous fixture run saved TutorialProgress=0 beside its executable.
 [IO.File]::WriteAllText((Join-Path $output 'ReShade.ini'), "[OVERLAY]`nTutorialProgress=4`n")
+}
 $hostSource = if ($Mode.StartsWith('nr-')) { 'host-before-nr.cpp' } else { 'host.cpp' }
 if ($Mode.StartsWith('nr-')) {
     # Compile the actual forwarding method, not a fixture copy of its policy.
@@ -79,12 +86,17 @@ try {
     & cmd.exe /d /c (Join-Path $output 'compile.cmd') *> (Join-Path $output 'compile.log')
     if ($LASTEXITCODE -ne 0) { Get-Content (Join-Path $output 'compile.log') -Tail 24; throw 'Host compilation failed' }
     $hostArguments = @($output, $Mode)
-    if ($TypelessInput) { $hostArguments += 'typeless' }
+    if ($ReversedDepth) { $hostArguments += 'typeless-reversed' }
+    elseif ($TypelessInput) { $hostArguments += 'typeless' }
     & (Join-Path $output 'host.exe') @hostArguments *> (Join-Path $output 'result.log')
     $hostResult = $LASTEXITCODE
     Get-Content (Join-Path $output 'result.log') -Tail 15
     if ($hostResult -ne 0) { throw "Real-core test failed: $hostResult" }
-    if ($TypelessInput -and $Mode -eq 'color') {
+    if ($Mode.StartsWith('single-')) {
+        $iniFiles = @(Get-ChildItem -LiteralPath $output -Filter 'ReShade*.ini' -File -Recurse)
+        if ($iniFiles.Count -ne 1 -or $iniFiles[0].FullName -ne (Join-Path $output 'ReShade.ini')) { throw 'Unexpected second ReShade config' }
+    }
+    if ($TypelessInput -and $Mode -in @('color','single-color')) {
         & (Join-Path $output 'host.exe') $output $Mode 'typeless-partial' *> (Join-Path $output 'result-partial.log')
         $partialResult = $LASTEXITCODE
         Get-Content (Join-Path $output 'result-partial.log') -Tail 8

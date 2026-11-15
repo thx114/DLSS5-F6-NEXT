@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 // Keep the /Yu checkpoint outside conditionals; standalone hosts supply a minimal pch.h.
 #ifdef HOYOSHADE_STAGE_TEST
 #include <Windows.h>
@@ -21,6 +21,8 @@
 #include "HoYoShadeSelection.h"
 #include "HoYoShadeEffectRequirements.h"
 #include "HoYoShadeDepthSemantics.h"
+#include "HoYoShadeCorePaths.h"
+#include "HoYoShadeCoreLoad.h"
 #include <bcrypt.h>
 #include <psapi.h>
 #include <filesystem>
@@ -510,7 +512,10 @@ struct State
     Microsoft::WRL::ComPtr<ID3D12Device> ownedDevice;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> ownedQueue;
     Microsoft::WRL::ComPtr<IDXGIFactory2> ownedFactory;
-    std::string ownedConfigPath; // Host test source; product config comes from the natural runtime.
+    std::string ownedConfigPath;
+    std::atomic<bool> soleRuntime{false}; // F6 loaded the core without graphics hooks
+    Selection::Source soleSelection; // same runtime supplies selection and records effects
+    Depth::Semantics::CompiledDefinitions soleCompiledDepth;
     std::string selectionConfigPath;
     reshade::api::effect_runtime* ownedNatural = nullptr;
     uint64_t ownedBindingOwner = 0, ownedBindingGeneration = 0;
@@ -522,6 +527,7 @@ struct State
     uint64_t observationSelectionRevision = 1; // executionMutex; BEFORE requests invalidate zero-selection evidence.
     std::atomic<HMODULE> self{nullptr};
     std::atomic<bool> connectStarted{false}, connecting{false};
+    std::atomic<uint64_t> connectionSettings{0};
     // Latest resolved admission attempt only, never a process-wide drain flag.
     struct EpochWait {
         uint64_t settings = 0, stream = 0, generation = 0, runtime = 0, lifetime = 0;
@@ -692,8 +698,8 @@ struct BeforeSrDonorCall
     State::Natural* natural = nullptr;
     BeforeSrDonorCall* previous = activeBeforeSrDonor;
     bool revoked = false, suppressing = false;
-    BeforeSrDonorCall(const NaturalAssociation::SelectionDonor* value, State::Natural& source) noexcept {
-        if (value) { token = *value; natural = &source; activeBeforeSrDonor = this; }
+    BeforeSrDonorCall(const NaturalAssociation::SelectionDonor* value, State::Natural* source) noexcept {
+        if (value && source) { token = *value; natural = source; activeBeforeSrDonor = this; }
     }
     ~BeforeSrDonorCall() { if (natural) activeBeforeSrDonor = previous; }
     BeforeSrDonorCall(const BeforeSrDonorCall&) = delete;
@@ -1258,6 +1264,7 @@ bool EnsureNativeBinding(uint64_t owner, ID3D12Device *device, ID3D12CommandQueu
         Get().selectionConfigPath = Get().ownedConfigPath;
         Get().ownedBinding.configPathUtf8 = Get().selectionConfigPath.c_str();
         Get().ownedBinding.configLifetime = configLifetime;
+        Get().ownedBinding.exclusiveRuntime = Get().soleRuntime.load();
         Get().ownedSelectionDonor = donor ? *donor : NaturalAssociation::SelectionDonor{};
     }
     if (oldOwner) {
@@ -1406,27 +1413,36 @@ bool SuppressBeforeSrSelectionDonor(State::Natural& natural,
 }
 Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoint& endpoint,
                    StageResult& result, OwnedRuntime::Detail& ownedDetail, NativeColorFacts& immutable,
-                   State::Natural& natural, State::Natural* suppress,
+                   Selection::Source& selection, State::Natural* natural, State::Natural* suppress,
                    reshade::api::command_list* naturalList,
                    const NaturalAssociation::SelectionDonor* selectionDonor) noexcept
 {
     BeforeSrDonorCall donorCall(selectionDonor, natural);
-    const auto naturalRuntime = natural.runtime;
-    const auto naturalLifetime = natural.lifetime, naturalEpoch = natural.frame.epoch;
+    const bool sole = natural == nullptr;
+    const auto naturalRuntime = natural ? natural->runtime : nullptr;
+    const auto naturalLifetime = natural ? natural->lifetime : 0;
+    const auto naturalEpoch = natural ? natural->frame.epoch : 0;
+    const auto settings = Get().appliedSettings.load(std::memory_order_acquire);
     const auto suppressRuntime = suppress ? suppress->runtime : nullptr;
     const uint64_t suppressLifetime = suppress ? suppress->lifetime : 0;
     const uint64_t suppressEpoch = suppress ? suppress->frame.epoch : 0;
     const Selection::CallBoundary sourceBoundary;
     const auto sourceCurrent = [&] {
-        return natural.live && natural.runtime == naturalRuntime && natural.lifetime == naturalLifetime &&
-            natural.frame.epoch == naturalEpoch && !natural.frame.invalid &&
+        if (sole) {
+            const auto observed = Selection::Watch(selection.naturalRuntime).Read();
+            return Get().soleRuntime.load() && Get().appliedSettings.load() == settings &&
+                Get().desiredSettings.load() == settings && (!selection.naturalRuntime ||
+                (observed.runtime && observed.revision == selection.naturalRevision));
+        }
+        return natural->live && natural->runtime == naturalRuntime && natural->lifetime == naturalLifetime &&
+            natural->frame.epoch == naturalEpoch && !natural->frame.invalid &&
             (selectionDonor || sourceBoundary.Current()) &&
             (!suppress || (suppress->live && suppress->runtime == suppressRuntime &&
                 suppress->lifetime == suppressLifetime && suppress->frame.epoch == suppressEpoch &&
                 !suppress->frame.invalid && suppress->thread == GetCurrentThreadId())) &&
-            (!selectionDonor || BeforeSrSelectionDonorCurrent(natural, *selectionDonor));
+            (!selectionDonor || BeforeSrSelectionDonorCurrent(*natural, *selectionDonor));
     };
-    if (!sourceCurrent() || !Selection::HasEnabledTechniques(natural.selection)) return Reason::SelectionUnavailable;
+    if (!sole && (!sourceCurrent() || !Selection::HasEnabledTechniques(selection))) return Reason::SelectionUnavailable;
     if (!AdmitColor(endpoint, result, immutable)) return Reason::ColorSpaceUnknown;
     auto* color = endpoint.color;
     const auto knownState = endpoint.state;
@@ -1456,11 +1472,11 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         return Reason::DeviceMismatch;
     }
     auto *nativeQueue = reinterpret_cast<ID3D12CommandQueue*>(request.nativeQueue);
-    if (!nativeQueue || !EnsureNativeBinding(request.stream, nativeDevice.Get(), nativeQueue, nativeDesc, natural.selection.files, endpoint, immutable, selectionDonor))
+    if (!nativeQueue || !EnsureNativeBinding(request.stream, nativeDevice.Get(), nativeQueue, nativeDesc, selection.files, endpoint, immutable, selectionDonor))
         return Reason::NoRuntime;
 
     if (selectionDonor && !sourceCurrent()) return Reason::SelectionPending;
-    Get().ownedNatural = natural.runtime;
+    Get().ownedNatural = naturalRuntime;
     OwnedRuntime::Binding binding{};
     CoreApi acceptedApi{};
     HMODULE coreModule = nullptr;
@@ -1487,6 +1503,10 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
     const auto ownedStatus = OwnedRuntime::AcquireForRender(binding, coreModule, acceptedApi, lease, &ownedDetail);
     if (ownedStatus != OwnedRuntime::Status::Ready || !lease)
         return ownedStatus == OwnedRuntime::Status::SignalFailed ? Reason::FenceUnavailable : Reason::NoRuntime;
+    if (sole) {
+        try { Depth::ResetReadiness(lease.Runtime()); } catch (...) { return Reason::InternalFailure; }
+        if (lease.BeginFrame(&ownedDetail) != OwnedRuntime::Status::Ready) return Reason::NoRuntime;
+    }
     auto *runtime = lease.Runtime();
     auto *sdkDevice = lease.Device();
     auto *sdkQueue = lease.Queue();
@@ -1494,6 +1514,10 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
     if (!runtime || !sdkDevice || !sdkQueue || !sdkList ||
         lease.NativeList() == nullptr || sdkQueue->get_native() != request.nativeQueue)
         return Reason::QueueMismatch;
+
+    if (sole) {
+        Selection::Capture(runtime, acceptedApi, selection, false, lease.Generation(), Selection::CaptureAccess::SoleRuntime);
+    }
 
     // An owned init/reload/reorder may revoke its handle map while leaving
     // the natural token unchanged. Drain an idle owned lease via its real
@@ -1519,7 +1543,7 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         return submitted ? pending : Reason::FenceUnavailable;
     };
     // The owned runtime must never inherit the previous frame's depth, including warmup.
-    try { Depth::ResetReadiness(runtime); } catch (...) { return Reason::InternalFailure; }
+    if (!sole) try { Depth::ResetReadiness(runtime); } catch (...) { return Reason::InternalFailure; }
     // AcquireForRender has proved the preceding GPU batch complete and holds
     // this exact private runtime exclusively. No effects are recorded yet.
     const auto& depthInput = endpoint.depth;
@@ -1528,27 +1552,32 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         depthInput.queue == nativeQueue && depthInput.readyFence == endpoint.ready.fence &&
         depthInput.readyValue == endpoint.ready.value;
     const auto quarantineDonorReader = [&]() noexcept {
-        if (selectionDonor && depthEndpointMatches && depthInput.reader) depthInput.reader->Quarantine();
+        if (depthEndpointMatches && depthInput.reader) depthInput.reader->Quarantine();
     };
-    const auto depthSemantics = Depth::Semantics::Project(Get().depthSemantics, runtime,
-        lease.Generation(), natural.selection, depthEndpointMatches ? &depthInput : nullptr, OwnedDepthReloadSerial);
-    if (depthSemantics.invalidateSelection) InvalidateOwnedSelection(natural.selection);
+    const auto depthSemantics = sole ?
+        Depth::Semantics::InspectCurrent(Get().soleCompiledDepth, runtime, selection, depthEndpointMatches ? &depthInput : nullptr, OwnedDepthReloadSerial) :
+        Depth::Semantics::Project(Get().depthSemantics, runtime, lease.Generation(), selection,
+            depthEndpointMatches ? &depthInput : nullptr, OwnedDepthReloadSerial);
+    if (depthSemantics.invalidateSelection) InvalidateOwnedSelection(selection);
     if (depthSemantics.outcome == Depth::Semantics::Outcome::Pending) {
         // Update the real core through the owned lease, with no render_effects
         // call, source color mutation or natural suppression while it compiles.
         return finishUnrecorded(lease, Reason::SelectionPending);
     }
     const bool depthSemanticsReady = depthSemantics.outcome == Depth::Semantics::Outcome::Ready;
-    if (!sourceCurrent()) return finishUnrecorded(lease, Reason::SelectionPending);
+    if (!sole && !sourceCurrent()) return finishUnrecorded(lease, Reason::SelectionPending);
     const Selection::CallBoundary selectionBoundary;
     bool selectionReady = false;
-    if (selectionDonor) {
-        try { selectionReady = Selection::Apply(natural.selection, runtime, lease.Generation()); }
+    if (sole) {
+        selectionReady = Selection::HasEnabledTechniques(selection) && !selection.mappingDirty &&
+            selection.boundRuntime == runtime && selection.boundGeneration == lease.Generation();
+    } else if (selectionDonor) {
+        try { selectionReady = Selection::Apply(selection, runtime, lease.Generation()); }
         catch (...) { return Reason::InternalFailure; } // unsubmitted lease quarantines its real owners
-    } else selectionReady = Selection::Apply(natural.selection, runtime, lease.Generation());
+    } else selectionReady = Selection::Apply(selection, runtime, lease.Generation());
     // A reentrant lifecycle change (or an unconfirmed reorder request) must
     // not fall through to warmup using the revoked SDK runtime/handles.
-    if (!selectionBoundary.Current() || !sourceCurrent())
+    if (!selectionBoundary.Current() || (!sole && !sourceCurrent()))
         return finishUnrecorded(lease, Reason::SelectionPending);
     if (!selectionReady) {
         // Warm only the owned runtime. Never suppress the real game while its
@@ -1560,7 +1589,7 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         return finishUnrecorded(lease, Reason::SelectionPending);
     }
 
-    const auto requirements = EffectRequirements::Inspect(natural.selection);
+    const auto requirements = EffectRequirements::Inspect(selection);
     if (requirements.status != EffectRequirements::Status::Ready)
         return finishUnrecorded(lease, Reason::EffectOrderInvalid);
     if (requirements.depth && (!depthEndpointMatches || !depthSemanticsReady))
@@ -1568,7 +1597,7 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
     const auto& preparedEffects = Get().effectPreparation;
     const bool effectWarmup = requirements.launchpadNormals &&
         (preparedEffects.runtime != lease.Generation() || preparedEffects.stream != endpoint.stream ||
-         preparedEffects.generation != endpoint.generation || preparedEffects.snapshot != natural.selection.snapshots ||
+         preparedEffects.generation != endpoint.generation || preparedEffects.snapshot != selection.snapshots ||
          preparedEffects.reload != OwnedDepthReloadSerial(runtime) ||
          preparedEffects.normalsMode != requirements.normalsMode ||
          !preparedEffects.completion.fence || !preparedEffects.completion.value ||
@@ -1735,7 +1764,7 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
             key.chain = enrolled->chain.load(std::memory_order_acquire);
             key.chainLifetime = enrolled->lifetime.load(std::memory_order_acquire);
             key.chainEpoch = enrolled->epoch; key.stream = endpoint.stream; key.generation = endpoint.generation;
-            key.naturalRuntime = Key(natural.runtime); key.naturalLifetime = natural.lifetime;
+            key.naturalRuntime = Key(naturalRuntime); key.naturalLifetime = naturalLifetime;
             key.runtime = Key(runtime); key.sdkDevice = Key(sdkDevice); key.sdkQueue = Key(sdkQueue);
             key.nativeDevice = request.nativeDevice; key.nativeQueue = request.nativeQueue; key.resource = Key(color);
             key.native = nativeDesc; key.sdk = sdkDesc; key.linear = linearFormat; key.srgb = srgbFormat;
@@ -1858,8 +1887,8 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         if (!AdmitColor(endpoint, result, immutable)) return finishUnrecorded(transaction->lease, Reason::ColorSpaceUnknown);
         // Register both actual picture participants BEFORE the first command
         // can record or throw. Mere enumeration/selection/warmup is not a use.
-        RememberSettingsUse(natural, endpoint.stream, endpoint.generation);
-        if (suppress && suppress != &natural)
+        if (natural) RememberSettingsUse(*natural, endpoint.stream, endpoint.generation);
+        if (suppress && suppress != natural)
             RememberSettingsUse(*suppress, endpoint.stream, endpoint.generation);
         result.attempt.state = SubmissionState::RecordedOrUncertain;
 
@@ -1901,7 +1930,7 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         // source format alone never forces a view or an adapter conversion.
         std::optional<Selection::RenderScope> selectedRender;
         if (effectInputsReady && endpoint.stage == Stage::BeforeSr) {
-            selectedRender.emplace(natural.selection, runtime, transaction->runtimeGeneration,
+            selectedRender.emplace(selection, runtime, transaction->runtimeGeneration,
                 sdkList, target->linear, target->srgb);
             if (selectedRender->Ready()) runtime->render_effects(sdkList, target->linear, target->srgb);
             result.techniques = selectedRender->RecordedTechniques();
@@ -1949,14 +1978,14 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         transitioned = false;
         if (recordingRevoked()) return retainRevokedRecording();
 
-        if (selectionDonor && (!sourceCurrent() || !AdmitColor(endpoint, result, immutable)))
+        if ((selectionDonor || sole) && (!sourceCurrent() || !AdmitColor(endpoint, result, immutable)))
             return retainRevokedRecording();
         if (effectsRecorded && selectedRender && !selectedRender->RecordedTechniques())
             return retainRevokedRecording();
         selectedRender.reset(); // witness ends before Submit/update and the natural empty-RTV suppression
         OwnedRuntime::Completion completion;
         const auto submitStatus = transaction->lease.Submit(completion, &ownedDetail);
-        const bool unknownDonorCompletion = selectionDonor && submitStatus == OwnedRuntime::Status::Ready &&
+        const bool unknownDonorCompletion = (selectionDonor || sole) && submitStatus == OwnedRuntime::Status::Ready &&
             (!completion.fence || !completion.value || completion.value == UINT64_MAX ||
              completion.fence->GetCompletedValue() == UINT64_MAX);
         if (unknownDonorCompletion) {
@@ -1993,7 +2022,7 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         const bool readerCompleted = !depthRead || depthRead->Complete(completion.fence.Get(), completion.value);
         if (!readerCompleted) {
             LOG_WARN("HoYoShade depth reader completion refused; owner retained sentinel=RESHADE-REAL-DEPTH");
-            if (selectionDonor) {
+            if (selectionDonor || sole) {
                 // The reader quarantines its content lease. Keep THIS active
                 // transaction/pool lease and all payloads, not just addresses;
                 // do not certify a consumer or suppress the natural runtime.
@@ -2031,15 +2060,15 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         }
         if (inputWarmupRecorded) {
             Get().effectPreparation = {transaction->runtimeGeneration, endpoint.stream, endpoint.generation,
-                natural.selection.snapshots, OwnedDepthReloadSerial(runtime), requirements.normalsMode, result.completion};
+                selection.snapshots, OwnedDepthReloadSerial(runtime), requirements.normalsMode, result.completion};
         }
         if (result.techniques) {
             // A lifecycle change after recording is uncertain output, not a
             // successful application against a replacement natural runtime.
             if (!sourceCurrent()) return Reason::NaturalUnavailable;
             if (selectionDonor) {
-                if (suppress != &natural || !AdmitColor(endpoint, result, immutable) ||
-                    !SuppressBeforeSrSelectionDonor(natural, *selectionDonor, result.attempt))
+                if (suppress != natural || !AdmitColor(endpoint, result, immutable) ||
+                    !SuppressBeforeSrSelectionDonor(*natural, *selectionDonor, result.attempt))
                     return Reason::NaturalUnavailable;
             } else if (suppress) {
                 if (!suppress->frame.Arm()) return Reason::NaturalFrameConsumed;
@@ -2580,6 +2609,7 @@ void SelectionEvent(reshade::api::effect_runtime* runtime, Selection::CacheEvent
     // owned work, before invalidating any borrowed reflection handles.
     Selection::Observe(runtime, event);
     for (auto& entry : Get().natural) Selection::Invalidate(entry.selection, runtime, event);
+    Selection::Invalidate(Get().soleSelection, runtime, event);
 }
 void OnInit(reshade::api::effect_runtime* runtime) noexcept
 { try { CallbackGuard guard; SelectionEvent(runtime, Selection::CacheEvent::Init); if (guard.entered) ObserveRuntime(runtime, RuntimeEvent::Init); } catch (...) { ++Get().overflow; } }
@@ -2588,7 +2618,14 @@ void OnPresent(reshade::api::effect_runtime* runtime) noexcept
 void OnBeforeNaturalPresent(reshade::api::command_queue*, reshade::api::swapchain*,
     const reshade::api::rect*, const reshade::api::rect*, uint32_t, const reshade::api::rect*) noexcept;
 void OnReload(reshade::api::effect_runtime* runtime) noexcept
-{ try { CallbackGuard guard; SelectionEvent(runtime, Selection::CacheEvent::Reload); if (guard.entered) ObserveRuntime(runtime, RuntimeEvent::Reload); } catch (...) { ++Get().overflow; } }
+{
+    try {
+        CallbackGuard guard; SelectionEvent(runtime, Selection::CacheEvent::Reload);
+        if (guard.entered) ObserveRuntime(runtime, RuntimeEvent::Reload);
+        if (Get().soleRuntime.load() && OwnedDepthReloadSerial(runtime))
+            Depth::Semantics::ObserveCompiled(Get().soleCompiledDepth, runtime, OwnedDepthReloadSerial(runtime));
+    } catch (...) { ++Get().overflow; }
+}
 void OnPreset(reshade::api::effect_runtime* runtime, const char*) noexcept
 {
     try { std::lock_guard lifetime(Get().executionMutex); SelectionEvent(runtime, Selection::CacheEvent::Preset); }
@@ -2666,6 +2703,10 @@ bool OnOwnedStageEffects(reshade::api::effect_runtime* runtime, bool enabled) no
         std::lock_guard lock(Get().executionMutex);
         ObservationSelectionRequested(); // BEFORE request, not acknowledgement of the new state.
 
+        if (Get().soleRuntime.load() && Get().soleSelection.naturalRuntime == runtime) {
+            Selection::Observe(runtime, Selection::CacheEvent::Order);
+            Selection::Invalidate(Get().soleSelection, runtime, Selection::CacheEvent::Order);
+        }
         Selection::RenderScope::SelectionRequested(runtime);
         return false;
     }
@@ -2677,6 +2718,10 @@ bool OnOwnedStageTechnique(reshade::api::effect_runtime* runtime, reshade::api::
         std::lock_guard lock(Get().executionMutex);
         ObservationSelectionRequested(); // Old zero-selection Capture cannot be claimed again.
 
+        if (Get().soleRuntime.load() && Get().soleSelection.naturalRuntime == runtime) {
+            Selection::Observe(runtime, Selection::CacheEvent::Order);
+            Selection::Invalidate(Get().soleSelection, runtime, Selection::CacheEvent::Order);
+        }
         Selection::RenderScope::SelectionRequested(runtime);
 
     }
@@ -2688,6 +2733,14 @@ bool OnOwnedStageUniform(reshade::api::effect_runtime* runtime, reshade::api::ef
     try {
         std::lock_guard lock(Get().executionMutex);
         RevokeEnabledObservationDemand();
+        if (Get().soleRuntime.load() && Get().soleSelection.naturalRuntime == runtime) {
+            for (const auto& uniform : Get().soleSelection.uniforms) {
+                if (uniform.natural.handle != variable.handle || !uniform.annotationSource.empty()) continue;
+                Selection::Observe(runtime, Selection::CacheEvent::Order);
+                Selection::Invalidate(Get().soleSelection, runtime, Selection::CacheEvent::Order);
+                break;
+            }
+        }
         Selection::RenderScope::UniformRequested(runtime, variable);
 
     }
@@ -2761,7 +2814,6 @@ Reason Connect(HMODULE self)
     }
     Get().api = api;
     Get().coreModule = held;
-    Get().accepted.store(true, std::memory_order_release);
     using E = reshade::addon_event;
     api.Subscribe<E::init_effect_runtime>(OnInit); api.Subscribe<E::destroy_effect_runtime>(OnDestroy);
     api.Subscribe<E::init_command_list>(OnList); api.Subscribe<E::destroy_command_list>(OnDestroyList);
@@ -2778,6 +2830,7 @@ Reason Connect(HMODULE self)
     api.Subscribe<E::reshade_reorder_techniques>(OnReorder);
     api.Subscribe<E::init_resource_view>(OnDomainView);
     Get().domainSubscriptionRequested.store(true,std::memory_order_release);
+    Get().accepted.store(true, std::memory_order_release);
     LOG_INFO("HoYoShade API20 registration accepted core_path={} disk_sha256=0cee63f9c9f13f3ac909c5b4903f4dbb4b719a7ab3b4f13b0deaf83c814b94f7 loaded_image_sha=UNKNOWN subscriptions_requested=20 callback_delivery=UNCONFIRMED stage_execution=false", diskPath.string());
     return Reason::ExecutionUnverified;
 }
@@ -2786,18 +2839,77 @@ Reason Connect(HMODULE self)
 #include "HoYoShade_Bridge.inl"
 
 namespace {
+Reason LoadManagedBeforeSrCore(HMODULE self, uint64_t settings) noexcept
+{
+#ifndef HOYOSHADE_STAGE_TEST
+    try {
+        auto& state = Get();
+        if (!SettingsEnabled(settings) || (settings & 3) != static_cast<unsigned>(Stage::BeforeSr)) return Reason::CoreMissing;
+        wchar_t modulePath[32768]{}, executablePath[32768]{};
+        const auto moduleLength = GetModuleFileNameW(self, modulePath, DWORD(std::size(modulePath)));
+        const auto exeLength = GetModuleFileNameW(nullptr, executablePath, DWORD(std::size(executablePath)));
+        if (!moduleLength || moduleLength >= std::size(modulePath) || !exeLength || exeLength >= std::size(executablePath)) return Reason::CoreMissing;
+        const auto game = std::filesystem::path(executablePath).parent_path();
+        const auto config = game / L"ReShade.ini";
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(config, error)) return Reason::CoreMissing;
+        std::vector<std::filesystem::path> directories {std::filesystem::path(modulePath).parent_path(), game};
+        if (Config::Instance()->MainDllPath.has_value()) directories.emplace_back(Config::Instance()->MainDllPath.value());
+        const auto core = CorePaths::Unique(directories);
+        if (core.empty() || !KnownDiskIdentity(core.c_str())) return Reason::IdentityRejected;
+        // A concurrent external connection always remains externally owned.
+        auto existing = Connect(self);
+        if (existing != Reason::CoreMissing) return existing;
+        if (state.desiredSettings.load(std::memory_order_acquire) != settings) return Reason::CoreMissing;
+        constexpr auto variable = L"RESHADE_DISABLE_GRAPHICS_HOOK";
+        const DWORD required = GetEnvironmentVariableW(variable, nullptr, 0);
+        const bool absent = !required && GetLastError() == ERROR_ENVVAR_NOT_FOUND;
+        std::wstring previous(required ? required : 1, L'\0');
+        if (required && GetEnvironmentVariableW(variable, previous.data(), required) >= required) return Reason::InternalFailure;
+        if (required) previous.resize(required - 1);
+        if (!SetEnvironmentVariableW(variable, L"1")) return Reason::InternalFailure;
+        CoreLoad::Witness witness;
+        const auto loaded = witness.Load(core.c_str());
+        const bool restored = SetEnvironmentVariableW(variable, absent ? nullptr : previous.c_str()) != FALSE;
+        if (!loaded) return Reason::CoreMissing;
+        // No runtime is created until an authenticated BeforeSR input arrives.
+        // The connection worker publishes acceptance with release ordering.
+        const bool managed = restored && witness.FirstLoad(loaded);
+        if (managed) state.ownedConfigPath = Selection::Utf8(config);
+        state.soleRuntime.store(managed, std::memory_order_release);
+        const auto connected = Connect(self);
+        if (state.coreModule != loaded) state.soleRuntime.store(false, std::memory_order_release);
+        LOG_INFO("HoYoShade managed connection core_path={} main_ini={} ownership={} graphics_hook={} environment_restored={} stage=before-sr",
+            Selection::Utf8(core), Selection::Utf8(config), state.soleRuntime.load() ? "f6" : "external-or-rejected",
+            managed ? "disabled-by-loader" : "unverified", restored);
+        FreeLibrary(loaded); // accepted Connect pins the core; rejected core retains normal loader ownership
+        return connected;
+    } catch (...) { return Reason::InternalFailure; }
+#else
+    (void)self; (void)settings; return Reason::CoreMissing;
+#endif
+}
 void StartConnectionIfNeeded() noexcept
 {
 #ifndef HOYOSHADE_STAGE_TEST
     auto& state = Get();
+    auto settings = state.desiredSettings.load(std::memory_order_acquire);
     if (!state.started.load(std::memory_order_acquire) ||
-        !SettingsEnabled(state.desiredSettings.load(std::memory_order_acquire)) ||
-        state.accepted.load(std::memory_order_acquire) || state.connectStarted.exchange(true)) return;
+        !SettingsEnabled(settings) || state.accepted.load(std::memory_order_acquire)) return;
+    bool idle = false;
+    if (!state.connecting.compare_exchange_strong(idle, true, std::memory_order_acq_rel)) return;
+    settings = state.desiredSettings.load(std::memory_order_acquire);
+    if (!SettingsEnabled(settings) || state.accepted.load(std::memory_order_acquire) ||
+        state.connectionSettings.load(std::memory_order_acquire) == settings) {
+        state.connecting.store(false, std::memory_order_release);
+        return;
+    }
+    state.connectionSettings.store(settings, std::memory_order_release);
+    state.connectStarted.store(true, std::memory_order_release);
     RevokeObservationDemand();
-    state.connecting.store(true, std::memory_order_release);
     state.core.store(Reason::CorePending, std::memory_order_release);
     try {
-        std::thread([] {
+        std::thread([settings] {
             auto& state = Get();
             try {
                 const auto self = state.self.load(std::memory_order_acquire);
@@ -2807,16 +2919,20 @@ void StartConnectionIfNeeded() noexcept
                     reinterpret_cast<LPCWSTR>(self), &pinned)) {
                     result = Reason::CoreMissing;
                     for (unsigned attempt = 0; attempt < 30; ++attempt) {
+                        if (state.desiredSettings.load(std::memory_order_acquire) != settings) break;
                         result = Connect(self);
+                        if (result == Reason::CoreMissing)
+                            result = LoadManagedBeforeSrCore(self, settings);
                         if (result != Reason::CoreMissing) break;
                         if (attempt != 29) Sleep(1000);
                     }
                 }
                 state.core.store(result, std::memory_order_release);
-                LOG_INFO("HoYoShade live connection finished result={} accepted={} core_load=existing-only requested_generation={} stage_execution=false",
-                    Text(result), state.accepted.load(), SettingsGeneration(state.desiredSettings.load()));
+                LOG_INFO("HoYoShade live connection finished result={} accepted={} core_load={} requested_generation={} stage_execution=false",
+                    Text(result), state.accepted.load(), state.soleRuntime.load() ? "f6-managed-single" : "external-existing", SettingsGeneration(state.desiredSettings.load()));
             } catch (...) { state.core.store(Reason::InternalFailure, std::memory_order_release); }
             state.connecting.store(false, std::memory_order_release);
+            if (state.desiredSettings.load(std::memory_order_acquire) != settings) StartConnectionIfNeeded();
         }).detach();
     } catch (...) {
         state.core.store(Reason::InternalFailure, std::memory_order_release);
@@ -3037,12 +3153,12 @@ bool Testing::BeforePresent(reshade::api::effect_runtime* runtime, IDXGISwapChai
     return runtime && chain && BeforeStageNaturalPresent(runtime->get_command_queue(), runtime->get_device(),
         Key(chain), runtime->get_current_back_buffer().handle);
 }
-bool Testing::ConnectHost(HMODULE self, const char* config, Stage stage) noexcept
+bool Testing::ConnectHost(HMODULE self, const char* config, Stage stage, bool soleRuntime) noexcept
 {
     RevokeObservationDemand();
     if (!self || !config || Get().started.exchange(true)) return false;
     try {
-        Get().ownedConfigPath = config; Get().stage.store(static_cast<unsigned>(stage));
+        Get().ownedConfigPath = config; Get().soleRuntime.store(soleRuntime); Get().stage.store(static_cast<unsigned>(stage));
         const uint64_t settings = (uint64_t{1} << SettingsShift) | EnabledBit | static_cast<unsigned>(stage);
         Get().desiredSettings.store(settings); Get().appliedSettings.store(settings);
         Get().enabled.store(true); Get().core.store(Connect(self));
@@ -3913,6 +4029,28 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
             result.reason = Reason::DeviceMismatch; return result;
         }
         const auto& device = deviceAccess.devices[0];
+        const bool sole = Get().soleRuntime.load(std::memory_order_acquire) &&
+            endpoint.stage == Stage::BeforeSr && endpoint.output == OutputKind::Original &&
+            (endpoint.naturalContract == NaturalSourceContract::BeforeSrBridgeInput ||
+             endpoint.naturalContract == NaturalSourceContract::BeforeSrOwnedRuntimeWithSelectionDonor);
+        if (sole) {
+            Request request{endpoint.stage, Key(device.Get()), Key(endpoint.queue), 1,
+                endpoint.stream, endpoint.generation, endpoint.frame, 0xc000};
+            Decision decision;
+            { std::lock_guard lock(Get().mutex); decision = Get().registry.InspectOwned(request, Get().stage.load()); }
+            if (!decision.executionAllowed) { result.reason = decision.reason; return result; }
+            if (ready.queue != endpoint.queue && FAILED(endpoint.queue->Wait(ready.fence, ready.value))) {
+                result.reason = Reason::FenceUnavailable;
+            } else {
+                OwnedRuntime::Detail detail;
+                result.reason = RecordStage(request, decision, endpoint, result, detail, immutable,
+                    Get().soleSelection, nullptr, nullptr, nullptr, nullptr);
+            }
+            if (result.attempt.CanRetry()) {
+                std::lock_guard lock(Get().mutex); Get().registry.ReleaseClaim(request, 0);
+            }
+            return result;
+        }
         State::Natural* natural = nullptr;
         State::Natural* suppress = nullptr;
         NaturalAssociation::SelectionDonor donor;
@@ -4067,7 +4205,7 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
         // owned runtime. Consume before the virtual call so exceptions cannot
         // authorize a second attempt. No persistent effects-state change.
         OwnedRuntime::Detail detail;
-        result.reason = RecordStage(request, decision, endpoint, result, detail, immutable, *natural, suppress, naturalList,
+        result.reason = RecordStage(request, decision, endpoint, result, detail, immutable, natural->selection, natural, suppress, naturalList,
             selectionDonorMode ? &donor : nullptr);
         if (selectionDonorMode && !result.attempt.naturalSuppressed &&
             !BeforeSrSelectionDonorCurrent(*natural, donor)) {

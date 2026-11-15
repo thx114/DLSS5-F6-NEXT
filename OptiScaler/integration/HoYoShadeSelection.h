@@ -376,7 +376,7 @@ inline bool SnapshotEffectsCurrent(const Source& source) noexcept
 // This is call-site authority, never inferred from executionMutex, cached TID
 // or a saved runtime pointer. ExistingSnapshot may read current selection under
 // its existing contract, but only a live core owner callback may export files.
-enum class CaptureAccess { ExistingSnapshot, OwnerCallback };
+enum class CaptureAccess { ExistingSnapshot, OwnerCallback, SoleRuntime };
 inline bool Snapshot(api::effect_runtime* runtime, const CoreApi& core, Source& out, const char* selected,
                      CaptureAccess access, CaptureReason& reason, const CallBoundary& call = CallBoundary{})
 {
@@ -653,6 +653,13 @@ inline void Capture(api::effect_runtime* runtime, const CoreApi& core, Source& o
             out.capture = facts;
         }
     } publish{out, facts};
+    const auto observed = Watch(runtime).Read();
+    if (access == CaptureAccess::SoleRuntime && !reload && out.valid && !out.refresh &&
+        out.naturalRuntime == runtime && out.naturalGeneration == generation && observed.reloadObserved &&
+        observed.revision && out.naturalRevision == observed.revision && out.graphKnown && out.graphValid) {
+        facts = out.capture; facts.topologyCached = facts.uniformsCached = true;
+        return; // same runtime owns values/order; no per-frame reflection or value replay
+    }
     out.valid = false; // never publish partial selection/donor authority
     if (!operation.entered) { Reject(facts.reason, CaptureReason::Reentrant); return; }
     const CallBoundary call;
@@ -807,6 +814,17 @@ inline void Capture(api::effect_runtime* runtime, const CoreApi& core, Source& o
         }
         if (!out.graphKnown || !out.graphValid) { Reject(facts.reason, CaptureReason::GraphUnavailable); return; }
         if (!presetKnown) { Reject(facts.reason, CaptureReason::PresetPathUnavailable); return; }
+        // One runtime is both the selection authority and execution target. Its
+        // existing handles and live values need neither config export nor replay.
+        if (access == CaptureAccess::SoleRuntime) {
+            if (!events.revision || !events.reloadObserved) { Reject(facts.reason, CaptureReason::Pending); return; }
+            for (auto& item : out.techniques) item.owned = item.natural;
+            for (auto& item : out.uniforms) item.owned = item.natural;
+            out.boundRuntime = runtime; out.boundGeneration = generation; out.boundRevision = events.revision;
+            out.snapshots = events.topology; // actual reload/selection generation, no private files
+            out.mappingDirty = false; out.valid = true; facts.reason = CaptureReason::Ready;
+            return; // no standalone preset, sorting, GUI-state or uniform setters
+        }
         if (out.files && !SnapshotEffectsCurrent(out)) {
             // Real enabled-effect scope change, not a timer or equivalent setter.
             // Old immutable files stay alive with the preceding frozen runtime.

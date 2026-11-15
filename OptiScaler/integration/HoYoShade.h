@@ -101,7 +101,7 @@ struct SelectionCacheStatus {
 SelectionCacheStatus ReadSelectionCache(reshade::api::effect_runtime*) noexcept;
 // Standalone host only. Reuses the exact loaded-core identity/API20 handshake
 // and callbacks; no fabricated SDK object or alternate product loader.
-bool ConnectHost(HMODULE self, const char* config, Stage stage) noexcept;
+bool ConnectHost(HMODULE self, const char* config, Stage stage, bool soleRuntime = false) noexcept;
 void EnableHost(bool enabled) noexcept;
 // Supplies pre-Present facts from a real runtime and its live native chain.
 // This tests placement and pixels, not the backend's event dispatch order.

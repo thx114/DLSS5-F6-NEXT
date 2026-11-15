@@ -32,7 +32,7 @@ enum class Phase { Free, Creating, Live, Collecting, Quarantined };
 struct Entry
 {
     Phase phase = Phase::Free;
-    bool active = false, retiring = false;
+    bool active = false, retiring = false, exclusiveRuntime = false;
     unsigned resourceReservations = 0; // skips runtime teardown while resize holds an exact pin
     uint64_t token = 0, owner = 0, generation = 0, fenceValue = 0;
     DWORD windowThread = 0;
@@ -267,7 +267,7 @@ bool Matches(const Entry& e, const Binding& b, HMODULE core)
 {
     return e.device.Get() == b.device && e.queue.Get() == b.queue && e.factory.Get() == b.factory &&
         e.width == b.width && e.height == b.height && e.format == b.format && e.core == core &&
-        std::strcmp(e.config.data(), b.configPathUtf8) == 0;
+        std::strcmp(e.config.data(), b.configPathUtf8) == 0 && e.exclusiveRuntime == b.exclusiveRuntime;
 }
 void ObservePayloads(Entry& entry,PayloadEvent event) noexcept
 {
@@ -398,7 +398,7 @@ Lease::~Lease() { Release(); }
 Lease::Lease(Lease&& other) noexcept
 {
     _slot = other._slot; _token = std::exchange(other._token, 0);
-    _thread = other._thread; _submitted = other._submitted;
+    _thread = other._thread; _submitted = other._submitted; _updated = other._updated;
 }
 Lease& Lease::operator=(Lease&& other) noexcept
 {
@@ -406,7 +406,7 @@ Lease& Lease::operator=(Lease&& other) noexcept
     {
         Release();
         _slot = other._slot; _token = std::exchange(other._token, 0);
-        _thread = other._thread; _submitted = other._submitted;
+        _thread = other._thread; _submitted = other._submitted; _updated = other._updated;
     }
     return *this;
 }
@@ -492,6 +492,34 @@ bool Lease::KeepAlive(const std::shared_ptr<void>& owner, PayloadObserver observ
         if (!payload.owner) { payload = {owner,observer}; return true; }
     return false;
 }
+Status Lease::BeginFrame(Detail* detail) noexcept
+{
+    Diagnostics report(detail, DiagnosticOperation::UpdateRuntime);
+    if (_thread != GetCurrentThreadId()) return report.Result(Status::WrongThread);
+    Operation operation;
+    if (!operation.entered) return report.Result(Status::Busy);
+    auto* e = Active(_slot, _token, _thread, _submitted);
+    if (!e) return report.Result(Status::Retired);
+    if (_updated) return report.Result(Status::Ready);
+    _submitted = true; // Block reentrant use while the core may replace handles/lists.
+    try {
+        if (!RuntimeMatches(*e) || !GetList(*e)) {
+            Quarantine(*e); return report.Result(Status::IdentityMismatch);
+        }
+        // The sole runtime has no natural Present. Suppress its private target,
+        // process reloads, then borrow the new frame's real immediate list.
+        e->runtime->render_effects(e->sdkList, {0}, {0});
+        e->update(e->runtime);
+        if (!RuntimeMatches(*e) || !GetList(*e)) {
+            Quarantine(*e); return report.Result(Status::IdentityMismatch);
+        }
+        _updated = true;
+        _submitted = false;
+        return report.Result(Status::Ready);
+    } catch (...) {
+        Quarantine(*e); return report.Result(Status::CompletionUnknown);
+    }
+}
 Status Lease::Submit(Completion& completion, Detail* detail, const WarmupTrace* trace) noexcept
 {
     Diagnostics report(detail, DiagnosticOperation::Submit);
@@ -522,8 +550,10 @@ Status Lease::Submit(Completion& completion, Detail* detail, const WarmupTrace* 
         { Quarantine(*e); return report.Result(Status::IdentityMismatch); }
         report.At(DiagnosticOperation::FlushImmediateList);
         MeasureWarmup(measured, WallOperation::Flush, [&] { e->sdkQueue->flush_immediate_command_list(); });
-        report.At(DiagnosticOperation::UpdateRuntime);
-        MeasureWarmup(measured, WallOperation::UpdateRuntime, [&] { e->update(e->runtime); });
+        if (!_updated) {
+            report.At(DiagnosticOperation::UpdateRuntime);
+            MeasureWarmup(measured, WallOperation::UpdateRuntime, [&] { e->update(e->runtime); });
+        }
         report.At(DiagnosticOperation::FenceValue);
         if (e->fenceValue >= MaxValue - 1)
         { Quarantine(*e); return report.Result(Status::SignalFailed); }
@@ -615,6 +645,11 @@ Status AcquireForRender(const Binding& b, HMODULE loadedCore, const CoreApi& acc
             }
             if (!selected)
             {
+                // A self-managed core has one effects runtime across BOTH
+                // graphics devices. Retiring/unknown GPU owners still count.
+                for (const auto& e : pool.entries)
+                    if (e.phase != Phase::Free && (b.exclusiveRuntime || e.exclusiveRuntime))
+                        return report.Result(Status::GpuPending);
                 for (uint32_t n = 0; n < Capacity; ++n)
                     if (pool.entries[n].phase == Phase::Free) { selected = &pool.entries[n]; index = n; break; }
                 if (!selected || pool.nextToken == MaxValue) return report.Result(Status::Capacity);
@@ -626,6 +661,7 @@ Status AcquireForRender(const Binding& b, HMODULE loadedCore, const CoreApi& acc
                 e.width = b.width; e.height = b.height; e.format = b.format;
                 std::memcpy(e.config.data(), b.configPathUtf8, std::strlen(b.configPathUtf8) + 1);
                 e.configLifetime = b.configLifetime;
+                e.exclusiveRuntime = b.exclusiveRuntime;
                 e.core = loadedCore; e.destroy = destroy; e.update = update;
                 e.windowThread = GetCurrentThreadId();
                 createNew = true;
@@ -728,7 +764,7 @@ Status AcquireForRender(const Binding& b, HMODULE loadedCore, const CoreApi& acc
             if (e.retiring) { e.phase = Phase::Quarantined; return report.Result(Status::Retired); }
             e.phase = Phase::Live;
             e.active = true;
-            lease._slot = index; lease._token = e.token; lease._thread = GetCurrentThreadId(); lease._submitted = false;
+            lease._slot = index; lease._token = e.token; lease._thread = GetCurrentThreadId(); lease._submitted = false; lease._updated = false;
         }
         return report.Result(Status::Ready);
     }

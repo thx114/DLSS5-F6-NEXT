@@ -334,6 +334,11 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="menu\DlssPresetMenuPolicy.h" />
     <ClInclude Include="upscalers\NgxDx12ResourceView.h" />
     <ClInclude Include="inputs\F6EvalReceiptV1.h" />
+    <ClInclude Include="inputs\taa\TaaProfile.h" />
+    <ClInclude Include="inputs\taa\TaaConstantBuffer.h" />
+    <ClInclude Include="inputs\taa\TaaPassDx11.h" />
+    <ClInclude Include="inputs\taa\TaaInputDx11.h" />
+    <ClCompile Include="inputs\taa\TaaInputDx11.cpp" />
     <ClInclude Include="inputs\NeoBeforeSrV1.h" />
     <ClInclude Include="inputs\BeforeSrInput.h" />
     <ClInclude Include="integration\HoYoShadeBeforeSrInput.h" />
@@ -851,7 +856,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="upscaler_time\UpscalerTime_Vk.cpp" />
     <ClCompile Include="with_dx12\dx11_with_dx12.cpp" />
     <ClCompile Include="with_dx12\with_dx12.cpp" />
-    <ClCompile Include="with_dx12\dx11_with_dx12_sc.cpp" />
+    <ClCompile Include="with_dx12\dx11_with_dx12_sc.cpp">
+      <PreprocessorDefinitions Condition="'$(F6PresentationProbe)'=='true'">F6_PRESENTATION_PROBE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ClCompile Include="wrapped\wrapped_factory.cpp" />
     <ClCompile Include="inputs\FG\FSR3_Dx12_FG.cpp" />
     <ClCompile Include="inputs\FG\Streamline_Inputs_Dx12.cpp" />
@@ -1126,6 +1133,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="integration\HoYoShadeDepth.cpp" />
     <ClCompile Include="integration\HoYoShadeDepthSemantics.cpp" />
     <ClInclude Include="integration\HoYoShadeDepthSemantics.h" />
+    <ClInclude Include="integration\HoYoShadeCorePaths.h" />
+    <ClInclude Include="integration\HoYoShadeCoreLoad.h" />
     <ClInclude Include="integration\HoYoShadeDepth.h" />
     <ClCompile Include="integration\HoYoShadeOwnedRuntime.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>

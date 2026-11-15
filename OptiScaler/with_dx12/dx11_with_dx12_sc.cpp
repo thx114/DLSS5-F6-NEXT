@@ -19,6 +19,14 @@
 #include <menu/menu_overlay_dx.h>
 #include <native/NativeDriverDx11.h>
 #include <native/NativeLowLatency.h>
+#if defined(F6_PRESENTATION_PROBE)
+#include <runtime/F6PresentationProbe.h>
+namespace { F6PresentationProbe::Observe presentationProbe = nullptr; }
+extern "C" __declspec(dllexport) void WINAPI F6_Test_SetPresentationProbe(F6PresentationProbe::Observe observer)
+{
+    presentationProbe = observer; // installed by the single-threaded isolated host
+}
+#endif
 
 #include <Util.h>
 #include <Config.h>
@@ -550,6 +558,14 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     if (!_CopyDx11SharedToDx12FGBackBuffer(dx11Index, copyAdmission,copiedColour.GetAddressOf()))
         return DXGI_ERROR_DEVICE_REMOVED;
     const auto copiedValue=_lastInteropCopyFenceValue;
+#if defined(F6_PRESENTATION_PROBE)
+    if (presentationProbe) {
+        const F6PresentationProbe::Sample sample {F6PresentationProbe::Stage::RawCopy, _fgSwapChain,
+            copiedColour.Get(), _dx12CommandQueue, _copyFence, copiedValue,
+            dx11Index, _fgSwapChain->GetCurrentBackBufferIndex(), 0};
+        presentationProbe(&sample);
+    }
+#endif
 
     // Overwrites the raw copy just made above with native input's processed picture, when that option is on; a no-op
     // otherwise. Runs here, before FG takes the frame: this is the only present this game gets once Dx11wDx12SC
@@ -590,6 +606,14 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     }();
     if (bridgeOutcome.result == DlssNr::FinishedPictureResult::FailedUncertain ||
         HoYoShade::ColorConsumers(_fgSwapChain) != HoYoShade::ConsumerAccess::Safe) return E_FAIL;
+#if defined(F6_PRESENTATION_PROBE)
+    if (presentationProbe) {
+        const F6PresentationProbe::Sample sample {F6PresentationProbe::Stage::AfterNr, _fgSwapChain,
+            copiedColour.Get(), nrPresentQueue, nullptr, 0,
+            dx11Index, _fgSwapChain->GetCurrentBackBufferIndex(), unsigned(bridgeOutcome.result)};
+        presentationProbe(&sample);
+    }
+#endif
     // The real interop Wait above orders this exact copy on nrPresentQueue.
     // An optional native overwrite has a different receipt/source, so it cannot
     // borrow the selected NGX source's colour identity.
@@ -667,6 +691,14 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     }
 
     CallerCpuTrace::Scope fgPresentCpu(CallerCpuTrace::Op::FgPresent, this, reinterpret_cast<uint64_t>(_handle), State::Instance().frameCount, Flags);
+#if defined(F6_PRESENTATION_PROBE)
+    if (presentationProbe) {
+        const F6PresentationProbe::Sample sample {F6PresentationProbe::Stage::FgInput, _fgSwapChain,
+            copiedColour.Get(), nrPresentQueue, nullptr, 0,
+            dx11Index, _fgSwapChain->GetCurrentBackBufferIndex(), unsigned(bridgeOutcome.result)};
+        presentationProbe(&sample);
+    }
+#endif
     auto result = _fgSwapChain->Present(SyncInterval, Flags);
 
     fgPresentCpu.Finish();

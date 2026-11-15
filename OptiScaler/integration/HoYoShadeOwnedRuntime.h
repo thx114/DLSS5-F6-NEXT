@@ -141,6 +141,7 @@ struct Binding
     // Optional private config/preset owner; retained through core destruction,
     // not released with per-submit payloads. Quarantined entries keep it.
     std::shared_ptr<void> configLifetime;
+    bool exclusiveRuntime = false; // managed main INI: drain/destroy old runtime before creating another
 };
 
 struct Completion
@@ -281,6 +282,10 @@ public:
     // Generic owners can retain native COM inputs, buffers and CPU metadata.
     bool KeepAlive(const std::shared_ptr<void>& owner, PayloadObserver observer = nullptr) noexcept;
 
+    // A sole runtime processes reload/preset changes before borrowing effect
+    // handles. Advances once; Submit then only flushes and fences this frame.
+    Status BeginFrame(Detail* detail = nullptr) noexcept;
+
     // Flushes the owned SDK immediate list, advances the runtime frame through
     // its real export, then signals the exact native queue. Render effects on the
     // external RTV before this call; Update suppresses the natural duplicate.
@@ -294,6 +299,7 @@ private:
     uint64_t _token = 0;
     DWORD _thread = 0;
     bool _submitted = false;
+    bool _updated = false;
     void Release() noexcept;
 };
 

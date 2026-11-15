@@ -57,7 +57,7 @@ struct Host {
     ComPtr<ID3D12Device> device; ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12CommandAllocator> allocator; ComPtr<ID3D12GraphicsCommandList> list;
     ComPtr<ID3D12Resource> color, upload, readback, depth[2], depthUpload, observedNormals;
-    bool useDepth = false, typelessInput = false, partialInput = false;
+    bool useDepth = false, typelessInput = false, partialInput = false, reversedInput = false;
     unsigned char alpha = 255;
     bool ownedFormatsTyped = true;
     unsigned ownedFormatObservations = 0;
@@ -66,7 +66,7 @@ struct Host {
     api::effect_runtime* natural = nullptr;
     using Update = void (*)(api::effect_runtime*); Update update = nullptr;
     using Destroy = void (*)(api::effect_runtime*); Destroy destroy = nullptr;
-    explicit Host(HMODULE core, const std::filesystem::path& config, bool depthEnabled = false, bool typeless = false)
+    explicit Host(HMODULE core, const std::filesystem::path& config, bool depthEnabled = false, bool typeless = false, bool createNatural = true)
         : useDepth(depthEnabled), typelessInput(typeless) {
         Hr(CreateDXGIFactory1(IID_PPV_ARGS(&factory))); Hr(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter)));
         constexpr D3D_FEATURE_LEVEL levels[]{D3D_FEATURE_LEVEL_11_0};
@@ -101,9 +101,11 @@ struct Host {
             static_cast<unsigned>(api::device_api::d3d11), device11.Get(), chainDevice.Get(), context.Get(), chain.Get(), config.string().c_str()); std::fflush(stdout);
         auto create = Export<HoYoShade::CoreApi::CreateEffectRuntime>(core, "ReShadeCreateEffectRuntime");
         update = Export<Update>(core, "ReShadeUpdateAndPresentEffectRuntime"); destroy = Export<Destroy>(core, "ReShadeDestroyEffectRuntime");
-        const auto created = create(api::device_api::d3d11, chainDevice.Get(), context.Get(), chain.Get(), config.string().c_str(), &natural);
-        std::printf("natural creation result=%d runtime=%p error=%lu\n", created, natural, GetLastError()); std::fflush(stdout);
-        Check(created && natural, "real DX11 natural runtime");
+        if (createNatural) {
+            const auto created = create(api::device_api::d3d11, chainDevice.Get(), context.Get(), chain.Get(), config.string().c_str(), &natural);
+            std::printf("natural creation result=%d runtime=%p error=%lu\n", created, natural, GetLastError()); std::fflush(stdout);
+            Check(created && natural, "real DX11 natural runtime");
+        }
         HoYoShade::RegisterBridgeSource(this, chain.Get(), device11.Get());
         D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC desc{}; desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; desc.Width = Width; desc.Height = Height;
@@ -307,7 +309,7 @@ struct Host {
         if (useDepth && fixture != Input::MissingDepth) {
             auto& input = endpoint.depth; input.resource = depth[pattern & 1].Get(); input.typedFormat = DXGI_FORMAT_R32_FLOAT;
             input.width = Width; input.height = Height; input.stateKnown = input.directionKnown = true;
-            input.reversed = fixture == Input::ReverseZ;
+            input.reversed = reversedInput || fixture == Input::ReverseZ;
             if (fixture == Input::WrongFormat) input.typedFormat = DXGI_FORMAT_R16_UNORM;
             input.queue = queue.Get(); input.readyFence = done.Get(); input.readyValue = serial;
             input.owner = endpoint.stream; input.generation = endpoint.generation; input.frame = endpoint.frame; input.epoch = 1;
@@ -323,6 +325,15 @@ struct Host {
         return result;
     }
 };
+unsigned dx11Inits = 0, dx12Inits = 0, liveRuntimes = 0, peakRuntimes = 0, destroys = 0;
+api::effect_runtime* managedRuntime = nullptr;
+void RuntimeInit(api::effect_runtime* r) {
+    ++liveRuntimes;
+    peakRuntimes = (std::max)(peakRuntimes, liveRuntimes);
+    if (r->get_device()->get_api() == api::device_api::d3d11) ++dx11Inits;
+    if (r->get_device()->get_api() == api::device_api::d3d12) { ++dx12Inits; managedRuntime = r; }
+}
+void RuntimeDestroy(api::effect_runtime*) { --liveRuntimes; ++destroys; }
 Host* observedHost = nullptr;
 void Finished(api::effect_runtime* runtime,api::command_list*,api::resource_view rtv,api::resource_view) { if(observedHost) observedHost->ObserveTextures(runtime,rtv); }
 enum class OrderPolicy { Allow, VetoOwned, RewriteOwned };
@@ -337,11 +348,16 @@ bool ChangeOrder(api::effect_runtime* runtime, size_t count, api::effect_techniq
 int main(int argc, char** argv) {
     try {
         Check(argc >= 2 && argc <= 4, "sandbox path argument");
+        const bool single = argc >= 3 && std::string_view(argv[2]).starts_with("single-");
+        const bool singleDepth = single && std::string_view(argv[2]) == "single-depth";
+        const bool singleMxao = single && std::string_view(argv[2]) == "single-mxao";
+        const bool singleSelection = single && std::string_view(argv[2]) == "single-selection";
         const bool depthMode = argc >= 3 && std::string_view(argv[2]) == "depth";
         const bool cacheMode = argc >= 3 && std::string_view(argv[2]) == "selection-cache";
         const bool launchpadMode = argc >= 3 && std::string_view(argv[2]) == "launchpad";
         const bool partialInput = argc == 4 && std::string_view(argv[3]) == "typeless-partial";
-        const bool typelessInput = partialInput || (argc == 4 && std::string_view(argv[3]) == "typeless");
+        const bool reversedInput = argc == 4 && std::string_view(argv[3]) == "typeless-reversed";
+        const bool typelessInput = reversedInput || partialInput || (argc == 4 && std::string_view(argv[3]) == "typeless");
         const auto root = std::filesystem::absolute(argv[1]);
         SetEnvironmentVariableW(L"RESHADE_DISABLE_GRAPHICS_HOOK", L"1");
         SetEnvironmentVariableW(L"RESHADE_DISABLE_LOADING_CHECK", L"1");
@@ -350,9 +366,15 @@ int main(int argc, char** argv) {
         auto core = LoadLibraryW((root / "HoYoShade/ReShade64.dll").c_str());
         if (!core) std::printf("LoadLibrary error %lu\n", GetLastError());
         Check(core != nullptr, "load sandbox pinned core");
-        Check(HoYoShade::Testing::ConnectHost(GetModuleHandleW(nullptr), (root / "natural.ini").string().c_str(), HoYoShade::Stage::BeforeSr), "real API20 identity handshake");
-        Host host(core, root / "natural.ini", depthMode || launchpadMode, typelessInput);
+        Check(HoYoShade::Testing::ConnectHost(GetModuleHandleW(nullptr), (root / (single ? "ReShade.ini" : "natural.ini")).string().c_str(), HoYoShade::Stage::BeforeSr, single), "real API20 identity handshake");
+        auto subscribe = Export<HoYoShade::CoreApi::RegisterEvent>(core, "ReShadeRegisterEvent");
+        if (single) {
+            subscribe(reshade::addon_event::init_effect_runtime, reinterpret_cast<void*>(RuntimeInit));
+            subscribe(reshade::addon_event::destroy_effect_runtime, reinterpret_cast<void*>(RuntimeDestroy));
+        }
+        Host host(core, root / (single ? "ReShade.ini" : "natural.ini"), depthMode || launchpadMode || singleDepth || singleMxao, typelessInput, !single);
         host.partialInput = partialInput;
+        host.reversedInput = reversedInput;
         if (typelessInput && !host.useDepth) host.alpha = 91;
         if (cacheMode) {
             const auto initialized = HoYoShade::Testing::ReadSelectionCache(host.natural);
@@ -363,9 +385,98 @@ int main(int argc, char** argv) {
         auto registerEvent=Export<HoYoShade::CoreApi::RegisterEvent>(core,"ReShadeRegisterEvent");
         registerEvent(reshade::addon_event::reshade_finish_effects,reinterpret_cast<void*>(Finished));
         if (cacheMode) registerEvent(reshade::addon_event::reshade_reorder_techniques,reinterpret_cast<void*>(ChangeOrder));
+        if (single) {
+            unsigned executed = 0;
+            const auto deadline = GetTickCount64() + 60000;
+            for (unsigned f = 1; GetTickCount64() < deadline && executed < 2; ++f) {
+                host.pattern = executed; host.Upload();
+                auto result = host.Filter(f);
+                Check(!result.Uncertain() && !result.attempt.naturalSuppressed, "single owner never suppresses a donor");
+                if (!result.EffectsExecuted()) { Sleep(10); continue; }
+                if (singleDepth) { Check(result.depthAvailable, "current DEPTH bound"); host.CheckDepthPixels(reversedInput); }
+                else if (singleMxao) { Check(result.depthAvailable && result.techniques == 2, "ordered Launchpad and MXAO"); host.CheckMxaoPixels(); }
+                else if (partialInput) host.CheckPartialColor();
+                else Check(host.Read() == (singleSelection ? 128u : 64u), "probe changed every current SR input pixel exactly once");
+                ++executed;
+            }
+            Check(executed == 2, "two filtered source pictures without a DX11 donor");
+            if (singleSelection) {
+                uint64_t frame = 300;
+                const auto settle = [&](unsigned expected) {
+                    const auto end = GetTickCount64() + 60000;
+                    for (;;) {
+                        host.Upload(); const auto result = host.Filter(frame++);
+                        Check(!result.Uncertain(), "single selection remains a known transaction");
+                        if (result.EffectsExecuted()) {
+                            const auto actual = host.Read();
+                            std::printf("single selection red=%u expected=%u\n", actual, expected);
+                            Check(actual == expected, "single runtime uses live order and uniform values"); break;
+                        }
+                        Check(host.Read() == 32 && GetTickCount64() < end, "pending single selection keeps current raw input");
+                        Sleep(10);
+                    }
+                };
+                Check(managedRuntime != nullptr, "observed the actual unique DX12 runtime");
+                auto add = managedRuntime->find_technique("CacheProbe.fx", "Add");
+                Check(add.handle != 0, "real single-runtime technique handle");
+                managedRuntime->set_technique_state(add, false); settle(64);
+                managedRuntime->set_technique_state(add, true); settle(128);
+                const auto uniform = managedRuntime->find_uniform_variable("CacheProbe.fx", "AddRed");
+                const float value = 16.0f / 255;
+                managedRuntime->set_uniform_value_float(uniform, &value, 1); settle(96);
+                managedRuntime->set_effects_state(false);
+                host.Upload(); Check(!host.Filter(frame++).EffectsExecuted() && host.Read() == 32, "disabled single core leaves raw input");
+                managedRuntime->set_effects_state(true); settle(96);
+                std::vector<api::effect_technique> order;
+                managedRuntime->enumerate_techniques("CacheProbe.fx", [&](auto*, auto t) { order.push_back(t); });
+                Check(order.size() == 2, "two actual single-runtime techniques");
+                std::reverse(order.begin(), order.end());
+                managedRuntime->reorder_techniques(order.size(), order.data()); settle(80);
+                const auto topology = HoYoShade::Testing::ReadSelectionCache(managedRuntime).topology;
+                managedRuntime->reload_effect_next_frame("CacheProbe.fx");
+                const auto reloadDeadline = GetTickCount64() + 60000;
+                api::effect_uniform_variable refreshed{};
+                for (;;) {
+                    host.Upload(); const auto result = host.Filter(frame++);
+                    Check(!result.Uncertain() && GetTickCount64() < reloadDeadline, "single reload replaces handles before recording source commands");
+                    const auto cache = HoYoShade::Testing::ReadSelectionCache(managedRuntime);
+                    if (cache.topology > topology && cache.reloadObserved) {
+                        refreshed = managedRuntime->find_uniform_variable("CacheProbe.fx", "AddRed");
+                        if (refreshed.handle) break;
+                    }
+                    Sleep(10);
+                }
+                Check(refreshed.handle != 0, "fresh single-runtime uniform after real reload");
+                settle(128); // First completed effect init reapplies the on-disk preset.
+                managedRuntime->set_uniform_value_float(refreshed, &value, 1);
+                order = {managedRuntime->find_technique("CacheProbe.fx", "Add"), managedRuntime->find_technique("CacheProbe.fx", "Scale")};
+                managedRuntime->reorder_techniques(order.size(), order.data()); settle(96);
+            }
+            if (singleDepth || singleMxao) {
+                host.Upload(); auto mismatch = host.Filter(191, Host::Input::WrongFrame);
+                Check(!mismatch.depthAvailable, "wrong-frame DEPTH never bound");
+                if (singleMxao) Check(!mismatch.EffectsExecuted() && host.Read() == 32, "MXAO missing input leaves raw SR pixels");
+                for (const auto input : {Host::Input::MissingDepth, Host::Input::WrongFormat}) {
+                    host.Upload(); auto rejected = host.Filter(192 + unsigned(input), input);
+                    Check(!rejected.depthAvailable, "missing or incompatible depth never binds stale input");
+                    if (singleMxao) Check(!rejected.EffectsExecuted() && host.Read() == 32, "required MXAO depth rejects before writeback");
+                }
+                if (!reversedInput) {
+                    host.Upload(); auto reversed = host.Filter(199, Host::Input::ReverseZ);
+                    Check(!reversed.depthAvailable, "compiled direction mismatch never binds depth");
+                }
+            }
+            Check(dx11Inits == 0 && dx12Inits == 1 && liveRuntimes == 1, "both native devices, one real runtime");
+            Check(peakRuntimes == 1, "single runtime throughout compilation and rendering");
+            HoYoShade::RetirePhysicalOutput(1);
+            Check(destroys == 1 && liveRuntimes == 0, "only owned runtime retires after its real fence");
+            std::printf("PASS single BeforeSR: dx11_inits=%u dx12_inits=%u destroys=%u filtered_frames=%u checks=%u\n", dx11Inits,dx12Inits,destroys,executed,checks);
+            return 0;
+        }
         bool executed = false;
         bool warmupObserved = false;
-        for (unsigned frame = 1; frame <= 600; ++frame) {
+        const auto compilationDeadline = GetTickCount64() + 60000;
+        for (unsigned frame = 1; GetTickCount64() < compilationDeadline; ++frame) {
             host.update(host.natural); host.Upload();
             const auto result = host.Filter(frame);
             if (result.Uncertain()) throw std::runtime_error("owned stage became uncertain");

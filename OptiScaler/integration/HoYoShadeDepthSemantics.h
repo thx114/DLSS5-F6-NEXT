@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace reshade::api { struct effect_runtime; }
 namespace HoYoShade::Selection { struct Source; }
@@ -140,12 +142,23 @@ public:
 };
 struct State { Controller controller; };
 using ReloadCounter = uint64_t (*)(reshade::api::effect_runtime*) noexcept;
+struct CompiledDefinitions {
+    struct Effect { std::string name; bool known = false, reversed = false, flipped = false; };
+    reshade::api::effect_runtime* runtime = nullptr;
+    uint64_t reload = 0;
+    std::vector<Effect> effects;
+};
+// Invoked only by the genuine completed reload callback, never by a queued
+// reload or a per-frame getter. Retains values for that compiled generation.
+void ObserveCompiled(CompiledDefinitions&, reshade::api::effect_runtime*, uint64_t reload) noexcept;
 
 // Caller holds the genuine exclusive owned lease AFTER its preceding GPU fence
 // completes and BEFORE any effect work is recorded. The current preset must be
 // the Selection-owned private copy. No natural runtime is a legal target.
 // Ready also requires Selection::Apply to rebuild/find the actual compiled graph
 // in the caller; neither this module nor a reload event proves GPU sampling.
+// The user-owned config is read-only to F6. No macro setters, preset writes or reloads.
+Result InspectCurrent(const CompiledDefinitions&, reshade::api::effect_runtime*, const Selection::Source&, const Access*, ReloadCounter) noexcept;
 Result Project(State&, reshade::api::effect_runtime*, uint64_t runtimeGeneration,
     Selection::Source&, const Access* realInput, ReloadCounter) noexcept;
 }
