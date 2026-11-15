@@ -3,8 +3,9 @@
 param(
     [string]$Artifact,
     [Parameter(Mandatory)][string]$DlssRuntime,
-    [ValidateSet('interop','skip','native','before-sr','legacy-shutdown')][string[]]$Cases = @('interop','skip','native','before-sr'),
+    [ValidateSet('interop','skip','native','before-sr','before-sr-typeless','legacy-shutdown')][string[]]$Cases = @('interop','skip','native','before-sr','before-sr-typeless'),
     [switch]$IncludeShutdown,
+    [string]$CorePath = 'D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/HoYoShade/ReShade64.dll',
     [string]$DevCmd = 'D:/VS2022BuildTools/Common7/Tools/VsDevCmd.bat'
 )
 Set-StrictMode -Version Latest
@@ -30,9 +31,17 @@ foreach ($case in $Cases)
     $null = [IO.Directory]::CreateDirectory($path)
     Copy-Item -LiteralPath $artifactPath -Destination (Join-Path $path 'OptiScaler.dll')
     Copy-Item -LiteralPath $runtimePath -Destination (Join-Path $path 'nvngx_dlss.dll')
+    if ($case -eq 'before-sr-typeless') {
+        $coreHash = (Get-FileHash -LiteralPath $CorePath -Algorithm SHA256).Hash
+        if ($coreHash -ne '0CEE63F9C9F13F3AC909C5B4903F4DBB4B719A7AB3B4F13B0DEAF83C814B94F7') {
+            throw 'Typeless receipt host requires the pinned ReShade core'
+        }
+        $null = [IO.Directory]::CreateDirectory((Join-Path $path 'HoYoShade'))
+        Copy-Item -LiteralPath $CorePath -Destination (Join-Path $path 'HoYoShade/ReShade64.dll')
+    }
     $backend = if ($case -eq 'native') { 'dlss' } else { 'dlss_12' }
     $skip = if ($case -eq 'skip') { '2' } else { 'auto' }
-    $beforeSrEnabled = if ($case -eq 'before-sr') { 'true' } else { 'false' }
+    $beforeSrEnabled = if ($case -in @('before-sr','before-sr-typeless')) { 'true' } else { 'false' }
     # Only this disposable host's settings. No installed profile is read or
     # changed; all feature DLL lookup paths remain within this fixture.
     $ini = @"
@@ -60,6 +69,7 @@ SkipFirstFrames=$skip
 [Log]
 LogToFile=true
 LogToConsole=false
+LogToNGX=true
 LogLevel=1
 LogAsync=false
 LogFileName=./OptiScaler.log
@@ -75,8 +85,23 @@ LogFileName=./OptiScaler.log
     if (!$complete) { $process.Kill(); $process.WaitForExit() }
     $stdout = [IO.File]::ReadAllText((Join-Path $path 'stdout.log'))
     $passed = $complete -and $process.ExitCode -eq 0 -and $stdout.Contains('PASS actual F6 V1 ABI')
+    $admission = @()
+    if ($case -eq 'before-sr-typeless') {
+        # SR pixels alone do not prove that BeforeSR admitted this input. The
+        # isolated host has no natural ReShade donor; verify the production
+        # admission separately without claiming that effects executed.
+        $logPath = Join-Path $path 'OptiScaler.log'
+        if (Test-Path -LiteralPath $logPath) {
+            $admission = @(Get-Content -LiteralPath $logPath | Where-Object {
+                $_ -match 'HoYoShade BeforeSR input .*source_format=27 .*input_query=current-input input_view=28 .*producer_storage=27 .*producer_color=producer-sdr .*sdr=true '
+            })
+        }
+        $passed = $passed -and $admission.Count -eq 6
+    }
     $rows += [pscustomobject]@{
         Case=$case; Path=$path; PID=$process.Id; Exit=$process.ExitCode; Timeout=(!$complete); Pass=$passed
+        TypelessSdrAdmissions=$admission.Count
+        AdmissionEvidence=$admission
         VendorShutdownExercised=([bool]$IncludeShutdown -or $case -eq 'legacy-shutdown')
         ArtifactSHA256=(Get-FileHash -LiteralPath (Join-Path $path 'OptiScaler.dll')).Hash
         RuntimeSHA256=(Get-FileHash -LiteralPath (Join-Path $path 'nvngx_dlss.dll')).Hash

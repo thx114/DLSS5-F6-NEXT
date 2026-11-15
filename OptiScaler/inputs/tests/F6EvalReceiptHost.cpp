@@ -7,9 +7,11 @@
 #include "../F6EvalReceiptV1.h"
 #include "../NeoBeforeSrV1.h"
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string_view>
 
 using Microsoft::WRL::ComPtr;
@@ -19,6 +21,13 @@ namespace
 unsigned checks = 0;
 thread_local const neo::interop::BeforeSrFrameV1* beforeSrFrame = nullptr;
 unsigned beforeSrQueries = 0, beforeSrMismatches = 0;
+std::atomic<bool> coreConnected {false};
+void NVSDK_CONV LogReceipt(const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature)
+{
+    if (message && std::strstr(message, "HoYoShade live connection finished") &&
+        std::strstr(message, "accepted=true"))
+        coreConnected.store(true, std::memory_order_release);
+}
 void Check(bool ok, const char* label)
 {
     ++checks;
@@ -40,20 +49,37 @@ struct Frame
 {
     ComPtr<ID3D11Texture2D> color, motion, depth, output, staging;
     ComPtr<ID3D11RenderTargetView> colorView, motionView, depthView, outputView;
+    ComPtr<ID3D11ShaderResourceView> colorSrv;
+    DXGI_FORMAT colorStorage, colorViewFormat;
     UINT render, display;
-    Frame(ID3D11Device* device, UINT size) : render(size), display(size * 2)
+    Frame(ID3D11Device* device, UINT size, bool typeless = false) :
+        colorStorage(typeless ? DXGI_FORMAT_R8G8B8A8_TYPELESS : DXGI_FORMAT_R10G10B10A2_UNORM),
+        colorViewFormat(typeless ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_R10G10B10A2_UNORM),
+        render(size), display(size * 2)
     {
         const auto texture = [&](UINT width, DXGI_FORMAT format, ComPtr<ID3D11Texture2D>& tex,
-                                 ComPtr<ID3D11RenderTargetView>& view, UINT extra = 0) {
+                                 ComPtr<ID3D11RenderTargetView>& view, UINT extra = 0,
+                                 DXGI_FORMAT viewFormat = DXGI_FORMAT_UNKNOWN) {
             D3D11_TEXTURE2D_DESC desc {};
             desc.Width = desc.Height = width;
             desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
             desc.Format = format;
             desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET | extra;
             Hr(device->CreateTexture2D(&desc, nullptr, &tex), "create frame texture");
-            Hr(device->CreateRenderTargetView(tex.Get(), nullptr, &view), "create frame RTV");
+            D3D11_RENDER_TARGET_VIEW_DESC rtv {};
+            rtv.Format = viewFormat; rtv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            Hr(device->CreateRenderTargetView(tex.Get(), viewFormat == DXGI_FORMAT_UNKNOWN ? nullptr : &rtv,
+                                             &view), "create frame RTV");
         };
-        texture(render, DXGI_FORMAT_R10G10B10A2_UNORM, color, colorView);
+        texture(render, colorStorage, color, colorView, 0, colorViewFormat);
+        if (typeless) {
+            // The producer declaration names a real compatible typed SRV,
+            // rather than guessing a view from the allocation's byte count.
+            D3D11_SHADER_RESOURCE_VIEW_DESC srv {};
+            srv.Format = colorViewFormat; srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            srv.Texture2D.MipLevels = 1;
+            Hr(device->CreateShaderResourceView(color.Get(), &srv, &colorSrv), "create actual typed source SRV");
+        }
         texture(render, DXGI_FORMAT_R16G16_FLOAT, motion, motionView);
         texture(render, DXGI_FORMAT_R32_FLOAT, depth, depthView);
         texture(display, DXGI_FORMAT_R8G8B8A8_UNORM, output, outputView, D3D11_BIND_UNORDERED_ACCESS);
@@ -137,9 +163,17 @@ int wmain(int argc, wchar_t** argv)
     if (argc != 3 && argc != 4) return 2;
     const bool skip = std::wstring_view(argv[2]) == L"skip";
     const bool native = std::wstring_view(argv[2]) == L"native";
-    const bool beforeSr = std::wstring_view(argv[2]) == L"before-sr";
+    const bool typeless = std::wstring_view(argv[2]) == L"before-sr-typeless";
+    const bool beforeSr = std::wstring_view(argv[2]) == L"before-sr" || typeless;
     const bool legacyOnly = std::wstring_view(argv[2]) == L"legacy-shutdown";
     const bool includeShutdown = legacyOnly || (argc == 4 && std::wstring_view(argv[3]) == L"shutdown");
+    if (typeless) {
+        // Match the independent true-core fixture: no graphics/input hooks
+        // and no loading check in this isolated, non-game process.
+        for (auto name : {L"RESHADE_DISABLE_GRAPHICS_HOOK", L"RESHADE_DISABLE_LOADING_CHECK",
+                          L"RESHADE_DISABLE_INPUT_HOOK", L"RESHADE_DISABLE_NETWORK_HOOK"})
+            Check(SetEnvironmentVariableW(name, L"1") != FALSE, "set isolated core environment");
+    }
     const auto module = LoadLibraryW(argv[1]);
     Check(module != nullptr, "load isolated F6 DLL");
     const auto evaluate = legacyOnly ? nullptr : Entry<F6EvaluateV1>(module, k_f6_evaluate_v1);
@@ -185,11 +219,29 @@ int wmain(int argc, wchar_t** argv)
     ComPtr<ID3D11DeviceContext> context;
     Hr(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
                          &device, nullptr, &context), "create real hardware device");
-    Ngx(init(0x1337, L".", device.Get(), NVSDK_NGX_Version_API, nullptr), "NGX Init");
+    NVSDK_NGX_FeatureCommonInfo commonInfo {};
+    commonInfo.LoggingInfo.LoggingCallback = LogReceipt;
+    commonInfo.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_ON;
+    Ngx(init(0x1337, L".", device.Get(), NVSDK_NGX_Version_API, typeless ? &commonInfo : nullptr), "NGX Init");
+    if (typeless) {
+        // Load after Init installs the callback, so even a fast connection
+        // cannot publish its acceptance before the host can observe it.
+        const auto corePath = std::filesystem::absolute(L"HoYoShade/ReShade64.dll");
+        const auto core = LoadLibraryW(corePath.c_str());
+        if (!core) std::fprintf(stderr, "ReShade LoadLibrary error=%lu\n", GetLastError());
+        Check(core != nullptr, "load fixture's pinned ReShade core");
+        // Production selection pauses while the asynchronous core connection
+        // runs. Wait for its actual receipt; a successful SR pixel check alone
+        // would otherwise miss the BeforeSR admission branch entirely.
+        const auto deadline = GetTickCount64() + 10000;
+        while (!coreConnected.load(std::memory_order_acquire) && GetTickCount64() < deadline) Sleep(10);
+        Check(coreConnected.load(std::memory_order_acquire),
+              "production core connection accepted before typeless admission");
+    }
     uint64_t request = 20;
     for (UINT size : {512u, 384u, 512u})
     {
-        Frame frame(device.Get(), size);
+        Frame frame(device.Get(), size, typeless);
         NVSDK_NGX_Parameter* parameters = nullptr;
         Ngx(allocate(&parameters), "allocate actual NGX table");
         parameters->Set(NVSDK_NGX_Parameter_Width, size);
@@ -213,7 +265,9 @@ int wmain(int argc, wchar_t** argv)
             input.context = context.Get(); input.color = frame.color.Get(); input.depth = frame.depth.Get();
             input.motion = frame.motion.Get(); input.render_width = input.render_height = size;
             input.display_width = input.display_height = size * 2;
-            input.color_storage_format = input.color_view_format = DXGI_FORMAT_R10G10B10A2_UNORM;
+            input.color_storage_format = frame.colorStorage;
+            input.color_view_format = frame.colorViewFormat;
+            if (typeless) input.color_transfer = neo::interop::ColorTransfer::srgb;
             input.frame = request; input.instance = reinterpret_cast<uintptr_t>(handle);
             input.flags = neo::interop::k_before_sr_depth_inverted;
             beforeSrFrame = beforeSr ? &input : nullptr;
@@ -244,8 +298,8 @@ int wmain(int argc, wchar_t** argv)
     }
     Check(beforeSrQueries == (beforeSr ? 6u : 0u) && beforeSrMismatches == 0,
         "BeforeSR query receives this call's original DX11 resources only when requested");
-    std::printf("before_sr queries=%u mismatches=%u enabled=%u transfer=unknown\n",
-        beforeSrQueries, beforeSrMismatches, beforeSr ? 1u : 0u);
+    std::printf("before_sr queries=%u mismatches=%u enabled=%u transfer=%s typeless=%u\n",
+        beforeSrQueries, beforeSrMismatches, beforeSr ? 1u : 0u, typeless ? "srgb" : "unknown", typeless ? 1u : 0u);
     if (includeShutdown) Ngx(shutdown(device.Get()), "shutdown after all handles and readbacks");
     else std::puts("LIMIT: vendor Shutdown1 not exercised; this suite proves Evaluate, pixels and per-handle Release only");
     std::printf("PASS actual F6 V1 ABI and %s provider pixels: %u checks\n", native ? "native" : "interop", checks);
