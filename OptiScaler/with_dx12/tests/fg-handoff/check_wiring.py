@@ -40,11 +40,18 @@ class HandoffWiring(unittest.TestCase):
             self.assertIn('CreationScope outputCreation(_finalOutputProvider)', FG[pos-180:pos])
 
     def test_physical_resize_keeps_output_queue_local(self):
-        body = parser.extract(read('OptiScaler/wrapped/wrapped_swapchain.cpp'),
-                              'HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(')
-        self.assertIn('_device = *ppPresentQueue;', body)
-        self.assertIn('if (!_providerOutput)\n            WithDx12::AdoptSwapchainQueue(', body)
-        self.assertNotRegex(body, r'currentCommandQueue\s*=(?!=)')
+        source = read('OptiScaler/wrapped/wrapped_swapchain.cpp')
+        body = parser.extract(source, 'HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(')
+        provider = parser.extract(source, 'HRESULT WrappedIDXGISwapChain4::ResizeProviderOutput(')
+        # Provider swaps terminate before source work; the isolated branch may
+        # change its own output queue but cannot publish the source queue.
+        guard = re.search(r'if\s*\(_providerOutput\)\s*return\s+ResizeProviderOutput\(', body)
+        self.assertIsNotNone(guard)
+        self.assertLess(guard.start(), body.index('_device = *ppPresentQueue;'))
+        self.assertLess(guard.start(), body.index('WithDx12::AdoptSwapchainQueue('))
+        self.assertNotIn('WithDx12::', provider)
+        for route in (body, provider):
+            self.assertNotRegex(route, r'currentCommandQueue\s*=(?!=)')
 
     def test_evaluate_guard_seals_before_return(self):
         body = read('OptiScaler/inputs/FG/Upscaler_Inputs_Dx11wDx12.cpp')
