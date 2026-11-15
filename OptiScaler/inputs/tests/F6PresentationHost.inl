@@ -174,6 +174,29 @@ void Run(HMODULE module, bool useSentinel)
             Hr(n % 2 ? chain->Present1(0, 0, &parameters) : chain->Present(0, 0), "actual wrapper Present/Present1");
         }
     }
+    // A failed attempt must not authorize reuse of A; a later successful C
+    // must be observed independently. The backbuffer is deliberately changed.
+    eval = 13;
+    frame.Fill(context.Get(), {128, 256, 512}); frame.Bind(p);
+    p->Set(NVSDK_NGX_Parameter_Color, static_cast<ID3D11Resource*>(nullptr));
+    F6EvalReceiptV1 failed;
+    const auto failure = evaluate(context.Get(), handle, p, nullptr, eval, &failed);
+    Check(failure != NVSDK_NGX_Result_Success && failed.status == F6OutputStatus::no_output,
+        "failed B has no current output receipt");
+    const float mark[] {0.25f,0,0.5f,1}; context->ClearRenderTargetView(rtv.Get(), mark);
+    change = "failed-B";
+    for (unsigned n = 0; n < 2; ++n) {
+        serial = 48 + n; Hr(chain->Present(0, 0), "raw B Present after failed Evaluate");
+    }
+    eval = 14;
+    frame.Fill(context.Get(), {704, 128, 256}); frame.Bind(p);
+    F6EvalReceiptV1 recovered;
+    Ngx(evaluate(context.Get(), handle, p, nullptr, eval, &recovered), "successful C after failed B");
+    Check(recovered.status == F6OutputStatus::current_output_ordered, "successful C publishes its own current output");
+    context->CopyResource(back.Get(), frame.output.Get()); change = "recovered-C";
+    for (unsigned n = 0; n < 2; ++n) {
+        serial = 52 + n; Hr(chain->Present(0, 0), "C Present after recovery");
+    }
     std::printf("PASS actual presentation observation checks=%u modelWrites=%u testWriter=%u generatedPixels=unknown\n", checks, writes, sentinelWrites);
     std::puts("LIMIT: SR token cannot distinguish unchanged, HUD-only and whole-scene writes; this host observes the gap and does not authorize replay.");
 }

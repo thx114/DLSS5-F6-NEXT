@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <string>
 #include <string_view>
 
 using Microsoft::WRL::ComPtr;
@@ -24,6 +26,19 @@ unsigned beforeSrQueries = 0, beforeSrMismatches = 0;
 std::atomic<bool> coreConnected {false};
 std::atomic<bool> coreManaged {false};
 std::atomic<unsigned> filteredStages {0};
+void ReadEarlyConnection()
+{
+    // F6 can finish its startup worker before NGX installs the logging callback.
+    // This fresh, isolated process owns the file; no old game log is consulted.
+    std::ifstream log("OptiScaler.log");
+    std::string line;
+    while (std::getline(log, line)) {
+        if (line.find("HoYoShade live connection finished") == std::string::npos ||
+            line.find("accepted=true") == std::string::npos) continue;
+        coreManaged.store(line.find("core_load=f6-managed-single") != std::string::npos);
+        coreConnected.store(true, std::memory_order_release);
+    }
+}
 void NVSDK_CONV LogReceipt(const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature)
 {
     if (message && std::strstr(message, "HoYoShade live connection finished") &&
@@ -255,7 +270,10 @@ int wmain(int argc, wchar_t** argv)
         // runs. Wait for its actual receipt; a successful SR pixel check alone
         // would otherwise miss the BeforeSR admission branch entirely.
         const auto deadline = GetTickCount64() + 10000;
-        while (!coreConnected.load(std::memory_order_acquire) && GetTickCount64() < deadline) Sleep(10);
+        while (!coreConnected.load(std::memory_order_acquire) && GetTickCount64() < deadline) {
+            if (managed) ReadEarlyConnection();
+            Sleep(100);
+        }
         Check(coreConnected.load(std::memory_order_acquire),
               "production core connection accepted before typeless admission");
     }

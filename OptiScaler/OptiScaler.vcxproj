@@ -334,11 +334,6 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="menu\DlssPresetMenuPolicy.h" />
     <ClInclude Include="upscalers\NgxDx12ResourceView.h" />
     <ClInclude Include="inputs\F6EvalReceiptV1.h" />
-    <ClInclude Include="inputs\taa\TaaProfile.h" />
-    <ClInclude Include="inputs\taa\TaaConstantBuffer.h" />
-    <ClInclude Include="inputs\taa\TaaPassDx11.h" />
-    <ClInclude Include="inputs\taa\TaaInputDx11.h" />
-    <ClCompile Include="inputs\taa\TaaInputDx11.cpp" />
     <ClInclude Include="inputs\NeoBeforeSrV1.h" />
     <ClInclude Include="inputs\BeforeSrInput.h" />
     <ClInclude Include="integration\HoYoShadeBeforeSrInput.h" />

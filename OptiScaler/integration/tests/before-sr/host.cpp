@@ -326,6 +326,7 @@ struct Host {
     }
 };
 unsigned dx11Inits = 0, dx12Inits = 0, liveRuntimes = 0, peakRuntimes = 0, destroys = 0;
+unsigned managedReloads = 0;
 api::effect_runtime* managedRuntime = nullptr;
 void RuntimeInit(api::effect_runtime* r) {
     ++liveRuntimes;
@@ -334,6 +335,7 @@ void RuntimeInit(api::effect_runtime* r) {
     if (r->get_device()->get_api() == api::device_api::d3d12) { ++dx12Inits; managedRuntime = r; }
 }
 void RuntimeDestroy(api::effect_runtime*) { --liveRuntimes; ++destroys; }
+void RuntimeReload(api::effect_runtime* r) { if (r == managedRuntime) ++managedReloads; }
 Host* observedHost = nullptr;
 void Finished(api::effect_runtime* runtime,api::command_list*,api::resource_view rtv,api::resource_view) { if(observedHost) observedHost->ObserveTextures(runtime,rtv); }
 enum class OrderPolicy { Allow, VetoOwned, RewriteOwned };
@@ -371,6 +373,7 @@ int main(int argc, char** argv) {
         if (single) {
             subscribe(reshade::addon_event::init_effect_runtime, reinterpret_cast<void*>(RuntimeInit));
             subscribe(reshade::addon_event::destroy_effect_runtime, reinterpret_cast<void*>(RuntimeDestroy));
+            subscribe(reshade::addon_event::reshade_reloaded_effects, reinterpret_cast<void*>(RuntimeReload));
         }
         Host host(core, root / (single ? "ReShade.ini" : "natural.ini"), depthMode || launchpadMode || singleDepth || singleMxao, typelessInput, !single);
         host.partialInput = partialInput;
@@ -465,11 +468,49 @@ int main(int argc, char** argv) {
                     host.Upload(); auto reversed = host.Filter(199, Host::Input::ReverseZ);
                     Check(!reversed.depthAvailable, "compiled direction mismatch never binds depth");
                 }
+                if (singleDepth) {
+                    const auto beforeReload = managedReloads;
+                    host.reversedInput = !host.reversedInput;
+                    managedRuntime->set_preprocessor_definition("RESHADE_DEPTH_INPUT_IS_REVERSED", host.reversedInput ? "1" : "0");
+                    managedRuntime->reload_effect_next_frame(nullptr);
+                    const auto end = GetTickCount64() + 60000;
+                    for (unsigned f = 500;; ++f) {
+                        host.Upload(); const auto changed = host.Filter(f);
+                        Check(!changed.Uncertain() && GetTickCount64() < end, "direction reload preserves known lifetime");
+                        if (changed.depthAvailable && changed.EffectsExecuted()) {
+                            Check(managedReloads > beforeReload, "new depth direction waits for the real compile callback");
+                            host.CheckDepthPixels(host.reversedInput); break;
+                        }
+                        Sleep(10);
+                    }
+                    host.reversedInput = !host.reversedInput;
+                    host.Upload(); Check(!host.Filter(699).depthAvailable, "old direction rejected after compile generation changes");
+                }
             }
             Check(dx11Inits == 0 && dx12Inits == 1 && liveRuntimes == 1, "both native devices, one real runtime");
             Check(peakRuntimes == 1, "single runtime throughout compilation and rendering");
+            host.Begin(); host.Submit(); // An actual same-queue marker also covers idle warmup submissions.
             HoYoShade::RetirePhysicalOutput(1);
             Check(destroys == 1 && liveRuntimes == 0, "only owned runtime retires after its real fence");
+            if (singleSelection) {
+                {
+                    HoYoShade::BridgeSourceResize resize(&host);
+                    DXGI_SWAP_CHAIN_DESC1 desc{}; Hr(host.chain->GetDesc1(&desc));
+                    Hr(host.chain->ResizeBuffers(desc.BufferCount, Width + 8, Height + 4, desc.Format, desc.Flags));
+                }
+                const auto end = GetTickCount64() + 60000;
+                for (unsigned f = 800;; ++f) {
+                    host.Upload(); const auto next = host.Filter(f);
+                    Check(!next.Uncertain() && GetTickCount64() < end, "new source generation recovers after actual swapchain resize");
+                    if (next.EffectsExecuted()) { Check(host.Read() == 128, "new runtime reads the existing preset after resize"); break; }
+                    Sleep(10);
+                }
+                Check(dx12Inits == 2 && liveRuntimes == 1 && peakRuntimes == 1, "replacement starts only after the prior runtime retires");
+                host.Upload(); Check(!host.Filter(999, Host::Input::WrongColorFrame).EffectsExecuted() && host.Read() == 32,
+                    "wrong-frame declaration cannot reuse the replacement runtime's prior input");
+                host.Begin(); host.Submit(); HoYoShade::RetirePhysicalOutput(1);
+                Check(destroys == 2 && liveRuntimes == 0, "replacement retires with its own queue completion");
+            }
             std::printf("PASS single BeforeSR: dx11_inits=%u dx12_inits=%u destroys=%u filtered_frames=%u checks=%u\n", dx11Inits,dx12Inits,destroys,executed,checks);
             return 0;
         }
