@@ -909,10 +909,6 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
             readBeforeSrRegion(endpoint);
             endpoint.state = D3D12_RESOURCE_STATE_COMMON; endpoint.stateKnown = true;
 
-            const auto outputSpace = State::Instance().outputColorSpace;
-            endpoint.sdr = beforeSrFlagsKnown && (beforeSrFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) == 0 &&
-                outputSpace.valid && outputSpace.dxgiColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-
             // The actual source chain proves selection through proxy devices.
             // Its backbuffer is association evidence, never the low-resolution SR input.
             endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrBridgeInput;
@@ -945,6 +941,7 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
                 inputReports.fetch_add(1, std::memory_order_relaxed) < 8) {
                 LARGE_INTEGER qpc {};
                 QueryPerformanceCounter(&qpc);
+                const auto outputSpace = State::Instance().outputColorSpace; // diagnostic only; not an input declaration
                 const auto effectiveFlags = beforeSrProvider->GetNativeDlssCreateFlags();
                 const auto& sourceDesc = dx11Color.SourceDesc;
                 LOG_INFO("HoYoShade BeforeSR input tid={} qpc={} params=0x{:x} source=0x{:x} "

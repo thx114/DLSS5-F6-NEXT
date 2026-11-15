@@ -130,6 +130,15 @@ int main() {
             "module without the new export retains the ordinary path");
         Check(HoYoShade::AdmitBeforeSrInput(nullptr, binding) == HoYoShade::BeforeSrColor::Legacy,
             "legacy Evaluate is independent of the optional metadata");
+        HoYoShade::ColorEndpoint undeclared;
+        for (const auto reason : {interop::BeforeSrQuery::NotRequested, interop::BeforeSrQuery::NoExport,
+                                  interop::BeforeSrQuery::NoMatch}) {
+            interop::BeforeSrInput absent; absent.query = reason;
+            undeclared.sdr = true; // Deliberately inject a G22 *output* hint for a typed input.
+            Check(!absent.HasDeclaration() && HoYoShade::BindBeforeSrInput(undeclared, &absent, binding) ==
+                HoYoShade::BeforeSrColor::Legacy && !undeclared.sdr && !undeclared.declaredInput,
+                "no current declaration: continue SR without granting BeforeSR colour");
+        }
         auto typeless = texture(DXGI_FORMAT_R8G8B8A8_TYPELESS);
         frame.color = typeless.Get(); frame.color_storage_format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
         frame.color_transfer = ColorTransfer::srgb;

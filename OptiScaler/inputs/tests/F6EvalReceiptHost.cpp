@@ -163,7 +163,8 @@ int wmain(int argc, wchar_t** argv)
     if (argc != 3 && argc != 4) return 2;
     const bool skip = std::wstring_view(argv[2]) == L"skip";
     const bool native = std::wstring_view(argv[2]) == L"native";
-    const bool typeless = std::wstring_view(argv[2]) == L"before-sr-typeless";
+    const std::wstring_view mode(argv[2]);
+    const bool typeless = mode == L"before-sr-typeless" || mode == L"before-sr-auto" || mode == L"before-sr-default";
     const bool beforeSr = std::wstring_view(argv[2]) == L"before-sr" || typeless;
     const bool legacyOnly = std::wstring_view(argv[2]) == L"legacy-shutdown";
     const bool includeShutdown = legacyOnly || (argc == 4 && std::wstring_view(argv[3]) == L"shutdown");

@@ -3,7 +3,7 @@
 param(
     [string]$Artifact,
     [Parameter(Mandatory)][string]$DlssRuntime,
-    [ValidateSet('interop','skip','native','before-sr','before-sr-typeless','legacy-shutdown')][string[]]$Cases = @('interop','skip','native','before-sr','before-sr-typeless'),
+    [ValidateSet('interop','skip','native','before-sr','before-sr-typeless','before-sr-auto','before-sr-default','before-sr-off','before-sr-other','legacy-shutdown')][string[]]$Cases = @('interop','skip','native','before-sr','before-sr-typeless','before-sr-auto','before-sr-default','before-sr-off','before-sr-other'),
     [switch]$IncludeShutdown,
     [string]$CorePath = 'D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/HoYoShade/ReShade64.dll',
     [string]$DevCmd = 'D:/VS2022BuildTools/Common7/Tools/VsDevCmd.bat'
@@ -31,7 +31,8 @@ foreach ($case in $Cases)
     $null = [IO.Directory]::CreateDirectory($path)
     Copy-Item -LiteralPath $artifactPath -Destination (Join-Path $path 'OptiScaler.dll')
     Copy-Item -LiteralPath $runtimePath -Destination (Join-Path $path 'nvngx_dlss.dll')
-    if ($case -eq 'before-sr-typeless') {
+    $expectsAdmission = $case -in @('before-sr-typeless','before-sr-auto','before-sr-default')
+    if ($expectsAdmission) {
         $coreHash = (Get-FileHash -LiteralPath $CorePath -Algorithm SHA256).Hash
         if ($coreHash -ne '0CEE63F9C9F13F3AC909C5B4903F4DBB4B719A7AB3B4F13B0DEAF83C814B94F7') {
             throw 'Typeless receipt host requires the pinned ReShade core'
@@ -41,7 +42,13 @@ foreach ($case in $Cases)
     }
     $backend = if ($case -eq 'native') { 'dlss' } else { 'dlss_12' }
     $skip = if ($case -eq 'skip') { '2' } else { 'auto' }
-    $beforeSrEnabled = if ($case -in @('before-sr','before-sr-typeless')) { 'true' } else { 'false' }
+    $enabledLine = switch ($case) {
+        'before-sr-default' { '' } # Absent key, not an explicit false.
+        'before-sr-auto' { 'Enabled=auto' }
+        { $_ -in @('before-sr','before-sr-typeless','before-sr-other') } { 'Enabled=true' }
+        default { 'Enabled=false' }
+    }
+    $stage = if ($case -eq 'before-sr-other') { 2 } else { 1 }
     # Only this disposable host's settings. No installed profile is read or
     # changed; all feature DLL lookup paths remain within this fixture.
     $ini = @"
@@ -52,8 +59,8 @@ Enabled=false
 [DlssNr]
 Enabled=false
 [HoYoShade]
-Enabled=$beforeSrEnabled
-Stage=1
+$enabledLine
+Stage=$stage
 [CAS]
 Enabled=false
 [OutputScaling]
@@ -86,7 +93,7 @@ LogFileName=./OptiScaler.log
     $stdout = [IO.File]::ReadAllText((Join-Path $path 'stdout.log'))
     $passed = $complete -and $process.ExitCode -eq 0 -and $stdout.Contains('PASS actual F6 V1 ABI')
     $admission = @()
-    if ($case -eq 'before-sr-typeless') {
+    if ($expectsAdmission) {
         # SR pixels alone do not prove that BeforeSR admitted this input. The
         # isolated host has no natural ReShade donor; verify the production
         # admission separately without claiming that effects executed.

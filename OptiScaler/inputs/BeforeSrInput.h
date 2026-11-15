@@ -2,9 +2,10 @@
 #include "NeoBeforeSrV1.h"
 
 namespace interop {
-enum class BeforeSrQuery { NoExport, NoMatch, Failed, Invalid, Matched };
+enum class BeforeSrQuery { NotRequested, NoExport, NoMatch, Failed, Invalid, Matched };
 inline const char* Text(BeforeSrQuery value) noexcept {
     switch (value) {
+    case BeforeSrQuery::NotRequested: return "not-requested";
     case BeforeSrQuery::NoExport: return "no-export";
     case BeforeSrQuery::NoMatch: return "no-current-match";
     case BeforeSrQuery::Failed: return "query-failed";
@@ -17,10 +18,10 @@ inline const char* Text(BeforeSrQuery value) noexcept {
 // Stack-owned description of this synchronous V1 call. No recent-frame cache,
 // registration or ownership/completion authority. The caller owns all resources.
 struct BeforeSrInput {
-    BeforeSrQuery query = BeforeSrQuery::NoExport;
+    BeforeSrQuery query = BeforeSrQuery::NotRequested;
     neo::interop::BeforeSrFrameV1 frame;
     bool HasDeclaration() const noexcept {
-        return query != BeforeSrQuery::NoExport && query != BeforeSrQuery::NoMatch;
+        return query == BeforeSrQuery::Failed || query == BeforeSrQuery::Invalid || query == BeforeSrQuery::Matched;
     }
 };
 
@@ -35,7 +36,9 @@ inline bool BeforeSrTextureMatches(ID3D11Texture2D* texture, UINT width, UINT he
 inline BeforeSrInput QueryBeforeSrInput(const void* caller, ID3D11DeviceContext* context,
     ID3D11Resource* color, ID3D11Resource* depth, ID3D11Resource* motion) noexcept {
     BeforeSrInput result;
+    result.query = BeforeSrQuery::Invalid;
     if (!caller || !context || !color || !depth || !motion) return result;
+    result.query = BeforeSrQuery::NoExport;
     HMODULE module = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
         reinterpret_cast<LPCWSTR>(caller), &module)) return result;

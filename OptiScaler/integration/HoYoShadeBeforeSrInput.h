@@ -60,12 +60,11 @@ inline BeforeSrColor AdmitBeforeSrInput(const interop::BeforeSrInput* source, co
     return ResolveBeforeSrInput(source, b).color;
 }
 // One production entry for declaration admission and endpoint publication.
-// A rejected declaration revokes any legacy/global SDR hint for this call.
+// The output swapchain describes a different image. Only this input can authorize SDR.
 inline BeforeSrColor BindBeforeSrInput(ColorEndpoint& endpoint, const interop::BeforeSrInput* source,
                                       const BeforeSrBinding& binding) noexcept {
     const auto admission = ResolveBeforeSrInput(source, binding);
-    if (admission.color != BeforeSrColor::Legacy)
-        endpoint.sdr = admission.color == BeforeSrColor::DeclaredSdr;
+    endpoint.sdr = admission.color == BeforeSrColor::DeclaredSdr;
     endpoint.declaredInput = ColorContract::DeclaredInput::Bind(admission.formats, endpoint);
     return admission.color;
 }

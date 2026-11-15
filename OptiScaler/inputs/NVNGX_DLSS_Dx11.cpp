@@ -21,6 +21,7 @@
 #include <runtime/GuideDiagnostics.h>
 #include "F6EvalReceiptV1.h"
 #include "BeforeSrInput.h"
+#include <integration/HoYoShadePolicy.h>
 #include <intrin.h>
 
 static ID3D11Device* D3D11Device = nullptr;
@@ -934,8 +935,9 @@ extern "C" __declspec(dllexport) __declspec(noinline) NVSDK_NGX_Result NVSDK_CON
 
     interop::BeforeSrInput beforeSr;
     const auto* config = Config::Instance();
-    if (context && parameters && config->HoYoShadeEnabled.value_or_default() &&
-        config->HoYoShadeStage.value_or_default() == 1) {
+    const auto stage = static_cast<unsigned>(config->HoYoShadeStage.value_or_default());
+    if (context && parameters && stage == static_cast<unsigned>(HoYoShade::Stage::BeforeSr) &&
+        HoYoShade::ResolveEnabled(config->HoYoShadeEnabled.ReadObserved(), stage)) {
         const auto readResource = [parameters](const char* name) {
             ID3D11Resource* resource = nullptr;
             if (parameters->Get(name, &resource) != NVSDK_NGX_Result_Success)
