@@ -3,6 +3,7 @@
 // namespace. All entry points require g_nrMutex. No cadence/model skipping,
 // SDK state, diagnostics input, waits, or game-specific capture lives here.
 #include "DlssNr_DetailHistoryPolicy.h"
+#include "DlssNr_DetailStabilitySample.h"
 #include "DlssNr_OrderedLifetime.h"
 #include <mutex>
 
@@ -30,9 +31,10 @@ DlssNrGpuLifetime::OrderedHistory<Key> recordings;
 NrDetailHistoryPolicy::SourceSequence sources;
 ID3D12Resource* detail[2] {};
 ID3D12Resource* colourDepth[2] {};
-ID3D12Resource* stability[2] {};
+DlssNrDetailStabilitySample stability[2] {};
 ID3D12Resource* fused = nullptr;
 ID3D12Device* resourceDevice = nullptr; // identity, resources retain their device
+DXGI_FORMAT rawStorageFormat = DXGI_FORMAT_UNKNOWN;
 unsigned width = 0, height = 0, publishedWrite = 0, activeWrite = 0;
 uint64_t generation = 0, publishedGeneration = 0, allocatedBytes = 0;
 Key publishedKey, activeKey;
@@ -155,8 +157,15 @@ bool OwnersBusy()
 void ParkAll()
 {
     Invalidate();
-    for (auto** p : { &detail[0], &detail[1], &colourDepth[0], &colourDepth[1], &stability[0], &stability[1], &fused }) Park(*p);
-    resourceDevice = nullptr; width = height = 0; allocatedBytes = 0;
+    for (unsigned i = 0; i < 2; ++i)
+    {
+        Park(detail[i]);
+        Park(colourDepth[i]);
+        Park(stability[i].residual);
+        Park(stability[i].raw);
+    }
+    Park(fused);
+    resourceDevice = nullptr; rawStorageFormat = DXGI_FORMAT_UNKNOWN; width = height = 0; allocatedBytes = 0;
 }
 D3D12_RESOURCE_DESC ScratchDesc(DXGI_FORMAT format, unsigned w, unsigned h)
 {
@@ -168,20 +177,37 @@ D3D12_RESOURCE_DESC ScratchDesc(DXGI_FORMAT format, unsigned w, unsigned h)
     d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     return d;
 }
-bool PrepareResources(const Frame& f)
+// These linear view formats round-trip every representable source channel.
+// In particular, an sRGB view cannot be reproduced by a linear UNORM write.
+DXGI_FORMAT StabilityRawFormat(DXGI_FORMAT modelInput)
 {
+    switch (modelInput)
+    {
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+    case DXGI_FORMAT_R8G8B8A8_UNORM: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+    case DXGI_FORMAT_R16G16B16A16_FLOAT: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    default: return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    }
+}
+bool PrepareResources(const Frame& f, DXGI_FORMAT sourceFormat, bool stabilize)
+{
+    const auto format = stabilize ? StabilityRawFormat(sourceFormat) : DXGI_FORMAT_UNKNOWN;
     if (resourceDevice == f.device && width == f.workWidth && height == f.workHeight &&
         detail[0] && detail[1] && colourDepth[0] && colourDepth[1] && fused &&
-        ((f.cfg->DlssNrPresentedTemporalStabilityMs.value_or_default() != 0) == (stability[0] != nullptr && stability[1] != nullptr))) return true;
+        rawStorageFormat == format && stabilize == (stability[0] && stability[1])) return true;
     // An unchanged allocation can advance in authenticated queue order. A new
     // size/device reaches here only after the old executable users have closed.
     ParkAll();
     const auto d = ScratchDesc(DXGI_FORMAT_R16G16B16A16_FLOAT, f.workWidth, f.workHeight);
     const auto c = ScratchDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, f.workWidth, f.workHeight);
     const auto db = AllocationBytes(f.device, d), cb = AllocationBytes(f.device, c);
-    const bool stabilize = f.cfg->DlssNrPresentedTemporalStabilityMs.value_or_default() != 0;
-    const auto baseBytes = AddBytes(AddBytes(AddBytes(db, db), db), AddBytes(cb, cb));
-    const auto required = stabilize ? AddBytes(baseBytes, AddBytes(db, db)) : baseBytes;
+    const auto slotBytes = AddBytes(db, cb); // residual and birth context
+    const auto passBytes = AddBytes(db, AddBytes(slotBytes, slotBytes)); // fused answer and two slots
+    const auto rawDesc = ScratchDesc(format, f.workWidth, f.workHeight);
+    const auto rawBytes = stabilize ? AllocationBytes(f.device, rawDesc) : 0;
+    const auto sampleBytes = AddBytes(db, rawBytes);
+    const auto required = stabilize ? AddBytes(passBytes, AddBytes(sampleBytes, sampleBytes)) : passBytes;
     const auto retired = ParkedBytes();
     snapshot.bytes = AddBytes(required, retired);
     if (!NrDetailHistoryPolicy::FitsBudget(required, retired))
@@ -190,14 +216,16 @@ bool PrepareResources(const Frame& f)
     {
         detail[i] = CreateScratch(f.device, d.Format, f.workWidth, f.workHeight);
         colourDepth[i] = CreateScratch(f.device, c.Format, f.workWidth, f.workHeight);
-        if (stabilize) stability[i] = CreateScratch(f.device, d.Format, f.workWidth, f.workHeight);
+        if (stabilize)
+            stability[i] = { CreateScratch(f.device, d.Format, f.workWidth, f.workHeight),
+                             CreateScratch(f.device, format, f.workWidth, f.workHeight) };
     }
     fused = CreateScratch(f.device, d.Format, f.workWidth, f.workHeight);
     if (!detail[0] || !detail[1] || !colourDepth[0] || !colourDepth[1] || !fused ||
         (stabilize && (!stability[0] || !stability[1])))
     { ParkAll(); snapshot.reason = "history-allocation-failed"; return false; }
     resourceDevice = f.device; width = f.workWidth; height = f.workHeight;
-    allocatedBytes = required;
+    rawStorageFormat = format; allocatedBytes = required;
     return true;
 }
 NrDetailHistoryPolicy::Settings Settings(const Frame& f)
@@ -237,7 +265,7 @@ NrDetailHistoryPolicy::Phase Phase(const Frame& f)
     return NrDetailHistoryPolicy::ResolvePhase(p);
 }
 Key Contract(const Frame& f, const NrDetailHistoryPolicy::Phase& phase,
-             const NrDetailHistoryPolicy::Settings& settings, double sourceEntrySeconds)
+             const NrDetailHistoryPolicy::Settings& settings, double sourceEntrySeconds, DXGI_FORMAT sourceFormat)
 {
     Key k;
     auto& i = k.identity;
@@ -270,7 +298,7 @@ Key Contract(const Frame& f, const NrDetailHistoryPolicy::Phase& phase,
         f.info->MotionSubrectBaseX, f.info->MotionSubrectBaseY,
         fb(f.info->MvScaleX), fb(f.info->MvScaleY), f.info->NativeFeatureFlags,
         f.info->RayReconstruction ? 1ull : 0ull, coordinateControls,
-        static_cast<uint64_t>(f.modelInput->GetDesc().Format), f.reversibleMode,
+        static_cast<uint64_t>(sourceFormat), f.reversibleMode,
         f.passthrough ? 1ull : 0ull, f.beforeUpscale ? 1ull : 0ull, f.finishedPicture ? 1ull : 0ull };
     i.settings = { fb(settings.durationSeconds), fb(settings.maxAgeSeconds), fb(settings.strength),
         fb(f.cfg->DlssNrPresentedTemporalDepthTolerance.value_or_default()),
@@ -292,10 +320,9 @@ Key Contract(const Frame& f, const NrDetailHistoryPolicy::Phase& phase,
     k.sample.captureEpoch = f.info->SourceCaptureEpoch;
     return k;
 }
-bool ViewFits(ID3D12Resource* resource, unsigned x, unsigned y, unsigned w, unsigned h)
+bool ViewFits(const D3D12_RESOURCE_DESC& d, unsigned x, unsigned y, unsigned w, unsigned h)
 {
-    if (!resource || !w || !h) return false;
-    const auto d = resource->GetDesc();
+    if (!w || !h) return false;
     return d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && d.DepthOrArraySize == 1 &&
         d.MipLevels == 1 && d.SampleDesc.Count == 1 &&
         !(d.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) &&
@@ -357,9 +384,10 @@ Plan Before(const Frame& f)
         (f.nativePreSrRoute && std::none_of(f.preSrOwner.begin(), f.preSrOwner.end(),
             [](uint64_t n) { return NrDetailHistoryPolicy::ValidSerial(n); })))
     { Invalidate(); return reject("unknown-source-identity"); }
-    if (!ViewFits(f.modelInput, 0, 0, f.workWidth, f.workHeight) ||
-        !ViewFits(f.motion, f.motionBaseX, f.motionBaseY, f.motionWidth, f.motionHeight) ||
-        !ViewFits(f.depth, f.depthBaseX, f.depthBaseY, f.depthWidth, f.depthHeight))
+    const auto modelInputDesc = f.modelInput->GetDesc();
+    if (!ViewFits(modelInputDesc, 0, 0, f.workWidth, f.workHeight) ||
+        !ViewFits(f.motion->GetDesc(), f.motionBaseX, f.motionBaseY, f.motionWidth, f.motionHeight) ||
+        !ViewFits(f.depth->GetDesc(), f.depthBaseX, f.depthBaseY, f.depthWidth, f.depthHeight))
     { Invalidate(); return reject("current-resource-view"); }
     auto* list = RealList(f.cmdList);
     auto* queue = RealQueue(f.temporalQueue);
@@ -367,7 +395,7 @@ Plan Before(const Frame& f)
         !DlssNrGpuLifetime::SameDevice(f.motion, queue) || !DlssNrGpuLifetime::SameDevice(f.modelInput, queue) ||
         queue->GetDesc().Type != list->GetType() || list->GetType() == D3D12_COMMAND_LIST_TYPE_COPY)
     { Invalidate(); return reject("queue-device-or-list-type"); }
-    activeKey = Contract(f, phase, settings, sourceEntrySeconds);
+    activeKey = Contract(f, phase, settings, sourceEntrySeconds, modelInputDesc.Format);
     const bool authenticatedProducer = f.nativePreSrRoute ? f.preSrProducerQueueVerified : f.orderedNativeQueue;
     bool orderedAdvance = recordings.Advance(authenticatedProducer, list, queue, activeKey, f.frameNumber);
     if (!orderedAdvance && !f.nativePreSrRoute && f.orderedNativeQueue && recordings.Pending())
@@ -392,11 +420,12 @@ Plan Before(const Frame& f)
     if (!f.workWidth || !f.workHeight || f.workWidth > 16384 || f.workHeight > 16384)
         return reject("invalid-working-extent");
     if (!f.pass->DetailReuseReady()) return reject("feedback-shader-unavailable");
-    if (!PrepareResources(f)) return {};
+    if (!PrepareResources(f, modelInputDesc.Format, settings.stabilitySeconds > 0)) return {};
     auto& slot = recordings.current;
     const auto use = NrRecording(f.device, f.cmdList);
     if (!DlssNrGpuLifetime::Retain(use, { detail[0], detail[1], colourDepth[0], colourDepth[1],
-                                         fused, stability[0], stability[1], f.modelInput, f.motion, f.depth }))
+                                         fused, stability[0].residual, stability[0].raw,
+                                         stability[1].residual, stability[1].raw, f.modelInput, f.motion, f.depth }))
         return reject("feedback-recording-owner-unavailable");
     const auto history = NrDetailHistoryPolicy::Select(activeKey, publishedKey, historyPublished, f.modelReset, step, settings);
     if(NrHistoryDebug::Wanted())
@@ -446,7 +475,7 @@ Plan Before(const Frame& f)
 }
 
 using Inspector = void (*)(const Frame&, const DlssNrDetailReuseConstants&, const Recording&,
-                          ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*);
+                          ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, DlssNrDetailStabilitySample);
 void After(const Frame& f, bool complete, ID3D12Resource*& finalAnswer, Inspector inspect = nullptr)
 {
     PublishOnExit publishObservation;
@@ -466,15 +495,18 @@ void After(const Frame& f, bool complete, ID3D12Resource*& finalAnswer, Inspecto
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     Barrier(f.cmdList, colourDepth[publishedWrite], D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    if (stability[publishedWrite]) Barrier(f.cmdList, stability[publishedWrite], D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    const auto previous = stability[publishedWrite];
+    for (auto* surface : { previous.residual, previous.raw })
+        if (surface) Barrier(f.cmdList, surface, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     constants.Mode = NrDetailHistoryPolicy::ResolveMode;
     const bool resolved = f.pass->DispatchDetailReuse(f.cmdList, constants, f.workWidth, f.workHeight,
         f.modelInput, finalAnswer, detail[publishedWrite], colourDepth[publishedWrite], f.motion,
-        fused, detail[activeWrite], f.depth, colourDepth[activeWrite], stability[publishedWrite], stability[activeWrite]);
-    if(resolved&&inspect)inspect(f,constants,slot,finalAnswer,detail[publishedWrite],colourDepth[publishedWrite],stability[publishedWrite]);
-    if (stability[publishedWrite]) Barrier(f.cmdList, stability[publishedWrite], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        fused, detail[activeWrite], f.depth, colourDepth[activeWrite], previous, stability[activeWrite]);
+    if(resolved&&inspect)inspect(f,constants,slot,finalAnswer,detail[publishedWrite],colourDepth[publishedWrite],previous);
+    for (auto* surface : { previous.residual, previous.raw })
+        if (surface) Barrier(f.cmdList, surface, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     Barrier(f.cmdList, colourDepth[publishedWrite], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     Barrier(f.cmdList, detail[publishedWrite], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,

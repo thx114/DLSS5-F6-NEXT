@@ -2231,7 +2231,7 @@ namespace DetailReuse { void LogNativeRecordingEvidence(); }
 // The shared preview owns immutable completed copies and renderer read leases.
 void CaptureHistoryDebug(const DetailReuse::Frame& f, const DlssNrDetailReuseConstants& params,
                          const DetailHistory::Recording& recording, ID3D12Resource* fresh,
-                         ID3D12Resource* oldResidual, ID3D12Resource* oldContext, ID3D12Resource* oldStability)
+                         ID3D12Resource* oldResidual, ID3D12Resource* oldContext, DlssNrDetailStabilitySample oldStability)
 {
     auto*& scratch=g_nr.historyDebug;
     auto*& queue=g_nr.historyDebugQueue;
@@ -2260,7 +2260,7 @@ void CaptureHistoryDebug(const DetailReuse::Frame& f, const DlssNrDetailReuseCon
     device=f.device;queue=f.temporalQueue;
     auto inspect=params;inspect.Mode=DlssNrDetailReuse_FeedbackInspect;inspect.DebugView=view;
     if(!f.pass->DispatchDetailReuse(f.cmdList,inspect,f.workWidth,f.workHeight,
-        f.modelInput,fresh,oldResidual,oldContext,f.motion,scratch,nullptr,f.depth,nullptr,oldStability,nullptr))
+        f.modelInput,fresh,oldResidual,oldContext,f.motion,scratch,nullptr,f.depth,nullptr,oldStability))
     {GuideCapture::PreviewUnavailable("History inspector shader dispatch unavailable");return;}
     Barrier(f.cmdList,scratch,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     GuideCapture::Inputs input;input.independentRecording=true;input.historyDiagnostic=true;input.historyView=view;
@@ -2934,7 +2934,7 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
                                       ID3D12Resource* In2, ID3D12Resource* In3, ID3D12Resource* In4,
                                       ID3D12Resource* OutTarget, ID3D12Resource* OutSecond,
                                       ID3D12Resource* InHistoryDistrust, ID3D12Resource* OutContext,
-                                      ID3D12Resource* InStability, ID3D12Resource* OutStability)
+                                      DlssNrDetailStabilitySample InStability, DlssNrDetailStabilitySample OutStability)
 {
     if (!DetailReuseReady() || InCmdList == nullptr || _device == nullptr || In0 == nullptr ||
         OutTarget == nullptr || Width == 0 || Height == 0)
@@ -2943,11 +2943,19 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
         (!OutSecond || !OutContext || OutTarget == OutSecond || OutTarget == OutContext || OutSecond == OutContext))
         return false;
 
-    if (InConstants.Mode == DlssNrDetailReuse_FeedbackResolve && InConstants.FeedbackStabilitySeconds > 0 &&
-        (!InStability || !OutStability || InStability == OutStability ||
-         OutStability == OutTarget || OutStability == OutSecond || OutStability == OutContext)) return false;
-
     const bool inspect = InConstants.Mode == DlssNrDetailReuse_FeedbackInspect;
+    const bool resolve = InConstants.Mode == DlssNrDetailReuse_FeedbackResolve;
+    if ((inspect || resolve) && InConstants.FeedbackStabilitySeconds > 0)
+    {
+        if (!InStability || InStability.residual == InStability.raw) return false;
+        if (resolve)
+        {
+            if (!OutStability || OutStability.residual == OutStability.raw) return false;
+            for (auto* output : { OutStability.residual, OutStability.raw })
+                if (output == InStability.residual || output == InStability.raw ||
+                    output == OutTarget || output == OutSecond || output == OutContext) return false;
+        }
+    }
     if (inspect && !HistoryInspectReady()) return false;
     const auto recording = NrRecording(_device, InCmdList);
     const int acquiredSlot = inspect
@@ -2966,7 +2974,8 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
         In3 != nullptr ? In3 : In0,
         In4 != nullptr ? In4 : In0,
         InHistoryDistrust != nullptr ? InHistoryDistrust : In0,
-        InStability != nullptr ? InStability : In0,
+        InStability.residual ? InStability.residual : In0,
+        InStability.raw ? InStability.raw : In0,
     };
 
     for (uint32_t i = 0; i < kSrvCount; ++i)
@@ -2975,7 +2984,8 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
     ID3D12Resource* const uavs[kUavCount] = {
         OutTarget, OutSecond != nullptr ? OutSecond : OutTarget,
         OutContext != nullptr ? OutContext : OutTarget,
-        OutStability != nullptr ? OutStability : OutTarget };
+        OutStability.residual ? OutStability.residual : OutTarget,
+        OutStability.raw ? OutStability.raw : OutTarget };
 
     for (uint32_t i = 0; i < kUavCount; ++i)
         CreateUnorderedAccessView(_device, uavs[i] ? uavs[i] : uavs[0], currentHeap.GetUavCPU(i), 0);
@@ -2988,7 +2998,8 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
 
     if (!DlssNrGpuLifetime::Retain(use, { currentHeap.GetHeapCSU(), constants,
             _rootSignature, _detailReusePipelineState, In0, In1, In2, In3, In4,
-            OutTarget, OutSecond, InHistoryDistrust, OutContext, InStability, OutStability })) return false;
+            OutTarget, OutSecond, InHistoryDistrust, OutContext,
+            InStability.residual, InStability.raw, OutStability.residual, OutStability.raw })) return false;
 
     ID3D12DescriptorHeap* heaps[] = { currentHeap.GetHeapCSU() };
     InCmdList->SetDescriptorHeaps(_countof(heaps), heaps);

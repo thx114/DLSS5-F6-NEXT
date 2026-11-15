@@ -400,6 +400,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="shaders\dlssnr\DlssNr_DetailReuse.inl" />
     <ClInclude Include="shaders\dlssnr\DlssNr_DetailHistory.inl" />
     <ClInclude Include="shaders\dlssnr\DlssNr_DetailHistoryPolicy.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_DetailStabilitySample.h" />
     <ClInclude Include="shaders\dlssnr\DlssNr_HistoryDebug.h" />
     <ClInclude Include="shaders\dlssnr\DlssNr_EvaluateGuides.h" />
     <ClInclude Include="shaders\dlssnr\precompile\dlssnr_detail_history.hlsli" />

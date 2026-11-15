@@ -25,6 +25,7 @@
 #pragma warning(disable: 4324) // Production constants have deliberate CB alignment.
 #include <shaders/dlssnr/DlssNr_Common.h>
 #include <shaders/dlssnr/DlssNr_DetailReuseConstants.h>
+#include <shaders/dlssnr/DlssNr_DetailStabilitySample.h>
 #pragma warning(pop)
 #include <shaders/dlssnr/DlssNr_OrderedLifetime.h>
 #include <shaders/dlssnr/NrGpuExecutionLifetime.h>
@@ -117,7 +118,8 @@ static void Barrier(ID3D12GraphicsCommandList* list, ID3D12Resource* resource,
 struct Pass {
     struct Call {
         DlssNrDetailReuseConstants constants;
-        std::array<ID3D12Resource*, 11> resources;
+        std::array<ID3D12Resource*, 9> resources;
+        DlssNrDetailStabilitySample previous, next;
     };
     bool ready = true;
     unsigned failCall = 0;
@@ -134,9 +136,9 @@ struct Pass {
         if (!pipeline)
         {
             D3D12_DESCRIPTOR_RANGE ranges[] {
-                {D3D12_DESCRIPTOR_RANGE_TYPE_SRV,7,0,0,0},
-                {D3D12_DESCRIPTOR_RANGE_TYPE_UAV,4,0,0,7},
-                {D3D12_DESCRIPTOR_RANGE_TYPE_CBV,1,0,0,11}};
+                {D3D12_DESCRIPTOR_RANGE_TYPE_SRV,8,0,0,0},
+                {D3D12_DESCRIPTOR_RANGE_TYPE_UAV,5,0,0,8},
+                {D3D12_DESCRIPTOR_RANGE_TYPE_CBV,1,0,0,13}};
             D3D12_ROOT_PARAMETER parameter {}; parameter.ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
             parameter.DescriptorTable={3,ranges};
             D3D12_STATIC_SAMPLER_DESC sampler {};
@@ -153,17 +155,17 @@ struct Pass {
             Hr(device->CreateComputePipelineState(&pso,IID_PPV_ARGS(&pipeline)));
         }
         D3D12_DESCRIPTOR_HEAP_DESC heapDesc {};
-        heapDesc.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;heapDesc.NumDescriptors=12;
+        heapDesc.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;heapDesc.NumDescriptors=14;
         heapDesc.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         ComPtr<ID3D12DescriptorHeap> heap;Hr(device->CreateDescriptorHeap(&heapDesc,IID_PPV_ARGS(&heap)));
         const auto first=heap->GetCPUDescriptorHandleForHeapStart();
         const auto stride=device->GetDescriptorHandleIncrementSize(heapDesc.Type);
         const auto handle=[&](unsigned slot){return D3D12_CPU_DESCRIPTOR_HANDLE{first.ptr+SIZE_T(slot)*stride};};
         const auto& r=call.resources;
-        ID3D12Resource* srv[] {r[0],r[1],r[2],r[3],r[4],r[7],r[9]};
-        ID3D12Resource* uav[] {r[5],r[6],r[8],r[10]};
-        for(unsigned i=0;i<7;++i)device->CreateShaderResourceView(srv[i]?srv[i]:srv[0],nullptr,handle(i));
-        for(unsigned i=0;i<4;++i)device->CreateUnorderedAccessView(uav[i]?uav[i]:uav[0],nullptr,nullptr,handle(7+i));
+        ID3D12Resource* srv[] {r[0],r[1],r[2],r[3],r[4],r[7],call.previous.residual,call.previous.raw};
+        ID3D12Resource* uav[] {r[5],r[6],r[8],call.next.residual,call.next.raw};
+        for(unsigned i=0;i<std::size(srv);++i)device->CreateShaderResourceView(srv[i]?srv[i]:srv[0],nullptr,handle(i));
+        for(unsigned i=0;i<std::size(uav);++i)device->CreateUnorderedAccessView(uav[i]?uav[i]:uav[0],nullptr,nullptr,handle(unsigned(std::size(srv))+i));
         D3D12_HEAP_PROPERTIES upload {};upload.Type=D3D12_HEAP_TYPE_UPLOAD;
         D3D12_RESOURCE_DESC buffer {};buffer.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;
         buffer.Width=(sizeof(call.constants)+255)&~255ull;buffer.Height=buffer.DepthOrArraySize=buffer.MipLevels=1;
@@ -174,7 +176,7 @@ struct Pass {
         void* mapped=nullptr;const D3D12_RANGE none {0,0};Hr(constants->Map(0,&none,&mapped));
         std::memcpy(mapped,&call.constants,sizeof(call.constants));constants->Unmap(0,nullptr);
         const D3D12_CONSTANT_BUFFER_VIEW_DESC cb {constants->GetGPUVirtualAddress(),UINT(buffer.Width)};
-        device->CreateConstantBufferView(&cb,handle(11));
+        device->CreateConstantBufferView(&cb,handle(unsigned(std::size(srv)+std::size(uav))));
         ID3D12DescriptorHeap* tables[] {heap.Get()};list->SetDescriptorHeaps(1,tables);
         list->SetComputeRootSignature(root.Get());list->SetPipelineState(pipeline.Get());
         list->SetComputeRootDescriptorTable(0,heap->GetGPUDescriptorHandleForHeapStart());
@@ -188,11 +190,13 @@ struct Pass {
         unsigned, unsigned, ID3D12Resource* input, ID3D12Resource* answer,
         ID3D12Resource* detail, ID3D12Resource* colour, ID3D12Resource* motion,
         ID3D12Resource* output, ID3D12Resource* secondary = nullptr, ID3D12Resource* depth = nullptr,
-        ID3D12Resource* birthContext = nullptr, ID3D12Resource* oldStability = nullptr, ID3D12Resource* newStability = nullptr)
+        ID3D12Resource* birthContext = nullptr,
+        DlssNrDetailStabilitySample oldStability = {}, DlssNrDetailStabilitySample newStability = {})
     {
-        calls.push_back({constants, {input, answer, detail, colour, motion, output, secondary, depth, birthContext, oldStability, newStability}});
+        calls.push_back({constants, {input, answer, detail, colour, motion, output, secondary, depth, birthContext},
+                         oldStability, newStability});
         if (failCall && calls.size() == failCall) return false;
-        for (auto* resource : {output, secondary, birthContext, newStability}) {
+        for (auto* resource : {output, secondary, birthContext, newStability.residual, newStability.raw}) {
             if (!resource) continue;
             D3D12_RESOURCE_BARRIER barrier {};
             barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
@@ -424,6 +428,7 @@ static void Fresh()
         "answer, residual and birth context use one dispatch");
     Check(world.pass.calls[0].resources[8] == DetailHistory::colourDepth[DetailHistory::activeWrite],
         "same dispatch writes the exact retained birth context");
+    Check(!world.pass.calls[0].next.residual && !world.pass.calls[0].next.raw, "disabled stability allocates no sample");
     Check(world.pass.calls[0].constants.FeedbackHistoryValid == 0, "first frame never samples previous history");
     Check(world.pass.calls[0].resources[0] == world.input.Get() && world.pass.calls[0].resources[1] == world.fresh.Get() &&
         world.pass.calls[0].resources[4] == world.motion.Get() && world.pass.calls[0].resources[7] == world.depth.Get(), "actual fresh/guide bindings reach the shader seam");
@@ -764,19 +769,37 @@ static void StabilityOwnership()
     auto first=world.New();auto second=world.New();Gate gate(world,world.queue.Get());
     auto a=world.Frame(first,1);Check(DetailHistory::Before(a).active,"stabilizer runs independently of long duration");
     Capture(world,a);
-    Check(DetailHistory::stability[0]&&DetailHistory::stability[1],"only enabled stabilizer allocates two residual textures");
-    Check(world.pass.calls.back().resources[10]==DetailHistory::stability[DetailHistory::activeWrite],
-          "one production dispatch writes the exact retained stabilization target");
+    Check(DetailHistory::stability[0] && DetailHistory::stability[1], "enabled stabilizer owns two paired samples");
+    const auto saved = DetailHistory::stability[DetailHistory::activeWrite];
+    Check(DetailHistory::StabilityRawFormat(DXGI_FORMAT_R8G8B8A8_TYPELESS) == DXGI_FORMAT_R8G8B8A8_UNORM &&
+          DetailHistory::StabilityRawFormat(DXGI_FORMAT_R16G16B16A16_FLOAT) == DXGI_FORMAT_R16G16B16A16_FLOAT &&
+          DetailHistory::StabilityRawFormat(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) == DXGI_FORMAT_R32G32B32A32_FLOAT &&
+          saved.raw->GetDesc().Format == DetailHistory::StabilityRawFormat(a.modelInput->GetDesc().Format),
+          "raw storage preserves source precision without always allocating RGBA32F");
+    Check(world.pass.calls.back().next.residual == saved.residual && world.pass.calls.back().next.raw == saved.raw,
+          "one production dispatch writes both surfaces in the exact retained slot");
+    uint64_t expectedBytes = DetailHistory::AllocationBytes(world.device.Get(), DetailHistory::fused->GetDesc());
+    for (unsigned i = 0; i < 2; ++i)
+        for (auto* texture : { DetailHistory::detail[i], DetailHistory::colourDepth[i],
+                               DetailHistory::stability[i].residual, DetailHistory::stability[i].raw })
+            expectedBytes += DetailHistory::AllocationBytes(world.device.Get(), texture->GetDesc());
+    Check(DetailHistory::Status().bytes == expectedBytes, "both source textures count against the unchanged allocation budget");
     world.Execute(first);world.Reset(first);
     auto b=world.Frame(second,2);Check(DetailHistory::Before(b).historyUsable,"published adjacent source feeds both histories");
-    Capture(world,b);world.Execute(second);
+    Capture(world,b);
+    const auto& next = world.pass.calls.back();
+    Check(next.previous.residual == saved.residual && next.previous.raw == saved.raw &&
+          next.next.residual != saved.residual && next.next.raw != saved.raw,
+          "next source reads both halves of the published slot and writes the other slot");
+    world.Execute(second);
     auto use=DetailHistory::recordings.current.resourceUse;
     Check(!use->GpuComplete(),"real queue gate blocks stabilization execution too");
-    DetailHistory::Release();Check(DetailHistory::stability[0],"release cannot free blocked stabilization operands");
+    DetailHistory::Release();Check(bool(DetailHistory::stability[0]),"release cannot free either blocked stabilization operand");
     world.Reset(second);Check(!use->Complete(),"Reset alone never retires stabilization state");
     gate.Open();world.Drain();DetailHistory::Collect();DetailHistory::Release();TickRetired();
-    Check(!DetailHistory::stability[0]&&!DetailHistory::stability[1]&&releasedResources==7,
-          "all seven resources retire only after exact queue completion and Reset");
+    Check(!DetailHistory::stability[0].raw && !DetailHistory::stability[1].raw &&
+          !DetailHistory::stability[0].residual && !DetailHistory::stability[1].residual && releasedResources == 9,
+          "all nine resources retire only after exact queue completion and Reset");
 }
 static const char* cases[] {
     "stability-ownership",
