@@ -80,12 +80,9 @@ $compile = Join-Path $out 'compile.cmd'
 & cmd.exe /d /c $compile *> (Join-Path $out 'compile.log')
 if ($LASTEXITCODE -ne 0) { Get-Content (Join-Path $out 'compile.log') -Tail 20; throw 'Host compile failed' }
 $mode = if ($Sentinel) { 'present-sentinel' } else { 'present' }
-$priorStable = [Environment]::GetEnvironmentVariable('F6_PRESENTATION_REQUIRE_STABLE', 'Process')
-try {
-    [Environment]::SetEnvironmentVariable('F6_PRESENTATION_REQUIRE_STABLE', $(if ($RequireStableNr) { '1' } else { $null }), 'Process')
-    $p = Start-Process -FilePath $exe -ArgumentList @('OptiScaler.dll', $mode) -WorkingDirectory $out -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput (Join-Path $out 'stdout.log') -RedirectStandardError (Join-Path $out 'stderr.log')
-} finally { [Environment]::SetEnvironmentVariable('F6_PRESENTATION_REQUIRE_STABLE', $priorStable, 'Process') }
+if ($RequireStableNr) { $mode += '-strict' }
+$p = Start-Process -FilePath $exe -ArgumentList @('OptiScaler.dll', $mode) -WorkingDirectory $out -WindowStyle Hidden -PassThru `
+    -RedirectStandardOutput (Join-Path $out 'stdout.log') -RedirectStandardError (Join-Path $out 'stderr.log')
 $null = $p.Handle
 $complete = $p.WaitForExit(180000)
 if (!$complete) { $p.Kill(); $p.WaitForExit() } # only this disposable fixture

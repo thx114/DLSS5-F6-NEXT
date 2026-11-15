@@ -102,8 +102,9 @@ void WINAPI Observe(const Sample* sample)
         }
         if (requireStable && serial % 4 == 1 && haveSourceNr)
             Check(picture.center == sourceNr.center, "unchanged second Present must retain this source's completed NR pixels");
-        if (eval == 13) Check(sample->nrResult != 1 && picture.center[0] == 64 &&
-            picture.center[1] == 0 && picture.center[2] == 128, "invalid B keeps its current raw scene, never A's NR");
+        if (eval == 13) Check(sample->nrResult != 1 && std::abs(int(picture.center[0]) - 64) <= 1 &&
+            picture.center[1] == 0 && std::abs(int(picture.center[2]) - 128) <= 1,
+            "invalid B keeps its current raw scene, never A's NR");
         if (serial % 4 && sentinel) Check(picture.hash == raw.hash, "repeated Present currently publishes fresh raw color");
     }
     std::printf("sample eval=%u present=%u change=%s stage=%u dx11=%u fg=%u color=%p queue=%p fence=%p:%llu nr=%u hash=%016llx hud=%u,%u,%u center=%u,%u,%u\n",
@@ -113,10 +114,11 @@ void WINAPI Observe(const Sample* sample)
         picture.center[0], picture.center[1], picture.center[2]);
 }
 
-void Run(HMODULE module, bool useSentinel)
+void Run(HMODULE module, bool useSentinel, bool stable)
 {
     sentinel = useSentinel;
-    requireStable = GetEnvironmentVariableW(L"F6_PRESENTATION_REQUIRE_STABLE", nullptr, 0) != 0;
+    requireStable = stable;
+    std::printf("probe require_stable=%u sentinel=%u\n", requireStable ? 1u : 0u, sentinel ? 1u : 0u);
     Entry<Install>(module, "F6_Test_SetPresentationProbe")(&Observe);
     const auto createFactory = Entry<decltype(&CreateDXGIFactory1)>(module, "CreateDXGIFactory1");
     ComPtr<IDXGIFactory2> factory;

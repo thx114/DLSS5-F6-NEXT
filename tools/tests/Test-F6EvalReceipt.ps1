@@ -3,7 +3,7 @@
 param(
     [string]$Artifact,
     [Parameter(Mandatory)][string]$DlssRuntime,
-    [ValidateSet('interop','skip','native','before-sr','before-sr-typeless','before-sr-auto','before-sr-default','before-sr-managed','before-sr-off','before-sr-other','legacy-shutdown')][string[]]$Cases = @('interop','skip','native','before-sr','before-sr-typeless','before-sr-auto','before-sr-default','before-sr-off','before-sr-other'),
+    [ValidateSet('interop','skip','native','before-sr','before-sr-typeless','before-sr-auto','before-sr-default','before-sr-preloaded','before-sr-managed','before-sr-managed-default','before-sr-managed-off','before-sr-managed-missing','before-sr-managed-bad','before-sr-off','before-sr-other','legacy-shutdown')][string[]]$Cases = @('interop','skip','native','before-sr','before-sr-typeless','before-sr-auto','before-sr-default','before-sr-off','before-sr-other'),
     [switch]$IncludeShutdown,
     [string]$OutputDirectory,
     [string]$CorePath = 'D:/APPS/test/TEST/HoYoShadeHub_Portable_1.4.5.0_x64_Full/HoYoShade/ReShade64.dll',
@@ -27,21 +27,48 @@ $command = 'call "{0}" -no_logo -arch=x64 -host_arch=x64 && cl /nologo /utf-8 /s
 & cmd.exe /d /s /c $command *> $compileLog
 if ($LASTEXITCODE -ne 0) { Get-Content -LiteralPath $compileLog; throw 'F6 V1 host compilation failed' }
 $rows = @()
+function Get-FixtureSelection([string]$Directory)
+{
+    # Compare authored values, allowing the core to add defaults and normalize
+    # path spelling. Byte hashes would mistake these changes for lost settings.
+    $values = @{}
+    foreach ($name in @('ReShade.ini','preset.ini')) {
+        $section = ''
+        foreach ($line in [IO.File]::ReadAllLines((Join-Path $Directory $name))) {
+            if ($line -match '^\s*\[([^]]+)\]\s*$') { $section = $Matches[1]; continue }
+            if ($line -match '^\s*([^;=]+?)\s*=(.*)$') {
+                $values["${name}/${section}/$($Matches[1].Trim())"] = $Matches[2].Trim()
+            }
+        }
+    }
+    [ordered]@{
+        EffectSearchPaths = [IO.Path]::GetFullPath($values['ReShade.ini/GENERAL/EffectSearchPaths'], $Directory)
+        PresetPath = [IO.Path]::GetFullPath($values['ReShade.ini/GENERAL/PresetPath'], $Directory)
+        TutorialProgress = $values['ReShade.ini/OVERLAY/TutorialProgress']
+        Techniques = $values['preset.ini//Techniques']
+        TechniqueSorting = $values['preset.ini//TechniqueSorting']
+    } | ConvertTo-Json -Compress
+}
 foreach ($case in $Cases)
 {
     $path = Join-Path $runRoot $case
     $null = [IO.Directory]::CreateDirectory($path)
     Copy-Item -LiteralPath $artifactPath -Destination (Join-Path $path 'OptiScaler.dll')
     Copy-Item -LiteralPath $runtimePath -Destination (Join-Path $path 'nvngx_dlss.dll')
-    $expectsAdmission = $case -in @('before-sr-typeless','before-sr-auto','before-sr-default','before-sr-managed')
-    if ($expectsAdmission) {
+    $managedFixture = $case.StartsWith('before-sr-managed')
+    $expectsAdmission = $case -in @('before-sr-typeless','before-sr-auto','before-sr-default','before-sr-preloaded','before-sr-managed','before-sr-managed-default')
+    if ($expectsAdmission -or $managedFixture) {
         $coreHash = (Get-FileHash -LiteralPath $CorePath -Algorithm SHA256).Hash
         if ($coreHash -ne '0CEE63F9C9F13F3AC909C5B4903F4DBB4B719A7AB3B4F13B0DEAF83C814B94F7') {
             throw 'Typeless receipt host requires the pinned ReShade core'
         }
         $null = [IO.Directory]::CreateDirectory((Join-Path $path 'HoYoShade'))
-        Copy-Item -LiteralPath $CorePath -Destination (Join-Path $path 'HoYoShade/ReShade64.dll')
-        if ($case -eq 'before-sr-managed') {
+        if ($case -eq 'before-sr-managed-bad') {
+            [IO.File]::WriteAllText((Join-Path $path 'HoYoShade/ReShade64.dll'), 'wrong core identity fixture')
+        } elseif ($case -ne 'before-sr-managed-missing') {
+            Copy-Item -LiteralPath $CorePath -Destination (Join-Path $path 'HoYoShade/ReShade64.dll')
+        }
+        if ($managedFixture) {
             Copy-Item -LiteralPath (Join-Path $root 'OptiScaler/integration/tests/before-sr/Probe.fx') -Destination $path
             [IO.File]::WriteAllText((Join-Path $path 'preset.ini'), "Techniques=Probe@Probe.fx`nTechniqueSorting=Probe@Probe.fx`n")
             [IO.File]::WriteAllText((Join-Path $path 'ReShade.ini'), "[GENERAL]`nEffectSearchPaths=$path`nPresetPath=$path/preset.ini`n[OVERLAY]`nTutorialProgress=4`n")
@@ -50,9 +77,9 @@ foreach ($case in $Cases)
     $backend = if ($case -eq 'native') { 'dlss' } else { 'dlss_12' }
     $skip = if ($case -eq 'skip') { '2' } else { 'auto' }
     $enabledLine = switch ($case) {
-        'before-sr-default' { '' } # Absent key, not an explicit false.
+        { $_ -in @('before-sr-default','before-sr-managed-default') } { '' } # Absent key, not an explicit false.
         'before-sr-auto' { 'Enabled=auto' }
-        { $_ -in @('before-sr','before-sr-typeless','before-sr-other','before-sr-managed') } { 'Enabled=true' }
+        { $_ -in @('before-sr','before-sr-typeless','before-sr-preloaded','before-sr-other','before-sr-managed','before-sr-managed-missing','before-sr-managed-bad') } { 'Enabled=true' }
         default { 'Enabled=false' }
     }
     $stage = if ($case -eq 'before-sr-other') { 2 } else { 1 }
@@ -91,8 +118,9 @@ LogFileName=./OptiScaler.log
     [IO.File]::WriteAllText((Join-Path $path 'OptiScaler.ini'), $ini, [Text.UTF8Encoding]::new($false))
     $hostArguments = @('OptiScaler.dll', $case)
     if ($IncludeShutdown) { $hostArguments += 'shutdown' }
+    $selectionBefore = if ($managedFixture) { Get-FixtureSelection $path } else { $null }
     $caseExe = $exe
-    if ($case -eq 'before-sr-managed') {
+    if ($managedFixture) {
         $caseExe = Join-Path $path 'F6EvalReceiptHost.exe'
         Copy-Item -LiteralPath $exe -Destination $caseExe
     }
@@ -115,11 +143,24 @@ LogFileName=./OptiScaler.log
                 $_ -match 'HoYoShade BeforeSR input .*source_format=27 .*input_query=current-input input_view=28 .*producer_storage=27 .*producer_color=producer-sdr .*sdr=true '
             })
         }
-        $passed = $passed -and $(if ($case -eq 'before-sr-managed') { $admission.Count -ge 6 } else { $admission.Count -eq 6 })
+        $passed = $passed -and $(if ($managedFixture) { $admission.Count -ge 6 } else { $admission.Count -eq 6 })
+    }
+    $configCount = $null
+    $selectionPreserved = $null
+    if ($managedFixture) {
+        $configs = @(Get-ChildItem -LiteralPath $path -Filter 'ReShade*.ini' -File -Recurse)
+        $configCount = $configs.Count
+        $selectionPreserved = $selectionBefore -eq (Get-FixtureSelection $path)
+        $passed = $passed -and $configCount -eq 1 -and $configs[0].FullName -eq (Join-Path $path 'ReShade.ini') -and $selectionPreserved
+        if ($case -in @('before-sr-managed-missing','before-sr-managed-bad')) {
+            $passed = $passed -and (Select-String -LiteralPath (Join-Path $path 'OptiScaler.log') `
+                -SimpleMatch 'result=core-disk-identity-rejected accepted=false' -Quiet)
+        }
     }
     $rows += [pscustomobject]@{
         Case=$case; Path=$path; PID=$process.Id; Exit=$process.ExitCode; Timeout=(!$complete); Pass=$passed
         TypelessSdrAdmissions=$admission.Count
+        MainIniCount=$configCount; AuthoredSelectionPreserved=$selectionPreserved
         AdmissionEvidence=$admission
         VendorShutdownExercised=([bool]$IncludeShutdown -or $case -eq 'legacy-shutdown')
         ArtifactSHA256=(Get-FileHash -LiteralPath (Join-Path $path 'OptiScaler.dll')).Hash

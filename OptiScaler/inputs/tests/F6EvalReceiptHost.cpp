@@ -189,9 +189,11 @@ int wmain(int argc, wchar_t** argv)
     const bool skip = std::wstring_view(argv[2]) == L"skip";
     const bool native = std::wstring_view(argv[2]) == L"native";
     const std::wstring_view mode(argv[2]);
-    const bool managed = mode == L"before-sr-managed";
-    const bool typeless = managed || mode == L"before-sr-typeless" || mode == L"before-sr-auto" || mode == L"before-sr-default";
-    const bool beforeSr = std::wstring_view(argv[2]) == L"before-sr" || typeless;
+    const bool managed = mode == L"before-sr-managed" || mode == L"before-sr-managed-default";
+    const bool preloaded = mode == L"before-sr-preloaded";
+    const bool typeless = managed || preloaded || mode == L"before-sr-typeless" || mode == L"before-sr-auto" || mode == L"before-sr-default";
+    const bool beforeSr = mode == L"before-sr" || typeless ||
+        mode == L"before-sr-managed-missing" || mode == L"before-sr-managed-bad";
     const bool legacyOnly = std::wstring_view(argv[2]) == L"legacy-shutdown";
     const bool includeShutdown = legacyOnly || (argc == 4 && std::wstring_view(argv[3]) == L"shutdown");
     if (typeless && !managed) {
@@ -201,12 +203,16 @@ int wmain(int argc, wchar_t** argv)
                           L"RESHADE_DISABLE_INPUT_HOOK", L"RESHADE_DISABLE_NETWORK_HOOK"})
             Check(SetEnvironmentVariableW(name, L"1") != FALSE, "set isolated core environment");
     }
+    if (preloaded)
+        Check(LoadLibraryW(std::filesystem::absolute(L"HoYoShade/ReShade64.dll").c_str()) != nullptr,
+            "external loader creates the core before F6 loads");
     const auto module = LoadLibraryW(argv[1]);
     Check(module != nullptr, "load isolated F6 DLL");
 #if defined(F6_PRESENTATION_HOST)
-    if (mode == L"present" || mode == L"present-sentinel")
+    if (mode == L"present" || mode == L"present-sentinel" || mode == L"present-strict" || mode == L"present-sentinel-strict")
     {
-        PresentationHost::Run(module, mode == L"present-sentinel");
+        PresentationHost::Run(module, mode == L"present-sentinel" || mode == L"present-sentinel-strict",
+            mode == L"present-strict" || mode == L"present-sentinel-strict");
         ExitProcess(0);
     }
 #endif
@@ -261,7 +267,7 @@ int wmain(int argc, wchar_t** argv)
         // Load after Init installs the callback, so even a fast connection
         // cannot publish its acceptance before the host can observe it.
         const auto corePath = std::filesystem::absolute(L"HoYoShade/ReShade64.dll");
-        if (!managed) {
+        if (!managed && !preloaded) {
             const auto core = LoadLibraryW(corePath.c_str());
             if (!core) std::fprintf(stderr, "ReShade LoadLibrary error=%lu\n", GetLastError());
             Check(core != nullptr, "load fixture's pinned ReShade core");
@@ -271,11 +277,12 @@ int wmain(int argc, wchar_t** argv)
         // would otherwise miss the BeforeSR admission branch entirely.
         const auto deadline = GetTickCount64() + 10000;
         while (!coreConnected.load(std::memory_order_acquire) && GetTickCount64() < deadline) {
-            if (managed) ReadEarlyConnection();
+            ReadEarlyConnection();
             Sleep(100);
         }
         Check(coreConnected.load(std::memory_order_acquire),
               "production core connection accepted before typeless admission");
+        if (preloaded) Check(!coreManaged.load(), "preloaded core remains externally owned");
     }
     uint64_t request = 20;
     if (managed) {
@@ -355,6 +362,8 @@ int wmain(int argc, wchar_t** argv)
     }
     Check(beforeSrQueries == expectedQueries && beforeSrMismatches == 0,
         "BeforeSR query receives this call's original DX11 resources only when requested");
+    if (mode == L"before-sr-managed-missing" || mode == L"before-sr-managed-bad" || mode == L"before-sr-managed-off")
+        Check(GetModuleHandleW(L"ReShade64.dll") == nullptr, "disabled, missing or rejected core never loads a module");
     std::printf("before_sr queries=%u mismatches=%u enabled=%u transfer=%s typeless=%u\n",
         beforeSrQueries, beforeSrMismatches, beforeSr ? 1u : 0u, typeless ? "srgb" : "unknown", typeless ? 1u : 0u);
     if (includeShutdown) Ngx(shutdown(device.Get()), "shutdown after all handles and readbacks");
