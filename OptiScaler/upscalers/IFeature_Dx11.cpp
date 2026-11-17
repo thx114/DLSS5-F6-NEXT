@@ -318,7 +318,9 @@ bool IFeature_Dx11::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext,
     }
     UpscalerTime->Start(InDeviceContext);
 
-    auto evalResult = EvaluateInternal(InDeviceContext, InParameters);
+    const auto evaluation = EvaluateInternal(InDeviceContext, InParameters);
+    const bool evalResult = evaluation != FeatureEvaluation::Failed;
+    const bool hasOutput = evaluation == FeatureEvaluation::OutputRecorded;
 
     UpscalerTime->End(InDeviceContext);
     restoreColor.Restore();
@@ -331,7 +333,7 @@ bool IFeature_Dx11::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext,
     // Iterate FORWARDS to execute the shaders in the defined order
     for (auto& pass : pipeline)
     {
-        if (!evalResult)
+        if (!hasOutput)
             break;
         if (pass.inputBuffer && pass.outputBuffer)
         {
@@ -344,7 +346,7 @@ bool IFeature_Dx11::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext,
     }
 
     // imgui
-    if (evalResult && !pipelineFailed && !Config::Instance()->OverlayMenu.value_or_default() && _frameCount > 30)
+    if (hasOutput && !pipelineFailed && !Config::Instance()->OverlayMenu.value_or_default() && _frameCount > 30)
     {
         if (Imgui != nullptr && Imgui.get() != nullptr)
         {
@@ -393,8 +395,8 @@ bool IFeature_Dx11::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext,
 
     _frameCount++;
 
-    if (orderedOutput && evalResult && !pipelineFailed && outputChainComplete && paramOutput &&
-        SuccessfulEvaluateRecordsOutput() && InDeviceContext->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+    if (orderedOutput && hasOutput && !pipelineFailed && outputChainComplete && paramOutput &&
+        InDeviceContext->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
     {
         ID3D11Resource* restored = nullptr;
         ComPtr<ID3D11Device> contextDevice, outputDevice;

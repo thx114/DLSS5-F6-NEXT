@@ -2,9 +2,14 @@
 
 #include <memory>
 #include <utility>
+#include <optional>
+#include <cstdint>
+
+enum class Upscaler;
 
 struct ID3D12Device;
 struct ID3D11Device;
+struct ID3D11DeviceContext;
 struct NVSDK_NGX_Handle;
 namespace interop { struct BeforeSrInput; }
 namespace neo::ngx { struct F6EvalReceiptV1; }
@@ -37,6 +42,9 @@ template <typename FeatureType> struct ContextData
     std::unique_ptr<FeatureType> feature;
     NVSDK_NGX_Parameter* createParams = nullptr;
     int changeBackendCounter = 0;
+    // The selected/fallback target belongs to this rebuild, across all phases.
+    std::optional<Upscaler> rebuildBackend;
+    uint64_t rebuildRequestRevision = 0;
 
     ContextData() = default;
     ContextData(const ContextData&) = delete;
@@ -54,6 +62,8 @@ template <typename FeatureType> struct ContextData
             feature = std::move(other.feature);
             createParams = std::exchange(other.createParams, nullptr);
             changeBackendCounter = std::exchange(other.changeBackendCounter, 0);
+            rebuildBackend = std::exchange(other.rebuildBackend, std::nullopt);
+            rebuildRequestRevision = std::exchange(other.rebuildRequestRevision, 0);
         }
         return *this;
     }

@@ -1,5 +1,6 @@
 #pragma once
 #include "IFeature.h"
+#include "FeatureEvaluation.h"
 
 #include <menu/menu_dx11.h>
 #include <shaders/rcas/RCAS_Dx11.h>
@@ -38,8 +39,7 @@ class IFeature_Dx11 : public virtual IFeature
     std::unique_ptr<GpuTime_Dx11> UpscalerTime = nullptr;
 
     virtual bool InitInternal(ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters) = 0;
-    virtual bool EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters) = 0;
-    virtual bool SuccessfulEvaluateRecordsOutput() const { return false; }
+    virtual FeatureEvaluation EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters) = 0;
 
   public:
     // Only DX11 w/DX12 should be overriding those
@@ -47,7 +47,7 @@ class IFeature_Dx11 : public virtual IFeature
     virtual bool Evaluate(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters);
 
     // Call-local delivery evidence, separate from legacy success/fallback.
-    // Only audited providers and a complete final-output pass chain opt in.
+    // A provider must record output and complete the final-output pass chain.
     // beforeSr is borrowed only during this evaluation, independently of output
     // delivery; native providers keep their existing processing path.
     virtual bool EvaluateWithOutput(ID3D11DeviceContext* context, NVSDK_NGX_Parameter* parameters,

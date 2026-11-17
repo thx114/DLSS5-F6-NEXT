@@ -84,14 +84,14 @@ bool DLSSFeatureDx12::InitDLSS(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
     return true;
 }
 
-bool DLSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
+FeatureEvaluation DLSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
 {
     if (_routedRelease && !_nativeRelease.Acquired())
-        return false;
+        return FeatureEvaluation::Failed;
     if (!_moduleLoaded)
     {
         LOG_ERROR("nvngx.dll or _nvngx.dll is not loaded!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     NVSDK_NGX_Result nvResult;
@@ -105,18 +105,18 @@ bool DLSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         if (nvResult != NVSDK_NGX_Result_Success)
         {
             LOG_ERROR("_EvaluateFeature result: {0:X}", (unsigned int) nvResult);
-            return false;
+            return FeatureEvaluation::Failed;
         }
     }
     else
     {
         LOG_ERROR("_EvaluateFeature is nullptr");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     _frameCount++;
 
-    return true;
+    return FeatureEvaluation::OutputRecorded;
 }
 
 void DLSSFeatureDx12::Shutdown(ID3D12Device* InDevice)

@@ -236,14 +236,14 @@ bool XeSSFeature_Dx11::InitInternal(ID3D11DeviceContext* InContext, NVSDK_NGX_Pa
     return true;
 }
 
-bool XeSSFeature_Dx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters)
+FeatureEvaluation XeSSFeature_Dx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters)
 {
     LOG_FUNC();
 
     if (!IsInited() || !_xessContext || !ModuleLoaded())
     {
         LOG_ERROR("Not inited!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     if (State::Instance().xessDebug)
@@ -293,7 +293,7 @@ bool XeSSFeature_Dx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
     else
     {
         LOG_ERROR("Color not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D11Resource* paramVelocity = nullptr;
@@ -308,7 +308,7 @@ bool XeSSFeature_Dx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
     else
     {
         LOG_ERROR("MotionVectors not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D11Resource* paramOutput = nullptr;
@@ -323,7 +323,7 @@ bool XeSSFeature_Dx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
     else
     {
         LOG_ERROR("Output not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     if (LowResMV())
@@ -340,7 +340,7 @@ bool XeSSFeature_Dx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
         else
         {
             LOG_ERROR("Depth not exist!!");
-            return false;
+            return FeatureEvaluation::Failed;
         }
     }
 
@@ -389,7 +389,7 @@ bool XeSSFeature_Dx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
         LOG_WARN("Bias mask not exist and its enabled in config, it may cause problems!!");
         Config::Instance()->DisableReactiveMask = true;
         State::Instance().changeBackend[_handle->Id] = true;
-        return true;
+        return FeatureEvaluation::NoOutput;
     }
 
     _hasColor = params.pColorTexture != nullptr;
@@ -410,7 +410,7 @@ bool XeSSFeature_Dx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
         if (xessResult != XESS_RESULT_SUCCESS)
         {
             LOG_ERROR("xessSetVelocityScale: {0}", ResultToString(xessResult));
-            return false;
+            return FeatureEvaluation::Failed;
         }
     }
     else
@@ -435,10 +435,10 @@ bool XeSSFeature_Dx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
     if (xessResult != XESS_RESULT_SUCCESS)
     {
         LOG_ERROR("D3D11Execute error: {0}", ResultToString(xessResult));
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
-    return true;
+    return FeatureEvaluation::OutputRecorded;
 }
 
 XeSSFeature_Dx11::XeSSFeature_Dx11(unsigned int handleId, NVSDK_NGX_Parameter* InParameters)

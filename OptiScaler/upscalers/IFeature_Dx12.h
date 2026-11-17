@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include "IFeature.h"
+#include "FeatureEvaluation.h"
 
 #include "SysUtils.h"
 #include <Util.h>
@@ -64,10 +65,7 @@ class IFeature_Dx12 : public virtual IFeature
                          D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState) const;
 
     virtual bool InitInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) = 0;
-    virtual bool EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) = 0;
-    // Opt in only after auditing every successful internal return. Some legacy
-    // backends return true to request a rebuild without recording any output.
-    virtual bool SuccessfulEvaluateRecordsOutput() const { return false; }
+    virtual FeatureEvaluation EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) = 0;
 
   public:
     // A caller retaining the complete feature must honor failure before any
@@ -77,7 +75,7 @@ class IFeature_Dx12 : public virtual IFeature
     bool Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters,
                   ID3D12Resource** recordedOutput = nullptr);
     // Internal Bridge entry; the caller retains ownership of slot/fence admission.
-    // Backend virtual EvaluateInternal implementations remain unchanged.
+    // The provider result still distinguishes a rebuild from recorded output.
     bool EvaluateForRecordingSlot(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters,
                                   UINT recordingSlot, bool isolatePassResources = false);
     // Only the selected DLSS path without the shared inline menu is covered.

@@ -187,20 +187,40 @@ bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
     return loaded;
 }
 
-bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device, ID3D11DeviceContext* devContext,
+bool FeatureProvider_Dx11::ChangeFeature(ID3D11Device* device, ID3D11DeviceContext* devContext,
                                          UINT handleId, NVSDK_NGX_Parameter* parameters,
                                          ContextData<IFeature_Dx11>* contextData, bool preserveDx12Fallback)
 {
     State& state = State::Instance();
     Config& cfg = *Config::Instance();
 
-    const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && state.newBackend == Upscaler::DLSS;
-    if (state.newBackend == Upscaler::Reset || dlssOnNonCapable)
-        state.newBackend = ResolveBackend(cfg.Dx11Upscaler, taa::source_output::current && taa::source_output::current->Valid() &&
-                taa::source_output::current->handle==handleId &&
-                taa::source_output::current->context==reinterpret_cast<uintptr_t>(devContext) &&
-                taa::source_output::current->parameters==reinterpret_cast<uintptr_t>(parameters),
-            cfg.Dx12Upscaler, IdentifyGpu::getPrimaryGpu().dlssCapable, NVNGXProxy::IsDx11Inited());
+    // A pending menu selection is not an Apply. Snapshot the committed request
+    // before Retire; a newer Apply can supersede a queued fallback, and will be
+    // replayed after an already-started rebuild has finished initialization.
+    if (contextData->changeBackendCounter == 0)
+    {
+        const auto revision = BackendSelection::Dx11Revision();
+        if (revision != contextData->rebuildRequestRevision)
+            contextData->rebuildBackend.reset();
+        contextData->rebuildRequestRevision = revision;
+    }
+    if (!contextData->rebuildBackend)
+    {
+        if (contextData->feature && contextData->feature->GetUpscalerType() == Upscaler::DLSSD)
+            contextData->rebuildBackend = Upscaler::DLSSD;
+        else
+            contextData->rebuildBackend = ResolveBackend(cfg.Dx11Upscaler,
+                taa::source_output::current && taa::source_output::current->Valid() &&
+                    taa::source_output::current->handle==handleId &&
+                    taa::source_output::current->context==reinterpret_cast<uintptr_t>(devContext) &&
+                    taa::source_output::current->parameters==reinterpret_cast<uintptr_t>(parameters),
+                cfg.Dx12Upscaler, IdentifyGpu::getPrimaryGpu().dlssCapable, NVNGXProxy::IsDx11Inited());
+    }
+    auto& target = *contextData->rebuildBackend;
+    const auto clearAppliedSelection = [&] {
+        if (cfg.Dx11Upscaler.has_value() && state.newBackend == cfg.Dx11Upscaler.value())
+            state.newBackend = Upscaler::Reset;
+    };
 
     // Rebuild requests have no exposure-only provenance here. Preserve unknown or
     // mixed requests, including required size/device/backend rebuilds. Reject
@@ -226,10 +246,10 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
 
         if (contextData->feature != nullptr)
         {
-            LOG_INFO("changing backend to {0}", UpscalerDisplayName(state.newBackend));
+            LOG_INFO("changing backend to {0}", UpscalerDisplayName(target));
 
-            const bool isPassthrough = state.newBackend == Upscaler::DLSSD || state.newBackend == Upscaler::DLSS ||
-                                       state.newBackend == Upscaler::DLSS_on12;
+            const bool isPassthrough = target == Upscaler::DLSSD || target == Upscaler::DLSS ||
+                                       target == Upscaler::DLSS_on12;
             auto retired = FeatureTransition::Prepare(*contextData, parameters, isPassthrough,
                 []() -> ContextData<IFeature_Dx11>::ParameterOwner {
                     return { GetNGXParameters(API::DX11, false),
@@ -239,6 +259,7 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
             {
                 LOG_ERROR("Cannot prepare upscaler replacement; current feature retained");
                 contextData->changeBackendCounter = 0;
+                contextData->rebuildBackend.reset();
                 return false;
             }
 
@@ -252,7 +273,7 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
         {
             LOG_ERROR("can't find handle {0} in Dx11Contexts!", handleId);
 
-            state.newBackend = Upscaler::Reset;
+            contextData->rebuildBackend.reset();
             state.changeBackend[handleId] = false;
 
             contextData->ClearCreateParams();
@@ -267,18 +288,18 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
 
     if (phase == FeatureTransition::Phase::Construct)
     {
-        LOG_INFO("Creating new {} upscaler", UpscalerDisplayName(state.newBackend));
+        LOG_INFO("Creating new {} upscaler", UpscalerDisplayName(target));
 
         contextData->feature.reset();
 
-        if (!GetFeature(state.newBackend, handleId, contextData->createParams, &contextData->feature,
+        if (!GetFeature(target, handleId, contextData->createParams, &contextData->feature,
                         preserveDx12Fallback))
         {
             LOG_ERROR("Upscaler can't created");
             contextData->feature.reset();
             contextData->ClearCreateParams();
             contextData->changeBackendCounter = 0;
-            state.newBackend = Upscaler::Reset;
+            contextData->rebuildBackend.reset();
             state.changeBackend[handleId] = false;
             return false;
         }
@@ -300,20 +321,30 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
 
         contextData->changeBackendCounter = 0;
 
+        if (BackendSelection::Dx11Revision() != contextData->rebuildRequestRevision)
+        {
+            // This completed instance still owns its original GPU lifetime.
+            // Retire it through the normal next rebuild before applying the new request.
+            contextData->rebuildBackend.reset();
+            state.changeBackend[handleId] = true;
+            return false;
+        }
+
         if (!initResult || !contextData->feature->ModuleLoaded())
         {
             LOG_ERROR("init failed with {0} feature", UpscalerDisplayName(contextData->feature->GetUpscalerType()));
 
-            if (state.newBackend != Upscaler::DLSSD)
+            if (target != Upscaler::DLSSD)
             {
-                state.newBackend = FallbackUpscaler(contextData->feature->GetUpscalerType(), preserveDx12Fallback);
+                target = FallbackUpscaler(contextData->feature->GetUpscalerType(), preserveDx12Fallback);
                 state.changeBackend[handleId] = true;
                 ImGui::InsertNotification({ ImGuiToastType::Warning, 10000,
-                    state.newBackend == Upscaler::FSR22_on12 ? "Falling back to FSR 2.2 (DX12 bridge)" : "Falling back to FSR 2.2" });
+                    target == Upscaler::FSR22_on12 ? "Falling back to FSR 2.2 (DX12 bridge)" : "Falling back to FSR 2.2" });
             }
             else
             {
-                state.newBackend = Upscaler::Reset;
+                clearAppliedSelection();
+                contextData->rebuildBackend.reset();
                 state.changeBackend[handleId] = false;
             }
 
@@ -324,7 +355,8 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
             LOG_INFO("init successful for {0}, upscaler changed",
                      UpscalerDisplayName(contextData->feature->GetUpscalerType()));
 
-            state.newBackend = Upscaler::Reset;
+            clearAppliedSelection();
+            contextData->rebuildBackend.reset();
             state.changeBackend[handleId] = false;
         }
 

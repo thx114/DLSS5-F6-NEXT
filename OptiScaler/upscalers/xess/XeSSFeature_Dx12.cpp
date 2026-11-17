@@ -13,14 +13,14 @@ bool XeSSFeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList, NVS
     return InitXeSS(Device, InParameters);
 }
 
-bool XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
+FeatureEvaluation XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
 {
     LOG_FUNC();
 
     if (!_xessContext || !ModuleLoaded())
     {
         LOG_ERROR("Not inited!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     xess_result_t xessResult;
@@ -90,7 +90,7 @@ bool XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     else
     {
         LOG_ERROR("Color not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     if (InParameters->Get(NVSDK_NGX_Parameter_MotionVectors, &params.pVelocityTexture) != NVSDK_NGX_Result_Success)
@@ -119,7 +119,7 @@ bool XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     else
     {
         LOG_ERROR("MotionVectors not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D12Resource* paramOutput;
@@ -144,7 +144,7 @@ bool XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     else
     {
         LOG_ERROR("Output not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     if (LowResMV())
@@ -165,7 +165,7 @@ bool XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         else
         {
             LOG_ERROR("Depth not exist!!");
-            return false;
+            return FeatureEvaluation::Failed;
         }
     }
 
@@ -189,7 +189,7 @@ bool XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
             LOG_WARN("AutoExposure disabled but ExposureTexture is not exist, it may cause problems!!");
             State::Instance().autoExposure = true;
             State::Instance().changeBackend[_handle->Id] = true;
-            return true;
+            return FeatureEvaluation::NoOutput;
         }
     }
     else
@@ -208,7 +208,7 @@ bool XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
                 Config::Instance()->DisableReactiveMask = false;
                 LOG_WARN("Reactive mask exist but not enabled, enabling it!");
                 State::Instance().changeBackend[_handle->Id] = true;
-                return true;
+                return FeatureEvaluation::NoOutput;
             }
 
             LOG_DEBUG("Using FSR reactive mask");
@@ -230,7 +230,7 @@ bool XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
                 Config::Instance()->DisableReactiveMask = false;
                 LOG_WARN("Reactive mask exist but not enabled, enabling it!");
                 State::Instance().changeBackend[_handle->Id] = true;
-                return true;
+                return FeatureEvaluation::NoOutput;
             }
 
             if (Config::Instance()->MaskResourceBarrier.has_value())
@@ -259,7 +259,7 @@ bool XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         LOG_WARN("Bias mask not exist and its enabled in config, it may cause problems!!");
         Config::Instance()->DisableReactiveMask = true;
         State::Instance().changeBackend[_handle->Id] = true;
-        return true;
+        return FeatureEvaluation::NoOutput;
     }
 
     _hasColor = params.pColorTexture != nullptr;
@@ -280,7 +280,7 @@ bool XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         if (xessResult != XESS_RESULT_SUCCESS)
         {
             LOG_ERROR("xessSetVelocityScale: {0}", ResultToString(xessResult));
-            return false;
+            return FeatureEvaluation::Failed;
         }
     }
     else
@@ -305,7 +305,7 @@ bool XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     if (xessResult != XESS_RESULT_SUCCESS)
     {
         LOG_ERROR("xessD3D12Execute error: {0}", ResultToString(xessResult));
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     // restore resource states
@@ -336,7 +336,7 @@ bool XeSSFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
 
     _frameCount++;
 
-    return true;
+    return FeatureEvaluation::OutputRecorded;
 }
 
 XeSSFeatureDx12::~XeSSFeatureDx12() {}

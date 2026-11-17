@@ -24,7 +24,7 @@ class XeSSFeatureDx12 : public XeSSFeature, public IFeature_Dx12
     }
 
     bool InitInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
-    bool EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
+    FeatureEvaluation EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
 
     bool IsWithDx12() final { return false; }
 

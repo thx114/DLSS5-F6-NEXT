@@ -129,7 +129,7 @@ Upscaler WantedBackend()
 class OpticalInputOwner final : public IFeature_Dx12
 {
     bool InitInternal(ID3D12GraphicsCommandList*, NVSDK_NGX_Parameter*) override { return true; }
-    bool EvaluateInternal(ID3D12GraphicsCommandList*, NVSDK_NGX_Parameter*) override { return false; }
+    FeatureEvaluation EvaluateInternal(ID3D12GraphicsCommandList*, NVSDK_NGX_Parameter*) override { return FeatureEvaluation::Failed; }
 public:
     OpticalInputOwner(unsigned int id, NVSDK_NGX_Parameter* params, ID3D12Device* device)
         : IFeature(id, params), IFeature_Dx12(id, params)

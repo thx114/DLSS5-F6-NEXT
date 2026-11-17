@@ -607,7 +607,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
 
         Dx11Contexts[handleId] = {};
 
-        // The authenticated producer still requires its DLSS-specific receipt.
+        // All providers must return the exact current output receipt.
         if (!FeatureProvider_Dx11::GetFeature(upscalerChoice, handleId, InParameters, &Dx11Contexts[handleId].feature,
                                              true))
         {
@@ -629,6 +629,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
         }
     }
 
+    // Register every successfully created handle immediately. A later menu Apply
+    // must reach handles that have not issued their first Evaluate yet.
+    State::Instance().changeBackend[handleId] = false;
     State::Instance().api = DX11;
     auto deviceContext = Dx11Contexts[handleId].feature.get();
     *OutHandle = deviceContext->Handle();
@@ -658,8 +661,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
 
     LOG_ERROR("CreateFeature failed");
 
-    State::Instance().newBackend = FeatureProvider_Dx11::FallbackUpscaler(
+    Dx11Contexts[handleId].rebuildBackend = FeatureProvider_Dx11::FallbackUpscaler(
         deviceContext->GetUpscalerType(), true);
+    Dx11Contexts[handleId].rebuildRequestRevision = BackendSelection::Dx11Revision();
     State::Instance().changeBackend[handleId] = true;
 
     return NVSDK_NGX_Result_Success;
@@ -862,7 +866,7 @@ static NVSDK_NGX_Result EvaluateDx11(ID3D11DeviceContext* InDevCtx,
 
     if (state.changeBackend[handleId])
     {
-        auto successfulPhase = FeatureProvider_Dx11::ChangeFeature(state.newBackend, D3D11Device, InDevCtx, handleId,
+        auto successfulPhase = FeatureProvider_Dx11::ChangeFeature(D3D11Device, InDevCtx, handleId,
                                                                    InParameters, activeContext,
                                                                    true);
 
@@ -949,7 +953,8 @@ static NVSDK_NGX_Result EvaluateDx11(ID3D11DeviceContext* InDevCtx,
          upscaler == Upscaler::DLSS || upscaler == Upscaler::FFX_on12))
     {
         ImGui::InsertNotification({ ImGuiToastType::Error, 10000, "Upscaler failed to run!" });
-        state.newBackend = fallback;
+        activeContext->rebuildBackend = fallback;
+        activeContext->rebuildRequestRevision = BackendSelection::Dx11Revision();
         state.changeBackend[handleId] = true;
     }
 

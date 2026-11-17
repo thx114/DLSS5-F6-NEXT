@@ -8,12 +8,11 @@ class DLSSDFeatureDx12 : public DLSSDFeature, public IFeature_Dx12
 {
   private:
   protected:
-    bool SuccessfulEvaluateRecordsOutput() const override { return true; }
     bool InitDLSSD(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters);
 
   public:
     bool InitInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
-    bool EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
+    FeatureEvaluation EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
 
     feature_version Version() override { return DLSSDFeature::Version(); }
     Upscaler GetUpscalerType() const final { return DLSSDFeature::GetUpscalerType(); }

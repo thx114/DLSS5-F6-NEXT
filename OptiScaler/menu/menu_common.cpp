@@ -1,4 +1,5 @@
 ﻿#include "pch.h"
+#include <upscalers/BackendSelection.h>
 
 #if defined(_MSC_VER)
 #pragma execution_character_set("utf-8")
@@ -3610,8 +3611,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         {
             ImGui::SameLine(0.0f, 6.0f);
 
-            if (MenuText::Button("切换超分##2") && state.newBackend != Upscaler::Reset &&
-                state.newBackend != currentBackend)
+            if (MenuText::Button("切换超分##2") && state.newBackend != Upscaler::Reset)
             {
                 if (state.newBackend == Upscaler::XeSS)
                 {
@@ -3620,6 +3620,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                     config->DlssReactiveMaskBias.reset();
                 }
 
+                BackendSelection::Commit(state.api, state.newBackend, *config);
                 MARK_ALL_BACKENDS_CHANGED();
             }
         }

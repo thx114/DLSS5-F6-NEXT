@@ -19,7 +19,7 @@ class FFXFeatureDx12 : public FFXFeature, public IFeature_Dx12
     FFXFeatureDx12(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters);
 
     bool InitInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
-    bool EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
+    FeatureEvaluation EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
     bool QueryProviders(ID3D12Device* device);
 
     feature_version Version() override { return FFXFeature::Version(); }

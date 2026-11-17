@@ -3,6 +3,7 @@
 #include "SysUtils.h"
 
 #include "IFeature_Dx11.h"
+#include "BackendSelection.h"
 
 #include <inputs/NVNGX_DLSS.h>
 
@@ -14,9 +15,7 @@ class FeatureProvider_Dx11
     static constexpr Upscaler ResolveBackend(std::optional<Upscaler> requested, bool taaInput,
         std::optional<Upscaler> dx12Preference, bool dlssCapable, bool nativeNgxReady)
     {
-        if (requested) return *requested;
-        if (taaInput && dx12Preference == Upscaler::DLSS && dlssCapable) return Upscaler::DLSS_on12;
-        return dlssCapable && nativeNgxReady ? Upscaler::DLSS : Upscaler::FSR22;
+        return BackendSelection::ResolveDx11(requested, taaInput, dx12Preference, dlssCapable, nativeNgxReady);
     }
 
     // Preserve only an explicit bridge request. Native and unknown requests
@@ -51,7 +50,7 @@ class FeatureProvider_Dx11
     static bool GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_Parameter* parameters,
                            std::unique_ptr<IFeature_Dx11>* feature, bool preserveDx12Fallback);
 
-    static bool ChangeFeature(Upscaler upscaler, ID3D11Device* device, ID3D11DeviceContext* cmdList, UINT handleId,
+    static bool ChangeFeature(ID3D11Device* device, ID3D11DeviceContext* cmdList, UINT handleId,
                               NVSDK_NGX_Parameter* parameters, ContextData<IFeature_Dx11>* contextData,
                               bool preserveDx12Fallback);
 };

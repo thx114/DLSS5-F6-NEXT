@@ -88,7 +88,7 @@ bool CreateBufferResourceWithSize(ID3D12Device* device, ID3D12Resource* source, 
     return true;
 }
 
-bool FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
+FeatureEvaluation FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
 {
     LOG_FUNC();
 
@@ -229,7 +229,7 @@ bool FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, 
     else
     {
         LOG_ERROR("Color not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D12Resource* paramVelocity;
@@ -260,7 +260,7 @@ bool FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, 
     else
     {
         LOG_ERROR("MotionVectors not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D12Resource* paramOutput;
@@ -281,7 +281,7 @@ bool FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, 
     else
     {
         LOG_ERROR("Output not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D12Resource* paramDepth;
@@ -304,7 +304,7 @@ bool FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, 
         LOG_ERROR("Depth not exist!!");
 
         if (LowResMV())
-            return false;
+            return FeatureEvaluation::Failed;
     }
 
     ID3D12Resource* paramExp = nullptr;
@@ -333,7 +333,7 @@ bool FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, 
             LOG_DEBUG("AutoExposure disabled but ExposureTexture is not exist, it may cause problems!!");
             State::Instance().autoExposure = true;
             State::Instance().changeBackend[Handle()->Id] = true;
-            return true;
+            return FeatureEvaluation::NoOutput;
         }
     }
 
@@ -591,7 +591,7 @@ bool FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, 
             State::Instance().changeBackend[Handle()->Id] = true;
         }
 
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     // restore resource states
@@ -621,7 +621,7 @@ bool FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, 
 
     _frameCount++;
 
-    return true;
+    return FeatureEvaluation::OutputRecorded;
 }
 
 bool FFXFeatureDx12::InitFFX(const NVSDK_NGX_Parameter* InParameters)

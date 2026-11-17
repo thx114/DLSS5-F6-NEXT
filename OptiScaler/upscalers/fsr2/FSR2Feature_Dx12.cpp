@@ -15,7 +15,7 @@ bool FSR2FeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList, NVS
     return InitFSR2(InParameters);
 }
 
-bool FSR2FeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
+FeatureEvaluation FSR2FeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
 {
     LOG_FUNC();
 
@@ -68,7 +68,7 @@ bool FSR2FeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     else
     {
         LOG_ERROR("Color not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D12Resource* paramVelocity;
@@ -100,7 +100,7 @@ bool FSR2FeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     else
     {
         LOG_ERROR("MotionVectors not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D12Resource* paramOutput;
@@ -122,7 +122,7 @@ bool FSR2FeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     else
     {
         LOG_ERROR("Output not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D12Resource* paramDepth;
@@ -144,7 +144,7 @@ bool FSR2FeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     else
     {
         LOG_ERROR("Depth not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D12Resource* paramExp = nullptr;
@@ -174,7 +174,7 @@ bool FSR2FeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
             LOG_DEBUG("AutoExposure disabled but ExposureTexture is not exist, it may cause problems!!");
             State::Instance().autoExposure = true;
             State::Instance().changeBackend[Handle()->Id] = true;
-            return true;
+            return FeatureEvaluation::NoOutput;
         }
     }
 
@@ -312,7 +312,7 @@ bool FSR2FeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     if (result != FFX_OK)
     {
         LOG_ERROR("ffxFsr2ContextDispatch error: {0}", ResultToString(result));
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     // restore resource states
@@ -342,7 +342,7 @@ bool FSR2FeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
 
     _frameCount++;
 
-    return true;
+    return FeatureEvaluation::OutputRecorded;
 }
 
 FSR2FeatureDx12::~FSR2FeatureDx12() {}

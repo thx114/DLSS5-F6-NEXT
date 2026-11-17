@@ -73,12 +73,12 @@ bool DLSSDFeatureDx11::InitInternal(ID3D11DeviceContext* InContext, NVSDK_NGX_Pa
     return initResult;
 }
 
-bool DLSSDFeatureDx11::EvaluateInternal(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Parameter* InParameters)
+FeatureEvaluation DLSSDFeatureDx11::EvaluateInternal(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Parameter* InParameters)
 {
     if (!_moduleLoaded)
     {
         LOG_ERROR("nvngx.dll or _nvngx.dll is not loaded!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     NVSDK_NGX_Result nvResult;
@@ -92,7 +92,7 @@ bool DLSSDFeatureDx11::EvaluateInternal(ID3D11DeviceContext* InDeviceContext, NV
         if (nvResult != NVSDK_NGX_Result_Success)
         {
             LOG_ERROR("_EvaluateFeature result: {0:X}", (unsigned int) nvResult);
-            return false;
+            return FeatureEvaluation::Failed;
         }
 
         LOG_TRACE("_EvaluateFeature ok!");
@@ -100,10 +100,10 @@ bool DLSSDFeatureDx11::EvaluateInternal(ID3D11DeviceContext* InDeviceContext, NV
     else
     {
         LOG_ERROR("_EvaluateFeature is nullptr");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
-    return true;
+    return FeatureEvaluation::OutputRecorded;
 }
 
 DLSSDFeatureDx11::DLSSDFeatureDx11(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters)

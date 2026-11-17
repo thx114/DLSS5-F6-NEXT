@@ -113,12 +113,12 @@ void FSR31FeatureDx11::ReleaseResources()
     }
 }
 
-bool FSR31FeatureDx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters)
+FeatureEvaluation FSR31FeatureDx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters)
 {
     LOG_FUNC();
 
     if (!IsInited())
-        return false;
+        return FeatureEvaluation::Failed;
 
     auto& state = State::Instance();
     auto& cfg = *Config::Instance();
@@ -163,7 +163,7 @@ bool FSR31FeatureDx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
         if (!CopyTexture(paramColor, &bufferColor, 40, true))
         {
             LOG_DEBUG("Can't copy Color!");
-            return false;
+            return FeatureEvaluation::Failed;
         }
 
         if (bufferColor.Texture != nullptr)
@@ -176,7 +176,7 @@ bool FSR31FeatureDx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
     else
     {
         LOG_ERROR("Color not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D11Resource* paramVelocity;
@@ -192,7 +192,7 @@ bool FSR31FeatureDx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
     else
     {
         LOG_ERROR("MotionVectors not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D11Resource* paramOutput;
@@ -207,7 +207,7 @@ bool FSR31FeatureDx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
     else
     {
         LOG_ERROR("Output not exist!!");
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
     ID3D11Resource* paramDepth;
@@ -224,7 +224,7 @@ bool FSR31FeatureDx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
         LOG_ERROR("Depth not exist!!");
 
         if (LowResMV())
-            return false;
+            return FeatureEvaluation::Failed;
     }
 
     ID3D11Resource* paramExp = nullptr;
@@ -248,7 +248,7 @@ bool FSR31FeatureDx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
             LOG_DEBUG("AutoExposure disabled but ExposureTexture is not exist, it may cause problems!!");
             State::Instance().autoExposure = true;
             State::Instance().changeBackend[Handle()->Id] = true;
-            return true;
+            return FeatureEvaluation::NoOutput;
         }
     }
 
@@ -385,10 +385,10 @@ bool FSR31FeatureDx11::EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSD
     if (result != Fsr31::FFX_OK)
     {
         LOG_ERROR("ffxFsr3ContextDispatch error: {0}", ResultToString(result));
-        return false;
+        return FeatureEvaluation::Failed;
     }
 
-    return true;
+    return FeatureEvaluation::OutputRecorded;
 }
 
 FSR31FeatureDx11::~FSR31FeatureDx11()

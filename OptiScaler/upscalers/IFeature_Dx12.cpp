@@ -345,12 +345,14 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
 
     UpscalerTime->Start(InCommandList, context.recordingSlot);
 
-    auto evalResult = EvaluateInternal(InCommandList, InParameters);
+    const auto evaluation = EvaluateInternal(InCommandList, InParameters);
 
     UpscalerTime->End(InCommandList);
 
-    if (!evalResult)
+    if (evaluation == FeatureEvaluation::Failed)
         return false;
+    if (evaluation == FeatureEvaluation::NoOutput)
+        return true;
 
     // Iterate FORWARDS to execute the shaders in the defined order
     for (auto& pass : pipeline)
@@ -398,7 +400,7 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
 
     InParameters->Set(NVSDK_NGX_Parameter_Output, paramOutput);
 
-    if (context.recordedOutput && outputGridPasses && SuccessfulEvaluateRecordsOutput() && paramOutput)
+    if (context.recordedOutput && outputGridPasses && paramOutput)
     {
         ID3D12Resource* restoredOutput = nullptr;
         if (InParameters->Get(NVSDK_NGX_Parameter_Output, &restoredOutput) == NVSDK_NGX_Result_Success &&
@@ -406,7 +408,7 @@ bool IFeature_Dx12::EvaluateWithContext(ID3D12GraphicsCommandList* InCommandList
             *context.recordedOutput = paramOutput;
     }
 
-    return evalResult;
+    return true;
 }
 
 std::optional<double> IFeature_Dx12::ReadUpscalerTime(void* commandQueueVoid)

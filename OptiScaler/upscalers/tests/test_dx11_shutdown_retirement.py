@@ -56,6 +56,7 @@ struct Feature {
 struct Context { std::unique_ptr<Feature> feature; };
 std::map<unsigned,Context> Dx11Contexts;
 ID3D11Device* D3D11Device=&device;
+ID3D11Device* taaAttachedDevice=nullptr;
 bool shutdown=false;
 struct State {
     Feature* currentFeature=nullptr;

@@ -7,10 +7,9 @@ class DLSSFeatureDx11 : public DLSSFeature, public IFeature_Dx11
 {
   private:
   protected:
-    bool SuccessfulEvaluateRecordsOutput() const override { return true; }
   public:
     bool InitInternal(ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters) override;
-    bool EvaluateInternal(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Parameter* InParameters) override;
+    FeatureEvaluation EvaluateInternal(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Parameter* InParameters) override;
 
     feature_version Version() override { return DLSSFeature::Version(); }
     Upscaler GetUpscalerType() const final { return DLSSFeature::GetUpscalerType(); }
