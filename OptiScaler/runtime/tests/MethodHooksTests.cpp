@@ -61,6 +61,43 @@ void Test() {
     }
 }
 }
+namespace VoidRouted {
+struct Object;
+using Call=void(*)(Object*,int);
+struct Object {Call* table; int value=0; bool switchDuringCall=false;};
+struct Domain {};
+void Policy(Object*,int);
+HookOwnership::RoutedHook<&Policy,0,Domain> route;
+unsigned observations=0;
+__declspec(noinline) void First(Object* object,int value) {volatile int input=value;object->value+=input*3;}
+__declspec(noinline) void Second(Object* object,int value) {volatile int input=value;object->value+=input*7;}
+Call firstTable[]{First},secondTable[]{Second};
+void Policy(Object* object,int value) {
+    ++observations;
+    if(object->switchDuringCall)object->table=secondTable;
+    route.Forward(object,value);
+}
+void Test() {
+    {HookOwnership::Own::Batch batch;
+     assert(route.Add(batch,reinterpret_cast<PVOID>(First))==NO_ERROR);
+     assert(route.Add(batch,reinterpret_cast<PVOID>(Second))==NO_ERROR);
+     assert(batch.Commit()==NO_ERROR);}
+    assert(route.Covers(reinterpret_cast<PVOID>(First))&&route.Covers(reinterpret_cast<PVOID>(Second)));
+    Object object{firstTable};
+    object.table[0](&object,2);assert(object.value==6&&observations==1);
+    object.table=secondTable;object.table[0](&object,2);assert(object.value==20&&observations==2);
+    // The runtime may change its vtable during a callback. The active thunk
+    // must still call the exact original it entered, even through Forward.
+    object.table=firstTable;object.switchDuringCall=true;
+    object.table[0](&object,2);assert(object.value==26&&observations==3&&object.table==secondTable);
+    Call direct=route.Forward;direct(&object,2);assert(object.value==40&&observations==3);
+    object.table=firstTable;direct(&object,2);assert(object.value==46&&observations==3);
+    std::vector<HookOwnership::Own::Slot*> slots;route.AppendSlots(slots);
+    assert(slots.size()==2);
+    assert(HookOwnership::Own::DetachAll(std::span<HookOwnership::Own::Slot* const>(slots))==NO_ERROR);
+    assert(!route.Covers(reinterpret_cast<PVOID>(First))&&!route.Covers(reinterpret_cast<PVOID>(Second)));
+}
+}
 int main() {
     const auto thunks = []<size_t... I>(std::index_sequence<I...>) {
         return std::array<Function, sizeof...(I)>{&Thunk<I>...};
@@ -101,5 +138,6 @@ int main() {
       assert(batch.Commit() == ERROR_INVALID_PARAMETER); }
     assert(!hooks.Covers(first) && First(4) == 19);
     Routed::Test();
+    VoidRouted::Test();
     std::puts("Method Hooks: distinct native/proxy targets, exact originals, nested observation, idempotence, rollback and reinstall passed");
 }

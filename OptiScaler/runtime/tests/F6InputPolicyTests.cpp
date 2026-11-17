@@ -14,7 +14,7 @@ int main()
     for (const auto game : {Identity::Other, Identity::Genshin, Identity::StarRail, Identity::ZenlessZoneZero})
         for (unsigned iteration = 0; iteration < 100; ++iteration)
             for (bool requested : {false, true})
-                assert(GameRouting::UseGenshinPresentPipeline(game, requested) ==
+                assert(GameRouting::UseGenshinSourceOutput(game, requested) ==
                        (game == Identity::Genshin && requested));
     struct Case { std::wstring_view path; Identity expected; };
     for (const auto& test : std::array {

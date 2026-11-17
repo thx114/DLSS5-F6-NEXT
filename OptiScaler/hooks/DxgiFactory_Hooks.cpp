@@ -1,6 +1,7 @@
 ﻿#include "pch.h"
 #include <runtime/ComIdentity.h>
 #include <runtime/F6InputPolicy.h>
+#include <runtime/PrivateGraphicsScope.h>
 #include "DxgiFactory_Hooks.h"
 #include "SwapchainCreateRule.h"
 #include "ProviderOutputCreation.h"
@@ -266,26 +267,26 @@ namespace { std::recursive_mutex factoryHookMutex; }
 void DxgiFactoryHooks::FactoryCreateDomain::Returned(HRESULT result, IDXGIFactory*, IUnknown* queue,
     DXGI_SWAP_CHAIN_DESC* desc, IDXGISwapChain** output)
 {
-    if (desc) ProviderOutputCreation::Observe<WrappedIDXGISwapChain4>(result, output, queue,
+    if (!PrivateGraphics::Active() && desc) ProviderOutputCreation::Observe<WrappedIDXGISwapChain4>(result, output, queue,
         desc->OutputWindow, desc->Flags, false, false, framegen::final_output::CaptureProviderOutputBinding);
 }
 void DxgiFactoryHooks::FactoryCreateDomain::Returned(HRESULT result, IDXGIFactory2*, IUnknown* queue,
     HWND window, const DXGI_SWAP_CHAIN_DESC1* desc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*,
     IDXGISwapChain1** output)
 {
-    if (desc) ProviderOutputCreation::Observe<WrappedIDXGISwapChain4>(result, output, queue,
+    if (!PrivateGraphics::Active() && desc) ProviderOutputCreation::Observe<WrappedIDXGISwapChain4>(result, output, queue,
         window, desc->Flags, false, false, framegen::final_output::CaptureProviderOutputBinding);
 }
 void DxgiFactoryHooks::FactoryCreateDomain::Returned(HRESULT result, IDXGIFactory2*, IUnknown* queue,
     IUnknown* window, const DXGI_SWAP_CHAIN_DESC1* desc, IDXGIOutput*, IDXGISwapChain1** output)
 {
-    if (desc) ProviderOutputCreation::Observe<WrappedIDXGISwapChain4>(result, output, queue,
+    if (!PrivateGraphics::Active() && desc) ProviderOutputCreation::Observe<WrappedIDXGISwapChain4>(result, output, queue,
         reinterpret_cast<HWND>(window), desc->Flags, true, false, framegen::final_output::CaptureProviderOutputBinding);
 }
 void DxgiFactoryHooks::FactoryCreateDomain::Returned(HRESULT result, IDXGIFactory2*, IUnknown* queue,
     const DXGI_SWAP_CHAIN_DESC1* desc, IDXGIOutput*, IDXGISwapChain1** output)
 {
-    if (!desc || !SwapchainCreate::Created(result, output) ||
+    if (PrivateGraphics::Active() || !desc || !SwapchainCreate::Created(result, output) ||
         !framegen::final_output::CreationScope::Active()) return;
     DXGI_SWAP_CHAIN_DESC resolved {};
     if (SUCCEEDED((*output)->GetDesc(&resolved)))
@@ -418,6 +419,9 @@ void DxgiFactoryHooks::HookToDLSSGFactory(IDXGIFactory* pFactory)
 HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                           IDXGISwapChain** ppSwapChain)
 {
+    if (PrivateGraphics::Active())
+        return o_CreateSwapChain(realFactory, pDevice, pDesc, ppSwapChain);
+
     const std::optional<UINT> applicationFlags = pDesc ? std::optional<UINT>{pDesc->Flags} : std::nullopt;
     *ppSwapChain = nullptr;
 
@@ -782,6 +786,9 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
                                                  const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
                                                  IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain)
 {
+    if (PrivateGraphics::Active())
+        return o_CreateSwapChainForHwnd(realFactory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+
     const std::optional<UINT> applicationFlags = pDesc ? std::optional<UINT>{pDesc->Flags} : std::nullopt;
     *ppSwapChain = nullptr;
 
@@ -1188,6 +1195,9 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForCoreWindow(IDXGIFactory2* realFactor
                                                        const DXGI_SWAP_CHAIN_DESC1* pDesc,
                                                        IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain)
 {
+    if (PrivateGraphics::Active())
+        return o_CreateSwapChainForCoreWindow(realFactory, pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
+
     const std::optional<UINT> applicationFlags = pDesc ? std::optional<UINT>{pDesc->Flags} : std::nullopt;
     if (State::Instance().vulkanCreatingSC)
     {
@@ -1304,6 +1314,9 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForComposition(IDXGIFactory2* realFacto
                                                         IDXGIOutput* pRestrictToOutput,
                                                         IDXGISwapChain1** ppSwapChain)
 {
+    if (PrivateGraphics::Active())
+        return o_CreateSwapChainForComposition(realFactory, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
+
     const std::optional<UINT> applicationFlags = pDesc ? std::optional<UINT>{pDesc->Flags} : std::nullopt;
     // Always call the trampoline, including pass-through/error cases. Calling the detoured virtual
     // method here re-enters this hook. Keep the composition descriptor intact: notably, a desktop
@@ -1363,6 +1376,9 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForComposition(IDXGIFactory2* realFacto
 
 HRESULT DxgiFactoryHooks::EnumAdapters(IDXGIFactory* realFactory, UINT Adapter, IDXGIAdapter** ppAdapter)
 {
+    if (PrivateGraphics::Active())
+        return o_EnumAdapters(realFactory, Adapter, ppAdapter);
+
     HRESULT result = S_FALSE;
 
     if (State::Instance().skipDxgiLoadChecks)
@@ -1411,6 +1427,9 @@ HRESULT DxgiFactoryHooks::EnumAdapters(IDXGIFactory* realFactory, UINT Adapter, 
 
 HRESULT DxgiFactoryHooks::EnumAdapters1(IDXGIFactory1* realFactory, UINT Adapter, IDXGIAdapter1** ppAdapter)
 {
+    if (PrivateGraphics::Active())
+        return o_EnumAdapters1(realFactory, Adapter, ppAdapter);
+
     HRESULT result = S_FALSE;
 
     if (State::Instance().skipDxgiLoadChecks)
@@ -1460,6 +1479,9 @@ HRESULT DxgiFactoryHooks::EnumAdapters1(IDXGIFactory1* realFactory, UINT Adapter
 HRESULT DxgiFactoryHooks::EnumAdapterByLuid(IDXGIFactory4* realFactory, LUID AdapterLuid, REFIID riid,
                                             void** ppvAdapter)
 {
+    if (PrivateGraphics::Active())
+        return o_EnumAdapterByLuid(realFactory, AdapterLuid, riid, ppvAdapter);
+
     HRESULT result;
     {
         ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
@@ -1479,6 +1501,9 @@ HRESULT DxgiFactoryHooks::EnumAdapterByLuid(IDXGIFactory4* realFactory, LUID Ada
 HRESULT DxgiFactoryHooks::EnumAdapterByGpuPreference(IDXGIFactory6* realFactory, UINT Adapter,
                                                      DXGI_GPU_PREFERENCE GpuPreference, REFIID riid, void** ppvAdapter)
 {
+    if (PrivateGraphics::Active())
+        return o_EnumAdapterByGpuPreference(realFactory, Adapter, GpuPreference, riid, ppvAdapter);
+
     HRESULT result;
 
     {

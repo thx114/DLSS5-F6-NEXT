@@ -78,6 +78,26 @@ struct PreviewSnapshot {
     uint64_t epoch=0,feature=0,configuration=0,owner=0;
     bool colourHdr=false;
 };
+struct PreviewSlotProgress {
+    uint64_t serial=0,revision=0,source=0,epoch=0,feature=0,configuration=0,owner=0;
+    uint64_t recording=0,list=0,queue=0,fence=0,fenceTarget=0,fenceCompleted=0;
+    unsigned readers=0;
+    bool reserved=false,recorded=false,executing=false,submitted=false,signalled=false;
+    bool gpuCompleted=false,reset=false,published=false,quarantined=false;
+};
+struct PreviewProgress {
+    PreviewMode mode=PreviewMode::Off;
+    unsigned historyView=0;
+    uint64_t revision=0,attempts=0,reserved=0,recorded=0,submitted=0,gpuCompleted=0;
+    uint64_t reset=0,published=0,acquired=0,drawn=0,outputSubmitted=0;
+    uint64_t lockBusy=0,rateLimited=0,slotsBusy=0;
+    const char* producerReason="Preview off";
+    const char* outputReason="Output not observed";
+    std::array<PreviewSlotProgress,3> slots{};
+};
+bool ReadPreviewProgress(PreviewProgress&) noexcept;
+void ObservePreviewOutput(bool sealed,bool acquired,bool cached) noexcept;
+void PreviewOutputUnavailable(const char*) noexcept;
 void SetPreviewDemand(const PreviewDemand&) noexcept;
 PreviewDemand GetPreviewDemand() noexcept;
 // Advisory routing only; actual sampling revalidates the demand revision.

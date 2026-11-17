@@ -2,6 +2,8 @@
 #include <native/OpticalFgNrPolicy.h>
 #include "FeatureProvider_Dx11.h"
 #include <upscalers/FeatureLifecycleTrace.h>
+#include <inputs/taa/TaaSourceOutput.h>
+#include <proxies/NVNGX_Proxy.h>
 
 #include "Util.h"
 #include "Config.h"
@@ -22,11 +24,61 @@
 #include <misc/IdentifyGpu.h>
 #include <imgui/ImGuiNotify.hpp>
 
+namespace {
+thread_local std::optional<Upscaler> initializingDx11Backend;
+struct BackendBinding {
+    const IFeature_Dx11* feature=nullptr;
+    Microsoft::WRL::ComPtr<IUnknown> device;
+    std::optional<Upscaler> backend;
+};
+std::mutex backendBindingMutex;
+BackendBinding backendBinding;
+}
+std::optional<Upscaler> FeatureProvider_Dx11::ActiveBackend(ID3D11Device* sourceDevice)
+{
+    // Init-local provider policy can run before a successful binding. A source
+    // transport only sees the committed backend for its own real DX11 device.
+    if(!sourceDevice && initializingDx11Backend)return initializingDx11Backend;
+    Microsoft::WRL::ComPtr<IUnknown> identity;
+    if(sourceDevice && FAILED(sourceDevice->QueryInterface(IID_PPV_ARGS(&identity))))return {};
+    std::lock_guard lock(backendBindingMutex);
+    return !sourceDevice||identity.Get()==backendBinding.device.Get()?backendBinding.backend:std::nullopt;
+}
+void FeatureProvider_Dx11::BindActiveFeature(IFeature_Dx11* feature,ID3D11DeviceContext* context)
+{
+    if(!feature||!context||!feature->IsInited())return;
+    {std::lock_guard lock(backendBindingMutex);if(backendBinding.feature==feature)return;}
+    Microsoft::WRL::ComPtr<ID3D11Device> device;context->GetDevice(&device);
+    BackendBinding selected;selected.feature=feature;
+    if(!device||FAILED(device.As(&selected.device)))return;
+    selected.backend=feature->GetUpscalerType();
+    {std::lock_guard lock(backendBindingMutex);std::swap(backendBinding,selected);}
+    LOG_INFO("DX11 provider binding: handle={} backend={} source_device={}",
+        feature->Handle()?feature->Handle()->Id:0,UpscalerDisplayName(feature->GetUpscalerType()),static_cast<void*>(device.Get()));
+    // Release the previous COM identity after leaving the publication lock.
+}
+void FeatureProvider_Dx11::ForgetFeature(const IFeature_Dx11* feature)
+{
+    BackendBinding previous;
+    {std::lock_guard lock(backendBindingMutex);
+        if(backendBinding.feature==feature)std::swap(backendBinding,previous);}
+}
+bool FeatureProvider_Dx11::InitializeFeature(IFeature_Dx11* feature,ID3D11Device* device,
+    ID3D11DeviceContext* context,NVSDK_NGX_Parameter* parameters)
+{
+    if(!feature)return false;
+    const auto previous=initializingDx11Backend;
+    initializingDx11Backend=feature->GetUpscalerType();
+    struct Restore {std::optional<Upscaler> previous;~Restore(){initializingDx11Backend=previous;}} restore{previous};
+    const bool initialized=feature->Init(device,context,parameters);
+    if(initialized)BindActiveFeature(feature,context);else ForgetFeature(feature);
+    return initialized;
+}
+
 bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_Parameter* parameters,
                                       std::unique_ptr<IFeature_Dx11>* feature, bool preserveDx12Fallback)
 {
     State& state = State::Instance();
-    Config& cfg = *Config::Instance();
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
     const auto fallback = FallbackUpscaler(upscaler, preserveDx12Fallback);
     const auto makeFallback = [&]() {
@@ -129,11 +181,8 @@ bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
         }
     }
 
-    // DLSSD is stored in the config as DLSS
-    if (upscaler == Upscaler::DLSSD)
-        upscaler = Upscaler::DLSS;
-
-    cfg.Dx11Upscaler = upscaler;
+    // The feature reports the active provider. A fallback must never turn the
+    // user's auto request into a persistent explicit backend selection.
 
     return loaded;
 }
@@ -147,7 +196,11 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
 
     const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && state.newBackend == Upscaler::DLSS;
     if (state.newBackend == Upscaler::Reset || dlssOnNonCapable)
-        state.newBackend = cfg.Dx11Upscaler.value_or_default();
+        state.newBackend = ResolveBackend(cfg.Dx11Upscaler, taa::source_output::current && taa::source_output::current->Valid() &&
+                taa::source_output::current->handle==handleId &&
+                taa::source_output::current->context==reinterpret_cast<uintptr_t>(devContext) &&
+                taa::source_output::current->parameters==reinterpret_cast<uintptr_t>(parameters),
+            cfg.Dx12Upscaler, IdentifyGpu::getPrimaryGpu().dlssCapable, NVNGXProxy::IsDx11Inited());
 
     // Rebuild requests have no exposure-only provenance here. Preserve unknown or
     // mixed requests, including required size/device/backend rebuilds. Reject
@@ -189,6 +242,7 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
                 return false;
             }
 
+            ForgetFeature(retired->feature.get()); // CPU selection ends here; GPU owners still retire normally.
             State::Instance().currentFeature = nullptr;
             // The feature destructor still owns its existing GPU drain contract.
             // Its exact initialization table survives alongside it.
@@ -235,7 +289,7 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
     if (phase == FeatureTransition::Phase::Initialize)
     {
         // then init and continue
-        auto initResult = contextData->feature->Init(device, devContext, contextData->createParams);
+        auto initResult = InitializeFeature(contextData->feature.get(), device, devContext, contextData->createParams);
 
         if (cfg.Dx11DelayedInit.value_or_default())
         {

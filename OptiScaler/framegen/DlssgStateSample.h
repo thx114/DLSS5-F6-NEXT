@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <mutex>
 #include <utility>
+#include "FrameOutputRate.h"
 
 namespace framegen
 {
@@ -38,6 +39,7 @@ struct DlssgStateSample
     // identity, generated count, displayed FPS or a completion proof. A cold
     // first read, failed predecessor or changed API/viewport leaves it unknown.
     bool counterIntervalKnown = false;
+    OutputRate outputRate {};
 };
 
 // One instance for all actual SDK queries. Query lock is always the innermost
@@ -52,6 +54,7 @@ class DlssgStateQueries final
     std::size_t next_ = 0;
     uint64_t sequence_ = 0;
     DlssgStateSample previous_ {};
+    OutputRateWindow outputRate_ {};
     inline static thread_local bool querying_ = false;
 
     static uint64_t Now() noexcept
@@ -82,6 +85,11 @@ public:
         // SDK mode/options can reset counters. Preserve the preceding query's
         // coordinates, but do not claim an uninterrupted known interval.
         previous_.succeeded = false;
+        outputRate_.Reset();
+        {
+            std::lock_guard sampleLock(sampleMutex_);
+            for (auto& cached : samples_) cached.outputRate = {};
+        }
         std::forward<Invoke>(invoke)();
         return true;
     }
@@ -111,6 +119,7 @@ public:
             // Never silently stretch the next interval back to an older read.
             sample.succeeded = false;
             sample.queryEndNs = Now();
+            outputRate_.Reset();
             previous_ = sample;
             Publish(sample);
             throw;
@@ -119,6 +128,10 @@ public:
         sample.counterIntervalKnown = sample.succeeded && previous_.succeeded &&
             previous_.api == api && previous_.viewport == viewport &&
             previous_.querySequence != 0 && sample.queryBeginNs >= previous_.queryEndNs;
+        outputRate_.Observe(api, viewport, sample.querySequence, sample.previousQuerySequence,
+                            sample.previousQueryEndNs, sample.queryEndNs, sample.actuallyPresented,
+                            sample.counterIntervalKnown);
+        sample.outputRate = outputRate_.Read(sample.queryEndNs);
         previous_ = sample;
         Publish(sample);
         return true;

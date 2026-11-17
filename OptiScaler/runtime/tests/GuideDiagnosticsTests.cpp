@@ -7,6 +7,31 @@
 using namespace GuideDiagnostics;
 int main(){try{
     unsigned checks=0;const auto check=[&](bool b){++checks;if(!b)throw std::runtime_error("observation invariant");};
+    // Display state must not turn an unobserved/disabled lane into missing guides.
+    Snapshot displayUnseen;
+    auto displayState=Display::StateFor(Consumer::NrModel,displayUnseen,false);
+    check(displayState==Display::State::Disabled);
+    check(Display::ResourceState(displayState,displayUnseen.depth)==Display::Presence::Unobserved);
+    displayState=Display::StateFor(Consumer::NrModel,displayUnseen,true);
+    check(displayState==Display::State::Unobserved);
+    check(Display::ResourceState(displayState,displayUnseen.motion)==Display::Presence::Unobserved);
+    Snapshot displayRetained;displayRetained.stage=Stage::Completed;displayRetained.accepted=true;displayRetained.depth.present=true;
+    displayState=Display::StateFor(Consumer::NrHistory,displayRetained,false);
+    check(displayState==Display::State::Disabled&&!Display::Accepted(displayState,displayRetained));
+    check(Display::ResourceState(displayState,displayRetained.depth)==Display::Presence::Unobserved);
+    displayState=Display::StateFor(Consumer::Fg,displayRetained,false);
+    check(displayState==Display::State::Observed&&Display::Accepted(displayState,displayRetained));
+    check(Display::ResourceState(displayState,displayRetained.depth)==Display::Presence::Present);
+    check(Display::ResourceState(displayState,displayRetained.motion)==Display::Presence::Missing);
+    displayRetained.stage=Stage::Rejected;displayRetained.accepted=false;
+    displayState=Display::StateFor(Consumer::NrModel,displayRetained,true);
+    check(displayState==Display::State::Observed&&!Display::Accepted(displayState,displayRetained));
+    check(Display::ResourceState(displayState,displayRetained.motion)==Display::Presence::Missing);
+    check(Display::StateFor(Consumer::NrHistory,displayUnseen,true)==Display::State::Unobserved);
+    check(Display::StateFor(Consumer::NrHistory,displayUnseen,true,false)==Display::State::Disabled);
+    check(Display::StateFor(Consumer::NrHistory,displayRetained,true,false)==Display::State::Disabled);
+    check(Display::StateFor(Consumer::Fg,displayRetained,true,false)==Display::State::Observed);
+    check(Display::StateFor(Consumer::NrModel,displayRetained,true,false)==Display::State::Observed);
     unsigned constructed=0;
     const auto expensiveSnapshot=[&] { ++constructed; };
     ObserveConsumers(expensiveSnapshot);check(constructed==0);

@@ -2,6 +2,7 @@
 #include "MethodHooks.h"
 #include <mutex>
 #include <tuple>
+#include <type_traits>
 
 namespace HookOwnership {
 template<class Domain> inline thread_local unsigned RoutedDepth = 0;
@@ -24,13 +25,22 @@ class RoutedHook<Callback, MethodIndex, Domain, Result(*)(Args...)> final {
     inline static thread_local Frame* active = nullptr;
     template<bool Direct> static Result CallOriginal(Function original, Args... args) {
         if (!original) return static_cast<Result>(E_UNEXPECTED);
-        const auto result = original(args...);
-        if constexpr (Direct) {
-            if constexpr (requires { Domain::ReturnedDirect(result,args...); }) Domain::ReturnedDirect(result,args...);
+        if constexpr (std::is_void_v<Result>) {
+            original(args...);
+            if constexpr (Direct) {
+                if constexpr (requires { Domain::ReturnedDirect(args...); }) Domain::ReturnedDirect(args...);
+            } else {
+                if constexpr (requires { Domain::Returned(args...); }) Domain::Returned(args...);
+            }
         } else {
-            if constexpr (requires { Domain::Returned(result,args...); }) Domain::Returned(result,args...);
+            const auto result = original(args...);
+            if constexpr (Direct) {
+                if constexpr (requires { Domain::ReturnedDirect(result,args...); }) Domain::ReturnedDirect(result,args...);
+            } else {
+                if constexpr (requires { Domain::Returned(result,args...); }) Domain::Returned(result,args...);
+            }
+            return result;
         }
-        return result;
     }
     static const void* Object([[maybe_unused]] Args... args) noexcept {
         if constexpr (MethodIndex == SIZE_MAX) return nullptr;
@@ -52,6 +62,11 @@ class RoutedHook<Callback, MethodIndex, Domain, Result(*)(Args...)> final {
         return Callback(args...);
     }
 public:
+    static constexpr size_t method_index = MethodIndex;
+    bool Covers(PVOID entry) const noexcept { return hooks.Covers(entry); }
+    // Stable function pointer for callers outside a thunk. Resolve this
+    // object's actual implementation, including after a context state swap.
+    static Result Forward(Args... args) { return RoutedHook{}(args...); }
     LONG Add(Own::Batch& batch, PVOID entry) const noexcept {
         const auto thunks = []<size_t... I>(std::index_sequence<I...>) {
             return std::array<Function, sizeof...(I)>{&Thunk<I>...};

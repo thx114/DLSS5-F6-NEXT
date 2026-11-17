@@ -177,16 +177,16 @@ D3D12_RESOURCE_DESC ScratchDesc(DXGI_FORMAT format, unsigned w, unsigned h)
     d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     return d;
 }
-// These linear view formats round-trip every representable source channel.
-// In particular, an sRGB view cannot be reproduced by a linear UNORM write.
+// Adjacent raw RGB and RGB observation energy share a full-precision texture.
+// The second moment cannot use the source's UNORM or low-precision alpha.
 DXGI_FORMAT StabilityRawFormat(DXGI_FORMAT modelInput)
 {
     switch (modelInput)
     {
     case DXGI_FORMAT_R8G8B8A8_TYPELESS:
-    case DXGI_FORMAT_R8G8B8A8_UNORM: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_UNORM: return DXGI_FORMAT_R32G32B32A32_FLOAT;
     case DXGI_FORMAT_R16G16B16A16_TYPELESS:
-    case DXGI_FORMAT_R16G16B16A16_FLOAT: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    case DXGI_FORMAT_R16G16B16A16_FLOAT: return DXGI_FORMAT_R32G32B32A32_FLOAT;
     default: return DXGI_FORMAT_R32G32B32A32_FLOAT;
     }
 }
@@ -245,6 +245,7 @@ NrDetailHistoryPolicy::Phase Phase(const Frame& f)
     p.requested = f.independentFeedbackRequested;
     p.preSr = f.nativePreSrRoute; p.nativeScene = f.info->NativeSceneRoute;
     p.beforeUpscale = f.beforeUpscale; p.finishedPicture = f.finishedPicture;
+    p.sourceOutput = f.info->SourceOutput;
     p.baseIdentity = f.baseIdentityVerified; p.currentDepth = f.currentDepthVerified;
     p.consumerMappingVerified = f.nativeGuideContractVerified && f.nativeGuidePhaseVerified;
     p.routeConvention = f.info->NativeRouteConventionVerified;
@@ -360,9 +361,15 @@ Plan Before(const Frame& f)
         if (!OwnersBusy() && !fusedReadable) ParkAll();
         return {};
     }
-    if (!f.cfg || !f.info || !f.pass || !f.cmdList || !f.device || !f.temporalQueue ||
-        !f.modelInput || !f.depth || !f.motion || !f.exposureContractKnown || !f.owner)
-    { Invalidate(); return reject("missing-current-frame-contract"); }
+    // Keep the missing fact visible. A single aggregate reason hid the exposure
+    // domain refusal behind the same message as a missing depth or producer.
+    const char* missing = !f.cfg ? "missing-current-config" :
+        !f.info ? "missing-current-frame-info" : !f.pass ? "missing-current-pass" :
+        !f.cmdList ? "missing-current-command-list" : !f.device ? "missing-current-device" :
+        !f.temporalQueue ? "missing-current-queue" : !f.modelInput ? "missing-current-model-input" :
+        !f.depth ? "missing-current-depth" : !f.motion ? "missing-current-motion" :
+        !f.exposureContractKnown ? "unknown-current-exposure-domain" : !f.owner ? "missing-current-owner" : nullptr;
+    if (missing) { Invalidate(); return reject(missing); }
     if (f.beforeUpscale != f.info->BeforeUpscale || f.finishedPicture != f.info->FinishedPicture)
     { Invalidate(); return reject("inconsistent-frame-placement"); }
     const auto phase = Phase(f);

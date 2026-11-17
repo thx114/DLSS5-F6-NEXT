@@ -16,6 +16,7 @@
 
 
 namespace DrawUiMask {class Frame;}
+namespace interop {struct BeforeSrInput;}
 #ifdef HOYOSHADE_STAGE_TEST
 namespace reshade::api {struct effect_runtime;}
 #endif
@@ -185,7 +186,7 @@ struct ProducerReady
 };
 enum class NaturalSourceContract : unsigned {
     TypedBackbuffer, BeforeSrExactDevice, BeforeSrOwnedRuntimeWithSelectionDonor, BeforeSrNativeProducer,
-    BeforeSrBridgeInput
+    BeforeSrInput
 };
 struct ColorEndpoint
 {
@@ -222,10 +223,12 @@ struct ColorEndpoint
 };
 inline ColorContract::Formats ResolveColorFormats(const ColorEndpoint& e, DXGI_FORMAT actual) noexcept
 {
-    if (!e.declaredInput) return ColorContract::Resolve(actual);
-    if (!e.sdr || e.stage != Stage::BeforeSr || e.output != OutputKind::Original ||
-        e.colorMode != ColorMode::TransferQualified ||
-        e.naturalContract != NaturalSourceContract::BeforeSrBridgeInput ||
+    if (!e.declaredInput) return e.colorMode == ColorMode::TransferQualified ? ColorContract::Resolve(actual) : ColorContract::Formats{};
+    const bool sourceValues=e.colorMode == ColorMode::SourceValuesBeforeSr &&
+        e.declaredInput.formats.transport.domain == ColorContract::Domain::SourceValues;
+    if ((!e.sdr && !sourceValues) || e.stage != Stage::BeforeSr || e.output != OutputKind::Original ||
+        (!sourceValues && e.colorMode != ColorMode::TransferQualified) ||
+        e.naturalContract != NaturalSourceContract::BeforeSrInput ||
         !e.declaredInput.Matches(e, actual)) return {};
     return e.declaredInput.formats.transport;
 }
@@ -274,6 +277,18 @@ struct StageResult
     bool Uncertain() const noexcept { return attempt.state == SubmissionState::RecordedOrUncertain; }
 };
 StageResult RenderStage(const ColorEndpoint& endpoint) noexcept;
+// Same-context native transaction. The caller temporarily supplies Color() to
+// vendor SR. Destruction seals the EVENT after that final SR read, never before.
+class BeforeSrDx11 final {
+    OwnedRuntime::Lease lease_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> color_;
+public:
+    BeforeSrDx11(ID3D11DeviceContext*,const interop::BeforeSrInput*,uint64_t stream) noexcept;
+    ~BeforeSrDx11();
+    ID3D11Texture2D* Color() const noexcept {return color_.Get();}
+    BeforeSrDx11(const BeforeSrDx11&)=delete;
+    BeforeSrDx11& operator=(const BeforeSrDx11&)=delete;
+};
 // Observe an executable selection on the source's owning thread. This does
 // NOT suppress natural effects. Only an admitted physical output may suppress
 // its exact natural runtime, after owned techniques and submission succeed.

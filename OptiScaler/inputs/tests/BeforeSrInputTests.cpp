@@ -1,4 +1,5 @@
 #include <integration/HoYoShadeBeforeSrInput.h>
+#include <inputs/NeoBeforeSrInput.h>
 #include <integration/HoYoShade.h>
 #include <wrl/client.h>
 #include <cstdio>
@@ -61,6 +62,24 @@ int main() {
         Check(HoYoShade::MatchesBeforeSrInput(&source, binding), "exact retained source identities and rectangle");
         Check(HoYoShade::AdmitBeforeSrInput(&source, binding) == HoYoShade::BeforeSrColor::TransferUnknown,
             "sRGB view plus UNORM storage cannot authorize unknown transfer");
+        interop::BeforeSrInput taa;
+        taa.query=interop::BeforeSrQuery::Matched;taa.origin=interop::SrInputOrigin::Taa;
+        taa.parameters=&frame;taa.feature=7;taa.request=31;taa.frame.context=context.Get();
+        taa.frame.color=color.Get();taa.frame.depth=depth.Get();taa.frame.motion=motion.Get();
+        const auto hdrDeclared=[&](const interop::BeforeSrInput& s, ID3D11Resource* c, bool override) {
+            return s.TaaHdrFlagDeclared(context.Get(),&frame,7,c,depth.Get(),motion.Get(),override);
+        };
+        Check(!hdrDeclared(taa,color.Get(),false),"automatic TAA fallback is not a declared HDR flag");
+        Check(hdrDeclared(taa,color.Get(),true),"explicit global override reaches the matched current call");
+        taa.frame.sr_hdr_declared=true;
+        Check(hdrDeclared(taa,color.Get(),false),"explicit TAA profile reaches the matched current call");
+        Check(!hdrDeclared(taa,other.Get(),true),"different color cannot borrow the TAA HDR declaration");
+        auto stale=taa;stale.feature=8;
+        Check(!hdrDeclared(stale,color.Get(),true),"different feature cannot borrow the TAA HDR declaration");
+        stale=taa;stale.request=0;
+        Check(!hdrDeclared(stale,color.Get(),true),"an absent request cannot borrow the TAA HDR declaration");
+        stale=taa;stale.query=interop::BeforeSrQuery::Invalid;
+        Check(!hdrDeclared(stale,color.Get(),true),"an invalid source cannot borrow the TAA HDR declaration");
         reply.color_transfer = ColorTransfer::srgb; source = call();
         Check(HoYoShade::AdmitBeforeSrInput(&source, binding) == HoYoShade::BeforeSrColor::DeclaredSdr,
             "supported declared SDR independent of final swapchain color space");
@@ -166,7 +185,7 @@ int main() {
                 "source storage view actual transport and private typed runtime remain distinct");
             HoYoShade::ColorEndpoint endpoint;
             endpoint.stage = HoYoShade::Stage::BeforeSr;
-            endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrBridgeInput;
+            endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrInput;
             endpoint.color = reinterpret_cast<ID3D12Resource*>(uintptr_t{11});
             endpoint.queue = reinterpret_cast<ID3D12CommandQueue*>(uintptr_t{12});
             endpoint.stream = 13; endpoint.generation = 14; endpoint.frame = 15;
@@ -206,7 +225,7 @@ int main() {
                 Check(bound.color == HoYoShade::BeforeSrColor::DeclaredSdr &&
                     bound.formats.transport.endpoint == transport, "compatible transport preserves its actual descriptor format");
             }
-            auto unknown = source; unknown.frame.color_transfer = ColorTransfer::unknown;
+            auto unknown = source; unknown.frame.color_transfer = interop::ColorTransfer::unknown;
             Check(HoYoShade::AdmitBeforeSrInput(&unknown, typelessBinding) == HoYoShade::BeforeSrColor::TransferUnknown,
                 "real typed SRV never turns an unknown typeless transfer into SDR");
             endpoint.sdr = true;
@@ -214,7 +233,7 @@ int main() {
             Check(!endpoint.sdr && !endpoint.declaredInput,
                 "unknown current producer revokes a global SDR hint and former typed view together");
             for (auto unsupported : {ColorTransfer::linear, ColorTransfer::pq}) {
-                auto hdr = source; hdr.frame.color_transfer = unsupported;
+                auto hdr = source; hdr.frame.color_transfer = static_cast<interop::ColorTransfer>(unsupported);
                 endpoint.sdr = true;
                 Check(HoYoShade::BindBeforeSrInput(endpoint, &hdr, typelessBinding) == HoYoShade::BeforeSrColor::TransferUnsupported &&
                     !endpoint.sdr && !endpoint.declaredInput, "unsupported HDR input grants no typeless stage endpoint");

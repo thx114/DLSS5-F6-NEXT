@@ -55,6 +55,7 @@ queue_drain = function(source, "bool WaitForQueueIdle(")
 copy_drain = function(source, "bool Dx11wDx12SC::_WaitForCopyQueueIdle()")
 present_wait = function(source, "bool Dx11wDx12SC::_WaitForInteropCopyOnPresentQueue()")
 admission = block(header, "    class CopySlotAdmission final", "    // Interop slot admission end")
+prepare_writer = function(source, "bool Dx11wDx12SC::_PrepareSharedWriter(")
 writer_admission = block(writer, "    // Interop shared writer admission begin",
                          "    // Interop shared writer admission end")
 reset = block(copy, "    if (!_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues, admission))",
@@ -69,15 +70,15 @@ check(writer.index("admission.Clear();") < writer.index(writer_admission),
 check(writer.index(writer_admission) < writer.index("_real->GetBuffer(index,") <
       writer.index("_msaaResolve.ResolveIn(") < writer.index("_dx11Context->CopyResource("),
       "exact reader retirement precedes replacement, Resolve and CopyResource")
-check("_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues)" in writer_admission and
-      "admission.Record(this, &_copyAllocatorFenceValues, _copyFence, _copyAllocators[copySlot]," in writer_admission,
-      "only the actual slot reader wait can publish admission")
+check("!_PrepareSharedWriter(copySlot, admission)" in writer_admission and
+      prepare_writer.index("_WaitForCopyAllocator(recordingSlot,") < prepare_writer.index("_dx11Context4->Wait("),
+      "actual allocator retirement and GPU reader ordering precede the write")
 check("_sourceFrameLatencyOwner" not in writer_admission and "_nativeParentRoute" not in writer_admission,
       "common lifetime admission is independent of special source ownership")
 check(copy.index(reset) < copy.index("_copyCommandLists[copySlot]->Reset(allocator, nullptr)"),
       "allocator Reset consumes the same call-local pre-write admission")
 check("WaitForSingleObject" not in consume and "GetCompletedValue" not in consume and
-      "admission.Consume(this, &fenceValues, _copyFence, _copyAllocators[slot], slot, fenceValues[slot])" in consume,
+      "admission.Consume(this, &fenceValues, _copyFence, _copyAllocators[slot], slot, fenceValues[slot]," in consume,
       "changed admission fails without polling or a second/late completion wait")
 check(wait.count("WaitForSingleObject(") == 1 and "WaitForSingleObject(_copyFenceEvent, 5000)" in wait,
       "the existing bounded wait is moved, not multiplied or lengthened")
@@ -140,16 +141,16 @@ if args.cpu:
     check(producer_legacy.count("result = _dx12CommandQueue->Wait(_dx12SharedFence, waitValue);") == 1,
           "writer-wait negative targets one actual queue wait")
     producer_legacy = producer_legacy.replace("result = _dx12CommandQueue->Wait(_dx12SharedFence, waitValue);", "result = S_OK;")
-    check(writer_admission.count("!_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues)") == 1,
+    check(writer_admission.count("!_PrepareSharedWriter(copySlot, admission)") == 1,
           "reader-retirement negative targets the actual pre-write wait")
-    writer_legacy = writer_admission.replace("!_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues)", "false")
+    writer_legacy = writer_admission.replace("!_PrepareSharedWriter(copySlot, admission)", "false")
     writer_admission = "if (negativeReaderRetirement) {\n" + writer_legacy + "\n} else {\n" + writer_admission + "\n}"
     with tempfile.TemporaryDirectory(prefix="f6-interop-retirement-") as temporary:
         output = Path(temporary)
         for name, content in {
             "InteropSlotAdmissionProduction.h": admission,
             "InteropProducerHandoffProduction.inl": producer + "\n" + producer_legacy,
-            "InteropCopyWaitProduction.inl": wait + "\n" + consume,
+            "InteropCopyWaitProduction.inl": wait + "\n" + consume + "\n" + prepare_writer,
             "InteropQueueDrainProduction.inl": queue_drain + "\n" + copy_drain,
             "InteropPresentQueueProduction.inl": present_wait + "\n" + legacy_present_wait,
             "InteropWriterAdmissionProduction.inl": writer_admission,

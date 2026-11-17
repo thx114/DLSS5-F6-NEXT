@@ -7,7 +7,8 @@ namespace GameRouting
 {
 
 
-inline bool UseGenshinPresentPipeline(Identity identity, bool requested) noexcept
+// Retained INI placement opt-in now selects scene output at successful SR.
+inline bool UseGenshinSourceOutput(Identity identity, bool requested) noexcept
 {
     return F6InputPolicy::DirectDlssInputs &&
         identity == Identity::Genshin && requested;

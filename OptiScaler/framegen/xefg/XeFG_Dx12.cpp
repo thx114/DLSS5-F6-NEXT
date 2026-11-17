@@ -49,6 +49,11 @@ void XeFG_Dx12::xefgLogCallback(const char* message, xefg_swapchain_logging_leve
 
 void XeFG_Dx12::ResetInterpolationState()
 {
+    std::lock_guard statusLock(_presentStatusMutex);
+    _outputRate.Reset();
+    _statusSequence = _statusEndNs = 0;
+    ++_statusEpoch;
+    InvalidateRuntimeObservation();
     _framesToInterpolate = -1;
     _initializedInterpolationLimit = 0;
     _lastInterpolationRequest.reset();
@@ -57,6 +62,7 @@ void XeFG_Dx12::ResetInterpolationState()
 
 bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
 {
+    std::lock_guard statusLock(_presentStatusMutex);
     ResetInterpolationState();
     _uiComposition.reset();
     _lastUiCompositionRequest.reset();
@@ -190,6 +196,8 @@ HWND XeFG_Dx12::Hwnd() { return _hwnd; }
 
 bool XeFG_Dx12::DestroySwapchainContext()
 {
+    std::lock_guard statusLock(_presentStatusMutex);
+    InvalidateRuntimeObservation();
     LOG_DEBUG("");
 
     if (_swapChainContext != nullptr && !State::Instance().isShuttingDown)
@@ -683,8 +691,43 @@ void XeFG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
     }
 }
 
+void XeFG_Dx12::ObservePresentReturned(IDXGISwapChain* chain, UINT flags, HRESULT result)
+{
+    if (!chain || (flags & DXGI_PRESENT_TEST)) return;
+    std::unique_lock statusLock(_presentStatusMutex, std::try_to_lock);
+    if (!statusLock.owns_lock()) return;
+    auto snapshot = RuntimeIdentity(result);
+    snapshot.epoch = _statusEpoch;
+    snapshot.status = framegen::RuntimeStatus::Waiting;
+    const auto query = XeFGProxy::GetLastPresentStatus();
+    xefg_swapchain_present_status_t status {};
+    const auto queryResult = result == S_OK && _swapChainContext && query ?
+        query(_swapChainContext, &status) : XEFG_SWAPCHAIN_RESULT_WARNING_MISSING_PRESENT_STATUS;
+    const auto endNs = framegen::RuntimeNowNs();
+    const auto sequence = ++_statusSequence;
+    const bool valid = queryResult == XEFG_SWAPCHAIN_RESULT_SUCCESS && status.frameGenResult >= 0;
+    _outputRate.Observe(reinterpret_cast<uintptr_t>(_swapChainContext), 0, sequence, sequence - 1,
+        _statusEndNs, endNs, status.framesPresented, valid);
+    _statusEndNs = valid ? endNs : 0;
+    if (FAILED(result) || queryResult < 0 || (queryResult == XEFG_SWAPCHAIN_RESULT_SUCCESS && status.frameGenResult < 0))
+        snapshot.status = framegen::RuntimeStatus::SdkError;
+    else if (valid)
+    {
+        snapshot.sdkStatus = static_cast<uint32_t>(status.frameGenResult);
+        snapshot.status = status.isFrameGenEnabled ? framegen::RuntimeStatus::EnabledUnconfirmed :
+            framegen::RuntimeStatus::SdkDisabled;
+        snapshot.outputRate = _outputRate.Read(endNs);
+        snapshot.rateSource = framegen::OutputRateSource::XefgSdk;
+        if (status.isFrameGenEnabled && snapshot.outputRate.known && snapshot.outputRate.frames > 0)
+            snapshot.status = framegen::RuntimeStatus::OutputObserved;
+    }
+    snapshot.tickNs = endNs;
+    framegen::RuntimeState().Publish(snapshot);
+}
+
 void XeFG_Dx12::Activate()
 {
+    std::lock_guard statusLock(_presentStatusMutex);
     LOG_DEBUG("");
 
     auto currentFeature = State::Instance().currentFeature;
@@ -700,6 +743,9 @@ void XeFG_Dx12::Activate()
 
         if (result == XEFG_SWAPCHAIN_RESULT_SUCCESS)
         {
+            _outputRate.Reset();
+            _statusEndNs = 0;
+            InvalidateRuntimeObservation();
             _isActive = true;
             _lastDispatchedFrame = 0;
         }
@@ -710,6 +756,10 @@ void XeFG_Dx12::Activate()
 
 void XeFG_Dx12::Deactivate()
 {
+    std::lock_guard statusLock(_presentStatusMutex);
+    _outputRate.Reset();
+    _statusEndNs = 0;
+    InvalidateRuntimeObservation();
     LOG_DEBUG("");
 
     if (_isActive)
@@ -1633,8 +1683,9 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
     fResource->width = inputResource->width;
     fResource->height = inputResource->height;
     fResource->cmdList = inputResource->cmdList;
+    fResource->preparedRasterGuides = inputResource->preparedRasterGuides;
 
-    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance());
+    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance(), fResource->preparedRasterGuides);
     auto willFlip = State::Instance().activeFgInput == FGInput::Upscaler &&
                     ((type == FG_ResourceType::Velocity && orientation.MotionCopy()) ||
                      (type == FG_ResourceType::Depth && orientation.DepthCopy()));
@@ -1835,6 +1886,7 @@ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
         if (_swapChainContext != nullptr)
             DestroySwapchainContext();
 
+        std::lock_guard statusLock(_presentStatusMutex);
         _swapChainContext = nullptr;
         ResetInterpolationState();
         _uiComposition.reset();

@@ -33,4 +33,9 @@ poll = body('IFGFeature_Dx12::UIAllocatorStatus IFGFeature_Dx12::PollUIAllocator
 poll = poll.replace('IFGFeature_Dx12::', 'DLSSG_Dx12::')
 retire = body('void DLSSG_Dx12::ResetCompletedGuideRecordings(', owner)
 target.with_name('GuidePreviewOwnerProduction.inl').write_text(poll + '\n' + retire + '\n', encoding='utf-8')
+nr_backend = (root / 'OptiScaler/shaders/dlssnr/DlssNr_Dx12.cpp').read_text(encoding='utf-8-sig')
+assignment_start = nr_backend.index('frame.PreviewIndependentCommands = ')
+assignment_end = nr_backend.index(';', assignment_start) + 1
+target.with_name('GuidePreviewAuthorityProduction.inl').write_text(
+    nr_backend[assignment_start:assignment_end] + '\n', encoding='utf-8')
 print('Actual canonical sampler hooks extracted; NR watcher gate remains separate')

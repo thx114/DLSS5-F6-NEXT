@@ -9,6 +9,7 @@
 #include <native/OpticalFgNrPolicy.h>
 
 #include "DLSSG_Dx12.h"
+#include <inputs/taa/TaaSourceOutput.h>
 #include "DLSSG_Dx12_Internal.h"
 #include <runtime/ComIdentity.h>
 #include <framegen/GuideOrientation.h>
@@ -450,7 +451,7 @@ void DLSSG_Dx12::CaptureAcceptedGuides(UINT slot) noexcept
     catch (...) {}
 }
 
-bool DLSSG_Dx12::FlipOwnedUpscalerGuide(Dx12Resource* input)
+bool DLSSG_Dx12::FlipOwnedUpscalerGuide(Dx12Resource* input,const framegen::GuideOrientation& orientation)
 {
     const auto slot=GetIndex();
     const bool depth=input->type==FG_ResourceType::Depth;
@@ -476,7 +477,6 @@ bool DLSSG_Dx12::FlipOwnedUpscalerGuide(Dx12Resource* input)
             &copy,true,depth)) return false;
         output=copy;
     }
-    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance());
     if (!shader->Dispatch(input->cmdList,input->resource,output,input->width,input->height,!depth,
         depth ? orientation.depthFlipY : orientation.motionFlipY,orientation.motionYInverted)) return false;
     input->copy=output;input->state=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -486,10 +486,14 @@ bool DLSSG_Dx12::FlipOwnedUpscalerGuide(Dx12Resource* input)
 bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsCommandList* list,
     const NVSDK_NGX_Parameter* parameters,
     ID3D12Resource* depth, ID3D12Resource* motion, UINT width, UINT height, UINT mvWidth, UINT mvHeight,
-    D3D12_RESOURCE_STATES depthState, D3D12_RESOURCE_STATES motionState, uintptr_t evaluatedOutput)
+    D3D12_RESOURCE_STATES depthState, D3D12_RESOURCE_STATES motionState, uintptr_t evaluatedOutput,
+    std::optional<source_colour::Receipt> sourceNr, GuideTransport transport)
 {
     std::lock_guard continuityLock(_inputContinuityMutex);
     if (!OwnsUpscalerDepthContract() || !CanSubmitInputs()) return false;
+    if (sourceNr && (!selectedFeature || !selectedFeature->Handle() ||
+        !sourceNr->Matches(reinterpret_cast<uintptr_t>(selectedFeature), selectedFeature->Handle()->Id, evaluatedOutput)))
+        return RefuseDepthContract("source-nr-receipt-mismatch", false);
     // Activate starts the normal target-frame pause. SetResource rejects guides
     // during that pause on every upscaler route, including DX11-on12. Defer
     // before recording conversions or reserving a native receipt; otherwise
@@ -513,7 +517,10 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
         !dlssg::depth_contract::Region(motionDesc,mvLeft,mvTop,mvWidth,mvHeight))
         return RefuseDepthContract("source-guide-subrect",false);
     const bool scale=Config::Instance()->FGEnableDepthScale.value_or_default();
-    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance());
+    const bool preparedRaster=taa::source_output::current &&
+        taa::source_output::PreparedRasterGuides(taa::source_output::current->handle);
+    ObserveGuideProducer(preparedRaster);
+    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance(), preparedRaster);
     const bool depthFlip=orientation.DepthCopy(),motionFlip=orientation.MotionCopy();
     const bool flip=depthFlip || motionFlip;
     if (((scale || depthFlip) && (left || top)) || (motionFlip && (mvLeft || mvTop)))
@@ -609,10 +616,9 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
     if ((scale || flip) && dlssg::depth_contract::Game()==GameRouting::Identity::StarRail &&
         (!_starRailGuideSwapchain || !_starRailGuideQueueCurrent))
         return RefuseDepthContract("starrail-conversion-not-on-presenting-queue",false);
-    const auto game=dlssg::depth_contract::Game();
-    const bool sharedDx11=ownedRecording &&
-        (game==GameRouting::Identity::Genshin || game==GameRouting::Identity::StarRail) &&
-        State::Instance().swapchainInteropApi==SwapchainInteropApi::Dx11wDx12;
+    // Borrowing follows the actual cache transport, independently of the game.
+    // Native DX12/Vulkan callers keep their own resource lifetime contract.
+    const bool sharedDx11=ownedRecording && transport==GuideTransport::SharedDx11;
     if (sharedDx11)
     {
         // A different queue needs a real producer receipt; do not guess order.
@@ -689,15 +695,17 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
     {
         Dx12Resource tag{};tag.type=type;tag.resource=resource;tag.cmdList=list;
         tag.left=x;tag.top=y;tag.width=w;tag.height=h;tag.state=state;
+        tag.preparedRasterGuides=preparedRaster;
         // Owned StarRail outputs preserve the rollback's UntilPresent tag.
         // Their writes are ordered on the real presenting queue; raw/cache
         // inputs keep the rollback's existing eOnlyValidNow SDK snapshot.
         tag.validity=type==FG_ResourceType::Depth && scale &&
             dlssg::depth_contract::Game()==GameRouting::Identity::StarRail ?
             FG_ResourceValidity::UntilPresent : FG_ResourceValidity::ValidNow;
+        const GuidePublication publication{&tag,orientation};
         const auto* previous=_upscalerGuidePublication;
-        _upscalerGuidePublication=&tag;
-        struct EndPublication { const Dx12Resource*& slot; const Dx12Resource* previous;
+        _upscalerGuidePublication=&publication;
+        struct EndPublication { const GuidePublication*& slot; const GuidePublication* previous;
             ~EndPublication(){slot=previous;} } finish{_upscalerGuidePublication,previous};
         return SetResource(&tag);
     };
@@ -762,7 +770,7 @@ bool DLSSG_Dx12::SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsC
                 _inputContinuity.SourceGeneration(),_inputOwnerEpoch,snapshot.feature,snapshot.configuration,
                 reinterpret_cast<uintptr_t>(this),ComIdentity::Get(_swapChain),output};
             _upscalerColourSources[slot]=UpscalerColourSourcePtr(new UpscalerColourSource(key,
-                CurrentInputOwner(),snapshot,selectedOutputDescription,reinterpret_cast<uintptr_t>(list),!nativeZzz));
+                CurrentInputOwner(),snapshot,selectedOutputDescription,reinterpret_cast<uintptr_t>(list),!nativeZzz,sourceNr));
             // DX11's callback already follows a successful real Evaluate. Native
             // success must come from CompleteNativeGuideSource's exact receipt.
             _upscalerColourSucceeded[slot]=!nativeZzz;
@@ -897,7 +905,9 @@ void DLSSG_Dx12::JoinUpscalerFinalColour(const UpscalerColourSourcePtr& source, 
         outcome.bridgeEndpoint!=source->bridge) return;
     if (source->bridge && (!copiedColour || !dlssg::depth_contract::SameOwner(copiedColour,colour.Get()) ||
         !copyFence || !copyValue || copyValue==UINT64_MAX || copyFence->GetCompletedValue()==UINT64_MAX)) return;
-    const auto mutation=outcome.Written() ? dlssg::colour::Mutation::NrWritten : dlssg::colour::Mutation::Original;
+    const auto mutation=dlssg::colour::CombinedMutation(source->sourceNr,
+        outcome.Written() ? dlssg::colour::Mutation::NrWritten : dlssg::colour::Mutation::Original);
+    if (mutation == dlssg::colour::Mutation::Uncertain) return;
     // WrittenOrdered means the real endpoint submitted on this very queue.
     // Retain that distinction; a CPU return or UI fence is never completion.
     if (outcome.Written() && (!outcome.fence || !outcome.fenceValue || outcome.fenceValue==UINT64_MAX ||
@@ -944,7 +954,8 @@ void DLSSG_Dx12::JoinUpscalerFinalColour(const UpscalerColourSourcePtr& source, 
         snapshot.colour={true,static_cast<UINT>(desc.Format),desc.Width,desc.Height,
             {0,0,static_cast<UINT>(desc.Width),desc.Height}};
         snapshot.picture=endpoint.present;
-        snapshot.colourChoice=outcome.Written() ? "same-source final NR present route; pixel lineage unverified" :
+        snapshot.colourChoice=mutation == dlssg::colour::Mutation::NrWritten ?
+            "source or Present NR written; final game composition copied; pixel lineage unverified" :
             "same-source current original present route; pixel lineage unverified";
         auto facts=GuideDiagnostics::TraceFacts(snapshot,FrameTrace::Kind::FinalColourJoined);
         facts.colour=endpoint.colour;facts.queue=endpoint.queue;facts.fenceValue=outcome.fenceValue;
@@ -1342,7 +1353,7 @@ bool DLSSG_Dx12::GuideTagsCurrent(int slot, UINT64 frame)
         // a sealed Genshin lease or a StarRail-owned presenting-queue output.
         if (a.resource!=b.resource || a.copy!=b.copy || a.cmdList!=b.cmdList ||
             a.state!=b.state || a.validity!=b.validity || a.left!=b.left || a.top!=b.top ||
-            a.width!=b.width || a.height!=b.height ||
+            a.width!=b.width || a.height!=b.height || a.preparedRasterGuides!=b.preparedRasterGuides ||
             !dlssg::depth_contract::Region(tag.description,a.left,a.top,a.width,a.height)) return false;
         if (a.validity==FG_ResourceValidity::ValidNow && !a.cmdList) return false;
         if (a.cmdList && a.cmdList==_uiCommandList[slot] &&

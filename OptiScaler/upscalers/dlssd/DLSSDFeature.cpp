@@ -53,6 +53,7 @@ void DLSSDFeature::ProcessInitParams(NVSDK_NGX_Parameter* InParameters)
     if (SharpenEnabled())
         featureFlags |= NVSDK_NGX_DLSS_Feature_Flags_DoSharpening;
 
+    RememberNativeDlssCreateFlags(featureFlags);
     InParameters->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, featureFlags);
 
     // Resolution -----------------------------

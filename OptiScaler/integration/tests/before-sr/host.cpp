@@ -58,7 +58,7 @@ struct Host {
     ComPtr<ID3D12CommandAllocator> allocator; ComPtr<ID3D12GraphicsCommandList> list;
     ComPtr<ID3D12Resource> color, upload, readback, depth[2], depthUpload, observedNormals;
     bool useDepth = false, typelessInput = false, partialInput = false, reversedInput = false;
-    unsigned char alpha = 255;
+    unsigned char alpha = 255, red = 32;
     bool ownedFormatsTyped = true;
     unsigned ownedFormatObservations = 0;
     unsigned pattern = 0; ComPtr<ID3D12Fence> done;
@@ -143,7 +143,8 @@ struct Host {
     void Upload() {
         unsigned char* mapped = nullptr; Hr(upload->Map(0, nullptr, reinterpret_cast<void**>(&mapped)));
         for (unsigned y = 0; y < Height; ++y) for (unsigned x = 0; x < Width; ++x) {
-            auto* p = mapped + y * footprint.Footprint.RowPitch + x * 4; p[0] = p[1] = p[2] = 32; p[3] = alpha;
+            auto* p = mapped + y * footprint.Footprint.RowPitch + x * 4;
+            p[0] = red; p[1] = p[2] = 32; p[3] = alpha;
         }
         upload->Unmap(0, nullptr); Begin();
         D3D12_TEXTURE_COPY_LOCATION src{}, dst{}; src.pResource = upload.Get(); src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; src.PlacedFootprint = footprint;
@@ -287,7 +288,7 @@ struct Host {
         endpoint.stage = HoYoShade::Stage::BeforeSr; endpoint.color = color.Get(); endpoint.queue = queue.Get(); endpoint.ready = {queue.Get(), done.Get(), serial};
         endpoint.width = Width; endpoint.height = Height; endpoint.stateKnown = true; endpoint.sdr = fixture != Input::UnknownColor;
         endpoint.state = D3D12_RESOURCE_STATE_COMMON; endpoint.stream = 1; endpoint.generation = identity.generation; endpoint.frame = identity.frame;
-        endpoint.naturalSource = source.Get(); endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrBridgeInput;
+        endpoint.naturalSource = source.Get(); endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrInput;
         endpoint.naturalDevice = identity.sourceDevice; endpoint.naturalBackbuffer = identity.buffer;
         if (typelessInput) {
             // Independent real-core fixture declaration. Producer query and
@@ -390,6 +391,7 @@ int main(int argc, char** argv) {
         if (cacheMode) registerEvent(reshade::addon_event::reshade_reorder_techniques,reinterpret_cast<void*>(ChangeOrder));
         if (single) {
             unsigned executed = 0;
+            uint64_t firstNormals = 0;
             const auto deadline = GetTickCount64() + 60000;
             for (unsigned f = 1; GetTickCount64() < deadline && executed < 2; ++f) {
                 host.pattern = executed; host.Upload();
@@ -397,12 +399,40 @@ int main(int argc, char** argv) {
                 Check(!result.Uncertain() && !result.attempt.naturalSuppressed, "single owner never suppresses a donor");
                 if (!result.EffectsExecuted()) { Sleep(10); continue; }
                 if (singleDepth) { Check(result.depthAvailable, "current DEPTH bound"); host.CheckDepthPixels(reversedInput); }
-                else if (singleMxao) { Check(result.depthAvailable && result.techniques == 2, "ordered Launchpad and MXAO"); host.CheckMxaoPixels(); }
+                else if (singleMxao) {
+                    Check(result.depthAvailable && result.techniques == 2, "ordered Launchpad and MXAO");
+                    host.CheckMxaoPixels();
+                    const auto normals = host.ReadNormals();
+                    if (executed) Check(normals != firstNormals, "single-runtime LP normals follow the current changed depth");
+                    else firstNormals = normals;
+                    std::printf("single MXAO depth_pattern=%u normals=%llx\n", host.pattern, normals);
+                }
                 else if (partialInput) host.CheckPartialColor();
                 else Check(host.Read() == (singleSelection ? 128u : 64u), "probe changed every current SR input pixel exactly once");
                 ++executed;
             }
             Check(executed == 2, "two filtered source pictures without a DX11 donor");
+            if (!singleDepth && !singleMxao && !singleSelection && !partialInput) {
+                Check(managedRuntime != nullptr, "observed single color runtime");
+                const auto probe = managedRuntime->find_technique("Probe.fx", "Probe");
+                const auto roundtrip = managedRuntime->find_technique("Probe.fx", "SrgbRoundtrip");
+                Check(probe.handle && roundtrip.handle, "explicit sRGB sampling and writeback technique");
+                managedRuntime->set_technique_state(probe, false);
+                managedRuntime->set_technique_state(roundtrip, true);
+                host.red = 128;
+                const auto end = GetTickCount64() + 60000;
+                for (uint64_t frame = 10000;; ++frame) {
+                    host.Upload(); const auto result = host.Filter(frame);
+                    Check(!result.Uncertain() && GetTickCount64() < end, "explicit sRGB selection becomes ready");
+                    if (result.EffectsExecuted()) {
+                        Check(host.Read() == 128, "middle gray survives exactly one sRGB decode/encode pair");
+                        break;
+                    }
+                    Check(host.Read() == 128, "pending sRGB selection preserves current middle gray");
+                    Sleep(10);
+                }
+                host.red = 32;
+            }
             if (singleSelection) {
                 uint64_t frame = 300;
                 const auto settle = [&](unsigned expected) {

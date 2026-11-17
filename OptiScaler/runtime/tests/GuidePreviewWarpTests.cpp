@@ -28,6 +28,7 @@ inline uint64_t Now() noexcept {
 #include <tuple>
 #include <thread>
 #include "PreviewDeviceAlias.h"
+#include "../../shaders/dlssnr/DlssNr_FrameInfo.h"
 
 namespace HookFixture {
 namespace Util {inline bool CheckForRealObject(const char*,IUnknown*,IUnknown**){return false;}}
@@ -189,6 +190,16 @@ static PreviewSnapshot Acquire(uint64_t source){
     PreviewSnapshot out;
     Until([&]{return GuideCapture::TryAcquireCompleted(out)&&out.source==source;},"completed immutable GPU snapshot");return out;
 }
+static GuideCapture::PreviewProgress Progress(){
+    GuideCapture::PreviewProgress progress;
+    Until([&]{return GuideCapture::ReadPreviewProgress(progress);},"nonblocking preview progress observation");
+    return progress;
+}
+static GuideCapture::PreviewSlotProgress ProgressSlot(uint64_t source){
+    const auto progress=Progress();
+    for(const auto& slot:progress.slots)if(slot.source==source)return slot;
+    throw std::runtime_error("preview progress did not retain the actual source identity");
+}
 struct Draw {
     Recording commands;
     ComPtr<ID3D12Resource> target,readback;
@@ -314,6 +325,29 @@ struct QueueGate {
     void Release(){Hr(fence->Signal(1));released=true;}
     ~QueueGate(){if(!released&&fence)fence->Signal(1);}
 };
+static void TestCallerPreviewAuthority(Fixture& fixture){
+    const auto authorized=[](ID3D12GraphicsCommandList* cmdList,ID3D12GraphicsCommandList* owner){
+        struct Source {ID3D12GraphicsCommandList* ownedPreviewRecording;};
+        const Source source{owner};DlssNrFrameInfo frame;
+        frame.SourceOutput=true;
+#include "GuidePreviewAuthorityProduction.inl"
+        Check(!frame.IndependentCommands&&!frame.FinishedPicture,"preview authority never grants independent model ownership");
+        return frame.CanRecordPreview();
+    };
+    auto current=fixture.New(),other=fixture.New();
+    Check(authorized(current.list.Get(),current.list.Get()),"this actual caller-owned DIRECT list can record previews");
+    Check(!authorized(current.list.Get(),other.list.Get())&&!authorized(other.list.Get(),current.list.Get()),
+        "different and previous-call DIRECT lists cannot authorize this preview");
+    Check(!authorized(nullptr,nullptr)&&!authorized(current.list.Get(),nullptr),"null ownership never authorizes preview commands");
+    Fixture::Close(current);Fixture::Close(other);
+    for(const auto kind:{D3D12_COMMAND_LIST_TYPE_COMPUTE,D3D12_COMMAND_LIST_TYPE_COPY}){
+        ComPtr<ID3D12CommandAllocator> allocator;ComPtr<ID3D12GraphicsCommandList> commands;
+        Hr(fixture.device->CreateCommandAllocator(kind,IID_PPV_ARGS(&allocator)));
+        Hr(fixture.device->CreateCommandList(0,kind,allocator.Get(),nullptr,IID_PPV_ARGS(&commands)));
+        Check(!authorized(commands.Get(),commands.Get()),"actual COMPUTE/COPY ownership cannot authorize DIRECT-only preview draws");
+        Hr(commands->Close());
+    }
+}
 static void TestCompletedOwnerRing(Fixture& f){
     Demand(PreviewMode::FgColour);GuideCapture::Request(false);
     OwnerFixture::DLSSG_Dx12 owner;
@@ -546,13 +580,35 @@ static void TestDeviceAliasPixels(Fixture& f){
     }
 }
 static void TestProducerGate(Fixture& f){
-    Demand(PreviewMode::FgColour);auto r=f.New();f.Record(r,20,f.Inputs());
+    Demand(PreviewMode::FgColour);const auto before=Progress();auto r=f.New();f.Record(r,20,f.Inputs());
     {QueueGate gate(f,f.producer.Get());f.Execute(r,f.producer.Get());f.Reset(r);
         Check(Observe(20).reset,"successful Reset is attached to executing generation");
         f.Drain(f.reader.Get());NeverAcquire("producer Reset and unrelated queue fence cannot publish blocked work");
+        const auto slot=ProgressSlot(20);
+        Check(slot.source==20&&slot.epoch==1020&&slot.feature==101&&slot.configuration==202&&slot.owner==303&&
+            slot.serial&&slot.recording&&slot.fence&&slot.fenceTarget&&slot.submitted&&slot.reset&&
+            slot.list==reinterpret_cast<uintptr_t>(r.list.Get())&&slot.queue==reinterpret_cast<uintptr_t>(f.producer.Get())&&
+            !slot.gpuCompleted&&!slot.published,"progress names the blocked actual producer list, queue, fence and exact source domain");
         Check(Observe(20).active&&!Observe(20).done&&Observe(20).inputsHeld,"blocked producer keeps actual inputs alive");gate.Release();}
     f.Drain(f.producer.Get());auto s=Acquire(20);Check(s.consumer==Stream::Fg,"real producer fence plus Reset publishes FG");
+    const auto completed=ProgressSlot(20);const auto after=Progress();
+    Check(completed.serial==s.serial&&completed.revision==s.revision&&completed.gpuCompleted&&completed.reset&&completed.published&&
+        completed.list==reinterpret_cast<uintptr_t>(r.list.Get())&&completed.queue==reinterpret_cast<uintptr_t>(f.producer.Get())&&
+        completed.fenceCompleted>=completed.fenceTarget,"progress only publishes the same immutable serial after its real producer fence and Reset");
+    Check(after.recorded==before.recorded+1&&after.submitted==before.submitted+1&&after.gpuCompleted==before.gpuCompleted+1&&
+        after.reset==before.reset+1&&after.published==before.published+1,"successful producer progress counters increment once per actual recording");
     Fixture::Close(r);s={};Demand(PreviewMode::Off);
+}
+static void TestDiscardedProducerProgress(Fixture& f){
+    Demand(PreviewMode::FgColour);const auto before=Progress();auto recording=f.New();f.Record(recording,21,f.Inputs());
+    Fixture::Close(recording);f.Reset(recording);
+    Until([&]{return !Observe(21).active;},"unsubmitted producer retires only after actual successful Reset");
+    const auto slot=ProgressSlot(21);const auto after=Progress();
+    Check(slot.reset&&!slot.executing&&!slot.submitted&&!slot.signalled&&!slot.gpuCompleted&&!slot.published,
+        "discarded producer Reset is not represented as submitted or GPU completed");
+    Check(after.reset==before.reset+1&&after.submitted==before.submitted&&after.gpuCompleted==before.gpuCompleted&&
+        after.published==before.published,"discarded producer only increments actual Reset progress");
+    Fixture::Close(recording);Demand(PreviewMode::Off);
 }
 static void TestReaderRetirement(Fixture& f){
     Demand(PreviewMode::FgColour);auto s=f.Complete(30,f.Inputs());std::vector<Draw> readers;
@@ -657,7 +713,7 @@ int main(int argc,char** argv){try{
     Fixture f;if(argc==2&&std::strcmp(argv[1],"--producer-replay")==0){
         TestProducerReplay(f);std::printf("GuidePreview producer replay WARP: %u checks passed; actual repeated Execute, no device removal\n",checks);return 0;
     }
-    TestOpenFgGuideDemand();TestPixelsAndDemand(f);TestHistoryInspectorPixels(f);TestDisplayedRetirement(f);TestDeviceAliasPixels(f);TestProducerGate(f);TestReaderRetirement(f);TestDelayedReceipts(f);TestBatchedHooks(f);TestCompletedOwnerRing(f);
+    TestCallerPreviewAuthority(f);TestOpenFgGuideDemand();TestPixelsAndDemand(f);TestHistoryInspectorPixels(f);TestDisplayedRetirement(f);TestDeviceAliasPixels(f);TestProducerGate(f);TestDiscardedProducerProgress(f);TestReaderRetirement(f);TestDelayedReceipts(f);TestBatchedHooks(f);TestCompletedOwnerRing(f);
     TestReaderReplay(f);TestQueueMismatch(f);TestSignalFailure(f);
     std::printf("GuidePreview WARP: %u checks passed; production GPU compute/display, actual queues/fences/Reset; no NVIDIA SDK/game claims\n",checks);return 0;
 }catch(const std::exception& e){GuideCapture::SetPreviewDemand({});std::fprintf(stderr,"GuidePreview WARP failure: %s\n",e.what());return 1;}}

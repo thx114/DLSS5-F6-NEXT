@@ -29,6 +29,8 @@ std::string ApiUpscalerInputName(ApiUpscalerInput upscaler)
         return "FSR 2.TT";
     case ApiUpscalerInput::FSR3_DX12:
         return "FSR 3.0";
+    case ApiUpscalerInput::TAA_DX11:
+        return "TAA Hook";
     default:
         return "????";
     }

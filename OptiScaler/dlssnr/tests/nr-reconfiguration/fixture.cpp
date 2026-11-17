@@ -126,7 +126,14 @@ struct Slot
     bool pending = false, quarantined = false, submitted = false;
 };
 std::array<Slot, 4> slots, freshColorSlots;
+// Cancellation is a host boundary: a submitted endpoint becomes idle; all
+// closure, actual submission completion and Reset policy below is production.
+void Cancel() {
+    for (auto* group : { &slots, &freshColorSlots })
+        for (auto& slot : *group) if (slot.submitted && !slot.quarantined) slot.pending = false;
 }
+}
+struct { void* feature = nullptr; } g_nr;
 
 #include "production.inc"
 
@@ -167,7 +174,7 @@ struct World
     {
         // Clear every host reference before backing objects leave scope.
         g_nrRetired.clear(); g_nrGpuWork.Clear();
-        Late::slots = {}; Late::freshColorSlots = {};
+        Late::slots = {}; Late::freshColorSlots = {};g_nr.feature = nullptr;
     }
     DlssNrGpuLifetime::Use Token(unsigned index)
     {
@@ -412,6 +419,29 @@ void ClosureFailuresAndHooks(Retire retire)
     }
 }
 
+void DirectEndpointRollover()
+{
+    for (unsigned index : {0u, 4u}) {
+        ++scenarios; World w;auto use = w.Private(index);
+        w.Slot(index).pending = true;w.executionFences[index].completed = 6;
+        Late::PrepareDirectEvaluation(true);
+        Require(!w.Slot(index).pending && !w.allocators[index].resets && !use->Complete(),
+                "source entry cancels old endpoint but retains unfinished actual submission");
+        w.executionFences[index].completed = 7;
+        Late::PrepareDirectEvaluation(true);
+        Require(w.allocators[index].resets == 1 && use->Complete() && g_nrRetired.empty(),
+                "source entry closes both idle private pools after their actual fences complete");
+    }
+    {
+        ++scenarios;World w;auto use = w.Private(4);g_nr.feature = &w;
+        Late::PrepareDirectEvaluation(true);
+        Require(!w.allocators[4].resets && !use->Complete(), "an active model does not poll resource-rebuild maintenance");
+        g_nr.feature = nullptr;Late::PrepareDirectEvaluation(false);
+        Require(!w.allocators[4].resets && !use->Complete(), "ordinary evaluation leaves Present maintenance to its endpoint");
+        Late::PrepareDirectEvaluation(true);
+        Require(use->Complete() && g_nrRetired.empty(), "waiting source model resumes retirement independently of Present");
+    }
+}
 int main(int argc, char** argv)
 {
     Retire retire = Late::RetireCompletedPrivateRecordings;
@@ -426,6 +456,7 @@ int main(int argc, char** argv)
     else if (argc != 1) return 2;
     try
     {
+        if (argc == 1) DirectEndpointRollover();
         IdlePools(retire); ExactCompletion(retire); SlotAndDepthCompletion(retire);
         Eligibility(retire); UncertainExecutions(retire); ExternalProducer(retire);
         OldGenerationAndCanonicalIdentity(retire);

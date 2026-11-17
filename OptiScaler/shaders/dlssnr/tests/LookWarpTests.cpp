@@ -5,10 +5,13 @@
 #include <d3d11.h>
 #include <d3d12.h>
 #include <d3dcompiler.h>
+#include <DirectXPackedVector.h>
 #include <wrl/client.h>
 #pragma warning(push)
 #pragma warning(disable : 4324) // Production constants occupy a 256-byte CB slot.
 #include <shaders/dlssnr/DlssNr_Look.h>
+#include <shaders/dlssnr/DlssNr_SurfaceFormats.h>
+#include <shaders/dlssnr/DlssNr_HistoryExposure.h>
 #pragma warning(pop)
 #include <fstream>
 #include <iterator>
@@ -141,6 +144,78 @@ struct DispatchResult
     Image colourDepth;
 };
 
+// Exercise the same typed boundaries as NR, while existing Look tests retain
+// their full-precision oracle. Copyback uses a separate, exact-format resource.
+struct TextureStorage
+{
+    std::array<DXGI_FORMAT, 6> inputs;
+    DXGI_FORMAT output = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    bool copyback = false;
+    TextureStorage() { inputs.fill(DXGI_FORMAT_R32G32B32A32_FLOAT); }
+};
+
+UINT PixelBytes(DXGI_FORMAT format)
+{
+    switch (format)
+    {
+    case DXGI_FORMAT_R32G32B32A32_FLOAT: return 16;
+    case DXGI_FORMAT_R16G16B16A16_FLOAT: return 8;
+    case DXGI_FORMAT_R11G11B10_FLOAT: return 4;
+    default: throw std::runtime_error("Unsupported fixture storage format");
+    }
+}
+
+std::vector<unsigned char> Pack(const Image& image, DXGI_FORMAT format)
+{
+    using namespace DirectX;
+    using namespace DirectX::PackedVector;
+    const UINT bytes = PixelBytes(format);
+    std::vector<unsigned char> packed(image.pixels.size() * bytes);
+    for (size_t i = 0; i < image.pixels.size(); ++i)
+    {
+        const auto p = image.pixels[i];
+        auto* target = packed.data() + i * bytes;
+        if (format == DXGI_FORMAT_R11G11B10_FLOAT)
+        {
+            XMFLOAT3PK value;
+            XMStoreFloat3PK(&value, XMVectorSet(p.r, p.g, p.b, p.a));
+            std::memcpy(target, &value, sizeof(value));
+        }
+        else if (format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+        {
+            const std::array<HALF, 4> value {XMConvertFloatToHalf(p.r), XMConvertFloatToHalf(p.g),
+                XMConvertFloatToHalf(p.b), XMConvertFloatToHalf(p.a)};
+            std::memcpy(target, value.data(), sizeof(value));
+        }
+        else std::memcpy(target, &p, sizeof(p));
+    }
+    return packed;
+}
+
+Pixel Unpack(const void* data, DXGI_FORMAT format)
+{
+    using namespace DirectX;
+    using namespace DirectX::PackedVector;
+    if (format == DXGI_FORMAT_R11G11B10_FLOAT)
+    {
+        XMFLOAT3PK packed;
+        std::memcpy(&packed, data, sizeof(packed));
+        XMFLOAT3 value;
+        XMStoreFloat3(&value, XMLoadFloat3PK(&packed));
+        return {value.x, value.y, value.z, 1.0f};
+    }
+    if (format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+    {
+        std::array<HALF, 4> value;
+        std::memcpy(value.data(), data, sizeof(value));
+        return {XMConvertHalfToFloat(value[0]), XMConvertHalfToFloat(value[1]),
+            XMConvertHalfToFloat(value[2]), XMConvertHalfToFloat(value[3])};
+    }
+    Pixel value;
+    std::memcpy(&value, data, sizeof(value));
+    return value;
+}
+
 class Fixture
 {
 public:
@@ -167,7 +242,7 @@ public:
         // declaration. All production branch bodies/resources remain intact.
         // The unspecialized multi-mode CS faults this Windows WARP build on
         // first dispatch; these are the same mode-14 and resolve pixel paths.
-        for (unsigned mode : {1u, 14u})
+        for (unsigned mode : {0u, 1u, 2u, 14u})
         {
             auto specialized = text;
             const auto anchor = specialized.find("float SkinColourWeight(");
@@ -181,7 +256,7 @@ public:
                 std::cerr.write(static_cast<const char*>(errors->GetBufferPointer()),
                                 static_cast<std::streamsize>(errors->GetBufferSize()));
             RequireHr(result, "Compile production HLSL");
-            auto& shader = mode == 14 ? layerShader : resolveShader;
+            auto& shader = shaders.at(mode);
             RequireHr(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &shader),
                       "Create production compute shader");
             std::cout << "Production mode " << mode << " ready (" << code->GetBufferSize() << " bytes)" << std::endl;
@@ -194,7 +269,7 @@ public:
         RequireHr(device->CreateSamplerState(&desc, &sampler), "Create linear clamp sampler");
     }
 
-    DispatchResult Run(const Inputs& inputs, const Constants& constants)
+    DispatchResult Run(const Inputs& inputs, const Constants& constants, const TextureStorage& storage = {})
     {
         if (!reportedFirstDispatch)
         {
@@ -208,16 +283,19 @@ public:
         {
             const auto& input = inputs[i];
             auto desc = TextureDesc(input.width, input.height);
+            desc.Format = storage.inputs[i];
             desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            const auto packed = Pack(input, desc.Format);
             D3D11_SUBRESOURCE_DATA data {};
-            data.pSysMem = input.pixels.data();
-            data.SysMemPitch = input.width * static_cast<UINT>(sizeof(Pixel));
+            data.pSysMem = packed.data();
+            data.SysMemPitch = input.width * PixelBytes(desc.Format);
             RequireHr(device->CreateTexture2D(&desc, &data, &textures[i]), "Upload input texture");
             RequireHr(device->CreateShaderResourceView(textures[i].Get(), nullptr, &views[i]), "Create input SRV");
             rawViews[i] = views[i].Get();
         }
 
         auto desc = TextureDesc(constants.Width, constants.Height);
+        desc.Format = storage.output;
         desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
         std::array<ComPtr<ID3D11Texture2D>, 2> outputs;
         std::array<ComPtr<ID3D11UnorderedAccessView>, 2> uavs;
@@ -240,13 +318,22 @@ public:
         RequireHr(device->CreateBuffer(&bufferDesc, &bufferData, &buffer), "Create constants buffer");
         auto* rawBuffer = buffer.Get();
         auto* rawSampler = sampler.Get();
-        context->CSSetShader(constants.Mode == 14 ? layerShader.Get() : resolveShader.Get(), nullptr, 0);
+        context->CSSetShader(shaders.at(constants.Mode).Get(), nullptr, 0);
         context->CSSetConstantBuffers(0, 1, &rawBuffer);
         context->CSSetSamplers(0, 1, &rawSampler);
         context->CSSetShaderResources(0, static_cast<UINT>(rawViews.size()), rawViews.data());
         context->CSSetUnorderedAccessViews(0, static_cast<UINT>(rawUavs.size()), rawUavs.data(), nullptr);
         context->Dispatch((constants.Width + 7) / 8, (constants.Height + 7) / 8, 1);
         context->ClearState();
+
+        if (storage.copyback)
+        {
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            ComPtr<ID3D11Texture2D> gameTarget;
+            RequireHr(device->CreateTexture2D(&desc, nullptr, &gameTarget), "Create exact-format game target");
+            context->CopyResource(gameTarget.Get(), outputs[0].Get());
+            outputs[0] = gameTarget;
+        }
 
         DispatchResult result;
         result.primary = Readback(outputs[0].Get());
@@ -282,16 +369,16 @@ private:
         RequireHr(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Map WARP output");
         Image result({}, desc.Width, desc.Height);
         for (UINT y = 0; y < desc.Height; ++y)
-            std::memcpy(result.pixels.data() + static_cast<size_t>(y) * desc.Width,
-                        static_cast<const char*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch,
-                        static_cast<size_t>(desc.Width) * sizeof(Pixel));
+            for (UINT x = 0; x < desc.Width; ++x)
+                result.At(x, y) = Unpack(static_cast<const char*>(mapped.pData) +
+                    static_cast<size_t>(y) * mapped.RowPitch + x * PixelBytes(desc.Format), desc.Format);
         context->Unmap(staging.Get(), 0);
         return result;
     }
 
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
-    ComPtr<ID3D11ComputeShader> layerShader, resolveShader;
+    std::array<ComPtr<ID3D11ComputeShader>, 15> shaders;
     ComPtr<ID3D11SamplerState> sampler;
     bool reportedFirstDispatch = false;
 };
@@ -388,6 +475,74 @@ Inputs FinalInputs(const Image& base, const Image& answer, const Constants& c)
     Image original = base;
     for (auto& p : original.pixels) p = Working(p, c.ReversibleMode, c.Passthrough != 0);
     return {base, answer, original, Image(), Image(), Image()};
+}
+
+// A model that returns its input has no edit to transfer, at any working size
+// or signal range. These are actual typed Encode/Downsample/Resolve dispatches;
+// no claim is made about a vendor model or the game's colour transfer.
+void HdrRangeIdentity(Fixture& f, Checks& checks)
+{
+    for (unsigned encoding : {0u, 3u}) for (unsigned pattern : {0u, 1u})
+    {
+        Image game;
+        const std::array<Pixel, 6> colours {{{4, .5f, .25f, 1}, {.5f, 4, .25f, 1},
+            {.25f, .5f, 4, 1}, {.0625f, .03125f, .015625f, 1},
+            {.75f, .5f, .25f, 1}, {10, .125f, 2, 1}}};
+        for (UINT y = 0; y < game.height; ++y) for (UINT x = 0; x < game.width; ++x)
+            game.At(x, y) = colours[pattern == 0 ? 0 : (x / 4 + y / 4) % colours.size()];
+        auto c = Settings(0, true);
+        c.Mode = DlssNrMode_Encode;
+        c.InputEncoding = encoding;
+        TextureStorage encodeStorage;
+        encodeStorage.inputs[0] = DXGI_FORMAT_R11G11B10_FLOAT;
+        encodeStorage.output = static_cast<DXGI_FORMAT>(DlssNr::WorkingColourFormat(DXGI_FORMAT_R11G11B10_FLOAT));
+        const auto encoded = f.Run({game, Image(), Image(), Image(), Image(), Image()}, c, encodeStorage);
+        const auto packedOriginal = Pack(game, DXGI_FORMAT_R11G11B10_FLOAT);
+        for (unsigned reduction : {1u, 2u})
+        {
+            auto down = c;
+            down.Mode = DlssNrMode_Downsample;
+            down.Width /= reduction;
+            down.Height /= reduction;
+            TextureStorage workStorage;
+            workStorage.inputs[0] = workStorage.output = encodeStorage.output;
+            const auto proxy = f.Run({encoded.primary, Image(), Image(), Image(), Image(), Image()}, down, workStorage).primary;
+            for (unsigned transfer : {1u, 2u}) for (bool copyback : {false, true})
+            {
+                auto resolve = c;
+                resolve.Mode = DlssNrMode_Resolve;
+                resolve.ModelWorkScale = 1.0f / reduction;
+                resolve.Transfer = transfer;
+                TextureStorage resolveStorage;
+                resolveStorage.inputs[0] = resolveStorage.inputs[1] = resolveStorage.inputs[2] = encodeStorage.output;
+                resolveStorage.output = DXGI_FORMAT_R11G11B10_FLOAT;
+                resolveStorage.copyback = copyback;
+                const auto result = f.Run({proxy, proxy, encoded.colourDepth, Image(), Image(), Image()}, resolve,
+                    resolveStorage).primary;
+                float worstRelative = 0;
+                for (UINT y = 0; y < game.height; ++y) for (UINT x = 0; x < game.width; ++x)
+                {
+                    const auto expected = Unpack(packedOriginal.data() +
+                        (static_cast<size_t>(y) * game.width + x) * 4, DXGI_FORMAT_R11G11B10_FLOAT);
+                    const auto actual = result.At(x, y);
+                    const std::array<float, 3> a {actual.r, actual.g, actual.b}, b {expected.r, expected.g, expected.b};
+                    for (unsigned k = 0; k < 3; ++k)
+                    {
+                        const float relative = std::abs(a[k] - b[k]) / std::max(b[k], 1e-4f);
+                        worstRelative = std::max(worstRelative, std::isfinite(relative) ? relative : 1e10f);
+                    }
+                }
+                // R11 blue has 5 fraction bits; the two format conversions can
+                // round an inverse-transform result to the neighbouring value.
+                const std::string name = "R11 -> FP16 -> R11 zero edit encoding=" + std::to_string(encoding) +
+                    " pattern=" + std::to_string(pattern) + " reduction=" + std::to_string(reduction) +
+                    " transfer=" + std::to_string(transfer) + " copy=" + std::to_string(copyback);
+                checks.Expect(worstRelative <= 0.032f, name);
+                if (worstRelative > 0.032f)
+                    std::cout << "  maximum relative channel error=" << worstRelative << std::endl;
+            }
+        }
+    }
 }
 // Compile the actual output descriptor ownership and resolve bindings, then
 // run production HLSL. Source permissions must never stand in for output flags.
@@ -596,13 +751,76 @@ std::string ReadSource(const std::filesystem::path& path)
 }
 } // namespace
 
+
+// Ordinary source-output passthrough must not lose history to parameters that
+// no encode/resize/resolve pixel reads. Test the production HLSL as well as its
+// history-only key; transformed HDR and divider remain distinct negative controls.
+void ExposureIndependentHistory(Fixture& f, Checks& checks)
+{
+    using namespace DlssNrHistoryExposure;
+    for(unsigned encoding:{0u,3u}) for(unsigned reversible:{0u,1u,2u}) {
+        Input domain;domain.feedback=domain.sourceOutput=true;domain.linearHdr=false;
+        domain.inputEncoding=encoding;domain.colourEncoding=encoding==3?3:0;domain.encodingKnown=false;
+        auto encode=Settings(reversible,true);encode.Mode=DlssNrMode_Encode;encode.InputEncoding=encoding;
+        encode.PreExposure=1.25f;domain.preExposure=encode.PreExposure;
+        checks.Expect(Independent(domain,encode),"ordinary source passthrough has an exposure-independent domain");
+        const auto canonical=CanonicalEncoding(encode);
+        checks.Expect(std::memcmp(&encode,&canonical,sizeof(encode))!=0,"history canonicalization uses a separate copy");
+        Image game;for(UINT y=0;y<game.height;++y)for(UINT x=0;x<game.width;++x)
+            game.At(x,y)={.1f+x*.013f,.05f+y*.021f,.15f+((x+2*y)%9)*.047f,1};
+        Image expectedEncode,expectedProxy,expectedResolve;
+        for(unsigned variant=0;variant<5;++variant) {
+            auto c=encode;c.WhitePoint=variant?float(variant)*7.f:1.f;
+            c.UseGameExposure=variant%2;c.UseExposureWhitePoint=1;
+            c.ExposurePreMul=variant?float(variant)*3:0;c.ExposureBaseScale=3+float(variant);
+            c.ExposureTrim=2+float(variant);c.ExposureTrimAnchorCount=2;c.ExposureTrimPreview=variant%2;
+            c.ExposureTrimAnchorExposure0=.1f+variant;c.ExposureTrimAnchorTrim0=.2f+variant;
+            c.ExposureTrimAnchorExposure1=7+float(variant);c.ExposureTrimAnchorTrim1=8+float(variant);
+            c.AutoExposureShadowProtection=variant*25.f;
+            const auto normalized=CanonicalEncoding(c);
+            checks.Expect(std::memcmp(&canonical,&normalized,sizeof(canonical))==0,"unused exposure changes preserve history key");
+            checks.Expect(canonical.PreExposure==encode.PreExposure&&canonical.ReversibleMode==reversible,
+                "producer pre-exposure and reversible mode remain in history key");
+            const float values[]{.125f,8,0,std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()};
+            const Image exposure({values[variant],values[variant],values[variant],1},1,1);
+            const auto encoded=f.Run({game,Image(),Image(),Image(),exposure,Image()},c);
+            auto down=c;down.Mode=DlssNrMode_Downsample;down.Width/=2;down.Height/=2;
+            const auto proxy=f.Run({encoded.primary,Image(),Image(),Image(),exposure,Image()},down).primary;
+            auto answer=proxy;for(auto& p:answer.pixels){p.r+=.03f;p.g+=.02f;p.b+=.01f;}
+            auto resolve=c;resolve.Mode=DlssNrMode_Resolve;resolve.ModelWorkScale=.5f;
+            const auto output=f.Run({proxy,answer,encoded.colourDepth,Image(),exposure,Image()},resolve).primary;
+            if(!variant){expectedEncode=encoded.primary;expectedProxy=proxy;expectedResolve=output;}
+            else {checks.ImageEquals(encoded.primary,expectedEncode,"encode does not read exposure in passthrough");
+                checks.ImageEquals(proxy,expectedProxy,"resize does not read exposure in passthrough");
+                checks.ImageEquals(output,expectedResolve,"resolve does not read exposure in ordinary passthrough");}
+        }
+        for(unsigned negative=0;negative<15;++negative) {
+            auto d=domain;auto c=encode;
+            switch(negative){case 0:d.feedback=false;break;case 1:d.sourceOutput=false;break;
+            case 2:d.beforeUpscale=true;break;case 3:d.nativePreSr=true;break;case 4:d.finishedPicture=true;break;
+            case 5:d.linearHdr=true;break;case 6:d.spatial=true;break;case 7:d.compare=1;break;case 8:d.debug=1;break;
+            case 9:c.Passthrough=0;break;case 10:d.inputEncoding=c.InputEncoding=4;d.colourEncoding=4;break;
+            case 11:d.preExposure=0;break;case 12:d.preExposure=std::nanf("");break;
+            case 13:c.Mode=DlssNrMode_Resolve;break;case 14:c.InputEncoding=encoding==0?3:0;break;}
+            checks.Expect(!Independent(d,c),"unproven or exposure-dependent domain retains exact gate");
+        }
+        auto changed=domain;changed.colourEncoding=2;checks.Expect(Domain(domain)!=Domain(changed),"unknown and declared sRGB are distinct histories");
+        changed=domain;changed.encodingKnown=!domain.encodingKnown;checks.Expect(Domain(domain)!=Domain(changed),"producer declaration changes history domain");
+        changed=domain;changed.encodingForced=true;checks.Expect(Domain(domain)!=Domain(changed),"forced encoding changes history domain");
+        auto c=canonical;c.PreExposure+=.5f;checks.Expect(std::memcmp(&canonical,&c,sizeof(c))!=0,"producer pre-exposure changes history key");
+        c=canonical;c.ReversibleMode+=1;checks.Expect(std::memcmp(&canonical,&c,sizeof(c))!=0,"reversible mode changes history key");
+    }
+}
+
 int main(int argc, char** argv)
 {
     try
     {
         Checks checks;
         const bool negative = argc > 1 && std::string(argv[1]) == "--negative-control";
+        const bool rangeOnly = argc > 1 && std::string(argv[1]) == "--hdr-range";
         std::string source;
+        if (rangeOnly && argc > 2) source = ReadSource(argv[2]);
         if (negative)
         {
             source = ReadSource(std::filesystem::path(__FILE__).parent_path().parent_path() / "precompile/dlssnr.hlsl");
@@ -616,11 +834,22 @@ int main(int argc, char** argv)
             std::cout << "NEGATIVE CONTROL: old encoded-domain layer math restored in production CSMain\n";
         }
         Fixture current(source);
+        if (argc>1 && std::string(argv[1])=="--exposure-history")
+        {
+            ExposureIndependentHistory(current,checks);return checks.Finish();
+        }
+        if (rangeOnly)
+        {
+            HdrRangeIdentity(current, checks);
+            return checks.Finish();
+        }
         AnalyticAndEndpoints(current, checks);
         if (!negative)
         {
+            ExposureIndependentHistory(current, checks);
             LayerFinalParity(current, checks);
             CurrentSourceResolve(current, checks);
+            HdrRangeIdentity(current, checks);
             if (argc > 1)
             {
                 Fixture baseline(ReadSource(argv[1]));

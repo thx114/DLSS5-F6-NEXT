@@ -2,6 +2,7 @@
 #include "DxgiFactory_WrappedCalls.h"
 #include "DxgiFactory_Hooks.h"
 #include "SwapchainCreateRule.h"
+#include <runtime/PrivateGraphicsScope.h>
 
 #include "FG_Hooks.h"
 #include "D3D11_Hooks.h"
@@ -81,6 +82,9 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChain(IDXGIFactory* realFactory, Wrap
                                                  IUnknown* pDevice, const DXGI_SWAP_CHAIN_DESC* pDesc,
                                                  IDXGISwapChain** ppSwapChain)
 {
+    if (PrivateGraphics::Active())
+        return realFactory->CreateSwapChain(pDevice, const_cast<DXGI_SWAP_CHAIN_DESC*>(pDesc), ppSwapChain);
+
     const std::optional<UINT> applicationFlags = pDesc ? std::optional<UINT>{pDesc->Flags} : std::nullopt;
     *ppSwapChain = nullptr;
 
@@ -415,6 +419,9 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChainForHwnd(IDXGIFactory2* realFacto
                                                         const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
                                                         IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain)
 {
+    if (PrivateGraphics::Active())
+        return realFactory->CreateSwapChainForHwnd(pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+
     const std::optional<UINT> applicationFlags = pDesc ? std::optional<UINT>{pDesc->Flags} : std::nullopt;
     *ppSwapChain = nullptr;
 
@@ -801,6 +808,9 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChainForCoreWindow(IDXGIFactory2* rea
                                                               IDXGIOutput* pRestrictToOutput,
                                                               IDXGISwapChain1** ppSwapChain)
 {
+    if (PrivateGraphics::Active())
+        return realFactory->CreateSwapChainForCoreWindow(pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
+
     const std::optional<UINT> applicationFlags = pDesc ? std::optional<UINT>{pDesc->Flags} : std::nullopt;
     if (State::Instance().vulkanCreatingSC)
     {

@@ -124,6 +124,17 @@ void ObserveCompiled(CompiledDefinitions& compiled, reshade::api::effect_runtime
         if (call.Current()) compiled = std::move(next);
     } catch (...) { compiled = {}; }
 }
+Result InspectDirections(const CompiledDefinitions& compiled,reshade::api::effect_runtime* runtime,
+    const Selection::Source& source,bool reversed,bool flipped,ReloadCounter counter) noexcept
+{
+    if(!runtime || !source.valid || !counter || compiled.runtime!=runtime || !compiled.reload ||
+        counter(runtime)!=compiled.reload)return {};
+    for(const auto& effect:source.effects)if(effect.enabled) {
+        const auto found=std::find_if(compiled.effects.begin(),compiled.effects.end(),[&](const auto& e){return e.name==effect.key;});
+        if(found==compiled.effects.end() || !found->known || found->reversed!=reversed || found->flipped!=flipped)return {};
+    }
+    return {Outcome::Ready};
+}
 Result InspectCurrent(const CompiledDefinitions& compiled, reshade::api::effect_runtime* runtime, const Selection::Source& source,
                       const Access* input, ReloadCounter counter) noexcept
 {

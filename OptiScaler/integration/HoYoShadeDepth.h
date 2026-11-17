@@ -141,6 +141,8 @@ public:
 // null, so ordinary color effects continue with a cleared DEPTH semantic.
 std::shared_ptr<Prepared> Prepare(const Access&, ID3D12Device*, reshade::api::device*, Cache&, reshade::api::effect_runtime*);
 void ResetReadiness(reshade::api::effect_runtime*);
+// Binding only: the native caller retains its own copy/actual completion.
+bool BindTexture(reshade::api::effect_runtime*,reshade::api::resource_view,bool reversed,bool yFlipped);
 void Clear(reshade::api::effect_runtime*); // propagates SDK errors; never renders stale depth
 
 // Owned-stage adapters. A missing real reader leaves the optional input empty.

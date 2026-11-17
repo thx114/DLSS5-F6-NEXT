@@ -380,7 +380,7 @@ bool DLSSG_Dx12::CanRetainForInputGap() const
 
 dlssg::InputOwner DLSSG_Dx12::CurrentInputOwner() const
 {
-    const auto orientation = framegen::ResolveGuideOrientation(*Config::Instance());
+    const auto orientation = framegen::ResolveGuideOrientation(*Config::Instance(), PreparedRasterGuides());
     return {(uintptr_t) _device, (uintptr_t) _gameCommandQueue, _inputOwnerEpoch, _width, _height,
             (uint32_t) Config::Instance()->FGDLSSGInterpolationCount.value_or_default(),
             (uint32_t) Config::Instance()->FGDLSSGForceDMFG.value_or_default(),
@@ -701,11 +701,42 @@ void DLSSG_Dx12::InvalidateDlssgOptions()
 
 void DLSSG_Dx12::InvalidateProviderCapabilities()
 {
+    InvalidateRuntimeObservation();
     InvalidateDispatchOptions();
     if (_providerOptionsLifecycle != UINT64_MAX) ++_providerOptionsLifecycle;
     _generationState.InvalidateCapability();
     _maxInterpolationCount = 0;
     _supportsDMFG = false;
+}
+
+void DLSSG_Dx12::ObservePresentReturned(IDXGISwapChain* chain, UINT flags, HRESULT result)
+{
+    if ((flags & DXGI_PRESENT_TEST) || chain != _swapChain) return;
+    auto snapshot = RuntimeObservation(flags, result);
+    const auto owner = CurrentProviderOwner();
+    if (!(owner == _runtimeObservedOwner))
+    {
+        _runtimeObservedOwner = owner;
+        _runtimeRateFloorNs = snapshot.tickNs;
+    }
+    snapshot.epoch = owner.lifecycle;
+    if (_inputContinuity.Held() || _depthSourceGap) snapshot.status = framegen::RuntimeStatus::InputGap;
+    framegen::DlssgStateSample sample;
+    if (owner.Known() && result == S_OK && StreamlineHooks::ReadDlssgStateSample(
+        StreamlineProxy::DLSSGGetState(), viewport, sample) && sample.queryBeginNs >= _runtimeRateFloorNs &&
+        sample.queryEndNs <= snapshot.tickNs && snapshot.tickNs - sample.queryEndNs <= 3000000000ull)
+    {
+        snapshot.sdkStatus = sample.status;
+        if (!sample.succeeded || sample.status) snapshot.status = framegen::RuntimeStatus::SdkError;
+        else if (sample.outputRate.known && sample.outputRate.firstNs >= _runtimeRateFloorNs)
+        {
+            snapshot.outputRate = sample.outputRate;
+            snapshot.rateSource = framegen::OutputRateSource::DlssgSdk;
+            if (snapshot.status == framegen::RuntimeStatus::EnabledUnconfirmed && sample.outputRate.frames > 0)
+                snapshot.status = framegen::RuntimeStatus::OutputObserved;
+        }
+    }
+    framegen::RuntimeState().Publish(snapshot);
 }
 
 framegen::input_present::Binding DLSSG_Dx12::CurrentInputPresentBinding(IDXGISwapChain* chain,ID3D12Resource* input)
@@ -2479,7 +2510,7 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
     const auto publicationOwner=CurrentInputOwner();
     if (checkedGuide)
     {
-        if (!false && inputResource!=_upscalerGuidePublication)
+        if (!_upscalerGuidePublication || inputResource!=_upscalerGuidePublication->resource)
             return RefuseDepthContract("unsealed-upscaler-guide-publication");
         if (fIndex!=GetIndex() || !dlssg::depth_contract::OnDevice(_device,inputResource->resource) ||
             !dlssg::depth_contract::Region(inputResource->resource->GetDesc(),inputResource->left,
@@ -2608,8 +2639,10 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
     fResource->width = inputResource->width;
     fResource->height = inputResource->height;
     fResource->cmdList = inputResource->cmdList;
+    fResource->preparedRasterGuides = inputResource->preparedRasterGuides;
 
-    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance());
+    const auto orientation=checkedGuide ? _upscalerGuidePublication->orientation :
+        framegen::ResolveGuideOrientation(*Config::Instance(), fResource->preparedRasterGuides);
     auto willFlip = State::Instance().activeFgInput == FGInput::Upscaler &&
                     !native::OpticalFgNrEnabled() &&
                     !false && // R727: this exact private transaction already matches picture raster
@@ -2632,7 +2665,7 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
     if (checkedGuide && willFlip)
         ResourceBarrier(fResource->cmdList,fResource->resource,sourceState,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     const bool flipped = willFlip && _device != nullptr &&
-        (checkedGuide ? FlipOwnedUpscalerGuide(fResource) : FlipResource(fResource));
+        (checkedGuide ? FlipOwnedUpscalerGuide(fResource,orientation) : FlipResource(fResource));
     if (checkedGuide && willFlip)
         ResourceBarrier(inputResource->cmdList,inputResource->resource,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,sourceState);
     if (checkedGuide && willFlip && !flipped)

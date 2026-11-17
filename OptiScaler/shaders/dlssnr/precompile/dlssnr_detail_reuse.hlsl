@@ -839,11 +839,13 @@ void PrepareSceneGuides(uint2 p)
     float2 scale = float2(mvScaleX, mvScaleY);
     if ((sceneGuideFlags & 4u) != 0u) scale.y = -scale.y;
     const float2 delta = raw * scale / float2(motionWidth, motionHeight);
+    const float2 workMotion = delta * WorkSize();
     const float z = FarIsZero(rawDepth);
-    const bool depthFinite = isfinite(rawDepth) && rawDepth >= 0.0 && rawDepth <= 1.0;
-    const bool motionFinite = all(isfinite(delta)) && all(abs(raw) < 65504.0);
-    bool valid = depthFinite && z > 0.0 && motionFinite &&
-        all(depthUv >= 0.0) && all(depthUv < 1.0) && all(motionUv >= 0.0) && all(motionUv < 1.0);
+    const bool depthFinite = isfinite(rawDepth) && rawDepth >= 0.0 && rawDepth <= 1.0 &&
+        all(depthUv >= 0.0) && all(depthUv < 1.0);
+    const bool motionFinite = all(isfinite(delta)) && all(isfinite(workMotion)) && all(abs(raw) < 65504.0) &&
+        all(motionUv >= 0.0) && all(motionUv < 1.0);
+    bool valid = depthFinite && z > 0.0 && motionFinite;
     float support = valid ? 1.0 : 0.0;
     if ((sceneGuideFlags & 8u) != 0u)
     {
@@ -857,7 +859,7 @@ void PrepareSceneGuides(uint2 p)
             ? min(support, min(agreement, 1.0 - saturate(distrust))) : 0.0;
     }
     // Z is far-zero and conditional. XY remains true scene motion in work pixels.
-    u0[p] = float4(motionFinite ? delta * WorkSize() : 65504.0, valid ? z : -1.0, support);
+    u0[p] = float4(motionFinite ? workMotion : 65504.0, valid ? z : -1.0, support);
     // Model depth is the true scene DeviceZ with canonical sample addressing;
     // flow disagreement never turns it into synthetic final-picture depth.
     u1[p] = float4(depthFinite ? rawDepth : (depthInverted != 0u ? 0.0 : 1.0), 0.0, 0.0, 0.0);

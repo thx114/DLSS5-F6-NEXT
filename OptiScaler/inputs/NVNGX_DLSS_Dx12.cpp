@@ -1282,6 +1282,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
             nrSource.featureFlags = unsigned(it->second.feature->GetFeatureFlags());
             nrSource.featureFlagsKnown = true;
         }
+        nrSource.effectiveColorCreateFlags=it->second.feature->GetNativeDlssCreateFlags();
         rayReconstruction |= it->second.feature->GetUpscalerType() == Upscaler::DLSSD;
     }
     GuideDiagnostics::EvaluationScope evaluateObservation(FrameTrace::Api::D3D12, handleId,
@@ -1356,7 +1357,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
             DlssNr::CompleteZzzFinishedPictureSource(nrSourceAttempt, InCmdList, InParameters,
                                                   nrSource, result == NVSDK_NGX_Result_Success);
             if (result == NVSDK_NGX_Result_Success && nrUpscale)
-                DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, rayReconstruction);
+                DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, rayReconstruction, 0, nrSource);
 
             evaluateObservation.Result(result);
             return result;
@@ -1394,7 +1395,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     DlssNr::CompleteZzzFinishedPictureSource(nrSourceAttempt, InCmdList, InParameters,
                                           nrSource, optiResult == NVSDK_NGX_Result_Success);
     if (optiResult == NVSDK_NGX_Result_Success && nrUpscale)
-        DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, rayReconstruction);
+        DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, rayReconstruction, 0, nrSource);
 
     evaluateObservation.Result(optiResult);
     return optiResult;

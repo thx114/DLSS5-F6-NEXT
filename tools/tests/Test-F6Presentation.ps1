@@ -5,6 +5,8 @@ param(
     [Parameter(Mandatory)][string]$RuntimeDirectory,
     [string]$OutputDirectory = ('build/f6-presentation-' + (Get-Date -Format 'yyyyMMdd-HHmmss')),
     [switch]$Sentinel,
+    [switch]$RawControl,
+    [switch]$DetailRetention,
     [switch]$RequireStableNr,
     [switch]$FrameGeneration
 )
@@ -33,7 +35,8 @@ if ($FrameGeneration -and (Test-Path -LiteralPath $streamline)) {
 }
 $exe = Join-Path $out 'YuanShen.exe' # synthetic fixture, required by the existing process route
 $fg = if ($FrameGeneration) { 'true' } else { 'false' }
-$nr = if ($Sentinel) { 'false' } else { 'true' }
+$nr = if ($Sentinel -or $RawControl) { 'false' } else { 'true' }
+$detail = if ($DetailRetention) { 'true' } else { 'false' }
 $ini = @"
 [Upscalers]
 Dx11Upscaler=dlss_12
@@ -45,7 +48,7 @@ External=false
 [DlssNr]
 Enabled=$nr
 GenshinPresentPipeline=true
-PresentedTemporalDetail=false
+PresentedTemporalDetail=$detail
 [HoYoShade]
 Enabled=false
 [CAS]
@@ -79,7 +82,7 @@ $compile = Join-Path $out 'compile.cmd'
 [IO.File]::WriteAllText($compile, $batch.Replace("`r`n", "`n").Replace("`n", "`r`n"))
 & cmd.exe /d /c $compile *> (Join-Path $out 'compile.log')
 if ($LASTEXITCODE -ne 0) { Get-Content (Join-Path $out 'compile.log') -Tail 20; throw 'Host compile failed' }
-$mode = if ($Sentinel) { 'present-sentinel' } else { 'present' }
+$mode = if ($Sentinel) { 'present-sentinel' } elseif ($RawControl) { 'present-raw' } else { 'present' }
 if ($RequireStableNr) { $mode += '-strict' }
 $p = Start-Process -FilePath $exe -ArgumentList @('OptiScaler.dll', $mode) -WorkingDirectory $out -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput (Join-Path $out 'stdout.log') -RedirectStandardError (Join-Path $out 'stderr.log')
@@ -89,7 +92,7 @@ if (!$complete) { $p.Kill(); $p.WaitForExit() } # only this disposable fixture
 $stdout = Get-Content -LiteralPath (Join-Path $out 'stdout.log') -Raw
 $result = [pscustomobject]@{
     Pass=($complete -and $p.ExitCode -eq 0 -and $stdout.Contains('PASS actual presentation observation'))
-    PID=$p.Id; Exit=$p.ExitCode; Timeout=(!$complete); Sentinel=[bool]$Sentinel; RequireStableNr=[bool]$RequireStableNr; RequestedFG=[bool]$FrameGeneration
+    PID=$p.Id; Exit=$p.ExitCode; Timeout=(!$complete); Sentinel=[bool]$Sentinel; RawControl=[bool]$RawControl; DetailRetention=[bool]$DetailRetention; RequireStableNr=[bool]$RequireStableNr; RequestedFG=[bool]$FrameGeneration
     ArtifactSHA256=(Get-FileHash -LiteralPath (Join-Path $out 'OptiScaler.dll')).Hash
     Runtime=(Get-FileHash -LiteralPath (Join-Path $out 'nvngx_dlssnr.dll')).Hash
     Path=$out; Scope='isolated wrapper FG-input readback; generated/display pixels unknown'

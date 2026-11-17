@@ -5,8 +5,11 @@
 #include "Util.h"
 
 #include <upscalers/IFeature_Dx11.h>
+#include <upscalers/IFeature_Dx11wDx12.h>
+#include <inputs/taa/TaaSourceOutput.h>
 #include <upscalers/FeatureLifecycleTrace.h>
 #include <upscalers/FeatureProvider_Dx11.h>
+#include <upscalers/FeatureTransition.h>
 
 #include "NVNGX_DLSS.h"
 #include "NVNGX_Parameter.h"
@@ -21,10 +24,12 @@
 #include <runtime/GuideDiagnostics.h>
 #include "F6EvalReceiptV1.h"
 #include "BeforeSrInput.h"
-#include <integration/HoYoShadePolicy.h>
+#include "NeoBeforeSrInput.h"
+#include <integration/HoYoShade.h>
 #include <intrin.h>
 
 static ID3D11Device* D3D11Device = nullptr;
+static ID3D11Device* taaAttachedDevice = nullptr; // nonowning; the TAA session retains the actual device
 static ankerl::unordered_dense::map<unsigned int, ContextData<IFeature_Dx11>> Dx11Contexts;
 static int evalCounter = 0;
 static bool shutdown = false;
@@ -149,6 +154,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_Init_Ext(unsigned long long InApp
                                                         NVSDK_NGX_Version InSDKVersion,
                                                         const NVSDK_NGX_FeatureCommonInfo* InFeatureInfo)
 {
+    // A real game Init takes ownership of its global input binding.
+    taaAttachedDevice=nullptr;
     NVSDK_NGX_FeatureCommonInfo localFeatureInfo = {};
 
     if (InFeatureInfo != nullptr)
@@ -355,6 +362,7 @@ static NVSDK_NGX_Result ShutdownDx11Body(ID3D11Device* device = nullptr, bool sh
 
     shutdown = true;
     D3D11Device = nullptr;
+    taaAttachedDevice = nullptr;
     State::Instance().currentFeature = nullptr;
 
     if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsDx11Inited())
@@ -588,19 +596,13 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
 
     if (InFeatureID == NVSDK_NGX_Feature_SuperSampling)
     {
-        Upscaler upscalerChoice = Upscaler::FSR22; // Default FSR 2.2.1
-
-        // If original NVNGX available use DLSS as base upscaler
-        if (IdentifyGpu::getPrimaryGpu().dlssCapable && NVNGXProxy::IsDx11Inited())
-            upscalerChoice = Upscaler::DLSS;
-
-        if (Config::Instance()->Dx11Upscaler.has_value())
-            upscalerChoice = Config::Instance()->Dx11Upscaler.value();
-
-        // The authenticated internal Genshin FSR dispatch must use the D3D11-on-D3D12
-        // DLSS path so its private D3D11 resources can reach the native DLSS provider.
-        // Keep the existing GPU/provider gates in FeatureProvider_Dx11; without them
-        // this request still fails closed or falls back to the configured FSR path.
+        const bool taaInput = taa::source_output::Creating(reinterpret_cast<uintptr_t>(InDevCtx),reinterpret_cast<uintptr_t>(InParameters));
+        const auto upscalerChoice = FeatureProvider_Dx11::ResolveBackend(Config::Instance()->Dx11Upscaler,
+            taaInput, Config::Instance()->Dx12Upscaler, IdentifyGpu::getPrimaryGpu().dlssCapable, NVNGXProxy::IsDx11Inited());
+        LOG_INFO("DX11 backend request: explicit={} taa={} dx12_preference={} resolved={}; configuration retained",
+            Config::Instance()->Dx11Upscaler.has_value(), taaInput,
+            UpscalerDisplayName(Config::Instance()->Dx12Upscaler.value_or_default()), UpscalerDisplayName(upscalerChoice));
+        // Provider GPU/library gates and the current-output receipt remain authoritative.
         LOG_INFO("Creating new {} feature", UpscalerDisplayName(upscalerChoice));
 
         Dx11Contexts[handleId] = {};
@@ -646,7 +648,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
 
     State::Instance().autoExposure.reset();
 
-    if (deviceContext->ModuleLoaded() && deviceContext->Init(D3D11Device, InDevCtx, InParameters))
+    if (deviceContext->ModuleLoaded() && FeatureProvider_Dx11::InitializeFeature(deviceContext,D3D11Device,InDevCtx,InParameters))
     {
         State::Instance().currentFeature = deviceContext;
 
@@ -697,10 +699,12 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_ReleaseFeature(NVSDK_NGX_Handle* 
 
     if (auto deviceContext = existingContext->second.feature.get(); deviceContext != nullptr)
     {
-        if (!shutdown && true)
+        // Release uses the same owner retirement contract as Shutdown. A fixed
+        // delay cannot prove GPU completion and stalls every bridge recreation.
+        if (!deviceContext->PrepareForShutdown())
         {
-            LOG_TRACE("sleeping for 500ms before reset()!");
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            LOG_ERROR("DX11 Release: feature {} could not retire; owner and runtime retained", handleId);
+            return NVSDK_NGX_Result_Fail;
         }
 
         if (deviceContext == State::Instance().currentFeature)
@@ -719,6 +723,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_ReleaseFeature(NVSDK_NGX_Handle* 
     // a temporary table. Erase that context too; borrowed tables are untouched.
     if (auto it = Dx11Contexts.find(handleId); it != Dx11Contexts.end())
         Dx11Contexts.erase(it);
+    State::Instance().changeBackend.erase(handleId);
 
     return NVSDK_NGX_Result_Success;
 }
@@ -756,6 +761,38 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_GetFeatureRequirements(
 
     OutSupported->FeatureSupported = NVSDK_NGX_FeatureSupportResult_AdapterUnsupported;
     return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+}
+
+namespace NgxInput {
+bool AttachTaaDx11Input(ID3D11Device* device) {
+    if (!device || shutdown || State::Instance().isShuttingDown || (D3D11Device && D3D11Device!=device)) return false;
+    if (!D3D11Device) taaAttachedDevice=device;
+    D3D11Device=device;
+    State::Instance().currentD3D11Device=device;
+    State::Instance().api=API::DX11;
+    return true;
+}
+bool HasTaaDx11Context(unsigned int id) {
+    const auto it=Dx11Contexts.find(id);
+    return it!=Dx11Contexts.end() && FeatureTransition::HasLiveContext(it->second);
+}
+bool ReleaseTaaDx11Feature(unsigned int id) {
+    if (!ModuleLifetime::CleanupAllowed()) return false;
+    const auto it=Dx11Contexts.find(id);
+    if (it==Dx11Contexts.end()) return true; // already released by NGX shutdown
+    auto* feature=it->second.feature.get();
+    if (feature && !feature->PrepareForShutdown()) return false;
+    if (State::Instance().currentFeature==feature) State::Instance().currentFeature=nullptr;
+    Dx11Contexts.erase(it);
+    State::Instance().changeBackend.erase(id);
+    return true;
+}
+void DetachTaaDx11Input(ID3D11Device* device) {
+    if (taaAttachedDevice!=device || !Dx11Contexts.empty()) return;
+    if (State::Instance().currentD3D11Device==device) State::Instance().currentD3D11Device=nullptr;
+    if (D3D11Device==device) D3D11Device=nullptr;
+    taaAttachedDevice=nullptr;
+}
 }
 
 static NVSDK_NGX_Result EvaluateDx11(ID3D11DeviceContext* InDevCtx,
@@ -845,6 +882,7 @@ static NVSDK_NGX_Result EvaluateDx11(ID3D11DeviceContext* InDevCtx,
     else
     {
         deviceContext = activeContext->feature.get();
+        FeatureProvider_Dx11::BindActiveFeature(deviceContext,InDevCtx);
         state.currentFeature = deviceContext;
     }
 
@@ -864,10 +902,18 @@ static NVSDK_NGX_Result EvaluateDx11(ID3D11DeviceContext* InDevCtx,
         return noOutput(NVSDK_NGX_Result_Success);
     }
 
+    // Bind the active producer capability to this actual backend and parameter
+    // block before translation. Native DX11 retains its existing NR route.
+    if (taa::source_output::current) {
+        const auto resource=[&](const char* key) {ID3D11Resource* r=nullptr;InParameters->Get(key,&r);return reinterpret_cast<uintptr_t>(r);};
+        const auto* call=taa::source_output::current;
+        taa::source_output::SelectBackend({reinterpret_cast<uintptr_t>(InDevCtx),reinterpret_cast<uintptr_t>(InParameters),
+            resource(NVSDK_NGX_Parameter_Color),resource(NVSDK_NGX_Parameter_Depth),
+            resource(NVSDK_NGX_Parameter_MotionVectors),resource(NVSDK_NGX_Parameter_Output),handleId,call->request},
+            dynamic_cast<IFeature_Dx11wDx12*>(deviceContext)!=nullptr);
+    }
     ID3D11Resource* orderedOutput = nullptr;
-    const auto upscaleResult = receipt
-        ? deviceContext->EvaluateWithOutput(InDevCtx, InParameters, &orderedOutput, beforeSr)
-        : deviceContext->Evaluate(InDevCtx, InParameters);
+    const auto upscaleResult = deviceContext->EvaluateWithOutput(InDevCtx, InParameters, &orderedOutput, beforeSr);
     if (receipt)
     {
         receipt->provider_frame = static_cast<uint64_t>(deviceContext->FrameCount());
@@ -911,11 +957,66 @@ static NVSDK_NGX_Result EvaluateDx11(ID3D11DeviceContext* InDevCtx,
     return NVSDK_NGX_Result_Success;
 }
 
+// Ordinary NGX provides exact current resources. Typed inputs can be filtered
+// as stored source values without a bridge or an invented transfer declaration.
+static interop::BeforeSrInput DescribeNgxInput(ID3D11DeviceContext* context,
+    const NVSDK_NGX_Handle* handle, NVSDK_NGX_Parameter* parameters)
+{
+    interop::BeforeSrInput input;
+    if (!context || !handle || !parameters || !HoYoShade::Selected(HoYoShade::Stage::BeforeSr)) return input;
+    input.origin=interop::SrInputOrigin::Ngx; input.query=interop::BeforeSrQuery::Invalid;
+    const auto texture=[&](const char* key,Microsoft::WRL::ComPtr<ID3D11Texture2D>& out) {
+        ID3D11Resource* resource=nullptr;
+        if(parameters->Get(key,&resource)!=NVSDK_NGX_Result_Success)
+            parameters->Get(key,reinterpret_cast<void**>(&resource));
+        return resource && SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&out)));
+    };
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> color,depth,motion,output;
+    if(context->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE || !texture(NVSDK_NGX_Parameter_Color,color) ||
+        !texture(NVSDK_NGX_Parameter_Depth,depth) || !texture(NVSDK_NGX_Parameter_MotionVectors,motion) ||
+        !texture(NVSDK_NGX_Parameter_Output,output)) return input;
+    D3D11_TEXTURE2D_DESC c{},o{};color->GetDesc(&c);output->GetDesc(&o);
+    if(c.MipLevels!=1 || c.ArraySize!=1 || c.SampleDesc.Count!=1) return input;
+    input.query=interop::BeforeSrQuery::Matched;input.parameters=parameters;input.feature=handle->Id;
+    static std::atomic<uint64_t> requests{0};input.request=requests.fetch_add(1,std::memory_order_relaxed)+1;
+    auto& f=input.frame;f.context=context;f.color=color.Get();f.depth=depth.Get();f.motion=motion.Get();
+    f.frame=input.request;f.instance=handle->Id;f.render_width=c.Width;f.render_height=c.Height;
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width,&f.render_width);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height,&f.render_height);
+    f.display_width=o.Width;f.display_height=o.Height;f.color_storage_format=f.color_view_format=c.Format;
+    f.effect_domain=interop::EffectDomain::SourceValues;
+    f.source_color=color.Get();f.source_storage_format=f.source_view_format=c.Format;
+    return input;
+}
+
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceContext* context,
     const NVSDK_NGX_Handle* handle, NVSDK_NGX_Parameter* parameters, PFN_NVSDK_NGX_ProgressCallback callback)
 {
-    return EvaluateDx11(context, handle, parameters, callback, nullptr);
+    const auto input=DescribeNgxInput(context,handle,parameters);
+    return EvaluateDx11(context, handle, parameters, callback, nullptr, &input);
 }
+
+namespace NgxInput {
+NVSDK_NGX_Result EvaluateDx11Input(ID3D11DeviceContext* context, const NVSDK_NGX_Handle* handle,
+    NVSDK_NGX_Parameter* parameters, uint64_t requestId, neo::ngx::F6EvalReceiptV1* receipt,
+    const interop::BeforeSrInput& input)
+{
+    if (!receipt || receipt->size != sizeof(*receipt) || receipt->version != 1)
+        return NVSDK_NGX_Result_FAIL_InvalidParameter;
+    *receipt = {};
+    receipt->request_id = requestId;
+    receipt->handle = reinterpret_cast<uintptr_t>(handle);
+    receipt->context = reinterpret_cast<uintptr_t>(context);
+    ID3D11Resource* output = nullptr;
+    if (parameters && parameters->Get(NVSDK_NGX_Parameter_Output, &output) != NVSDK_NGX_Result_Success)
+        parameters->Get(NVSDK_NGX_Parameter_Output, reinterpret_cast<void**>(&output));
+    receipt->output = reinterpret_cast<uintptr_t>(output);
+    auto current = input;
+    if (current.HasDeclaration() && (!handle || !current.MatchesCall(context, parameters, handle->Id, requestId)))
+        current.query = interop::BeforeSrQuery::Invalid;
+    return EvaluateDx11(context, handle, parameters, nullptr, receipt, &current);
+}
+} // namespace NgxInput
 
 extern "C" __declspec(dllexport) __declspec(noinline) NVSDK_NGX_Result NVSDK_CONV F6_NGX_D3D11_EvaluateFeatureV1(
     ID3D11DeviceContext* context, const NVSDK_NGX_Handle* handle, NVSDK_NGX_Parameter* parameters,

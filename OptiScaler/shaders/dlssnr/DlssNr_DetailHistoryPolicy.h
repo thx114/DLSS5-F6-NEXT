@@ -27,7 +27,7 @@ inline bool RequiresFullModelEvaluation(bool legacyReuseEnabled, uint32_t legacy
 
 inline constexpr uint64_t ByteLimit = 512ull * 1024 * 1024;
 inline constexpr uint32_t ResolveMode = 24;
-enum class Placement : uint32_t { FinishedCanonical = 1, PreSrRaster = 2 };
+enum class Placement : uint32_t { FinishedCanonical = 1, PreSrRaster = 2, SourceOutputCanonical = 3 };
 enum class TimeDomain : uint32_t { SourceCaptureMilliseconds = 1, ConsumerSourceEntrySeconds = 2 };
 
 inline bool ValidSerial(uint64_t n) { return n != 0 && n != UINT64_MAX; }
@@ -59,7 +59,7 @@ struct Settings
 struct PhaseFacts
 {
     bool requested = false, preSr = false, nativeScene = false;
-    bool beforeUpscale = false, finishedPicture = false;
+    bool beforeUpscale = false, finishedPicture = false, sourceOutput = false;
     bool baseIdentity = false, currentDepth = false, consumerMappingVerified = false;
     bool routeConvention = false, metadataKnown = false, flagsKnown = false;
     bool jitterKnown = false, motionJitterKnown = false, motionJittered = false;
@@ -83,7 +83,8 @@ inline Phase ResolvePhase(const PhaseFacts& f)
     const auto reject = [&](const char* reason) { p.reason = reason; return p; };
     if (!f.requested) return p;
     if (f.unsupported) return reject("unsupported-or-blocked-route");
-    if (f.preSr ? (!f.beforeUpscale || f.finishedPicture) :
+    if (f.sourceOutput ? (!f.nativeScene || f.preSr || f.beforeUpscale || f.finishedPicture) :
+        f.preSr ? (!f.beforeUpscale || f.finishedPicture) :
                   (!f.nativeScene || f.beforeUpscale || !f.finishedPicture))
         return reject("placement-contract");
     if (!f.baseIdentity || !f.currentDepth || !f.consumerMappingVerified || !f.routeConvention)
@@ -107,9 +108,10 @@ inline Phase ResolvePhase(const PhaseFacts& f)
     const float y = f.preSr ? 0.0f : p.jitterUvY;
     if (f.motionPhaseX != x || f.motionPhaseY != y || f.depthPhaseX != x || f.depthPhaseY != y ||
         f.cancelX != 0 || f.cancelY != 0) return reject("guide-address-phase");
-    p.placement = f.preSr ? Placement::PreSrRaster : Placement::FinishedCanonical;
+    p.placement = f.preSr ? Placement::PreSrRaster :
+        f.sourceOutput ? Placement::SourceOutputCanonical : Placement::FinishedCanonical;
     p.verified = true;
-    p.reason = f.preSr ? "pre-sr-raster" : "finished-canonical";
+    p.reason = f.preSr ? "pre-sr-raster" : f.sourceOutput ? "sr-output-canonical" : "finished-canonical";
     return p;
 }
 

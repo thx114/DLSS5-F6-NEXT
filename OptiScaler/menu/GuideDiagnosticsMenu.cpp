@@ -200,10 +200,10 @@ void SnapshotStatus() {
     GuideCapture::PreviewSnapshot displayed;
     const bool have=GuideCapture::ReadDisplayed(displayed);
     // Fixed three-line region: identity always belongs to the displayed snapshot.
-    ImGui::BeginChild("GuideDisplayedStatus",ImVec2(0,ImGui::GetTextLineHeightWithSpacing()*3.3f),false);
+    ImGui::BeginChild("GuideDisplayedStatus",ImVec2(0,ImGui::GetTextLineHeightWithSpacing()*7.3f),false);
     if(have){
         const auto now=GuideDiagnostics::Now();
-        MenuText::Text("显示源帧 %llu／代次 %llu／快照 %llu",
+        MenuText::Text("已提交预览源帧 %llu／代次 %llu／快照 %llu",
             displayed.source,displayed.epoch,displayed.serial);
         MenuText::Text("feature %llu／配置 %llu／owner %llu",
             displayed.feature,displayed.configuration,displayed.owner);
@@ -213,6 +213,15 @@ void SnapshotStatus() {
         MenuText::TextUnformatted("显示源帧／代次：尚不可用");
         MenuText::TextUnformatted("显示 feature／配置／owner：尚不可用");
         MenuText::TextUnformatted("等待所选 GPU 快照完成、Reset 并提交显示");
+    }
+    GuideCapture::PreviewProgress progress;
+    if(GuideCapture::ReadPreviewProgress(progress)){
+        MenuText::TextWrapped("采样：%s",progress.producerReason);
+        MenuText::TextWrapped("输出：%s",progress.outputReason);
+        MenuText::Text("进程累计：录制 %llu／提交 %llu／GPU完成 %llu／Reset %llu／发布 %llu／预览提交 %llu",
+            progress.recorded,progress.submitted,progress.gpuCompleted,progress.reset,progress.published,progress.outputSubmitted);
+        MenuText::Text("限频 %llu／槽忙 %llu／锁忙 %llu；图像为全屏背景，不在窗口内嵌入",
+            progress.rateLimited,progress.slotsBusy,progress.lockBusy);
     }
     ImGui::EndChild();
 }
@@ -245,7 +254,7 @@ void RenderHistoryTuning(Config* config) {
     if(MenuText::SliderFloat("低可信区域稳定比例",&floor,0.0f,1.0f,"%.2f"))config->DlssNrPresentedTemporalStabilityFloor=floor;
     float limit=config->DlssNrPresentedTemporalStabilityClamp.value_or_default();
     if(MenuText::SliderFloat("稳定变化容差",&limit,0.001f,0.5f,"%.3f"))config->DlssNrPresentedTemporalStabilityClamp=limit;
-    MenuText::TextWrapped("0 ms 关闭；可先试 100～250 ms。仅平滑 NR 增加的变化，游戏原画保持当前帧。深度或运动不可信时仍按上面的比例稳定；越高越稳定，也可能拖尾。时间是衰减常数与平均滞后上限，不是旧整帧冻结时长。切场景或源帧断链会重置。");
+    MenuText::TextWrapped("0 ms 关闭短期稳定；仅估计 NR 残差，游戏原画保持当前帧。低可信比例只作用于有效运动与深度对应内的软权重；无效输入、越界和跨表面仍拒绝，原画变化仍独立降低历史权重。变化容差是稳态历史包围盒的下限，噪声统计可适当放宽；不是最终像素变化的硬上限。时间是衰减常数与平均滞后上限，不是旧整帧冻结时长。切场景或源帧断链会重置。");
     if(MenuText::TreeNode("持续保留高级参数")) {
         float noise=config->DlssNrPresentedTemporalNoiseFloor.value_or_default();
         if(MenuText::SliderFloat("持续保留：噪声下限",&noise,0.0f,0.1f,"%.3f"))config->DlssNrPresentedTemporalNoiseFloor=noise;
@@ -279,7 +288,7 @@ void RenderHistoryWindow(Config* config) {
         historyView=image?unsigned(image-1):0u;
         SyncDemand(config);
     }
-    MenuText::TextWrapped("拒绝图：绿=模型域非零增量；黄绿=低可信稳定生效；蓝=当前细节更强/无增量；灰=无相邻历史；黄=过期；橙=深度；紫=运动；红=越界；青=出生颜色/结构不匹配；暗红=无效输入。");
+    MenuText::TextWrapped("拒绝图：绿=模型域非零增量；黄绿=低可信稳定生效；蓝=有效但无非零增量；灰=无相邻历史；黄=过期；橙=深度；紫=运动；红=越界；青=出生颜色/结构不匹配；暗红=无效输入。");
     SnapshotStatus();
     const auto now=NrHistoryDebug::Now();
     if(view.count) {
@@ -321,7 +330,9 @@ void RenderHistoryWindow(Config* config) {
     ImGui::End();
     if(!historyWindowOpen){NrHistoryDebug::Request(false);GuideCapture::RequestHistoryMeasurement(false);}
 }
-void Render(Config*) {
+void Render(Config* config) {
+    const bool nrEnabled=config&&config->DlssNrEnabled.value_or_default();
+    const bool historyEnabled=config&&(config->DlssNrDetailReuse.value_or_default()||config->DlssNrPresentedTemporalDetail.value_or_default());
     MenuText::SeparatorText("深度与运动诊断");
     static GuideDiagnostics::View view;
     static uint64_t refreshed=0;
@@ -332,21 +343,36 @@ void Render(Config*) {
     if(ImGui::BeginTable("GuideConsumerStates",3,ImGuiTableFlags_BordersInnerV)){
         for(unsigned n=0;n<3;++n){const auto& lane=view.lanes[n];const auto& s=lane.latest;
             ImGui::TableNextRow();ImGui::TableNextColumn();
-            MenuText::Text("%s：%s%s",consumers[n],stages[static_cast<unsigned>(s.stage)],
-                GuideDiagnostics::Stale(s,now)?"（陈旧／未观测）":"");
+            const auto display=GuideDiagnostics::Display::StateFor(static_cast<GuideDiagnostics::Consumer>(n),s,nrEnabled,historyEnabled);
+            const bool observed=display==GuideDiagnostics::Display::State::Observed;
+            const bool enabled=display!=GuideDiagnostics::Display::State::Disabled;
+            MenuText::Text("%s：%s%s",consumers[n],!enabled?"已关闭":observed?stages[static_cast<unsigned>(s.stage)]:"尚未观测",
+                observed&&GuideDiagnostics::Stale(s,now)?"（陈旧）":"");
             ImGui::TableNextColumn();
-            MenuText::Text("源 %llu；深度 %s／运动 %s；准入 %s",s.source,
-                s.depth.present?"收到":"缺失",s.motion.present?"收到":"缺失",s.accepted?"接受":"未接受");
+            if(!enabled)MenuText::TextUnformatted("未运行；深度／运动尚未观测");
+            else if(!observed)MenuText::TextUnformatted("深度／运动尚未观测；准入尚未观测");
+            else MenuText::Text("源 %llu；深度 %s／运动 %s；准入 %s",s.source,
+                s.depth.present?"收到":"缺失",s.motion.present?"收到":"缺失",
+                GuideDiagnostics::Display::Accepted(display,s)?"接受":"未接受");
             ImGui::TableNextColumn();
-            if(lane.completed.tick)MenuText::Text("最近完成 %llu；年龄 %llu ms",lane.completed.source,
+            if(lane.completed.tick)MenuText::Text("上次完成 %llu；年龄 %llu ms",lane.completed.source,
                 GuideDiagnostics::Age(lane.completed,now));
-            else MenuText::TextUnformatted("最近完成：未知");
+            else MenuText::TextUnformatted("上次完成：尚未观测");
         }
         ImGui::EndTable();
     }
     if(MenuText::TreeNode("消费者详情与拒绝原因")){
         for(unsigned n=0;n<3;++n){ImGui::PushID(static_cast<int>(n));const auto& lane=view.lanes[n];const auto& s=lane.latest;
-            MenuText::SeparatorText(consumers[n]);MenuText::TextWrapped("原因：%s",s.reason.c_str());
+            MenuText::SeparatorText(consumers[n]);
+            const auto display=GuideDiagnostics::Display::StateFor(static_cast<GuideDiagnostics::Consumer>(n),s,nrEnabled,historyEnabled);
+            if(display!=GuideDiagnostics::Display::State::Observed){
+                MenuText::TextUnformatted(display==GuideDiagnostics::Display::State::Disabled?
+                    "当前消费者已关闭；未运行，深度／运动尚未观测":"当前消费者尚未观测到深度／运动");
+                if(lane.completed.tick)MenuText::Text("上次完成 %llu；年龄 %llu ms",lane.completed.source,
+                    GuideDiagnostics::Age(lane.completed,now));
+                ImGui::PopID();continue;
+            }
+            MenuText::TextWrapped("原因：%s",s.reason.c_str());
             MenuText::Text("源 %llu；代次 %llu；配置 %llu；相位 %s",s.source,s.epoch,s.configuration,s.phaseVerified?"已验证":"未知");
             MenuText::Text("深度行翻转 %d／运动行翻转 %d／运动 Y 取反 %d；SDK scale %.7g, %.7g；jitter %.7g, %.7g",
                 s.depthFlip,s.motionFlip,s.yNegated,s.scaleX,s.scaleY,s.jitterX,s.jitterY);

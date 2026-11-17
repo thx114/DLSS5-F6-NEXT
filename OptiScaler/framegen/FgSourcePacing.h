@@ -7,7 +7,7 @@ enum class PacingRole : uint8_t { Unknown, Source, GeneratedOutput };
 struct SourcePacingInput
 {
     PacingRole role = PacingRole::Unknown;
-    bool realPresent = false, directDlss = false, ownedDlssgProvider = false;
+    bool realPresent = false, sourceRoute = false, ownedDlssgProvider = false;
     bool fgActive = false, ownMarkers = false, tokenLeaseValid = false;
     bool reflexOwnsCap = false, nativeOwnsCap = false, xellOwnsCap = false;
     bool hasFgOutput = false, dxvkExcluded = false;
@@ -32,7 +32,7 @@ public:
 constexpr SourcePacingDecision SelectSourcePacing(const SourcePacingInput& input) noexcept
 {
     const bool source = input.realPresent && input.role == PacingRole::Source &&
-        input.directDlss && input.ownedDlssgProvider;
+        input.sourceRoute && input.ownedDlssgProvider;
     // Reflex can reduce latency without owning the cap. Keep that legal
     // combination with an explicit FrameLimit; only cap owners exclude it.
     return { source, source && input.fgActive,

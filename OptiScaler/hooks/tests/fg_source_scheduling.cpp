@@ -133,7 +133,7 @@ void SourcePolicy()
         case 0:in.role=PacingRole::GeneratedOutput;break;
         case 1:in.role=PacingRole::Unknown;break;
         case 2:in.realPresent=false;break;
-        case 3:in.directDlss=false;break;
+        case 3:in.sourceRoute=false;break;
         case 4:in.ownedDlssgProvider=false;break;
         case 5:in.tokenLeaseValid=false;break;
         case 6:in.ownMarkers=false;break;

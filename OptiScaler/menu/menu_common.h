@@ -246,6 +246,7 @@ class MenuCommon
     static void RenderMainMenuHeaderMessages(RenderMenuContext& ctx);
     static void RenderMainMenuPages(RenderMenuContext& ctx);
     static void RenderActiveUpscalerSettings(RenderMenuContext& ctx);
+    static void RenderTaaSourceSettings(RenderMenuContext& ctx);
     static void RenderGimiSettings(RenderMenuContext& ctx);
     static void RenderFrameGenerationSelection(RenderMenuContext& ctx);
     static void RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx);

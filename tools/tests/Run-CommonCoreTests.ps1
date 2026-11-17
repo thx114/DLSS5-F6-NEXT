@@ -1,4 +1,4 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 [CmdletBinding()]
 param(
     [string]$DevCmd = 'D:/VS2022BuildTools/Common7/Tools/VsDevCmd.bat',
@@ -19,6 +19,14 @@ $include = Join-Path $root 'OptiScaler/include'
 $simpleini = Join-Path $root 'external/simpleini'
 $env:VSLANG = '1033'
 $suites = @(
+    @{ Name = 'FrameOutputRate'; Source = 'OptiScaler/framegen/tests/FrameOutputRateTests.cpp' },
+    @{ Name = 'FgRuntimeStatus'; Source = 'OptiScaler/framegen/tests/FgRuntimeStatusTests.cpp' },
+    @{ Name = 'TaaSourceOutput'; Source = 'OptiScaler/inputs/taa/tests/TaaSourceOutputTests.cpp' },
+    @{ Name = 'TaaAutomaticWarp'; Source = 'OptiScaler/inputs/taa/tests/TaaAutomaticWarpTests.cpp'; Libraries = 'd3d11.lib d3dcompiler.lib' },
+    @{ Name = 'TaaProjectionJitter'; Source = 'OptiScaler/inputs/taa/tests/TaaProjectionJitterTests.cpp'; Libraries = 'd3d11.lib d3dcompiler.lib' },
+    @{ Name = 'TaaShaderAnalysis'; Source = 'OptiScaler/inputs/taa/tests/TaaShaderAnalysisTests.cpp'; Libraries = 'd3dcompiler.lib' },
+    @{ Name = 'TaaConsumerWarp'; Source = 'OptiScaler/inputs/taa/tests/TaaConsumerWarpTests.cpp'; Libraries = 'd3d11.lib d3dcompiler.lib' },
+    @{ Name = 'TaaPassWarp'; Source = 'OptiScaler/inputs/taa/tests/TaaPassWarpTests.cpp'; Libraries = 'd3d11.lib d3dcompiler.lib' },
     @{ Name = 'FgHandoffWarp'; Source = 'OptiScaler/with_dx12/tests/fg-handoff/fixture.cpp'; StubInclude = 'build/common-core-tests'; Libraries = 'd3d11.lib d3d12.lib dxgi.lib' },
     @{ Name = 'BridgeRetirementWarp'; Source = 'OptiScaler/upscalers/tests/bridge-retirement/fixture.cpp'; StubInclude = 'build/common-core-tests'; Libraries = 'd3d12.lib dxgi.lib' },
     @{ Name = 'ReflexQueueTiming'; Source = 'OptiScaler/runtime/tests/ReflexQueueTimingTests.cpp' },
@@ -30,6 +38,8 @@ $suites = @(
     @{ Name = 'DlssPresetMenu'; Source = 'OptiScaler/menu/tests/DlssPresetMenuTests.cpp' },
     @{ Name = 'LookControls'; Source = 'OptiScaler/menu/tests/look-controls/fixture.cpp'; StubInclude = 'build/common-core-tests' },
     @{ Name = 'NrColourTransaction'; Source = 'OptiScaler/shaders/dlssnr/tests/colour-transaction/fixture.cpp'; StubInclude = 'build/common-core-tests' },
+    @{ Name = 'NrColourEncoding'; Source = 'OptiScaler/shaders/dlssnr/tests/NrColourEncodingTests.cpp' },
+    @{ Name = 'NrDeferredContract'; Source = 'OptiScaler/shaders/dlssnr/tests/deferred-contract/fixture.cpp'; StubInclude = 'build/common-core-tests' },
     @{ Name = 'NrPresentationSource'; Source = 'OptiScaler/runtime/tests/NrPresentationSourceTests.cpp' },
     @{ Name = 'NrPresentationOutputWarp'; Source = 'OptiScaler/runtime/tests/NrPresentationOutputWarpTests.cpp'; Libraries = 'd3d12.lib dxgi.lib' },
     @{ Name = 'SwapchainHookBoundary'; Source = 'OptiScaler/wrapped/tests/SwapchainHookBoundaryTests.cpp' },
@@ -58,6 +68,7 @@ $suites = @(
     @{ Name = 'GuideOrientation'; Source = 'OptiScaler/framegen/tests/GuideOrientationTests.cpp'; StubInclude = 'build/common-core-tests' },
     @{ Name = 'ResourceFlipWarp'; Source = 'OptiScaler/shaders/resource_flip/tests/RFWarp.cpp'; Libraries = 'd3d12.lib dxgi.lib d3dcompiler.lib' },
     @{ Name = 'F6InputPolicy'; Source = 'OptiScaler/runtime/tests/F6InputPolicyTests.cpp' },
+    @{ Name = 'PrivateGraphicsScope'; Source = 'OptiScaler/runtime/tests/PrivateGraphicsScopeTests.cpp'; AdditionalSource = 'OptiScaler/runtime/tests/PrivateGraphicsScopeOther.cpp' },
     @{ Name = 'HookOwnership'; Source = 'OptiScaler/runtime/tests/HookOwnershipTests.cpp'; Libraries = ('"{0}"' -f (Join-Path $root 'OptiScaler/library/detours/detours.lib')) },
     @{ Name = 'HoYoShadeEffectRequirements'; Source = 'OptiScaler/runtime/tests/HoYoShadeEffectRequirementsTests.cpp' },
     @{ Name = 'MethodHooks'; Source = 'OptiScaler/runtime/tests/MethodHooksTests.cpp'; Libraries = ('"{0}"' -f (Join-Path $root 'OptiScaler/library/detours/detours.lib')) },
@@ -65,6 +76,7 @@ $suites = @(
     @{ Name = 'ProviderOutputCreation'; Source = 'OptiScaler/runtime/tests/ProviderOutputCreationTests.cpp'; Libraries = ('"{0}"' -f (Join-Path $root 'OptiScaler/library/detours/detours.lib')) },
     @{ Name = 'SourcePresent'; Source = 'OptiScaler/runtime/tests/SourcePresentTests.cpp' },
     @{ Name = 'FeatureTransition'; Source = 'OptiScaler/upscalers/tests/FeatureTransitionTests.cpp' },
+    @{ Name = 'Dx11BackendBinding'; Source = 'OptiScaler/upscalers/tests/backend-binding/fixture.cpp'; StubInclude = 'build/common-core-tests'; Libraries = 'd3d11.lib' },
     @{ Name = 'NgxDx12ResourceView'; Source = 'OptiScaler/upscalers/tests/NgxDx12ResourceViewTests.cpp' },
     @{ Name = 'Dx11OutputCopy'; Source = 'OptiScaler/with_dx12/tests/output-copy/fixture.cpp'; StubInclude = 'build/common-core-tests' },
     @{ Name = 'InteropSwapchainPolicy'; Source = 'OptiScaler/with_dx12/tests/InteropSwapchainPolicyTests.cpp' },
@@ -104,6 +116,10 @@ if ($SuiteName.Count) {
     $suites = @($suites | Where-Object { $_.Name -in $SuiteName })
 }
 
+if ('Dx11BackendBinding' -in $suites.Name) {
+    & $Python -B (Join-Path $root 'OptiScaler/upscalers/tests/backend-binding/prepare.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot extract actual DX11 backend/source binding' }
+}
 if ('FgHandoffWarp' -in $suites.Name) {
     & $Python -B (Join-Path $root 'OptiScaler/with_dx12/tests/fg-handoff/prepare.py')
     if ($LASTEXITCODE -ne 0) { throw 'Cannot extract FG queue/guide handoff implementation' }
@@ -121,6 +137,10 @@ if ('Dx11OutputCopy' -in $suites.Name) {
 if ('NrReconfiguration' -in $suites.Name) {
     & $Python -B (Join-Path $root 'OptiScaler/dlssnr/tests/nr-reconfiguration/prepare.py') --emit
     if ($LASTEXITCODE -ne 0) { throw 'Cannot extract current NR reconfiguration implementation' }
+}
+if ('NrDeferredContract' -in $suites.Name) {
+    & $Python -B (Join-Path $root 'OptiScaler/shaders/dlssnr/tests/deferred-contract/prepare.py') (Join-Path $root 'OptiScaler/shaders/dlssnr/DlssNr_DeferredSr.inl') $output
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot extract current deferred colour transaction' }
 }
 if ('NrColourTransaction' -in $suites.Name -or 'NrLayerLookWarp' -in $suites.Name) {
     & $Python -B (Join-Path $root 'OptiScaler/shaders/dlssnr/tests/colour-transaction/prepare.py')
@@ -290,6 +310,11 @@ if ($SkipSharedRegression) {
     exit 0
 }
 
+& $Python -B (Join-Path $root 'OptiScaler/inputs/taa/tests/test_hook_writeback.py')
+if ($LASTEXITCODE -ne 0) { throw 'TAA Map/Unmap staging writeback checks failed' }
+& $Python -B (Join-Path $root 'OptiScaler/inputs/taa/tests/test_hook_writeback.py') --negative-old-order
+if ($LASTEXITCODE -ne 0) { throw 'TAA old staging writeback order negative control escaped' }
+
 & $Python -B (Join-Path $root 'OptiScaler/inputs/FG/tests/test_upscaler_frame_wiring.py')
 if ($LASTEXITCODE -ne 0) { throw "Input wiring checks failed with exit $LASTEXITCODE" }
 
@@ -328,6 +353,9 @@ if ($LASTEXITCODE -ne 0) { throw "FG source pacing/query/latency checks failed w
 & $Python -B (Join-Path $root 'OptiScaler/hooks/tests/test_dlssg_state_observation.py')
 if ($LASTEXITCODE -ne 0) { throw "DLSSG state observation ABI/LastError checks failed with exit $LASTEXITCODE" }
 
+& $Python -B (Join-Path $root 'OptiScaler/framegen/tests/test_runtime_output_observation.py')
+if ($LASTEXITCODE -ne 0) { throw "FG runtime output observation checks failed with exit $LASTEXITCODE" }
+
 & (Join-Path $root 'tools/tests/Test-F6DisplayTiming.ps1')
 if ($LASTEXITCODE -ne 0) { throw "Display event parser checks failed with exit $LASTEXITCODE" }
 
@@ -345,9 +373,23 @@ if ($LASTEXITCODE -ne 17 -or !(Select-String -LiteralPath $suppressionNegativeLo
 & $Python -B (Join-Path $root 'OptiScaler/with_dx12/tests/test_interop_copy_retirement.py') --cpu
 if ($LASTEXITCODE -ne 0) { throw "Interop copy reader retirement checks failed with exit $LASTEXITCODE" }
 
+& $Python -B (Join-Path $root 'OptiScaler/with_dx12/tests/run_interop_reader_warp.py') --output (Join-Path $output 'InteropReaderWarp')
+if ($LASTEXITCODE -ne 0) { throw "Interop shared reader WARP checks failed with exit $LASTEXITCODE" }
+
 
 
 
 
 & $Python -B (Join-Path $root 'OptiScaler/runtime/tests/test_observed_settings.py')
 if ($LASTEXITCODE -ne 0) { throw "Observed settings checks failed with exit $LASTEXITCODE" }
+
+& $Python -B (Join-Path $root 'OptiScaler/upscalers/tests/test_dx11_release_retirement.py')
+if ($LASTEXITCODE -ne 0) { throw 'DX11 release retirement checks failed' }
+$releaseNegativeLog = Join-Path $output 'Dx11ReleaseRetirement/negative.log'
+& $Python -B (Join-Path $root 'OptiScaler/upscalers/tests/test_dx11_release_retirement.py') --negative-skip-retirement *> $releaseNegativeLog
+if ($LASTEXITCODE -ne 1 -or !(Select-String -LiteralPath $releaseNegativeLog -SimpleMatch 'FAIL 5:' -Quiet)) {
+    throw "DX11 release retirement negative escaped or failed for an unrelated reason; inspect $releaseNegativeLog"
+}
+# The negative process has the expected failure code; do not export it as the
+# result of the otherwise successful shared regression script.
+$global:LASTEXITCODE = 0

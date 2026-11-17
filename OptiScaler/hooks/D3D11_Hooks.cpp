@@ -13,6 +13,8 @@
 #include <resource_tracking/DrawObservation_Dx11.h>
 #include <mods/gimi/GimiRuntime.h>
 #include <native/NativeLowLatency.h>
+#include <inputs/taa/TaaInputDx11.h>
+#include <inputs/taa/TaaFullscreenDx11.h>
 
 #include <wrapped/wrapped_swapchain.h>
 
@@ -62,7 +64,7 @@ static HRESULT hkD3D11On12CreateDevice(IUnknown* pDevice, UINT Flags, const D3D_
 static void HookToDeviceLocal(ID3D11Device* device);
 struct D3D11FactoryDomain {
     template<class... Args> static void Returned(HRESULT result,Args... args) {
-        if (!gimi::runtime::Enabled() || FAILED(result)) return;
+        if ((!gimi::runtime::Enabled() && !taa::NeedsHooks()) || FAILED(result)) return;
         const auto arguments=std::tuple<Args...>(args...);
         constexpr size_t deviceIndex=sizeof...(Args)==12 ? 9 : 7;
         auto** device=std::get<deviceIndex>(arguments);
@@ -75,8 +77,10 @@ using D3D11On12FactoryDomain = D3D11On12FactoryBoundary::Domain<D3D11FactoryDoma
 static HookOwnership::RoutedHook<&hkD3D11On12CreateDevice, SIZE_MAX, D3D11On12FactoryDomain> o_D3D11On12CreateDevice;
 using PFN_CreatePixelShader = rewrite_signature<decltype(&ID3D11Device::CreatePixelShader)>::type;
 using PFN_CreateVertexShader = rewrite_signature<decltype(&ID3D11Device::CreateVertexShader)>::type;
+using PFN_CreateComputeShader = rewrite_signature<decltype(&ID3D11Device::CreateComputeShader)>::type;
 static HookOwnership::MethodHooks<PFN_CreatePixelShader> pixelHooks;
 static HookOwnership::MethodHooks<PFN_CreateVertexShader> vertexHooks;
+static HookOwnership::MethodHooks<PFN_CreateComputeShader> computeHooks;
 static PFN_CreateSamplerState o_CreateSamplerState = nullptr;
 static PFN_Release o_D3D11DeviceRelease = nullptr;
 static HookOwnership::Own::Slot ownDeviceRelease,ownDeviceSampler;
@@ -117,11 +121,22 @@ static bool ModCreationEnabled(ID3D11Device* device)noexcept
     gimi::runtime::CreationCoverage(device,complete);
     return complete;
 }
+static void RememberTaaGeometry(ID3D11Device* device,ID3D11Buffer* buffer,
+    const D3D11_BUFFER_DESC* desc,const D3D11_SUBRESOURCE_DATA* data)
+{
+    if(!buffer || !desc || GenericDepthDx11::ModInternal() ||
+       !(desc->BindFlags&(D3D11_BIND_VERTEX_BUFFER|D3D11_BIND_INDEX_BUFFER)) || desc->ByteWidth>4096)return;
+    // Swapchain creation can change the immediate context implementation after
+    // device initialization. Cover its writes before admitting these new bytes.
+    if(!GenericDepthDx11::EnsureTaaWriteCoverage(device))return;
+    taa::constants::Observe(buffer);taa::constants::Initialized(buffer,data);
+}
 static HRESULT hkModCreateBuffer(ID3D11Device* device,const D3D11_BUFFER_DESC* desc,
     const D3D11_SUBRESOURCE_DATA* data,ID3D11Buffer** out)
 {
     if(!gimi::runtime::Enabled() || GenericDepthDx11::ModInternal()){
         const auto hr=o_ModCreateBuffer(device,desc,data,out);
+        if(SUCCEEDED(hr)&&out&&*out)RememberTaaGeometry(device,*out,desc,data);
         return hr;
     }
     const bool mod=out && ModCreationEnabled(device);
@@ -130,6 +145,7 @@ static HRESULT hkModCreateBuffer(ID3D11Device* device,const D3D11_BUFFER_DESC* d
     const auto* actualDesc=edit.changed ? &edit.effective : desc;
     const auto* actualData=edit.changed && data ? &edit.initial : data;
     const auto hr=o_ModCreateBuffer(device,actualDesc,actualData,out);
+    if(SUCCEEDED(hr)&&out&&*out)RememberTaaGeometry(device,*out,actualDesc,actualData);
     if(SUCCEEDED(hr) && out && *out && mod)
         gimi::runtime::BufferCreated(device,*out,actualDesc,actualData,edit.qualified ? &edit : nullptr);
     return hr;
@@ -152,6 +168,7 @@ static HRESULT hkModCreateLayout(ID3D11Device* device,const D3D11_INPUT_ELEMENT_
     const void* bytes,SIZE_T size,ID3D11InputLayout** out)
 {
     const auto hr=o_ModCreateLayout(device,elements,count,bytes,size,out);
+    if(SUCCEEDED(hr)&&out&&*out&&!GenericDepthDx11::ModInternal())taa::fullscreen::Remember(*out,elements,count);
     if(SUCCEEDED(hr) && out && *out && ModCreationEnabled(device))gimi::runtime::LayoutCreated(device,*out,elements,count);
     return hr;
 }
@@ -208,7 +225,7 @@ LONG D3D11Hooks::InstallGimiCreationHooks(ID3D11Device* device) noexcept
 static HRESULT hkCreateSamplerState(ID3D11Device* This, const D3D11_SAMPLER_DESC* pSamplerDesc,
                                     ID3D11SamplerState** ppSamplerState);
 
-static thread_local unsigned pixelCreationDepth = 0, vertexCreationDepth = 0;
+static thread_local unsigned pixelCreationDepth = 0, vertexCreationDepth = 0, computeCreationDepth = 0;
 struct ShaderCreationScope {
     unsigned& depth;
     bool outer;
@@ -222,7 +239,8 @@ template<size_t Index> static HRESULT hkCreatePixelShader(ID3D11Device* device,c
     auto call = pixelHooks.Acquire(Index);
     const auto result=call.Get()(device,bytes,size,linkage,shader);
     if(SUCCEEDED(result) && shader && *shader){
-        if(scope.outer) DrawObservationDx11::RememberShader(*shader,DrawObservationDx11::ShaderByteHash(bytes,size),size);
+        if(scope.outer) { DrawObservationDx11::RememberShader(*shader,DrawObservationDx11::ShaderByteHash(bytes,size),size);
+            taa::RememberShader(*shader,bytes,size); }
         if(ModCreationEnabled(device))gimi::runtime::ShaderCreated(device,*shader,bytes,size,false,linkage!=nullptr);}
     return result;
 }
@@ -234,8 +252,22 @@ template<size_t Index> static HRESULT hkVisibleCreateVertexShader(ID3D11Device* 
     auto call = vertexHooks.Acquire(Index);
     const auto result=call.Get()(device,bytes,size,linkage,shader);
     if(SUCCEEDED(result) && shader && *shader){
-        if(scope.outer) DrawObservationDx11::RememberShader(*shader,DrawObservationDx11::ShaderByteHash(bytes,size),size);
+        if(scope.outer) { DrawObservationDx11::RememberShader(*shader,DrawObservationDx11::ShaderByteHash(bytes,size),size);
+            taa::RememberShader(*shader,bytes,size); }
         if(ModCreationEnabled(device))gimi::runtime::ShaderCreated(device,*shader,bytes,size,true,linkage!=nullptr);}
+    return result;
+}
+
+template<size_t Index> static HRESULT hkVisibleCreateComputeShader(ID3D11Device* device,const void* bytes,SIZE_T size,
+                                           ID3D11ClassLinkage* linkage,ID3D11ComputeShader** shader)
+{
+    ShaderCreationScope scope(computeCreationDepth);
+    auto call=computeHooks.Acquire(Index);
+    const auto result=call.Get()(device,bytes,size,linkage,shader);
+    if (SUCCEEDED(result) && shader && *shader && scope.outer) {
+        DrawObservationDx11::RememberShader(*shader,DrawObservationDx11::ShaderByteHash(bytes,size),size);
+        taa::RememberShader(*shader,bytes,size);
+    }
     return result;
 }
 
@@ -250,10 +282,17 @@ static LONG EnsureShaderHooks(ID3D11Device* device) noexcept
     static const auto vertexThunks = []<size_t... I>(std::index_sequence<I...>) {
         return std::array<PFN_CreateVertexShader, sizeof...(I)>{&hkVisibleCreateVertexShader<I>...};
     }(std::make_index_sequence<decltype(vertexHooks)::capacity>{});
+    static const auto computeThunks = []<size_t... I>(std::index_sequence<I...>) {
+        return std::array<PFN_CreateComputeShader, sizeof...(I)>{&hkVisibleCreateComputeShader<I>...};
+    }(std::make_index_sequence<decltype(computeHooks)::capacity>{});
     HookOwnership::Own::Batch hooks;
     const auto pixel = pixelHooks.Add(hooks, table[15], pixelThunks);
     const auto vertex = pixel == NO_ERROR ? vertexHooks.Add(hooks, table[12], vertexThunks) : pixel;
     if (vertex != NO_ERROR) return vertex;
+    const auto compute=computeHooks.Add(hooks,table[18],computeThunks);
+    if (compute!=NO_ERROR) return compute;
+    HookOwnership::AddMethod(hooks,ownModBuffer,&(PVOID&)o_ModCreateBuffer,table,3,(PVOID)hkModCreateBuffer);
+    HookOwnership::AddMethod(hooks,ownModLayout,&(PVOID&)o_ModCreateLayout,table,11,(PVOID)hkModCreateLayout);
     const auto result=hooks.Commit();
     if (result != NO_ERROR) LOG_WARN("D3D11 shader hook transaction refused hr=0x{:X} device={} pixel={} vertex={}",
         result, static_cast<void*>(device), table[15], table[12]);
@@ -775,7 +814,7 @@ void D3D11Hooks::Unhook()
     o_D3D11CreateDeviceAndSwapChain.AppendSlots(slots);
     o_D3D11On12CreateDevice.AppendSlots(slots);
     D3D11On12FactoryRoutes::routes.AppendSlots(slots);
-    pixelHooks.AppendSlots(slots); vertexHooks.AppendSlots(slots);
+    pixelHooks.AppendSlots(slots); vertexHooks.AppendSlots(slots); computeHooks.AppendSlots(slots);
     const auto result = HookOwnership::Own::DetachAll(std::span<HookOwnership::Own::Slot* const>(slots));
     if (result != NO_ERROR)
     {
@@ -804,6 +843,7 @@ static_assert(std::is_same_v<decltype(&hkModCreateGeometry), PFN_ModCreateGeomet
 static_assert(std::is_same_v<decltype(&hkModCreateGeometrySO), PFN_ModCreateGeometrySO>);
 static_assert(std::is_same_v<decltype(&hkCreatePixelShader<0>), PFN_CreatePixelShader>);
 static_assert(std::is_same_v<decltype(&hkVisibleCreateVertexShader<0>), PFN_CreateVertexShader>);
+static_assert(std::is_same_v<decltype(&hkVisibleCreateComputeShader<0>), PFN_CreateComputeShader>);
 static_assert(std::is_same_v<decltype(&hkD3D11On12CreateDevice), PFN_D3D11ON12_CREATE_DEVICE>);
 static_assert(std::is_same_v<decltype(&hkD3D11CreateDevice), PFN_D3D11_CREATE_DEVICE>);
 static_assert(std::is_same_v<decltype(&hkD3D11CreateDeviceAndSwapChain), PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN>);

@@ -13,6 +13,7 @@
 #include <string_view>
 #include <vector>
 #include <runtime/ObservedSetting.h>
+#include <inputs/taa/TaaProfile.h>
 
 enum HasDefaultValue
 {
@@ -113,7 +114,7 @@ template <class T, HasDefaultValue defaultState = WithDefault> class CustomOptio
             return this->has_value() ? std::move(this->value()) : std::move(_defaultValue);
         }
 
-        constexpr std::optional<T> value_for_config()
+        constexpr std::optional<T> value_for_config() const
             requires(defaultState == WithDefault)
     {
         if (_volatile)
@@ -130,7 +131,7 @@ template <class T, HasDefaultValue defaultState = WithDefault> class CustomOptio
         return this->value();
     }
 
-    constexpr std::optional<T> value_for_config()
+    constexpr std::optional<T> value_for_config() const
         requires(defaultState != WithDefault)
     {
         if (_volatile)
@@ -1094,6 +1095,11 @@ class Config
     CustomOptional<Upscaler, SoftDefault> Dx11Upscaler { Upscaler::FSR22 };
     CustomOptional<Upscaler, SoftDefault> Dx12Upscaler { Upscaler::XeSS };
     CustomOptional<Upscaler, SoftDefault> VulkanUpscaler { Upscaler::FSR22 };
+
+    // TAA is an input source, independent of the selected SR/NR/FG backends.
+    CustomOptional<taa::Mode> TaaMode { taa::Mode::Off };
+    CustomOptional<std::string, NoDefault> TaaProfile;
+    CustomOptional<std::string, NoDefault> TaaCandidate;
 
     // Output Scaling
     CustomOptional<bool> OutputScalingEnabled { false };

@@ -158,6 +158,10 @@ void ObserveCompiled(CompiledDefinitions&, reshade::api::effect_runtime*, uint64
 // Ready also requires Selection::Apply to rebuild/find the actual compiled graph
 // in the caller; neither this module nor a reload event proves GPU sampling.
 // The user-owned config is read-only to F6. No macro setters, preset writes or reloads.
+// Caller separately validates current API objects and copy lifetime. This only
+// compares the selected effects to genuinely observed compiled definitions.
+Result InspectDirections(const CompiledDefinitions&,reshade::api::effect_runtime*,const Selection::Source&,
+    bool reversed,bool flipped,ReloadCounter) noexcept;
 Result InspectCurrent(const CompiledDefinitions&, reshade::api::effect_runtime*, const Selection::Source&, const Access*, ReloadCounter) noexcept;
 Result Project(State&, reshade::api::effect_runtime*, uint64_t runtimeGeneration,
     Selection::Source&, const Access* realInput, ReloadCounter) noexcept;

@@ -883,6 +883,11 @@ float3 NvOkLab(float3 rgb)
 
 float3 NvidiaResidualModel(float3 fullProxy, float2 uv)
 {
+    // A passthrough source can contain finite signal values above one without
+    // declaring their transfer. Use one numerical bound for every operand,
+    // then restore it after the existing bounded OkLab reconstruction. Unit
+    // range retains the old math; identical model/proxy still has zero edit.
+    const float range = gPassthrough != 0 ? max(1.0, max(fullProxy.r, max(fullProxy.g, fullProxy.b))) : 1.0;
     uint gridW, gridH;
     gModel.GetDimensions(gridW, gridH);
 
@@ -899,16 +904,16 @@ float3 NvidiaResidualModel(float3 fullProxy, float2 uv)
         const float2 tapUv = ((float2) texel + 0.5) / grid;
         const float4 a4 = gSource.SampleLevel(gLinear, tapUv, 0);
         const float4 b4 = gModel.SampleLevel(gLinear, tapUv, 0);
-        const float3 la = NvOkLab(gPassthrough != 0 ? a4.rgb : SrgbToLinear(a4.rgb));
-        const float3 lb = NvOkLab(gPassthrough != 0 ? b4.rgb : SrgbToLinear(b4.rgb));
+        const float3 la = NvOkLab((gPassthrough != 0 ? a4.rgb : SrgbToLinear(a4.rgb)) / range);
+        const float3 lb = NvOkLab((gPassthrough != 0 ? b4.rgb : SrgbToLinear(b4.rgb)) / range);
         const float ratio = clamp(log(max(lb.x, 0.1)) - log(max(la.x, 0.1)), -2.0, 2.0) * saturate(10.0 * la.x);
         const float weight = (tap.x != 0 ? f.x : 1.0 - f.x) * (tap.y != 0 ? f.y : 1.0 - f.y);
         residual += weight * float3(ratio, lb.y - la.y, lb.z - la.z);
     }
 
-    const float3 lab = NvOkLab(fullProxy);
+    const float3 lab = NvOkLab(fullProxy / range);
     const float L = saturate(lab.x * exp(residual.x));
-    return saturate(FromOkLab(float3(L, lab.y + residual.y, lab.z + residual.z)));
+    return range * saturate(FromOkLab(float3(L, lab.y + residual.y, lab.z + residual.z)));
 }
 
 // Replace's highlight/shadow guard: bounds how far a Replace pixel's luminance may sit from the
@@ -1885,28 +1890,12 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
     // the wrong question the moment SGSR1 enlarges the proxy.
     if (gTransfer >= 1 && gModelWorkScale < 0.999)
     {
-        // Saturated, because that is what the encode does and this has to reproduce it exactly.
-        //
-        // The encode writes LinearToSrgb(SoftKnee(frame / paperwhite)), and LinearToSrgb saturates
-        // before it does anything else -- so the proxy the Classic path reads back is always inside
-        // the unit cube. SoftKnee alone is not: it rolls luminance off above 0.75 but leaves a
-        // channel free to sit above 1, and with a measured white point of 0.1 in a dark red interior
-        // the red channel of anything lit is far above 1.
-        //
-        // CubeScaleResidual then computes (1 - P) / d to find how far the residual may travel before
-        // leaving the cube. With P above 1 that numerator is negative, alpha comes out negative,
-        // saturate(alpha) is zero, and the entire edit is discarded -- leaving the knee'd proxy as
-        // the answer, which is darker than the frame everywhere the knee fired. That is the darker,
-        // redder 50% picture: not the working scale, and not the residual idea, just a proxy that was
-        // never clamped the way the one it stands in for is.
-        // Rebuilt with the same curve the encode used, so the two agree on the frame's own proxy.
-        // Passthrough must reproduce the encode's passthrough branch, which writes the frame raw --
-        // SoftKnee returns it unchanged there, so both non-passthrough branches are gated behind the
-        // same passthrough check the encode has. Without this, a reversible + matched-residual +
-        // already-tone-mapped frame would Neutwo-compress a frame the encode left raw. Neutwo, the
-        // hybrid and the signal curves already land in [0,1], so they need no saturate.
+        // Reproduce mode 0 in the resolve's working domain. Only the HDR knee
+        // was saturated by LinearToSrgb on encode. Passthrough wrote the raw
+        // signal: clamping it here changes hue even when the model did nothing.
+        // Reversible curves already land inside the unit cube.
         float3 fullProxy = gPassthrough != 0
-                               ? saturate(original)
+                               ? original
                                : (ProxyCurve(gReversibleMode) == kCurveKnee ? saturate(SoftKnee(original))
                                                                             : ProxyEncode(original));
         proxy = fullProxy;

@@ -30,7 +30,8 @@ struct Surface {
 struct Use {
     ComPtr<ID3D12CommandList> list;ComPtr<ID3D12CommandQueue> queue;ComPtr<ID3D12Fence> fence;
     std::shared_ptr<Display> display;
-    uint64_t generation=0,value=0;bool pre=false,post=false,reset=false,done=false,quarantined=false,signalled=false,signalling=false;
+    uint64_t generation=0,value=0,completedValue=0,diagnosticListIdentity=0,diagnosticQueueIdentity=0;
+    bool pre=false,post=false,reset=false,done=false,quarantined=false,signalled=false,signalling=false;
     bool Active() const {return list!=nullptr;}
 };
 struct Slot {
@@ -43,6 +44,9 @@ struct Slot {
 struct State {
     std::mutex mutex;PreviewDemand demand;std::atomic<unsigned> mode{0},historyView{0};
     std::atomic<const char*> status{"Preview off"};
+    std::atomic<const char*> outputStatus{"Output not observed"};
+    std::atomic<uint64_t> attempts{0},reservations{0},recorded{0},submitted{0},completed{0},resets{0};
+    std::atomic<uint64_t> publications{0},acquisitions{0},draws{0},outputs{0},lockBusy{0},rateLimited{0},slotsBusy{0};
     std::array<Slot,SlotCount> slots;
     std::array<std::atomic<uint64_t>,SlotCount> cancelled{};
     PreviewSnapshot displayed; // metadata only, never pins a storage slot
@@ -141,6 +145,8 @@ bool Register(Use& use,ID3D12GraphicsCommandList* list,ID3D12Device*,unsigned ke
     uint64_t generation=0;
     Each([&](Slot&,Use& other,unsigned,bool){if(other.Active()&&!other.reset&&other.list.Get()==canonical.Get())generation=other.generation;});
     use.list=std::move(canonical);use.generation=generation?generation:++Get().generation;++use.value;
+    use.diagnosticListIdentity=reinterpret_cast<uintptr_t>(use.list.Get());use.diagnosticQueueIdentity=0;
+    use.completedValue=0;
     use.pre=use.post=use.reset=use.done=use.quarantined=use.signalled=use.signalling=false;
     Get().active[key].store(use.list.Get(),std::memory_order_release);return true;
 }
@@ -166,13 +172,16 @@ bool Poll(){
             lock.unlock();const auto complete=fence->GetCompletedValue();lock.lock();
             if(use.quarantined||!use.Active()||use.generation!=generation||use.value!=value)return;
             if(complete==UINT64_MAX){use.quarantined=true;Mark("Preview device removed; recording retained");return;}
-            if(complete<use.value){pending=true;return;}use.done=true;}
+            use.completedValue=complete;
+            if(complete<use.value){pending=true;return;}use.done=true;if(producer)++s.completed;}
         // Publish only after both the actual producer fence AND successful Reset
         // of this exact executable recording. Completion alone permits replay.
         if(!use.done||!use.reset)return;
         if(producer&&!slot.discarded){slot.published=true;slot.completedTick=GuideDiagnostics::Now();
+            ++s.publications;
             if(slot.revision==s.revision&&s.demand.mode!=PreviewMode::Off&&!s.demand.frozen&&
-               (s.latest==UINT_MAX||slot.serial>s.slots[s.latest].serial))s.latest=key/UsesPerSlot;}
+               (s.latest==UINT_MAX||slot.serial>s.slots[s.latest].serial)){
+                s.latest=key/UsesPerSlot;Mark("GPU snapshot published after its producer fence and successful Reset");}}
         s.active[key].store(nullptr,std::memory_order_release);use.list.Reset();use.queue.Reset();use.display.reset();
         if(producer){for(auto& input:slot.surface->inputs)input.Reset();
             if(slot.discarded)slot.surface->state=slot.startState;}
@@ -191,7 +200,8 @@ bool Executing(ID3D12CommandQueue* queue,UINT count,ID3D12CommandList* const* li
         bool match=false;for(UINT n=0;n<count;++n)match|=u.list.Get()==lists[n];if(!match)return;
         if(u.pre&&!u.post&&u.queue.Get()==queue){receipt.preview[key]=u.generation;return;}
         if(u.pre||u.post){u.quarantined=true;Mark("Preview replay or queue mismatch; recording retained");return;}
-        u.queue=queue;u.pre=true;receipt.preview[key]=u.generation;});return true;
+        u.queue=queue;u.diagnosticQueueIdentity=reinterpret_cast<uintptr_t>(queue);
+        u.pre=true;receipt.preview[key]=u.generation;});return true;
 }
 bool Submitted(ID3D12CommandQueue* queue,UINT count,ID3D12CommandList* const* lists,const ExecutionReceipt& receipt){
     if(!queue||!Matches(count,lists))return false;auto& s=Get();std::lock_guard lock(s.mutex);
@@ -200,13 +210,13 @@ bool Submitted(ID3D12CommandQueue* queue,UINT count,ID3D12CommandList* const* li
         if(!generation||!u.Active()||u.quarantined||u.generation!=generation)return;
         bool match=false;for(UINT n=0;n<count;++n)match|=u.list.Get()==lists[n];if(!match)return;
         if(!u.pre||u.queue.Get()!=queue){u.quarantined=true;Mark("Preview receipt queue mismatch; retained");return;}
-        if(!u.post)u.post=true; // duplicate nested hook receipt is idempotent
+        if(!u.post){u.post=true;if(key%UsesPerSlot==0)++s.submitted;}
     });return true;
 }
 bool Reset(ID3D12GraphicsCommandList* list){
     ID3D12CommandList* base=list;if(!Matches(1,&base))return false;auto& s=Get();std::lock_guard lock(s.mutex);
     Each([&](Slot& slot,Use& u,unsigned,bool producer){if(!u.Active()||u.quarantined||u.reset||u.list.Get()!=base)return;
-        u.reset=true;if(!u.pre){u.done=true;if(producer)slot.discarded=true;}});return true;
+        u.reset=true;if(producer)++s.resets;if(!u.pre){u.done=true;if(producer)slot.discarded=true;}});return true;
 }
 bool NeedsReset(ID3D12GraphicsCommandList* list){
     ID3D12CommandList* base=list;if(!Matches(1,&base))return false;auto& s=Get();
@@ -223,7 +233,8 @@ void SetPreviewDemand(const PreviewDemand& requested) noexcept {
         {std::lock_guard lock(s.mutex);const auto& old=s.demand;
             if(d.mode==old.mode&&d.raw==old.raw&&d.flipY==old.flipY&&d.frozen==old.frozen&&d.gain==old.gain&&d.historyView==old.historyView)return;
             const bool changed=d.mode!=old.mode||d.raw!=old.raw||d.flipY!=old.flipY||d.gain!=old.gain||d.historyView!=old.historyView;
-            if(changed){++s.revision;s.latest=UINT_MAX;s.displayed={};s.lastTick=0;s.lastSource=0;}
+            if(changed){++s.revision;s.latest=UINT_MAX;s.displayed={};s.lastTick=0;s.lastSource=0;
+                s.outputStatus.store("Waiting for authenticated physical output",std::memory_order_release);}
             s.demand=d;
             s.historyView.store(d.mode==PreviewMode::History?d.historyView:0,std::memory_order_release);
             s.mode.store(static_cast<unsigned>(d.mode),std::memory_order_release);
@@ -252,16 +263,25 @@ bool PreviewWanted(Stream stream) noexcept {
     try{std::unique_lock lock(s.mutex,std::try_to_lock);return lock.owns_lock()&&!s.demand.frozen;}catch(...){return false;}
 }
 bool TryBeginSample(Stream stream,SampleToken& token) noexcept {
-    token={};if(!PreviewWanted(stream))return false;
-    try {auto& s=PreviewDetail::Get();std::unique_lock lock(s.mutex,std::try_to_lock);
-        const auto now=GuideDiagnostics::Now();if(!lock.owns_lock()||s.demand.frozen||s.demand.mode==PreviewMode::Off||
-            PreviewDetail::Selected(s.demand.mode)!=stream||(s.lastTick&&now-s.lastTick<34))return false;
+    token={};auto& s=PreviewDetail::Get();
+    if(PreviewDetail::Selected(GetPreviewMode())!=stream)return false;
+    ++s.attempts;
+    try {std::unique_lock lock(s.mutex,std::try_to_lock);
+        if(!lock.owns_lock()){++s.lockBusy;return false;}
+        if(s.demand.frozen||s.demand.mode==PreviewMode::Off||PreviewDetail::Selected(s.demand.mode)!=stream)return false;
+        const auto now=GuideDiagnostics::Now();if(s.lastTick&&now-s.lastTick<34){++s.rateLimited;return false;}
         for(unsigned n=0;n<PreviewDetail::SlotCount;++n){auto& slot=s.slots[n];
             if(slot.reserved&&s.cancelled[n].load(std::memory_order_acquire)==slot.serial)slot.reserved=false;
             if(n==s.latest||slot.preparing||slot.reserved||slot.producer.Active()||(slot.surface&&slot.surface.use_count()!=1))continue;
             bool reading=false;for(auto& r:slot.readers)reading|=r.Active();if(reading)continue;
             slot.reserved=true;slot.published=false;slot.discarded=false;slot.serial=++s.serial;slot.revision=s.revision;
-            token={n,slot.serial,s.revision,stream,s.demand.historyView};s.lastTick=now;return true;}
+            slot.source=slot.epoch=slot.feature=slot.configuration=slot.owner=slot.completedTick=0;
+            slot.producer.generation=slot.producer.completedValue=0;
+            slot.producer.diagnosticListIdentity=slot.producer.diagnosticQueueIdentity=0;
+            slot.producer.pre=slot.producer.post=slot.producer.reset=slot.producer.done=false;
+            slot.producer.signalled=slot.producer.signalling=slot.producer.quarantined=false;
+            token={n,slot.serial,s.revision,stream,s.demand.historyView};s.lastTick=now;++s.reservations;return true;}
+        ++s.slotsBusy;
     }catch(...){}return false;
 }
 void CancelSample(SampleToken& token) noexcept {
@@ -304,7 +324,7 @@ bool PrepareOne(){
         {std::lock_guard lock(s.mutex);auto& slot=s.slots[n];
             slot.preparing=false;
             if(surface&&!slot.reserved&&!slot.producer.Active()&&n!=s.latest){
-                slot.surface.swap(surface);slot.producer.fence.Swap(fence);slot.producer.value=0;
+                slot.surface.swap(surface);slot.producer.fence.Swap(fence);slot.producer.value=slot.producer.completedValue=0;
                 for(auto& reader:slot.readers){reader.fence.Reset();reader.value=0;}
             }else if(!surface)Mark("Independent DX12 preview preparation failed");}
         // Old idle resources/fences destruct outside the shared mutex.
@@ -315,10 +335,10 @@ bool PrepareOne(){
 bool TryRecord(SampleToken& token,ID3D12GraphicsCommandList* list,const Inputs& in,const GuideDiagnostics::Snapshot& stamp) noexcept {
     using namespace PreviewDetail;bool recorded=false;
     try{auto& s=Get();std::unique_lock lock(s.mutex,std::try_to_lock);
-        if(!lock.owns_lock()){CancelSample(token);return false;}
+        if(!lock.owns_lock()){++s.lockBusy;CancelSample(token);return false;}
         if(token.slot>=SlotCount){token={};return false;}auto& slot=s.slots[token.slot];
         if(!slot.reserved||slot.serial!=token.serial||token.revision!=s.revision||s.demand.frozen||s.demand.mode==PreviewMode::Off){
-            lock.unlock();CancelSample(token);return false;}
+            Mark("Preview reservation superseded by a different demand or frozen view");lock.unlock();CancelSample(token);return false;}
         const auto demand=s.demand;lock.unlock();
         const auto fail=[&](const char* why){Mark(why);CancelSample(token);return false;};
         if(!list||!in.independentRecording||list->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT)return fail("Unavailable: independently owned DX12 DIRECT recording required");
@@ -344,11 +364,12 @@ bool TryRecord(SampleToken& token,ID3D12GraphicsCommandList* list,const Inputs& 
         const auto otherFormat=other?ViewFormat(other->GetDesc().Format,0):DXGI_FORMAT_R32G32B32A32_FLOAT;
         if(format==DXGI_FORMAT_UNKNOWN||otherFormat==DXGI_FORMAT_UNKNOWN)return fail("Unavailable: unsupported input view format");
         if(other){owner.Reset();if(other->GetDevice(IID_PPV_ARGS(&owner))!=S_OK||!D3D12DeviceIdentity::Same(owner.Get(),device.Get()))return fail("Unavailable: comparison device mismatch");}
-        if(!lock.try_lock()){CancelSample(token);return false;}
+        if(!lock.try_lock()){++s.lockBusy;CancelSample(token);return false;}
         if(!slot.reserved||slot.serial!=token.serial||token.revision!=s.revision||s.demand.frozen||s.demand.mode!=demand.mode){lock.unlock();CancelSample(token);return false;}
-        if(stamp.source==s.lastSource&&stamp.feature==s.lastFeature&&stamp.owner==s.lastOwner&&stamp.configuration==s.lastConfig){lock.unlock();CancelSample(token);return false;}
+        if(stamp.source==s.lastSource&&stamp.feature==s.lastFeature&&stamp.owner==s.lastOwner&&stamp.configuration==s.lastConfig){Mark("Waiting for a new source ordinal in this preview domain");lock.unlock();CancelSample(token);return false;}
         if(!slot.surface||slot.surface->device.Get()!=device.Get()||slot.surface->width!=rect.width||slot.surface->height!=rect.height){
             slot.requestedDevice=device;slot.requestedWidth=rect.width;slot.requestedHeight=rect.height;
+            Mark("Preparing immutable preview storage on the producer device");
             lock.unlock();CancelSample(token);StartWorker(Storage());return false;}
         auto surface=slot.surface;slot.source=stamp.source;slot.tick=stamp.tick?stamp.tick:GuideDiagnostics::Now();
         slot.epoch=stamp.epoch;slot.feature=stamp.feature;slot.configuration=stamp.configuration;slot.owner=stamp.owner;
@@ -370,7 +391,7 @@ bool TryRecord(SampleToken& token,ID3D12GraphicsCommandList* list,const Inputs& 
         Barrier(list,surface->texture.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Barrier(list,other,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,in.contributionState);Barrier(list,resource,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,state);
         lock.lock();surface->state=D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;s.lastSource=stamp.source;s.lastFeature=stamp.feature;s.lastOwner=stamp.owner;s.lastConfig=stamp.configuration;slot.reserved=false;
-        token={};recorded=true;Mark("GPU snapshot recorded; awaiting its actual queue/fence");
+        token={};recorded=true;++s.recorded;Mark("GPU snapshot recorded; awaiting actual Execute, fence and Reset");
     }catch(...){if(token.slot<SlotCount){auto& s=Get();std::lock_guard lock(s.mutex);auto& slot=s.slots[token.slot];
         if(slot.producer.Active())slot.producer.quarantined=true;}CancelSample(token);}if(recorded)StartWorker(Storage());return recorded;
 }
@@ -381,7 +402,7 @@ bool TryAcquireCompleted(PreviewSnapshot& out) noexcept {
         for(auto& r:slot.readers)if(r.quarantined)return false;
         out.lease=slot.surface;out.texture=slot.surface->texture.Get();out.width=slot.surface->width;out.height=slot.surface->height;
         out.serial=slot.serial;out.revision=slot.revision;out.source=slot.source;out.tick=slot.tick;out.completedTick=slot.completedTick;
-        out.consumer=slot.consumer;out.epoch=slot.epoch;out.feature=slot.feature;out.configuration=slot.configuration;out.owner=slot.owner;out.colourHdr=slot.colourHdr;return true;
+        out.consumer=slot.consumer;out.epoch=slot.epoch;out.feature=slot.feature;out.configuration=slot.configuration;out.owner=slot.owner;out.colourHdr=slot.colourHdr;++s.acquisitions;return true;
     }catch(...){return false;}
 }
 namespace PreviewDetail {
@@ -390,19 +411,19 @@ bool RetainOutputRead(const PreviewSnapshot& snapshot,ID3D12GraphicsCommandList*
         if(list->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT)return false;ComPtr<ID3D12Device> device;if(list->GetDevice(IID_PPV_ARGS(&device))!=S_OK)return false;
         for(unsigned n=0;n<PreviewDetail::SlotCount;++n){auto& slot=s.slots[n];
             if(slot.serial!=snapshot.serial||slot.surface.get()!=snapshot.lease.get()||!slot.published||slot.producer.quarantined)continue;
-            if(!D3D12DeviceIdentity::Same(slot.surface->device.Get(),device.Get())){Mark("Unavailable: preview output device mismatch");return false;}
+            if(!D3D12DeviceIdentity::Same(slot.surface->device.Get(),device.Get())){PreviewOutputUnavailable("Unavailable: preview output device mismatch");return false;}
             for(auto& r:slot.readers)if(r.Active()&&r.list.Get()==static_cast<ID3D12CommandList*>(list)&&!r.reset){
                 if(r.pre||r.quarantined)return false;display=r.display;return bool(display);}
             display=slot.surface->display;
             if(!display||display->device.Get()!=device.Get()){
-                slot.surface->requestedDisplayDevice=device;Mark("Preparing preview on the actual output device");
+                slot.surface->requestedDisplayDevice=device;PreviewOutputUnavailable("Preparing preview on the actual output device");
                 lock.unlock();StartWorker(Storage());return false;}
             for(unsigned j=0;j<PreviewDetail::ReadersPerSlot;++j)if(!slot.readers[j].Active()){
                 auto& reader=slot.readers[j];
                 if(reader.fence.Get()!=display->fences[j].Get()){reader.fence=display->fences[j];reader.value=0;}
                 if(!PreviewDetail::Register(reader,list,device.Get(),n*PreviewDetail::UsesPerSlot+j+1))return false;
                 reader.display=display;return true;}
-            Mark("Preview output reader slots busy; skipped");
+            PreviewOutputUnavailable("Preview output reader slots busy; skipped");
         }return false;
     }catch(...){return false;}
 }
@@ -414,7 +435,7 @@ bool DrawPreview(const PreviewSnapshot& snapshot,ID3D12GraphicsCommandList* list
     try{if(!snapshot.lease||!list||!width||!height)return false;
         if(format!=DXGI_FORMAT_R8G8B8A8_UNORM&&format!=DXGI_FORMAT_B8G8R8A8_UNORM&&
            format!=DXGI_FORMAT_R8G8B8A8_UNORM_SRGB&&format!=DXGI_FORMAT_B8G8R8A8_UNORM_SRGB){
-            PreviewUnavailable("Unavailable: output HDR/format transfer contract is not supported");return false;}
+            PreviewOutputUnavailable("Unavailable: output HDR/format transfer contract is not supported");return false;}
         std::shared_ptr<PreviewDetail::Display> display;
         if(!PreviewDetail::RetainOutputRead(snapshot,list,display))return false;
         ID3D12PipelineState* pipeline=nullptr;
@@ -425,13 +446,15 @@ bool DrawPreview(const PreviewSnapshot& snapshot,ID3D12GraphicsCommandList* list
         list->SetDescriptorHeaps(1,heaps);list->SetGraphicsRootSignature(display->root.Get());list->SetPipelineState(pipeline);
         list->SetGraphicsRoot32BitConstants(0,4,c,0);list->SetGraphicsRootDescriptorTable(1,display->heap->GetGPUDescriptorHandleForHeapStart());
         const D3D12_VIEWPORT vp{0,0,float(width),float(height),0,1};const D3D12_RECT rect{0,0,LONG(width),LONG(height)};
-        list->RSSetViewports(1,&vp);list->RSSetScissorRects(1,&rect);list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);list->DrawInstanced(3,1,0,0);return true;
+        list->RSSetViewports(1,&vp);list->RSSetScissorRects(1,&rect);list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);list->DrawInstanced(3,1,0,0);
+        ++PreviewDetail::Get().draws;PreviewOutputUnavailable("Preview draw recorded; waiting for actual output submission");return true;
     }catch(...){return false;}
 }
 void NoteDisplayed(const PreviewSnapshot& snapshot) noexcept {
     try{auto& s=PreviewDetail::Get();std::lock_guard lock(s.mutex);
         if(snapshot.revision!=s.revision||s.demand.mode==PreviewMode::Off)return;
         s.displayed=snapshot;s.displayed.lease.reset();s.displayed.texture=nullptr;
+        ++s.outputs;s.outputStatus.store("Preview output submitted; scanout not measured",std::memory_order_release);
     }catch(...){}
 }
 void ClearDisplayed(const PreviewSnapshot& snapshot) noexcept {
@@ -450,5 +473,38 @@ bool ReadDisplayed(PreviewSnapshot& out) noexcept {
     }catch(...){return false;}
 }
 void PreviewUnavailable(const char* reason) noexcept {PreviewDetail::Mark(reason?reason:"Preview unavailable");}
-std::string PreviewStatus() noexcept {try{return PreviewDetail::Get().status.load(std::memory_order_acquire);}catch(...){return {};}}
+void PreviewOutputUnavailable(const char* reason) noexcept {
+    PreviewDetail::Get().outputStatus.store(reason?reason:"Preview output unavailable",std::memory_order_release);
+}
+void ObservePreviewOutput(bool sealed,bool acquired,bool cached) noexcept {
+    if(!PreviewActive())return;
+    if(!sealed)PreviewOutputUnavailable("Waiting for authenticated physical output after SDK input seal");
+    else if(!acquired&&!cached)PreviewOutputUnavailable("Physical output authenticated; no completed producer snapshot");
+}
+bool ReadPreviewProgress(PreviewProgress& out) noexcept {
+    try{auto& s=PreviewDetail::Get();std::unique_lock lock(s.mutex,std::try_to_lock);if(!lock.owns_lock())return false;
+        out={};out.mode=s.demand.mode;out.historyView=s.demand.historyView;out.revision=s.revision;
+        out.attempts=s.attempts.load();out.reserved=s.reservations.load();out.recorded=s.recorded.load();
+        out.submitted=s.submitted.load();out.gpuCompleted=s.completed.load();out.reset=s.resets.load();
+        out.published=s.publications.load();out.acquired=s.acquisitions.load();out.drawn=s.draws.load();out.outputSubmitted=s.outputs.load();
+        out.lockBusy=s.lockBusy.load();out.rateLimited=s.rateLimited.load();out.slotsBusy=s.slotsBusy.load();
+        out.producerReason=s.status.load(std::memory_order_acquire);out.outputReason=s.outputStatus.load(std::memory_order_acquire);
+        for(unsigned index=0;index<PreviewDetail::SlotCount;++index){const auto& slot=s.slots[index];const auto& use=slot.producer;auto& value=out.slots[index];
+            value.serial=slot.serial;value.revision=slot.revision;value.source=slot.source;value.epoch=slot.epoch;
+            value.feature=slot.feature;value.configuration=slot.configuration;value.owner=slot.owner;
+            value.recording=use.generation;value.list=use.diagnosticListIdentity;value.queue=use.diagnosticQueueIdentity;
+            value.fence=reinterpret_cast<uintptr_t>(use.fence.Get());
+            value.fenceTarget=use.generation?use.value:0;value.fenceCompleted=use.completedValue;
+            value.reserved=slot.reserved;value.recorded=use.generation!=0;value.executing=use.pre;value.submitted=use.post;
+            value.signalled=use.signalled;value.gpuCompleted=use.post&&use.signalled&&use.done&&use.value&&
+                use.completedValue>=use.value&&use.completedValue!=UINT64_MAX;
+            value.reset=use.reset;value.published=slot.published;value.quarantined=use.quarantined;
+            for(const auto& reader:slot.readers)if(reader.Active())++value.readers;
+        }return true;
+    }catch(...){return false;}
+}
+std::string PreviewStatus() noexcept {
+    try{auto& s=PreviewDetail::Get();std::string text="Producer: ";text+=s.status.load(std::memory_order_acquire);
+        text+=" | Output: ";text+=s.outputStatus.load(std::memory_order_acquire);return text;}catch(...){return {};}
+}
 } // namespace GuideCapture

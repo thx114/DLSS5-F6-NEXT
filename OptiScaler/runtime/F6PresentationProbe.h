@@ -9,7 +9,7 @@
 
 namespace F6PresentationProbe
 {
-enum class Stage : uint32_t { RawCopy, AfterNr, FgInput };
+enum class Stage : uint32_t { RawCopy, AfterNr, FgInput, SourceOutput };
 struct Sample
 {
     Stage stage;
@@ -22,4 +22,7 @@ struct Sample
 };
 using Observe = void (WINAPI*)(const Sample*);
 using Install = void (WINAPI*)(Observe);
+#if defined(F6_PRESENTATION_PROBE)
+inline Observe observer = nullptr;
+#endif
 }

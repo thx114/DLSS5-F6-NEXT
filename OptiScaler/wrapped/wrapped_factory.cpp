@@ -2,6 +2,7 @@
 #include "wrapped_factory.h"
 
 #include <hooks/DxgiFactory_WrappedCalls.h>
+#include <runtime/PrivateGraphicsScope.h>
 
 #include <detours/detours.h>
 
@@ -230,6 +231,9 @@ HRESULT __stdcall WrappedIDXGIFactory7::GetWindowAssociation(HWND* pWindowHandle
 HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory7::CreateSwapChain(IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                                                 IDXGISwapChain** ppSwapChain)
 {
+    if (PrivateGraphics::Active())
+        return _real->CreateSwapChain(pDevice, pDesc, ppSwapChain);
+
     auto result = DxgiFactoryWrappedCalls::CreateSwapChain(_real, this, pDevice, pDesc, ppSwapChain);
 
     if (result == S_OK)
@@ -280,6 +284,9 @@ WrappedIDXGIFactory7::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const
     if (_real2 == nullptr)
         return E_NOTIMPL;
 
+    if (PrivateGraphics::Active())
+        return _real2->CreateSwapChainForHwnd(pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+
     HRESULT result;
     DXGI_SWAP_CHAIN_DESC1 localDesc = *pDesc;
 
@@ -309,6 +316,9 @@ HRESULT __stdcall WrappedIDXGIFactory7::CreateSwapChainForCoreWindow(IUnknown* p
 {
     if (_real2 == nullptr)
         return E_NOTIMPL;
+
+    if (PrivateGraphics::Active())
+        return _real2->CreateSwapChainForCoreWindow(pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
 
     DXGI_SWAP_CHAIN_DESC1 localDesc = *pDesc;
 

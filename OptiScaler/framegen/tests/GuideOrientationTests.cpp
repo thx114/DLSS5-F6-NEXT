@@ -83,5 +83,24 @@ int main()
     reloaded.FGMotionTextureFlipY.set_from_config(config.FGMotionTextureFlipY.value_for_config());
     reloaded.FGMotionYInverted.set_from_config(config.FGMotionYInverted.value_for_config());
     CHECK(ResolveGuideOrientation(reloaded).Key() == 4);
+    ConfigFixture prepared;
+    prepared.FGResourceFlip.set_volatile_value(true);prepared.FGResourceFlipOffset=true;
+    const auto native=ResolveGuideOrientation(prepared),raster=ResolveGuideOrientation(prepared,true);
+    CHECK(native.depthFlipY&&native.motionFlipY&&native.motionYInverted);
+    CHECK(!raster.depthFlipY&&!raster.motionFlipY&&!raster.motionYInverted&&!raster.UsesOffset());
+    CHECK(prepared.FGResourceFlip.value_or_default());
+    for (bool legacy : {false, true})
+    for (auto depth : values) for (auto motion : values) for (auto sign : values)
+    {
+        prepared.FGResourceFlip=legacy;
+        prepared.FGDepthTextureFlipY=depth;prepared.FGMotionTextureFlipY=motion;prepared.FGMotionYInverted=sign;
+        const auto explicitRaster=ResolveGuideOrientation(prepared,true);
+        CHECK(explicitRaster.depthFlipY==depth.value_or(legacy));
+        CHECK(explicitRaster.motionFlipY==motion.value_or(legacy));
+        CHECK(explicitRaster.motionYInverted==sign.value_or(legacy));
+        prepared.FGResourceFlip.set_volatile_value(true);
+        const auto automaticRaster=ResolveGuideOrientation(prepared,true);
+        CHECK(automaticRaster.Key()==explicitRaster.Key()); // auto may not erase saved intent
+    }
     std::printf("GuideOrientation: %u checks passed\n", checks);
 }

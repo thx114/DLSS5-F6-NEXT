@@ -4,6 +4,7 @@
 #include <mods/gimi/GimiRuntime.h>
 #include <ui_mask/DrawUiMask.h>
 #include <runtime/HookCpuTiming.h>
+#include <inputs/taa/TaaInputDx11.h>
 #include <dlssnr/LayerLookConfig.h>
 
 #include "Util.h"
@@ -154,6 +155,17 @@ bool Config::Reload(std::filesystem::path iniPath)
             Dx12Upscaler.set_from_config(readString("Upscalers", "Dx12Upscaler", true).transform(CodeToUpscalerFfx));
             VulkanUpscaler.set_from_config(
                 readString("Upscalers", "VulkanUpscaler", true).transform(CodeToUpscalerFfx));
+        }
+
+        // Independent TAA input source
+        {
+            const auto raw=readString("TAA","Mode");
+            const auto mode=raw ? taa::ParseMode(*raw) : std::optional<taa::Mode>{taa::Mode::Off};
+            if (!mode) LOG_WARN("Invalid TAA Mode '{}'; TAA input disabled",raw.value_or(""));
+            TaaMode.set_from_config(mode.value_or(taa::Mode::Off));
+            TaaProfile.set_from_config(readString("TAA","Profile"));
+            TaaCandidate.set_from_config(readString("TAA","Candidate"));
+            taa::Configure(TaaMode.value_or_default(),TaaProfile.value_or(""),iniPath.parent_path(),TaaCandidate.value_or(""));
         }
 
         // Frame Generation
@@ -1498,6 +1510,11 @@ void Config::WriteSettings(Sink& target)
         SaveUpscaler("Dx12Upscaler", this->Dx12Upscaler);
         SaveUpscaler("VulkanUpscaler", this->VulkanUpscaler);
     }
+
+    // Independent TAA input source
+    target.SetValue("TAA","Mode",TaaMode.value_for_config().transform([](taa::Mode mode){return std::string(taa::ModeName(mode));}).value_or("auto").c_str());
+    target.SetValue("TAA","Profile",TaaProfile.value_for_config().value_or("auto").c_str());
+    target.SetValue("TAA","Candidate",TaaCandidate.value_for_config().value_or("auto").c_str());
 
     // Frame Generation
     {

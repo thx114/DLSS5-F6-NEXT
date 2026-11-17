@@ -7,6 +7,7 @@
 #include "UpscalerFrameParameters.h"
 #include <framegen/dlssg/FgDepthContract.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
+#include <inputs/taa/TaaSourceOutput.h>
 
 static DS_Dx12* DepthScale = nullptr;
 
@@ -50,6 +51,8 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
     if (fg == nullptr || State::Instance().activeFgInput != FGInput::Upscaler || _device == nullptr)
         return {};
 
+    const bool preparedRaster=feature->Handle() &&
+        taa::source_output::PreparedRasterGuides(feature->Handle()->Id);
     auto fgConstants = fg_inputs::MakeFgConstants<FG_Constants, FG_Flags>(frame);
 
     // Source admission remains an edge contract. A common scalar request does
@@ -90,6 +93,7 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
     auto inputExecution=nativeZzz ? own->BeginNativeUpscalerInputs(_device,fgConstants) :
         checkedSource ? fg->GuardExecution(FGExecutionScope::Inputs) : FGExecutionGuard{};
     if (checkedSource && (!fg->CanSubmitInputs() || (nativeZzz && !own->OwnsNativeZzzSource()))) return {};
+    fg->ObserveGuideProducer(preparedRaster);
     const auto previousFrame=fg->FrameCount();
     const auto startedFrame=fg->StartNewFrame();
     if (checkedSource && (!fg->CanSubmitInputs() || startedFrame==previousFrame)) return {};
@@ -147,6 +151,7 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
         {
             Dx12Resource setResource {};
             setResource.type = FG_ResourceType::Velocity;
+        setResource.preparedRasterGuides = preparedRaster;
             setResource.cmdList = commandList;
             setResource.resource = paramVelocity;
             setResource.state = feature->GetUpscalerType() == Upscaler::Optical ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE :
@@ -190,6 +195,7 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
                     {
                         Dx12Resource setResource {};
                         setResource.type = FG_ResourceType::Depth;
+        setResource.preparedRasterGuides = preparedRaster;
                         setResource.cmdList = commandList;
                         setResource.resource = DepthScale->Buffer();
                         setResource.width = feature->RenderWidth();
@@ -208,6 +214,7 @@ dlssg::NativeSource UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* 
             {
                 Dx12Resource setResource {};
                 setResource.type = FG_ResourceType::Depth;
+        setResource.preparedRasterGuides = preparedRaster;
                 setResource.cmdList = commandList;
                 setResource.resource = paramDepth;
                 setResource.width = feature->RenderWidth();

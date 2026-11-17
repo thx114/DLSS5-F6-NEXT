@@ -5,6 +5,7 @@
 #include <cstring>
 #include <array>
 #include <format>
+#include <mutex>
 #include "menu_overlay_base.h"
 #include "menu_overlay_dx.h"
 #include "MenuHotpathContext.h"
@@ -52,6 +53,34 @@ static ID3D12Resource* g_mainRenderTargetResource[NUM_BACK_BUFFERS] = {};
 static D3D12_CPU_DESCRIPTOR_HANDLE g_mainRenderTargetDescriptor[NUM_BACK_BUFFERS] = {};
 
 static thread_local MenuOverlayDx::PresentResult* g_presentResult = nullptr;
+
+static void LogGuidePreviewProgress()
+{
+    if(!GuideCapture::PreviewActive())return;
+    static std::mutex mutex;
+    std::unique_lock lock(mutex,std::try_to_lock);
+    if(!lock.owns_lock())return;
+    static uint64_t lastTick=0,lastRevision=0;
+    static const char* lastProducer=nullptr;
+    static const char* lastOutput=nullptr;
+    const auto now=GuideDiagnostics::Now();
+    if(lastTick&&now-lastTick<1000)return;
+    GuideCapture::PreviewProgress progress;
+    if(!GuideCapture::ReadPreviewProgress(progress))return;
+    if(progress.revision==lastRevision&&progress.producerReason==lastProducer&&progress.outputReason==lastOutput&&
+       lastTick&&now-lastTick<5000)return;
+    lastTick=now;lastRevision=progress.revision;lastProducer=progress.producerReason;lastOutput=progress.outputReason;
+    LOG_INFO("F6 preview mode={} view={} revision={} attempts={} reserved={} recorded={} submitted={} gpuCompleted={} reset={} published={} acquired={} drawn={} outputSubmitted={} lockBusy={} rateLimited={} slotsBusy={} producer=\"{}\" output=\"{}\" counters=process_cumulative",
+        static_cast<unsigned>(progress.mode),progress.historyView,progress.revision,progress.attempts,progress.reserved,
+        progress.recorded,progress.submitted,progress.gpuCompleted,progress.reset,progress.published,progress.acquired,
+        progress.drawn,progress.outputSubmitted,progress.lockBusy,progress.rateLimited,progress.slotsBusy,
+        progress.producerReason,progress.outputReason);
+    for(const auto& slot:progress.slots)if(slot.serial&&slot.revision==progress.revision)
+        LOG_INFO("F6 preview slot serial={} revision={} source={} epoch={} feature={} configuration={} owner={} recording={} list={:X} queue={:X} fence={:X} fenceTarget={} fenceCompleted={} reserved={} recorded={} executing={} submitted={} signalled={} gpuCompleted={} reset={} published={} quarantined={} readers={}",
+            slot.serial,slot.revision,slot.source,slot.epoch,slot.feature,slot.configuration,slot.owner,slot.recording,
+            slot.list,slot.queue,slot.fence,slot.fenceTarget,slot.fenceCompleted,slot.reserved,slot.recorded,slot.executing,
+            slot.submitted,slot.signalled,slot.gpuCompleted,slot.reset,slot.published,slot.quarantined,slot.readers);
+}
 
 // Host elapsed spans around existing CPU calls. They include scheduler/driver
 // blocking, not GPU time or scheduled thread CPU. No GPU queries are issued.
@@ -1277,8 +1306,7 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain, bool physicalOutpu
         const bool hasPreview = sealedPreviewOutput && GuideCapture::TryAcquireCompleted(previewSnapshot);
         if (hasPreview) g_menuPreviewOutput.NeedsRefresh(previewSnapshot);
         const bool previewDemand = hasPreview || g_menuPreviewOutput.HasImage();
-        if(!sealedPreviewOutput&&GuideCapture::PreviewActive())
-            GuideCapture::PreviewUnavailable("Preview awaits authenticated physical output after SDK input seal");
+        GuideCapture::ObservePreviewOutput(sealedPreviewOutput,hasPreview,g_menuPreviewOutput.HasImage());
         if (!drawUi && !previewDemand)
         {
             cpu.NoUi = true;
@@ -1498,6 +1526,7 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
     if (pSwapChain == nullptr || pDevice == nullptr || (Flags & DXGI_PRESENT_TEST) != 0)
         return;
+    struct PreviewProgressOnPresent { ~PreviewProgressOnPresent(){LogGuidePreviewProgress();} } previewProgressOnPresent;
     // Capture route permission before any menu callbacks can edit the FG
     // request. A selected FG source remains excluded even when requested Off;
     // authenticated physical-output callers supply waitForOutputMenu themselves.

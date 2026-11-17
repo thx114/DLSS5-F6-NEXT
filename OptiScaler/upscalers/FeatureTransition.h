@@ -26,6 +26,16 @@ inline Phase Advance(int& counter) noexcept
     }
 }
 
+// A feature may be temporarily absent while the same caller-owned context
+// advances through Retire and Construct. Its borrowed parameters must survive
+// until Initialize; a failed/abandoned transition has neither owner nor recipe.
+template<class Context>
+bool HasLiveContext(const Context& context) noexcept
+{
+    return context.feature != nullptr ||
+           (context.changeBackendCounter > 0 && context.changeBackendCounter < 3 && context.createParams != nullptr);
+}
+
 // Allocate the next table and capture the recipe before detaching the old
 // feature. The retiring context owns its own initialization table until AFTER
 // its feature destructor/release; a custom table supplied by the caller remains

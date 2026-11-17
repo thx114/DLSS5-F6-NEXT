@@ -85,6 +85,7 @@ enum class ApiUpscalerInput
     FSR2X_VK,
     FSR2_TinyTina,
     FSR3_DX12,
+    TAA_DX11,
 };
 
 enum class SharpenShader

@@ -4,12 +4,13 @@
 #include "HoYoShade.h"
 
 namespace HoYoShade {
-enum class BeforeSrColor { Legacy, DeclaredSdr, InvalidSource, ResourceMismatch,
+enum class BeforeSrColor { Legacy, DeclaredSdr, SourceValues, InvalidSource, ResourceMismatch,
     RegionMismatch, TransferUnknown, TransferUnsupported, FormatMismatch };
 inline const char* Text(BeforeSrColor value) noexcept {
     switch (value) {
     case BeforeSrColor::Legacy: return "legacy-input";
     case BeforeSrColor::DeclaredSdr: return "producer-sdr";
+    case BeforeSrColor::SourceValues: return "source-values";
     case BeforeSrColor::InvalidSource: return "invalid-producer-description";
     case BeforeSrColor::ResourceMismatch: return "producer-resource-mismatch";
     case BeforeSrColor::RegionMismatch: return "producer-region-mismatch";
@@ -48,10 +49,15 @@ inline BeforeSrAdmission ResolveBeforeSrInput(const interop::BeforeSrInput* sour
     if (f.context != b.context || f.color != b.color || f.depth != b.depth || f.motion != b.motion)
         return {BeforeSrColor::ResourceMismatch};
     if (!MatchesBeforeSrInput(source, b)) return {BeforeSrColor::RegionMismatch};
-    if (f.color_transfer == neo::interop::ColorTransfer::unknown) return {BeforeSrColor::TransferUnknown};
+    if (f.effect_domain == interop::EffectDomain::SourceValues) {
+        const auto formats=ColorContract::ResolveInput(b.storage,f.color_view_format,b.transport,ColorContract::Domain::SourceValues);
+        if (f.color_storage_format != b.storage || !formats) return {BeforeSrColor::FormatMismatch};
+        return {BeforeSrColor::SourceValues,formats};
+    }
+    if (f.color_transfer == interop::ColorTransfer::unknown) return {BeforeSrColor::TransferUnknown};
     // API20's current pair of effect RTVs supports the declared SDR endpoint.
     // Linear/PQ need separate processing semantics; a typed view grants none.
-    if (f.color_transfer != neo::interop::ColorTransfer::srgb) return {BeforeSrColor::TransferUnsupported};
+    if (f.color_transfer != interop::ColorTransfer::srgb) return {BeforeSrColor::TransferUnsupported};
     const auto formats = ColorContract::ResolveInput(b.storage, f.color_view_format, b.transport);
     if (f.color_storage_format != b.storage || !formats) return {BeforeSrColor::FormatMismatch};
     return {BeforeSrColor::DeclaredSdr, formats};
@@ -65,6 +71,7 @@ inline BeforeSrColor BindBeforeSrInput(ColorEndpoint& endpoint, const interop::B
                                       const BeforeSrBinding& binding) noexcept {
     const auto admission = ResolveBeforeSrInput(source, binding);
     endpoint.sdr = admission.color == BeforeSrColor::DeclaredSdr;
+    endpoint.colorMode = admission.color == BeforeSrColor::SourceValues ? ColorMode::SourceValuesBeforeSr : ColorMode::TransferQualified;
     endpoint.declaredInput = ColorContract::DeclaredInput::Bind(admission.formats, endpoint);
     return admission.color;
 }

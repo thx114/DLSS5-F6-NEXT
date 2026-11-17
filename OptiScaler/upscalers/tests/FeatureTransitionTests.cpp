@@ -78,6 +78,38 @@ int main()
         assert(FeatureTransition::Advance(counter) == Phase::Invalid && counter == invalid);
     }
     unsigned groups = 1;
+    {
+        std::vector<int> log;
+        Parameters caller(log, 9);
+        Context context;
+        assert(!FeatureTransition::HasLiveContext(context));
+        Seed(context, log);
+        assert(FeatureTransition::HasLiveContext(context));
+        assert(FeatureTransition::Advance(context.changeBackendCounter) == Phase::Retire);
+        auto retired = FeatureTransition::Prepare(context, static_cast<NVSDK_NGX_Parameter*>(&caller), true,
+            [&] { return Allocate(log, 4); }, [](auto& table, auto& feature) { FeatureTransition::CopyRecipe(table, feature); });
+        assert(retired && !context.feature && context.createParams == &caller);
+        assert(FeatureTransition::HasLiveContext(context));
+        assert(FeatureTransition::Advance(context.changeBackendCounter) == Phase::Construct);
+        assert(FeatureTransition::HasLiveContext(context));
+        context.feature = std::make_unique<Feature>(Feature{log, &caller, 3});
+        assert(FeatureTransition::Advance(context.changeBackendCounter) == Phase::Initialize);
+        assert(FeatureTransition::HasLiveContext(context));
+        context.changeBackendCounter = 0;context.ClearCreateParams();
+        assert(FeatureTransition::HasLiveContext(context));
+        context.feature.reset();
+        assert(!FeatureTransition::HasLiveContext(context));
+        context.BorrowCreateParams(&caller);
+        for (int invalid : {-1, 0, 3, INT_MAX}) {
+            context.changeBackendCounter = invalid;
+            assert(!FeatureTransition::HasLiveContext(context));
+        }
+        context.changeBackendCounter = 1;context.ClearCreateParams();
+        assert(!FeatureTransition::HasLiveContext(context));
+        retired.reset();
+        assert(caller.id == 9); // caller survives retirement of its old feature
+        ++groups;
+    }
     const auto recipe = [](auto& table, auto& feature) { FeatureTransition::CopyRecipe(table, feature); };
     {
         std::vector<int> log;

@@ -118,7 +118,7 @@ class FrameInputWiringTests(unittest.TestCase):
                               "static NVSDK_NGX_Result EvaluateDx11(")
         gate = entry.index("if (upscaleResult")
         self.assertLess(gate, entry.index("UpscalerInputsDx11wDx12::UpscaleStart"))
-        self.assertLess(entry.index("deviceContext->Evaluate(InDevCtx, InParameters)"), gate)
+        self.assertLess(entry.index("deviceContext->EvaluateWithOutput(InDevCtx, InParameters, &orderedOutput, beforeSr)"), gate)
 
     def test_all_upscaler_guide_routes_defer_before_publication_during_warmup(self):
         provider = read(PRODUCT / "framegen/dlssg/DLSSG_Dx12.cpp")

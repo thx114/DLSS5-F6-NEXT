@@ -6,7 +6,9 @@
 #include <nvsdk_ngx_params.h>
 #include "../F6EvalReceiptV1.h"
 #include "../NeoBeforeSrV1.h"
+#include "NeoBeforeSrCallerFixture.h"
 #include <array>
+#include <utility>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -152,14 +154,40 @@ struct Frame
         p->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
         p->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
         p->Set(NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, 16.67f);
-        p->Set(NVSDK_NGX_Parameter_Jitter_Offset_X, 0.0f);
-        p->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, 0.0f);
+        p->Set(NVSDK_NGX_Parameter_Jitter_Offset_X, .25f);
+        p->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, -.125f);
         p->Set(NVSDK_NGX_Parameter_MV_Scale_X, 1.0f);
         p->Set(NVSDK_NGX_Parameter_MV_Scale_Y, 1.0f);
         p->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
         p->Set(NVSDK_NGX_Parameter_Reset, 1);
         p->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, render);
         p->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, render);
+    }
+    void VerifyBinding(NVSDK_NGX_Parameter* p) const
+    {
+        const auto resource=[&](const char* key,ID3D11Resource* expected) {
+            ID3D11Resource* actual=nullptr;Ngx(p->Get(key,&actual),key);
+            Check(actual==expected,"caller resource retains its exact identity after actual SR");
+        };
+        resource(NVSDK_NGX_Parameter_Color,color.Get());
+        resource(NVSDK_NGX_Parameter_Depth,depth.Get());
+        resource(NVSDK_NGX_Parameter_MotionVectors,motion.Get());
+        resource(NVSDK_NGX_Parameter_Output,output.Get());
+        resource(NVSDK_NGX_Parameter_ExposureTexture,nullptr);
+        const std::array<std::pair<const char*,float>,8> floats{{
+            {NVSDK_NGX_Parameter_DLSS_Pre_Exposure,1.0f},{NVSDK_NGX_Parameter_DLSS_Exposure_Scale,1.0f},
+            {NVSDK_NGX_Parameter_FrameTimeDeltaInMsec,16.67f},{NVSDK_NGX_Parameter_Jitter_Offset_X,.25f},
+            {NVSDK_NGX_Parameter_Jitter_Offset_Y,-.125f},{NVSDK_NGX_Parameter_MV_Scale_X,1.0f},
+            {NVSDK_NGX_Parameter_MV_Scale_Y,1.0f},{NVSDK_NGX_Parameter_Sharpness,0.0f}}};
+        for(size_t i=0;i<floats.size();++i) {
+            const auto& [key,expected]=floats[i];float actual=0;Ngx(p->Get(key,&actual),key);
+            Check(actual==expected,"caller float parameters retain authored values after actual SR");
+        }
+        for(const auto* key:{NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width,
+                            NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height}) {
+            unsigned actual=0;Ngx(p->Get(key,&actual),key);Check(actual==render,"caller render subrect is restored");
+        }
+        int reset=0;Ngx(p->Get(NVSDK_NGX_Parameter_Reset,&reset),"caller reset");Check(reset==1,"caller reset is restored");
     }
 };
 }
@@ -181,6 +209,9 @@ extern "C" __declspec(dllexport) HRESULT WINAPI Dx11FsrBridge_QueryBeforeSrFrame
 #if defined(F6_PRESENTATION_HOST)
 #include "F6PresentationHost.inl"
 #endif
+#if defined(F6_NEO_BEFORE_SR_HOST)
+#include "F6NeoBeforeSrHost.inl"
+#endif
 
 int wmain(int argc, wchar_t** argv)
 {
@@ -189,7 +220,9 @@ int wmain(int argc, wchar_t** argv)
     const bool skip = std::wstring_view(argv[2]) == L"skip";
     const bool native = std::wstring_view(argv[2]) == L"native";
     const std::wstring_view mode(argv[2]);
-    const bool managed = mode == L"before-sr-managed" || mode == L"before-sr-managed-default";
+    const bool neoCaller = mode.starts_with(L"before-sr-caller-");
+    const bool filtered = !neoCaller || mode == L"before-sr-caller-srgb";
+    const bool managed = neoCaller || mode == L"before-sr-managed" || mode == L"before-sr-managed-default";
     const bool preloaded = mode == L"before-sr-preloaded";
     const bool typeless = managed || preloaded || mode == L"before-sr-typeless" || mode == L"before-sr-auto" || mode == L"before-sr-default";
     const bool beforeSr = mode == L"before-sr" || typeless ||
@@ -208,15 +241,37 @@ int wmain(int argc, wchar_t** argv)
             "external loader creates the core before F6 loads");
     const auto module = LoadLibraryW(argv[1]);
     Check(module != nullptr, "load isolated F6 DLL");
+#if defined(F6_NEO_BEFORE_SR_HOST)
+    if (mode.starts_with(L"before-sr-neo-"))
+        NeoBeforeSrHost::Run(mode);
+#endif
 #if defined(F6_PRESENTATION_HOST)
-    if (mode == L"present" || mode == L"present-sentinel" || mode == L"present-strict" || mode == L"present-sentinel-strict")
+    if (mode == L"present" || mode == L"present-sentinel" || mode == L"present-strict" || mode == L"present-sentinel-strict" || mode == L"present-raw" || mode == L"present-raw-strict")
     {
         PresentationHost::Run(module, mode == L"present-sentinel" || mode == L"present-sentinel-strict",
-            mode == L"present-strict" || mode == L"present-sentinel-strict");
+            mode == L"present-strict" || mode == L"present-sentinel-strict" || mode == L"present-raw-strict",
+            mode == L"present-raw" || mode == L"present-raw-strict");
         ExitProcess(0);
     }
 #endif
     const auto evaluate = legacyOnly ? nullptr : Entry<F6EvaluateV1>(module, k_f6_evaluate_v1);
+    NeoCallerEvaluate callerEvaluate = nullptr;
+    NeoCallerCase callerCase = NeoCallerCase::Sdr;
+    if (neoCaller) {
+        Check(argc == 4, "production Neo caller DLL supplied");
+        const auto caller = LoadLibraryW(argv[3]);
+        Check(caller != nullptr, "load production-query caller fixture DLL");
+        callerEvaluate = Entry<NeoCallerEvaluate>(caller, "FixtureEvaluate");
+        Check(GetProcAddress(caller, neo::interop::k_query_before_sr_frame_v1) != nullptr,
+            "Neo production query is exported by the actual caller DLL");
+        if (mode.ends_with(L"unknown")) callerCase = NeoCallerCase::Unknown;
+        else if (mode.ends_with(L"linear")) callerCase = NeoCallerCase::Linear;
+        else if (mode.ends_with(L"pq")) callerCase = NeoCallerCase::Pq;
+        else if (mode.ends_with(L"wrong-view")) callerCase = NeoCallerCase::WrongView;
+        else if (mode.ends_with(L"wrong-color")) callerCase = NeoCallerCase::WrongColor;
+        else if (mode.ends_with(L"wrong-extent")) callerCase = NeoCallerCase::WrongExtent;
+        else if (mode.ends_with(L"closed-scope")) callerCase = NeoCallerCase::ClosedScope;
+    }
     const auto legacy = Entry<decltype(&NVSDK_NGX_D3D11_EvaluateFeature)>(module, "NVSDK_NGX_D3D11_EvaluateFeature");
     using Init = NVSDK_NGX_Result (NVSDK_CONV *)(unsigned long long, const wchar_t*, ID3D11Device*,
                                                NVSDK_NGX_Version, const NVSDK_NGX_FeatureCommonInfo*);
@@ -325,9 +380,11 @@ int wmain(int argc, wchar_t** argv)
             if (typeless) input.color_transfer = neo::interop::ColorTransfer::srgb;
             input.frame = request; input.instance = reinterpret_cast<uintptr_t>(handle);
             input.flags = neo::interop::k_before_sr_depth_inverted;
-            beforeSrFrame = beforeSr ? &input : nullptr;
-            expectedQueries += beforeSr ? 1u : 0u;
-            const auto evaluated = legacyOnly ? legacy(context.Get(), handle, parameters, nullptr) :
+            beforeSrFrame = beforeSr && !neoCaller ? &input : nullptr;
+            expectedQueries += beforeSr && !neoCaller ? 1u : 0u;
+            const auto evaluated = neoCaller ? callerEvaluate(evaluate, context.Get(), handle, parameters,
+                request, &receipt, &input, frame.colorSrv.Get(), callerCase) :
+                legacyOnly ? legacy(context.Get(), handle, parameters, nullptr) :
                 evaluate(context.Get(), handle, parameters, nullptr, request, &receipt);
             beforeSrFrame = nullptr;
             Ngx(evaluated, "V1 Evaluate");
@@ -335,20 +392,18 @@ int wmain(int argc, wchar_t** argv)
             const bool skipped = skip && n == 0;
             Check(legacyOnly || status == (skipped ? F6OutputStatus::no_output : F6OutputStatus::current_output_ordered),
                   "exact per-call delivery status");
-            ID3D11Resource* restored = nullptr;
-            Ngx(parameters->Get(NVSDK_NGX_Parameter_Output, &restored), "read restored caller output");
-            Check(restored == frame.output.Get(), "caller Output retains original DX11 identity");
+            frame.VerifyBinding(parameters);
             std::printf("receipt request=%llu handle=%p context=%p output=%p status=%u frame=%llu size=%u color=%u\n",
                 static_cast<unsigned long long>(request), static_cast<void*>(handle), static_cast<void*>(context.Get()),
                 static_cast<void*>(frame.output.Get()), static_cast<unsigned>(status),
                 static_cast<unsigned long long>(receipt.provider_frame), size, ++n);
             auto expectedRgb = rgb;
-            if (managed) expectedRgb[0] += 128; // Probe adds exactly 32/255 before SR.
-            if (!frame.CheckPixels(context.Get(), expectedRgb, skipped, !managed)) {
+            if (managed && filtered) expectedRgb[0] += 128; // Probe adds exactly 32/255 before SR.
+            if (!frame.CheckPixels(context.Get(), expectedRgb, skipped, !managed || !filtered)) {
                 Check(GetTickCount64() < deadline, "managed core compiled and actually filtered the current input");
                 Sleep(10); continue;
             }
-            if (managed) Check(filteredStages.load() != 0, "production recorded effects, not only producer admission");
+            if (managed && filtered) Check(filteredStages.load() != 0, "production recorded effects, not only producer admission");
             break;
             }
         }
@@ -357,11 +412,24 @@ int wmain(int argc, wchar_t** argv)
         frame.Fill(context.Get(), third); frame.Bind(parameters);
         Ngx(legacy(context.Get(), handle, parameters, nullptr), "legacy Evaluate remains callable");
         frame.CheckPixels(context.Get(), third, false);
+        const auto releaseStart = GetTickCount64();
         Ngx(release(handle), "release after real readback completion");
+        if (mode == L"release") {
+            const auto releaseMs = GetTickCount64() - releaseStart;
+            std::printf("completed feature release: size=%u cpu_ms=%llu\n", size,
+                static_cast<unsigned long long>(releaseMs));
+            Check(releaseMs < 450, "completed owner release has no implicit 500ms stall");
+        }
         Ngx(destroy(parameters), "destroy table after release");
     }
     Check(beforeSrQueries == expectedQueries && beforeSrMismatches == 0,
         "BeforeSR query receives this call's original DX11 resources only when requested");
+    if (neoCaller) {
+        Check(beforeSrQueries == 0, "EXE query substitute was never used by the Neo caller");
+        if (!filtered) Check(filteredStages.load() == 0, "rejected declaration never executed effects");
+        std::printf("neo production query: case=%u substitute_queries=%u effects=%u\n",
+            static_cast<unsigned>(callerCase), beforeSrQueries, filteredStages.load());
+    }
     if (mode == L"before-sr-managed-missing" || mode == L"before-sr-managed-bad" || mode == L"before-sr-managed-off")
         Check(GetModuleHandleW(L"ReShade64.dll") == nullptr, "disabled, missing or rejected core never loads a module");
     std::printf("before_sr queries=%u mismatches=%u enabled=%u transfer=%s typeless=%u\n",

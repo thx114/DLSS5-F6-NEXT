@@ -2,8 +2,9 @@
 
 // Which colour encoding the NR pass decodes the game's frame with.
 //
-// Auto is the rule this pass has always used: the frame is linear HDR only when the game's DLSS IsHDR flag is set AND
-// the format can hold linear light (FormatCanHoldLinearHdr); anything else is treated as a tone-mapped sRGB picture.
+// With a producer declaration, Auto uses the game's DLSS IsHDR intent and the
+// format's storage capacity. Synthetic SR flags do not declare a transfer:
+// those inputs keep their source signal unchanged and remain explicitly unknown.
 // The flag is a statement of intent a game can get wrong in either direction, and "tone-mapped" is not always sRGB,
 // so [DlssNr] ColourEncoding lets the user name the encoding instead. A forced choice is always applied, even when
 // the format looks wrong for it -- a manual override that refuses to override is no use -- and the mismatch is only
@@ -23,6 +24,7 @@ namespace DlssNrColourEncoding
 {
 enum class Encoding : uint32_t
 {
+    Unspecified = 0, // source signal, no transfer declaration or edge conversion
     LinearHdr = 1,
     Srgb = 2,
     Gamma22 = 3,
@@ -37,6 +39,7 @@ struct Choice
     Encoding encoding = Encoding::Srgb;
     bool automatic = true;
     bool mismatch = false;       // forced, and the format looks wrong for it
+    bool flagKnown = true;       // false for a synthetic fallback, not a producer declaration
     const char* reason = "";     // why Auto chose what it chose; empty when forced
 
     // Whether the frame reaches the model through the linear-HDR path (white point, proxy curve).
@@ -47,6 +50,8 @@ inline const char* Name(Encoding encoding)
 {
     switch (encoding)
     {
+    case Encoding::Unspecified:
+        return "Source signal (transfer unknown)";
     case Encoding::LinearHdr:
         return "Linear HDR";
     case Encoding::Srgb:
@@ -61,14 +66,17 @@ inline const char* Name(Encoding encoding)
 
 // setting: [DlssNr] ColourEncoding. gameSaysHdr: the game's DLSS IsHDR create flag. formatCanHoldHdr: the
 // backend's FormatCanHoldLinearHdr for the frame's colour-authority format.
-inline Choice Resolve(uint32_t setting, bool gameSaysHdr, bool formatCanHoldHdr)
+inline Choice Resolve(uint32_t setting, bool gameSaysHdr, bool formatCanHoldHdr, bool flagKnown = true)
 {
     Choice choice;
 
     if (setting == kAuto || setting >= kSettingCount)
     {
-        choice.encoding = gameSaysHdr && formatCanHoldHdr ? Encoding::LinearHdr : Encoding::Srgb;
-        choice.reason = !gameSaysHdr       ? "HDR flag off"
+        choice.encoding = !flagKnown ? Encoding::Unspecified :
+            gameSaysHdr && formatCanHoldHdr ? Encoding::LinearHdr : Encoding::Srgb;
+        choice.flagKnown = flagKnown;
+        choice.reason = !flagKnown ? "source transfer undeclared; signal passthrough"
+                        : !gameSaysHdr       ? "HDR flag off"
                         : formatCanHoldHdr ? "HDR flag on, float format"
                                            : "HDR flag on, but the format cannot hold linear HDR";
         return choice;
@@ -160,7 +168,7 @@ inline std::string Describe(const Choice& choice, const char* formatName)
 {
     char text[192];
     if (choice.automatic)
-        std::snprintf(text, sizeof(text), "Auto: %s (%s; %s)", Name(choice.encoding), choice.reason,
+        std::snprintf(text, sizeof(text), "Auto%s: %s (%s; %s)", choice.flagKnown ? "" : " (unverified)", Name(choice.encoding), choice.reason,
                       formatName ? formatName : "");
     else
         std::snprintf(text, sizeof(text), "Forced: %s; %s", Name(choice.encoding), formatName ? formatName : "");

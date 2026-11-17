@@ -1,8 +1,9 @@
-#pragma once
+﻿#pragma once
 #include "IFeature_Dx11.h"
 #include "Dx11BridgeInitState.h"
 #include <runtime/GpuWorkDomain.h>
 #include <runtime/GuideSourceMetadata.h>
+#include <runtime/SourceNrReceipt.h>
 #include <atomic>
 struct Dx11BridgeInitRetention;
 
@@ -13,6 +14,8 @@ struct Dx11BridgeInitRetention;
 #include <d3d12.h>
 #include <d3d11_4.h>
 #include <dxgi1_6.h>
+
+#include <runtime/OwnedRecordingRetirement.h>
 
 #define DX11WDX12_COMMAND_BUFFER_COUNT 3
 
@@ -27,8 +30,11 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
     }
 
   protected:
+    using RecordingOwners = OwnedRecordingRetirement::Pool<DX11WDX12_COMMAND_BUFFER_COUNT>;
+    std::shared_ptr<RecordingOwners> recordingOwners = RecordingOwners::Create();
     std::unique_ptr<IFeature_Dx12> dx12Feature = nullptr;
     GuideSourceMetadata::Ptr currentInputMetadata;
+    source_colour::Receipt currentSourceNr;
     // Count real input attempts, including failures and inputs that skip NR.
     // The successful-output clock is unsuitable for one-frame MV adjacency.
     std::atomic<uint64_t> nrSourceAttempts { 0 };
@@ -52,6 +58,8 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
     HANDLE Dx12FenceEvent = nullptr;
     UINT64 Dx12FenceValue = 0;
     bool submissionUnfenced = false;
+    void SetSubmissionUnfenced(bool value) noexcept
+    { submissionUnfenced = value; recordingOwners->Uncertain(value); }
     UINT64 Dx12CommandAllocatorFenceValue[DX11WDX12_COMMAND_BUFFER_COUNT] = {};
     std::atomic<bool> interopFenceFaultReported{false},interopDeviceFaultReported{false};
     void ReportInteropFenceFault(const char* phase,UINT slot,UINT64 target,UINT64 completed,DWORD waitResult) noexcept;
@@ -84,6 +92,7 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
   public:
     bool PrepareForShutdown() override { return !initRetention && ReleaseSharedResources(true); }
     GuideSourceMetadata::Ptr CurrentInputMetadata() const noexcept { return currentInputMetadata; }
+    const source_colour::Receipt& CurrentSourceNrReceipt() const noexcept { return currentSourceNr; }
     // dx11 w/dx12 can't be wrapped but the IFeature_Dx11, needs its own Init and Evaluate
     bool InitInternal(ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters) final { return false; };
     bool EvaluateInternal(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Parameter* InParameters) final

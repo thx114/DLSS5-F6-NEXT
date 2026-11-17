@@ -32,9 +32,13 @@ constexpr GuideOrientation ResolveGuideOrientation(bool legacyFlip, std::optiona
             motionYInverted.value_or(legacyFlip), offset};
 }
 
-template<class Config> GuideOrientation ResolveGuideOrientation(const Config& config)
+template<class Config> GuideOrientation ResolveGuideOrientation(const Config& config, bool preparedRaster = false)
 {
-    return ResolveGuideOrientation(config.FGResourceFlip.value_or_default(), config.FGDepthTextureFlipY,
+    // Prepared producers have already normalized automatic engine conventions.
+    // Saved/user legacy settings and explicit per-guide overrides still apply.
+    const bool legacy = preparedRaster ? config.FGResourceFlip.value_for_config().value_or(false) :
+        config.FGResourceFlip.value_or_default();
+    return ResolveGuideOrientation(legacy, config.FGDepthTextureFlipY,
         config.FGMotionTextureFlipY, config.FGMotionYInverted, config.FGResourceFlipOffset.value_or_default());
 }
 }

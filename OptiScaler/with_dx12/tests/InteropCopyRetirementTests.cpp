@@ -2,6 +2,7 @@
 #include <Windows.h>
 #include <wrl/client.h>
 #include <atomic>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -194,6 +195,12 @@ void QuarantineColor(IDXGISwapChain* chain, ID3D12CommandQueue* queue,
 bool negativeReaderRetirement = false;
 #include "InteropSlotAdmissionProduction.h"
 
+struct ReaderContext {
+    unsigned waits = 0;
+    UINT64 target = 0;
+    HRESULT result = S_OK;
+    HRESULT Wait(ID3D12Fence*, UINT64 value) { ++waits; target = value; return result; }
+};
 class Dx11wDx12SC : public RefCounted
 {
   public:
@@ -203,6 +210,10 @@ class Dx11wDx12SC : public RefCounted
     HANDLE _copyFenceEvent = nullptr;
     std::vector<ID3D12CommandAllocator*> _copyAllocators;
     std::vector<UINT64> _copyAllocatorFenceValues, _nrCopyAllocatorFenceValues;
+    UINT _nextCopyAllocator = 0;
+    std::vector<UINT64> _sharedTextureReaderValues {18};
+    ID3D12Fence* _dx11CopyReaderFence = nullptr;
+    ReaderContext readerContext;
     ID3D12CommandQueue* _dx12CommandQueue = nullptr;
     IFrameGen* _fg = nullptr;
     UINT _currentFakeIndex = 0;
@@ -216,7 +227,7 @@ class Dx11wDx12SC : public RefCounted
     ID3D12Fence* _presentRetirementFence = nullptr;
     HANDLE _presentRetirementEvent = nullptr;
     UINT64 _presentRetirementValue = 0;
-    void* _dx11Context4 = this;
+    ReaderContext* _dx11Context4 = &readerContext;
     void* _dx11Fence = this;
     ID3D12Fence* _dx12SharedFence = nullptr;
     std::vector<int> _copyCommandLists {1}, _nrCopyCommandLists, _sharedDx11BackBufferCopies, _openedDx11BackBuffers;
@@ -228,6 +239,7 @@ class Dx11wDx12SC : public RefCounted
     // Logging is observational: the exact extracted production wait below
     // still decides completion/Reset. No simulated device loss grants reuse.
     void _ReportCopyFenceFault(const char*,UINT,UINT64,UINT64,DWORD) { ++faultReports; }
+    bool _PrepareSharedWriter(UINT textureSlot, CopySlotAdmission& admission);
     bool _WaitForCopyAllocator(UINT slot, std::vector<UINT64>& fenceValues);
     bool _WaitForCopyAllocator(UINT slot, std::vector<UINT64>& fenceValues, CopySlotAdmission& admission);
 
@@ -248,6 +260,7 @@ class Dx11wDx12SC : public RefCounted
                     Microsoft::WRL::ComPtr<ID3D12Resource> fgBackBuffer,
                     ID3D12CommandList* list, ID3D12Resource** copiedColour = nullptr)
     {
+        const auto textureSlot = _currentFakeIndex;
         if(copiedColour)*copiedColour=nullptr;
         ID3D12CommandList* lists[] = { list };
         CallerCpuTrace::Scope copyExecuteCpu(CallerCpuTrace::Op::CopyExecute);
@@ -305,7 +318,7 @@ struct Fixture
     Dx11wDx12SC owner;
     Fixture()
     {
-        owner._copyFence = &fence; owner._copyFenceEvent = &event;
+        owner._copyFence = &fence; owner._dx11CopyReaderFence = &fence; owner._copyFenceEvent = &event;
         owner._dx12SharedFence = &fence;
         owner._copyAllocators = { &allocator }; owner._copyAllocatorFenceValues = { 18 };
         owner._dx12CommandQueue = &queue; owner._dx12Device = &device; owner._fgSwapChain = &chain;
@@ -467,6 +480,30 @@ void ReaderRetiresBeforeWriteOnce()
     Check(f.owner.WriteShared(0, fresh) && f.owner.ResetForCopy(0, fresh) && f.event.waits == 0,
           "a never-submitted slot needs no wait");
 }
+void ExistingRingAvoidsTextureCpuWait()
+{
+    Fixture f;
+    ID3D12CommandAllocator spare, another;
+    f.owner._copyAllocators = {&f.allocator, &spare, &another};
+    f.owner._copyAllocatorFenceValues = {18, 0, 0};
+    CopySlotAdmission proof;
+    Check(f.owner.WriteShared(0, proof) && proof.RecordingSlot()==1 && f.event.waits==0,
+          "one live shared texture reader does not block CPU when an existing allocator is available");
+    Check(f.owner.readerContext.waits==1 && f.owner.readerContext.target==18 && f.owner.writes==1,
+          "DX11 write is ordered behind its exact prior texture reader on GPU");
+    Check(f.owner.ResetForCopy(1,proof) && spare.resets==1 && f.allocator.resets==0,
+          "only the independent retired allocator resets while texture slot stays zero");
+    CopySlotAdmission changed;
+    Check(f.owner.WriteShared(0,changed),"obtain proof before texture timeline change");
+    f.owner._sharedTextureReaderValues[0]=19;
+    Check(!f.owner.ResetForCopy(changed.RecordingSlot(),changed),"changed texture reader invalidates admission");
+    f.owner._sharedTextureReaderValues[0]=18; f.owner.readerContext.result=E_FAIL;
+    const auto writes=f.owner.writes;
+    CopySlotAdmission failed;
+    Check(!f.owner.WriteShared(0,failed) && f.owner.writes==writes,
+          "failed GPU reader Wait refuses before write without CPU fallback");
+}
+
 void RefusalsNeverWriteOrReset()
 {
     for (int kind = 1; kind != 7; ++kind)
@@ -507,11 +544,11 @@ void ProofCannotCrossIdentityOrTimeline()
         ID3D12Fence fence, anotherFence;
         ID3D12CommandAllocator allocator, anotherAllocator;
         CopySlotAdmission proof;
-        proof.Record(&owner, &ring, &fence, &allocator, 0, 18);
+        proof.Record(&owner, &ring, &fence, &allocator, 0, 18, 0, 18);
         Check(!proof.Consume(kind == 0 ? &anotherOwner : &owner, kind == 1 ? &anotherRing : &ring,
                              kind == 2 ? &anotherFence : &fence, kind == 3 ? &anotherAllocator : &allocator,
-                             kind == 4 ? 1u : 0u, kind == 5 ? 19 : 18), "owner/ring/fence/allocator/slot/value must all match");
-        Check(!proof.Consume(&owner, &ring, &fence, &allocator, 0, 18), "mismatched proof is consumed permanently");
+                             kind == 4 ? 1u : 0u, kind == 5 ? 19 : 18, 0, 18), "owner/ring/fence/allocator/slot/value must all match");
+        Check(!proof.Consume(&owner, &ring, &fence, &allocator, 0, 18, 0, 18), "mismatched proof is consumed permanently");
     }
 }
 void FailedSignalPinsActualOperandsOnEveryRoute()
@@ -572,6 +609,7 @@ int main(int argc, char** argv)
     PresentQueueDrainFailuresRetainOwner();
     PresentQueueWaitPinsOwnerBeforeFailure();
     ReaderRetiresBeforeWriteOnce();
+    ExistingRingAvoidsTextureCpuWait();
     RefusalsNeverWriteOrReset();
     ProofCannotCrossIdentityOrTimeline();
     FailedSignalPinsActualOperandsOnEveryRoute();

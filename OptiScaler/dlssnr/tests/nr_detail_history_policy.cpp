@@ -57,6 +57,14 @@ void Phases()
     p.motionPhaseX = p.depthPhaseX = p.jitterX / p.renderWidth;
     p.motionPhaseY = p.depthPhaseY = p.jitterY / p.renderHeight;
     Require(ResolvePhase(p).verified, "finished scene retains canonical current-J guide phase");
+    p.finishedPicture = false; p.sourceOutput = true;
+    Require(ResolvePhase(p).verified && ResolvePhase(p).placement == Placement::SourceOutputCanonical,
+        "scene SR output has a distinct history contract with canonical guide phase");
+    p.finishedPicture = true;
+    Require(!ResolvePhase(p).verified, "source output cannot claim finished-picture semantics");
+    p.finishedPicture = p.sourceOutput = false;
+    Require(!ResolvePhase(p).verified, "unidentified post-SR placement cannot reuse history");
+    p.finishedPicture = true;
     p.nativeScene = false;
     Require(!ResolvePhase(p).verified, "finished optical-flow route gains no native permission");
 }

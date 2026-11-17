@@ -8,6 +8,9 @@ param(
     [switch]$DelegateForeground,
     # Explicit opt-in: only the exact no-input foreground-retention rejection can authorize one activation click.
     [switch]$AllowActivationClick,
+    # Skip the entry click after successful activation. An explicitly authorized
+    # exact-hit fallback may still send its one activation click.
+    [switch]$FocusOnly,
     [double]$X = 0.5,
     [double]$Y = 0.949,
     # Required: every launcher CLI call uses exactly this --biz value; no implicit default game.
@@ -162,6 +165,10 @@ try {
         Write-Information 'Exact no-input foreground-retention rejection matched; requesting one exact-hit activation click, with no second click.' -InformationAction Continue
     } elseif ([HoYoShadeHub.CliInspection.Windows]::Foreground() -ne $script:selectedWindow) {
         throw 'Selected window lost foreground after activation; no click requested.'
+    }
+    if ($FocusOnly -and !$activationClick) {
+        Write-Information "Exact game HWND $script:selectedWindow is foreground; no entry click requested. Records: $recordDirectory" -InformationAction Continue
+        return
     }
     $clickStep = @{
         action = 'click_game'; expectedPid = $ExpectedPid

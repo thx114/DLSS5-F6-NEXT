@@ -4,6 +4,7 @@
 #include "FGHookRetirement.h"
 #include "FgPacingLease.h"
 #include "DlssgPacingLifetime.h"
+#include "FgRuntimeStatus.h"
 
 #include <upscalers/IFeature.h>
 
@@ -55,6 +56,8 @@ struct Dx12Resource
     ID3D12Resource* copy = nullptr;
     int frameIndex = -1;
     bool waitingExecution = false;
+    // Coordinate fact of this physical producer, independent of transport/API.
+    bool preparedRasterGuides = false;
 
     ID3D12Resource* GetResource() { return (copy == nullptr) ? resource : copy; }
 };
@@ -80,6 +83,13 @@ class IFGFeature_Dx12 : public virtual IFGFeature
     void DestroyCopyCmdList();
 
   protected:
+    const uint64_t _runtimeInstance = framegen::NextRuntimeInstance();
+    framegen::RuntimeSnapshot RuntimeIdentity(HRESULT result) const;
+    framegen::RuntimeSnapshot RuntimeObservation(UINT flags, HRESULT result) const;
+    void InvalidateRuntimeObservation()
+    { framegen::RuntimeState().Invalidate(reinterpret_cast<uintptr_t>(static_cast<IFGFeature*>(this)), _runtimeInstance); }
+    std::atomic_bool _preparedRasterGuides{false};
+
     enum class UIAllocatorStatus { Ready, Busy, Invalid };
     UIAllocatorStatus PollUIAllocator(UINT index) const;
     virtual bool WaitForUIAllocator(UINT index);
@@ -89,6 +99,8 @@ class IFGFeature_Dx12 : public virtual IFGFeature
     // The queue the game created the swapchain with, which frame generation takes the frame on. Not necessarily
     // State::currentCommandQueue: that follows every swapchain created, including the one frame generation makes.
     ID3D12CommandQueue* GameCommandQueue() const { return _gameCommandQueue; }
+    void ObserveGuideProducer(bool prepared) { _preparedRasterGuides.store(prepared, std::memory_order_release); }
+    bool PreparedRasterGuides() const { return _preparedRasterGuides.load(std::memory_order_acquire); }
     virtual FGExecutionGuard GuardExecution(FGExecutionScope) { return {}; }
     // Queried while guarded, BEFORE the source's original token request.
     // Concrete providers close admission before Off/free/shutdown and return
@@ -97,6 +109,8 @@ class IFGFeature_Dx12 : public virtual IFGFeature
     virtual bool CanSubmitInputs() { return true; }
     virtual bool CompletePendingTeardown() { return true; }
     virtual bool PrepareForSwapchainChange(bool terminal = false) { return true; }
+    // Called exactly once after the real SDK Present, while its owner is guarded.
+    virtual void ObservePresentReturned(IDXGISwapChain* chain, UINT flags, HRESULT result);
     // Separate opt-in contract: old bool/empty guard defaults are never completion receipts.
     virtual FGHookRetirementReceipt RetireSwapchainForHook(const FGHookRetirementRequest&) { return {}; }
 
@@ -176,6 +190,6 @@ class IFGFeature_Dx12 : public virtual IFGFeature
 
     bool HasResource(FG_ResourceType type, int index = -1) override final;
 
-    IFGFeature_Dx12() = default;
-    virtual ~IFGFeature_Dx12() { DestroyCopyCmdList(); }
+    IFGFeature_Dx12() { framegen::RuntimeState().Invalidate(reinterpret_cast<uintptr_t>(static_cast<IFGFeature*>(this)), 0); }
+    virtual ~IFGFeature_Dx12() { InvalidateRuntimeObservation(); DestroyCopyCmdList(); }
 };

@@ -9,6 +9,7 @@
 #include <wrl/client.h>
 #include <shaders/dlssnr/DlssNr_RecordingLifetime.h>
 #include <runtime/D3D12DeviceIdentity.h>
+#include <runtime/OwnedRecordingRetirement.h>
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -71,6 +72,8 @@ struct Provider {
 ;
 class IFeature_Dx11wDx12 {
 public:
+    using RecordingOwners = OwnedRecordingRetirement::Pool<3>;
+    std::shared_ptr<RecordingOwners> recordingOwners = RecordingOwners::Create();
     ID3D12GraphicsCommandList* Dx12CommandList[3] {};
     ID3D12CommandAllocator* Dx12CommandAllocator[3] {};
     ID3D12Fence* Dx12Fence = nullptr;
@@ -217,10 +220,58 @@ void SignalFailure() {
     Check(!f.bridge.ReleaseSharedResources(true), "NR Signal failure retains after owner queue drains");
     f.Retained(); Check(allocatorResets==0 && callbacks==0, "quarantine cannot be cleared by Reset");
 }
+void CachedOwnerPoll() {
+    Fixture f; f.Submit();
+    auto old = f.bridge.recordingOwners;
+    auto current = IFeature_Dx11wDx12::RecordingOwners::Create();
+    {
+        IFeature_Dx11wDx12::RecordingOwners::Use use(*old);
+        for (unsigned i=0;i<3;++i)
+            old->Publish(i,f.bridge.Dx12CommandList[i],f.bridge.Dx12CommandAllocator[i],f.bridge.Dx12Fence,i+1);
+    }
+    unsigned closeCalls=0;
+    const auto close = [&](auto* list,auto* allocator) {++closeCalls;return DlssNr::RetireFinishedPictureRecording(list,allocator);};
+    Fixture::Wait(f.tail.Get(),1);Fixture::Wait(f.bridge.Dx12Fence,3);
+    {
+        IFeature_Dx11wDx12::RecordingOwners::Use use(*old);
+        Check(IFeature_Dx11wDx12::RecordingOwners::Poll(current.get(),close)==0,"an active owner cannot be reset by a nested Evaluate");
+    }
+    old->Uncertain(true);
+    Check(IFeature_Dx11wDx12::RecordingOwners::Poll(current.get(),close)==0,"uncertain owner remains pinned");
+    old->Uncertain(false);
+    Check(IFeature_Dx11wDx12::RecordingOwners::Poll(old.get(),close)==0,"current owner uses its normal recording ring");
+    Check(closeCalls==0,"no early callback while owner unavailable");
+    Check(IFeature_Dx11wDx12::RecordingOwners::Poll(current.get(),close)==3,"cached inactive owner closes its three actual generations");
+    Check(f.bridge.dx12Feature && f.providerReleased==0,"poll preserves the cached provider");
+    for(unsigned i=0;i<3;++i) {
+        Check(f.uses[i]->Complete(),"exact NR execution completed and successful Reset closes old use");
+        Check(f.bridge.Dx12CommandList[i] && f.bridge.Dx12CommandAllocator[i],"cached commands and allocators remain available");
+        Hr(f.bridge.Dx12CommandAllocator[i]->Reset());
+        Hr(f.bridge.Dx12CommandList[i]->Reset(f.bridge.Dx12CommandAllocator[i],nullptr));
+        Hr(f.bridge.Dx12CommandList[i]->Close());
+    }
+    Check(IFeature_Dx11wDx12::RecordingOwners::Poll(current.get(),close)==0,"completed old recording is closed only once");
+}
+
+void CachedOwnerOtherQueue() {
+    Fixture f;Hr(f.other->Wait(f.gate.Get(),1));f.Submit(f.other.Get());
+    auto current=IFeature_Dx11wDx12::RecordingOwners::Create();
+    auto old=f.bridge.recordingOwners;
+    for(unsigned i=0;i<3;++i)old->Publish(i,f.bridge.Dx12CommandList[i],f.bridge.Dx12CommandAllocator[i],f.bridge.Dx12Fence,i+1);
+    Fixture::Wait(f.bridge.Dx12Fence,3);
+    Check(IFeature_Dx11wDx12::RecordingOwners::Poll(current.get(),DlssNr::RetireFinishedPictureRecording)==0,
+          "completed owner fence cannot substitute for pending NR execution on another actual queue");
+    Check(allocatorResets==0&&listResets==0&&f.bridge.dx12Feature,"blocked cached owner keeps provider and every recording");
+    Hr(f.gate->Signal(1));Fixture::Wait(f.tail.Get(),1);
+    Check(IFeature_Dx11wDx12::RecordingOwners::Poll(current.get(),DlssNr::RetireFinishedPictureRecording)==3,
+          "all actual executions completed permit cached owner closure");
+}
+
 int main(int argc,char** argv) {
     try {
         if(argc==2 && std::string(argv[1])=="--baseline") { Baseline(); return 2; }
         Check(argc==1, "unknown argument");
+        CachedOwnerPoll(); CachedOwnerOtherQueue();
         SuccessAndContext(true,false); SuccessAndContext(false,false); SuccessAndContext(true,true);
         DelayedOwnerQueue(); OtherActualQueue(); Refusals(); SignalFailure();
         std::printf("PASS bridge retirement production + WARP: %u scenarios, %u checks; HRESULT faults explicit\n",scenarios,checks);

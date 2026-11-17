@@ -6,10 +6,11 @@ namespace HoYoShade {
 // NativeTyped is a processing contract, never an SDR/linear transfer claim.
 // Copies preserve typed buffer values; selected effect sRGB states remain
 // governed by the fixed API20 pair of RTVs, without adapter tone mapping.
-enum class ColorMode : unsigned { TransferQualified, GenshinNativeTypedBeforeSr, GenshinNativeTypedBeforeNr };
+enum class ColorMode : unsigned { TransferQualified, SourceValuesBeforeSr, GenshinNativeTypedBeforeSr, GenshinNativeTypedBeforeNr };
 inline const char* Text(ColorMode v) noexcept {
     switch (v) {
     case ColorMode::TransferQualified: return "transfer-qualified";
+    case ColorMode::SourceValuesBeforeSr: return "before-sr-source-values";
     case ColorMode::GenshinNativeTypedBeforeSr: return "genshin-native-typed-before-sr";
     case ColorMode::GenshinNativeTypedBeforeNr: return "genshin-native-typed-before-nr-finished-picture";
     default: return "invalid";

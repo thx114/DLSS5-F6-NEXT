@@ -1993,4 +1993,23 @@
     <ClInclude Include="runtime\LibraryObservation.h" />
     <ClInclude Include="runtime\LoaderModuleState.h" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="inputs\taa\TaaProfile.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClInclude Include="inputs\taa\TaaProjectionJitterDx11.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClInclude Include="inputs\taa\TaaSelection.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClInclude Include="inputs\taa\TaaShaderAnalysis.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClInclude Include="inputs\taa\TaaAutoDx11.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClInclude Include="inputs\taa\TaaTemporalEvidenceDx11.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClInclude Include="inputs\taa\TaaConstantBuffer.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClInclude Include="inputs\taa\TaaPassDx11.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClInclude Include="inputs\taa\TaaDepthStencilDx11.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClInclude Include="inputs\taa\TaaInputDx11.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClCompile Include="inputs\taa\TaaInputDx11.cpp"><Filter>NVNGX</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="inputs\BeforeSrInput.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClInclude Include="inputs\NeoBeforeSrV1.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClInclude Include="inputs\NeoBeforeSrInput.h"><Filter>NVNGX</Filter></ClInclude>
+    <ClInclude Include="runtime\Dx11ContextState.h"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
 </Project>

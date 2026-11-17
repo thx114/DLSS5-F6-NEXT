@@ -5,8 +5,10 @@
 #include "UpscalerFrameParameters.h"
 #include <framegen/dlssg/FgDepthContract.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
+#include <inputs/taa/TaaSourceOutput.h>
 #include <runtime/GuideCapture.h>
 #include <upscalers/IFeature_Dx11wDx12.h>
+#include <dlssnr/DlssNrFeature_Dx12.h>
 #include <Util.h>
 
 #include <with_dx12/with_dx12.h>
@@ -109,6 +111,8 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
     if (fg == nullptr)
         return;
 
+    const bool preparedRaster=feature->Handle() &&
+        taa::source_output::PreparedRasterGuides(feature->Handle()->Id);
     auto fgConstants = fg_inputs::MakeFgConstants<FG_Constants, FG_Flags>(frame);
 
     fg->EvaluateState(_dx12Device, fgConstants);
@@ -122,6 +126,7 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
 
     auto inputExecution = fg->GuardExecution(FGExecutionScope::Inputs);
     if (!fg->CanSubmitInputs()) return;
+    fg->ObserveGuideProducer(preparedRaster);
     const auto previousFrame = fg->FrameCount();
     const auto startedFrame = fg->StartNewFrame();
     if (!fg->CanSubmitInputs() || startedFrame == previousFrame) return;
@@ -191,24 +196,33 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
             own->RejectUpscalerGuideSource("selected-sr-cache-source-mismatch");
             return;
         }
+        std::optional<source_colour::Receipt> sourceNr;
+        if (DlssNr::UsesSourceOutput())
+        {
+            auto* bridge = dynamic_cast<IFeature_Dx11wDx12*>(feature);
+            if (!bridge || !feature->Handle() ||
+                !bridge->CurrentSourceNrReceipt().Matches(reinterpret_cast<uintptr_t>(static_cast<IFeature*>(feature)),
+                    feature->Handle()->Id, evaluatedOutput))
+            {
+                own->RejectUpscalerGuideSource("source-nr-current-output-unproven");
+                return;
+            }
+            sourceNr = bridge->CurrentSourceNrReceipt();
+        }
         const bool tagged=own->SetUpscalerGuidePair(static_cast<IFeature*>(feature),cmdList,InParameters,paramDepth,paramVelocity,
             feature->RenderWidth(),feature->RenderHeight(),
             feature->LowResMV()?feature->RenderWidth():feature->TargetWidth(),
             feature->LowResMV()?feature->RenderHeight():feature->TargetHeight(),
             (D3D12_RESOURCE_STATES)cfg.DepthResourceBarrier.value_or(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
             (D3D12_RESOURCE_STATES)cfg.MVResourceBarrier.value_or(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-            evaluatedOutput);
-        const auto game=dlssg::depth_contract::Game();
+            evaluatedOutput, sourceNr, DLSSG_Dx12::GuideTransport::SharedDx11);
         // Return the raw shared guides immediately after their real snapshot
         // submission, before Present appends final-colour/NR/FG work to this
         // queue. The existing Signal -> DX11 GPU Wait still orders every next
         // cache writer; no CPU completion wait or extra input slot is needed.
         // Guide/offline diagnostics keep the open recording until final colour
         // is available. Colour-only preview can open its own try-only recording.
-        const bool starRailDiagnosticRead=game==GameRouting::Identity::StarRail &&
-            GuideCapture::NeedsOpenFgGuideRecording();
-        if (game==GameRouting::Identity::Genshin ||
-            (game==GameRouting::Identity::StarRail && !starRailDiagnosticRead))
+        if (!GuideCapture::NeedsOpenFgGuideRecording())
             own->SealDx11GuideInputs(tagged,_dx12CommandQueue);
         return;
     }
@@ -217,6 +231,7 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
     {
         Dx12Resource setResource {};
         setResource.type = FG_ResourceType::Velocity;
+        setResource.preparedRasterGuides = preparedRaster;
         setResource.cmdList = cmdList;
         setResource.resource = paramVelocity;
         setResource.state = (D3D12_RESOURCE_STATES) Config::Instance()->MVResourceBarrier.value_or(
@@ -257,6 +272,7 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
                 {
                     Dx12Resource setResource {};
                     setResource.type = FG_ResourceType::Depth;
+        setResource.preparedRasterGuides = preparedRaster;
                     setResource.cmdList = cmdList;
                     setResource.resource = DepthScaleDx11wDx12->Buffer();
                     setResource.width = feature->RenderWidth();
@@ -274,6 +290,7 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
         {
             Dx12Resource setResource {};
             setResource.type = FG_ResourceType::Depth;
+        setResource.preparedRasterGuides = preparedRaster;
             setResource.cmdList = cmdList;
             setResource.resource = paramDepth;
             setResource.width = feature->RenderWidth();

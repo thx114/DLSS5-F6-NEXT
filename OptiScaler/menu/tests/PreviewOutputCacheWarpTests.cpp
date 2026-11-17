@@ -47,14 +47,22 @@ static std::vector<std::array<unsigned char,4>> ReadOutput(Fixture& f,Draw& d)
 int main(){try{
     Fixture f;Demand(PreviewMode::FgColour);auto snapshot=f.Complete(901,f.Inputs());
     MenuPreview::OutputCache cache;auto demand=GuideCapture::GetPreviewDemand();cache.Select(demand,true);
+    const auto before=Progress();
     auto first=OutputTarget(f);bool read=false;
     Until([&]{return cache.Record(f.device.Get(),first.commands.list.Get(),first.target.Get(),&snapshot,read);},
         "first physical output records real production preview reader");
     Check(read,"first output owns a real snapshot reader");
+    const auto recorded=Progress();
+    Check(recorded.drawn==before.drawn+1&&recorded.outputSubmitted==before.outputSubmitted,
+        "recording a physical preview draw is distinct from actual output submission");
     // Simulate an FPS glyph after preview: it must not get baked into the cache.
     const float white[]{1,1,1,1};const D3D12_RECT fps{0,0,8,8};
     first.commands.list->ClearRenderTargetView(first.rtv->GetCPUDescriptorHandleForHeapStart(),white,1,&fps);
     auto pixels=ReadOutput(f,first);cache.NoteSubmitted();
+    const auto submitted=Progress();
+    Check(submitted.outputSubmitted==recorded.outputSubmitted+1&&
+        std::strcmp(submitted.outputReason,"Preview output submitted; scanout not measured")==0,
+        "actual output submission is observable without claiming scanout");
     PixelNear(pixels[0],1,1,1,"FPS layer remains above selected preview");
     // More physical outputs than the fixed runtime reader capacity. They must
     // not register additional snapshot readers or expose the magenta game image.
@@ -67,6 +75,16 @@ int main(){try{
         PixelNear(shown[0],7.f/512,5.f/256,.25f,"cached image excludes FPS and normal game pixels");
         PixelNear(shown[100*next.width+200],207.f/512,105.f/256,.25f,"continuous output retains preview pixels");
     }
+    const auto cached=Progress();
+    Check(cached.drawn==submitted.drawn&&cached.outputSubmitted==submitted.outputSubmitted+24,
+        "cached physical outputs count real submissions without fabricating new producer readers or draws");
+    GuideCapture::ObservePreviewOutput(false,false,false);const auto unsealed=Progress();
+    Check(std::strcmp(unsealed.outputReason,"Waiting for authenticated physical output after SDK input seal")==0,
+        "unsealed physical output reports the actual output gate");
+    GuideCapture::ObservePreviewOutput(true,false,false);const auto missing=Progress();
+    Check(std::strcmp(missing.outputReason,"Physical output authenticated; no completed producer snapshot")==0&&
+        std::strcmp(missing.producerReason,unsealed.producerReason)==0,
+        "missing completed image updates output status without overwriting producer status");
     // An existing immutable snapshot remains acquirable while a newer producer
     // waits for Reset. Complete() deliberately assumes no earlier snapshot.
     auto nextProducer=f.New();auto nextStamp=Stamp(902);nextStamp.epoch=snapshot.epoch;

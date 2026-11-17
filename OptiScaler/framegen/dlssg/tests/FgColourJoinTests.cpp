@@ -18,6 +18,28 @@ void Check(bool result, int line)
 int main()
 {
     using namespace dlssg::colour;
+    source_colour::Receipt nr {source_colour::Result::NrWritten, 1, 2, 3, 4, 5, 6, 7, 8};
+    CHECK(nr.Matches(1,6,2));
+    CHECK(!nr.Matches(2,6,2) && !nr.Matches(1,7,2) && !nr.Matches(1,6,3));
+    CHECK(CombinedMutation(nr,Mutation::Original) == Mutation::NrWritten);
+    CHECK(CombinedMutation(nr,Mutation::NrWritten) == Mutation::NrWritten);
+    CHECK(CombinedMutation(nr,Mutation::Uncertain) == Mutation::Uncertain);
+    nr.result = source_colour::Result::Unknown;
+    CHECK(!nr.Matches(1,6,2) && CombinedMutation(nr,Mutation::Original) == Mutation::Uncertain);
+    nr.result = source_colour::Result::Modified;
+    CHECK(nr.Matches(1,6,2));
+    CHECK(CombinedMutation(nr,Mutation::Original) == Mutation::Uncertain);
+    source_colour::Recording recording;
+    CHECK(recording.Outcome() == source_colour::Result::Original);
+    recording.Write();
+    CHECK(recording.Outcome() == source_colour::Result::Modified && !recording.resolved);
+    recording.Resolve();
+    CHECK(recording.Outcome() == source_colour::Result::NrWritten);
+    nr.result = source_colour::Result::Original;
+    CHECK(CombinedMutation(nr,Mutation::Original) == Mutation::Original);
+    nr.fenceValue = UINT64_MAX;
+    CHECK(!nr.Matches(1,6,2));
+    CHECK(CombinedMutation(std::nullopt,Mutation::Original) == Mutation::Original);
     const Source source{1,10,2,3,4,5,0x100,0x200,0x300};
     CHECK(CanUseHudless(source,source,Mutation::Original));
     CHECK(!CanUseHudless(source,source,Mutation::NrWritten));

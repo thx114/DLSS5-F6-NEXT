@@ -42,6 +42,7 @@ struct Fixture
         frame.SourceCaptureSerial = frame.SourceCaptureEpoch = 41;
         frame.SubmissionEpoch = 900; // intentionally distinct from source ordinal
         frame.NativeBaseIdentityVerified = frame.NativeCurrentDepthVerified = native;
+        frame.NativeRouteConventionVerified=native;
         frame.NativePresentQueueIdentity = native ? &queue : nullptr;
         frame.NativeFeatureFlagsKnown = frame.NativeGuideMetadataKnown = true;
         frame.NativeFeatureFlags = 2; // retained low-resolution MV create flag
@@ -96,15 +97,33 @@ void AdmissionBoundaries()
     native.frame.SourceCaptureSerial = 41;
     native.frame.SourceCaptureEpoch = 73;
     native.frame.SubmissionEpoch = 900;
-    Require(native.ResolveNow().path == Path::NativeExisting && !native.ResolveNow().NeedsPreparation(),
-        "native source, capture and model clocks remain independent without adding preparation");
+    Require(native.ResolveNow().path == Path::PrepareNative && native.ResolveNow().NeedsPreparation(),
+        "native source, capture and model clocks remain independent while preparing current guide phase");
     native.frame.SceneGuideSourceVerified = true; // competing producer claim
     Require(native.ResolveNow().requested == Request::NativeExisting &&
-        native.ResolveNow().path == Path::NativeExisting && !native.ResolveNow().NeedsPreparation(),
-        "native endpoint always retains existing path without a new guide preparation");
+        native.ResolveNow().path == Path::PrepareNative && native.ResolveNow().NeedsPreparation(),
+        "native identity takes precedence over a competing retained producer claim");
     native.frame.NativeBaseIdentityVerified = false;
     Require(!native.ResolveNow().Admitted() && !native.ResolveNow().NeedsPreparation(),
         "invalid native identity cannot fall through to retained preparation");
+    native=Fixture(true);native.frame.NativeRouteConventionVerified=false;
+    Require(!native.ResolveNow().Admitted(),"native preparation requires the authenticated route coordinate convention");
+    Fixture source(true);
+    source.frame.FinishedPicture = source.frame.IndependentCommands = false;
+    source.frame.SourceOutput = true;
+    Require(!source.frame.CanRecordPreview(),"source-output placement alone cannot authorize preview work");
+    source.frame.PreviewIndependentCommands=true;
+    Require(source.frame.CanRecordPreview()&&!source.frame.IndependentCommands&&!source.frame.FinishedPicture,
+        "preview-only private recording does not grant finished-picture or independent-model authority");
+    Require(source.ResolveNow().path == Path::PrepareNative,
+        "successful scene SR output uses its real producer recording without claiming finished-picture ownership");
+    Require(source.ResolveNow().phaseUvX == source.frame.NativeJitterX / source.frame.RenderSubrectWidth,
+        "de-jittered SR output samples native guides at canonical render-pixel jitter");
+    source.frame.NativeBaseIdentityVerified = false;
+    Require(!source.ResolveNow().Admitted(), "source-output label alone cannot authenticate the provider output");
+    source.frame.NativeBaseIdentityVerified = true;
+    source.frame.NativePresentQueueIdentity = nullptr;
+    Require(!source.ResolveNow().Admitted(), "source output needs the actual producer queue");
     Fixture unknown;
     unknown.frame.SceneGuideSourceVerified = false;
     Require(unknown.ResolveNow().requested == Request::None && !unknown.ResolveNow().Admitted(),
@@ -177,6 +196,60 @@ void PhaseAndHistory()
             "row/sign correction cannot negate or scale canonical address phase again");
         Require((f.Key() == original) == (controls == 0), "coordinate changes invalidate the model/history contract");
     }
+    for (unsigned aligned = 0; aligned < 4; ++aligned)
+    {
+        for (unsigned controls = 0; controls < 8; ++controls)
+        {
+            Fixture native(true);
+            native.frame.DepthIsPictureAligned = (aligned & 1u) != 0;
+            native.frame.MotionIsPictureAligned = (aligned & 2u) != 0;
+            native.consumer.coordinates = DlssNr::GuideCoordinates::Resolve(
+                (controls & 1u) != 0, (controls & 2u) != 0, (controls & 4u) != 0, true, false,
+                native.frame.DepthIsPictureAligned, native.frame.MotionIsPictureAligned);
+            Require(native.ResolveNow().NeedsPreparation(), "native aligned mapping is admitted");
+            Require(native.Key()[12] == native.consumer.coordinates.key, "history retains the full coordinate key");
+            auto forged = native;
+            forged.consumer.coordinates.key ^= 64u;
+            Require(!forged.ResolveNow().Admitted(), "unknown coordinate bits cannot be admitted");
+            forged = native;
+            forged.consumer.coordinates.key ^= 16u;
+            Require(!forged.ResolveNow().Admitted(), "depth alignment must match the current source");
+            forged = native;
+            forged.consumer.coordinates.key ^= 32u;
+            Require(!forged.ResolveNow().Admitted(), "motion alignment must match the current source");
+        }
+    }
+    Fixture prepared(true);
+    prepared.frame.DepthIsPictureAligned = prepared.frame.MotionIsPictureAligned = true;
+    prepared.consumer.coordinates = DlssNr::GuideCoordinates::Resolve(true, true, true, true, false, true, true);
+    Require(prepared.consumer.coordinates.key == 48u && prepared.ResolveNow().NeedsPreparation(),
+        "prepared TAA depth and motion retain their aligned source contract");
+    prepared.consumer.coordinates.depthRowsFlip = true;
+    prepared.consumer.coordinates.key |= 1u;
+    Require(!prepared.ResolveNow().Admitted(), "aligned depth cannot also request a row flip");
+    prepared.consumer.coordinates = DlssNr::GuideCoordinates::Resolve(true, true, true, true, false, true, true);
+    prepared.consumer.coordinates.motionRowsFlip = true;
+    prepared.consumer.coordinates.key |= 2u;
+    Require(!prepared.ResolveNow().Admitted(), "aligned motion cannot also request a row flip");
+    prepared.consumer.coordinates = DlssNr::GuideCoordinates::Resolve(true, true, true, true, false, true, true);
+    prepared.consumer.coordinates.vectorYNegated = true;
+    prepared.consumer.coordinates.key |= 4u;
+    Require(!prepared.ResolveNow().Admitted(), "aligned motion cannot also negate its vector");
+    prepared = Fixture(true);
+    prepared.frame.DepthIsPictureAligned = prepared.frame.MotionIsPictureAligned = true;
+    prepared.frame.RenderSubrectWidth = 1536; prepared.frame.RenderSubrectHeight = 960;
+    prepared.frame.OutputWidth = prepared.consumer.pictureWidth = 2560;
+    prepared.frame.OutputHeight = prepared.consumer.pictureHeight = 1600;
+    prepared.consumer.workWidth = 1536; prepared.consumer.workHeight = 960;
+    prepared.consumer.depth.width = prepared.consumer.motion.width = 1536;
+    prepared.consumer.depth.height = prepared.consumer.motion.height = 960;
+    prepared.frame.DepthSubrectBaseX = prepared.frame.DepthSubrectBaseY = 0;
+    prepared.frame.MotionSubrectBaseX = prepared.frame.MotionSubrectBaseY = 0;
+    prepared.consumer.depthRect = prepared.consumer.motionRect = {0,0,1536,960};
+    prepared.frame.MvScaleX = prepared.frame.MvScaleY = prepared.consumer.scaleX = prepared.consumer.scaleY = 1;
+    prepared.consumer.coordinates = DlssNr::GuideCoordinates::Resolve(false,false,false,true,false,true,true);
+    Require(prepared.ResolveNow().NeedsPreparation() && prepared.Key()[0] == 1,
+        "1536x960 aligned TAA guides prepare the 2560x1600 source-output model at 1536x960");
     f = Fixture();
     ++f.frame.SourceCaptureSerial; ++f.frame.SourceCaptureEpoch;
     f.frame.SubmissionEpoch += 7;
@@ -204,8 +277,15 @@ void PhaseAndHistory()
     f.frame.SceneGuideSourceVerified = false;
     Require(f.Key() == HistoryKey {}, "leaving the capability clears its history contract");
     f = Fixture(true);
-    Require(f.Key(false)[0] == 1 && f.Key(false) == f.Key(true),
-        "native existing guides never depend on a new preparation recording");
+    Require(f.Key(false)[0] == 0 && f.Key(false) != f.Key(true),
+        "native current phase requires actual preparation before publishing the model contract");
+    const auto nativeKey=f.Key();
+    f.frame.NativeJitterX=-.25f;f.frame.NativeJitterY=.125f;
+    ++f.frame.SourceCaptureSerial;f.frame.SubmissionEpoch+=7;
+    Require(f.Key()==nativeKey&&f.ResolveNow().NeedsPreparation(),
+        "native varying current jitter updates prepared samples without resetting model history");
+    f.consumer.coordinates=DlssNr::GuideCoordinates::Resolve(true,false,true,true,false,false);
+    Require(f.Key()!=nativeKey,"native stable coordinate convention changes isolate the model history");
     f = Fixture();
     Require(f.Key(true, false) != f.Key(true, true),
         "conditional geometry support is distinct from model-only source depth");

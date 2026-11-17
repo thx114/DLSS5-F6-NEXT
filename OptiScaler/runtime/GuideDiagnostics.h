@@ -87,6 +87,23 @@ struct Snapshot {
         fields[static_cast<unsigned>(f)]={v,valid?origin:Origin::Unknown,valid};
     }
 };
+// Menu-only projection of observations. A disabled or unobserved consumer has
+// no current resource verdict; retained snapshots remain available as history.
+namespace Display {
+enum class State { Disabled, Unobserved, Observed };
+enum class Presence { Unobserved, Present, Missing };
+inline State StateFor(Consumer consumer,const Snapshot& snapshot,bool nrEnabled,bool historyEnabled=true) noexcept {
+    if(consumer!=Consumer::Fg&&(!nrEnabled||(consumer==Consumer::NrHistory&&!historyEnabled)))return State::Disabled;
+    return snapshot.stage==Stage::Unknown?State::Unobserved:State::Observed;
+}
+inline Presence ResourceState(State state,const Resource& resource) noexcept {
+    if(state!=State::Observed)return Presence::Unobserved;
+    return resource.present?Presence::Present:Presence::Missing;
+}
+inline bool Accepted(State state,const Snapshot& snapshot) noexcept {
+    return state==State::Observed&&snapshot.accepted;
+}
+} // namespace Display
 struct Event {
     Consumer consumer=Consumer::NrModel; Stage stage=Stage::Unknown;
     uint64_t source=0,picture=0,providerFrame=0,tick=0; std::string reason;

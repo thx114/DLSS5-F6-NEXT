@@ -6,6 +6,7 @@
 #define DLSSNR_LIFETIME_TEST_SEAM
 #endif
 #include <windows.h>
+#include <runtime/OwnedRecordingRetirement.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
@@ -568,6 +569,46 @@ static void Pending()
     Check(next.active && !next.historyUsable, "refused source is observed and next accepted source starts fresh");
     Capture(world, b); world.Execute(second); world.Finish(second);
 }
+static void CachedFeatureChange()
+{
+    World world;
+    using Owners=OwnedRecordingRetirement::Pool<3>;
+    auto oldOwner=Owners::Create(), currentOwner=Owners::Create();
+    std::array<Recording,3> old {world.New(),world.New(),world.New()};
+    ComPtr<ID3D12Fence> fence;
+    Hr(world.device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)));
+    for(unsigned i=0;i<3;++i) {
+        auto frame=world.Frame(old[i],266+i);
+        Check(DetailHistory::Before(frame).active,"old cached feature records each source");
+        Capture(world,frame);world.Execute(old[i]);
+        Hr(world.queue->Signal(fence.Get(),i+1));
+        oldOwner->Publish(i,old[i].list.Get(),old[i].allocator.Get(),fence.Get(),i+1);
+    }
+    world.Drain();
+    auto current=world.New(), next=world.New();
+    auto frame=world.Frame(current,1);frame.preSrOwner[2]=1000001;
+    ExpectBusy(frame);
+    Check(DetailHistory::recordings.Pending()==3,"GPU completion alone preserves three executable old sources");
+    const auto close=[&](ID3D12GraphicsCommandList* list,ID3D12CommandAllocator* allocator) {
+        if(!g_nrGpuWork.CanResetRecording(list))return E_PENDING;
+        auto result=allocator->Reset();if(FAILED(result))return result;
+        result=list->Reset(allocator,nullptr);if(FAILED(result))return result;
+        g_nrGpuWork.ResetRecording(list);DetailHistory::ResetRecording(list);
+        return list->Close();
+    };
+    Check(Owners::Poll(currentOwner.get(),close)==3,"idle original owners close via actual completed queue and successful Reset");
+    frame=world.Frame(current,2);frame.preSrOwner[2]=1000001;
+    auto plan=DetailHistory::Before(frame);
+    Check(plan.active&&!plan.historyUsable,"new feature first seeds fresh feedback after old owner closes");
+    Capture(world,frame);world.Execute(current);
+    auto adjacent=world.Frame(next,3);adjacent.preSrOwner[2]=1000001;
+    plan=DetailHistory::Before(adjacent);
+    Check(plan.active&&plan.historyUsable,"adjacent new feature source recovers continuous feedback");
+    Capture(world,adjacent);world.Execute(next);world.Drain();
+    world.Reset(current);world.Reset(next);DetailHistory::Collect();
+    DetailHistory::Release();TickRetired();
+}
+
 static void CompletionOnly()
 {
     World world; auto first = world.New(); auto second = world.New(); Gate gate(world, world.queue.Get());
@@ -771,8 +812,8 @@ static void StabilityOwnership()
     Capture(world,a);
     Check(DetailHistory::stability[0] && DetailHistory::stability[1], "enabled stabilizer owns two paired samples");
     const auto saved = DetailHistory::stability[DetailHistory::activeWrite];
-    Check(DetailHistory::StabilityRawFormat(DXGI_FORMAT_R8G8B8A8_TYPELESS) == DXGI_FORMAT_R8G8B8A8_UNORM &&
-          DetailHistory::StabilityRawFormat(DXGI_FORMAT_R16G16B16A16_FLOAT) == DXGI_FORMAT_R16G16B16A16_FLOAT &&
+    Check(DetailHistory::StabilityRawFormat(DXGI_FORMAT_R8G8B8A8_TYPELESS) == DXGI_FORMAT_R32G32B32A32_FLOAT &&
+          DetailHistory::StabilityRawFormat(DXGI_FORMAT_R16G16B16A16_FLOAT) == DXGI_FORMAT_R32G32B32A32_FLOAT &&
           DetailHistory::StabilityRawFormat(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) == DXGI_FORMAT_R32G32B32A32_FLOAT &&
           saved.raw->GetDesc().Format == DetailHistory::StabilityRawFormat(a.modelInput->GetDesc().Format),
           "raw storage preserves source precision without always allocating RGBA32F");
@@ -801,8 +842,35 @@ static void StabilityOwnership()
           !DetailHistory::stability[0].residual && !DetailHistory::stability[1].residual && releasedResources == 9,
           "all nine resources retire only after exact queue completion and Reset");
 }
+static void MissingContract()
+{
+    World world; auto recording=world.New();
+    const auto verify=[&](const auto& change,const char* reason) {
+        auto frame=world.Frame(recording,1);change(frame);
+        const auto before=DetailHistory::snapshot.recordedCount;
+        Check(!DetailHistory::Before(frame).active&&std::string(DetailHistory::Status().reason)==reason,
+              "each missing current-frame fact reports its own refusal");
+        Check(DetailHistory::snapshot.recordedCount==before&&!DetailHistory::snapshot.published,
+              "missing fact cannot record or publish history");
+    };
+    verify([](auto& f){f.cfg=nullptr;},"missing-current-config");
+    verify([](auto& f){f.info=nullptr;},"missing-current-frame-info");
+    verify([](auto& f){f.pass=nullptr;},"missing-current-pass");
+    verify([](auto& f){f.cmdList=nullptr;},"missing-current-command-list");
+    verify([](auto& f){f.device=nullptr;},"missing-current-device");
+    verify([](auto& f){f.temporalQueue=nullptr;},"missing-current-queue");
+    verify([](auto& f){f.modelInput=nullptr;},"missing-current-model-input");
+    verify([](auto& f){f.depth=nullptr;},"missing-current-depth");
+    verify([](auto& f){f.motion=nullptr;},"missing-current-motion");
+    verify([](auto& f){f.exposureContractKnown=false;},"unknown-current-exposure-domain");
+    verify([](auto& f){f.owner=0;},"missing-current-owner");
+    auto frame=world.Frame(recording,2);
+    Check(DetailHistory::Before(frame).active,"qualified current frame still seeds after rejected contracts");
+    world.Close(recording);world.Reset(recording);
+}
 static const char* cases[] {
-    "stability-ownership",
+    "missing-contract",
+    "cached-feature-change", "stability-ownership",
     "fresh", "adjacent", "finished-native-route", "pending", "completion-only", "wrong-queue", "history-signal", "registry-signal",
     "replay", "reconfigure-strength", "reconfigure-revision", "reconfigure-encoding", "reconfigure-mapping",
     "reconfigure-duration-zero", "duration-zero", "strength-zero", "dispatch-failure"
@@ -824,7 +892,9 @@ int main(int argc, char** argv)
     }
     const std::string name = argv[2];
     try {
-        if (name == "stability-ownership") StabilityOwnership();
+        if (name == "missing-contract") MissingContract();
+        else if (name == "cached-feature-change") CachedFeatureChange();
+        else if (name == "stability-ownership") StabilityOwnership();
         else if (name == "fresh") Fresh();
         else if (name == "adjacent") Adjacent();
         else if (name == "finished-native-route") FinishedNativeRoute();

@@ -12,6 +12,10 @@
 #include "HoYoShade.h"
 #include "HoYoShadeApi.h"
 #include "HoYoShadeColorContract.h"
+#include "HoYoShadeBeforeSrInput.h"
+#include <runtime/Dx11ContextState.h>
+#include <runtime/PrivateGraphicsScope.h>
+#include <resource_tracking/DrawObservation_Dx11.h>
 #include "HoYoShadeOwnedRuntime.h"
 #include "HoYoShadeReporting.h"
 #include "HoYoShadeDeviceValidation.h"
@@ -481,6 +485,11 @@ struct State
     } natural[32]{};
     std::shared_ptr<OwnedRuntime::Resource> scratch;
     uint64_t scratchGeneration = 0;
+    reshade::api::format scratchFormat = reshade::api::format::unknown;
+    reshade::api::format scratchSrgb = reshade::api::format::unknown;
+    Microsoft::WRL::ComPtr<ID3D11Device> workDevice11;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext1> workContext11;
+    Microsoft::WRL::ComPtr<ID3DDeviceContextState> workState11;
     reshade::api::effect_runtime* scratchRuntime = nullptr;
     std::array<DirectEntry, OwnedRuntime::Capacity> directEntries;
     std::array<DirectChain, 32> directChains;
@@ -670,10 +679,10 @@ bool OwnedStageRequested() noexcept
         return GameRouting::IdentifyExecutable(name.c_str());
     }();
     const auto& config = *Config::Instance();
-    return game == GameRouting::Identity::Genshin &&
-        (Selected(Stage::BeforeSr) || (Selected(Stage::BeforeNr) &&
-         config.DlssNrEnabled.value_or_default() && config.DlssNrFinishedPicture.value_or_default() &&
-         !config.DlssNrRunBeforeSr.value_or_default() && !config.DlssNrDeferredDlss.value_or_default()));
+    return Selected(Stage::BeforeSr) || (game == GameRouting::Identity::Genshin &&
+        Selected(Stage::BeforeNr) && !config.DlssNrGenshinPresentPipeline.value_or_default() &&
+        config.DlssNrEnabled.value_or_default() && config.DlssNrFinishedPicture.value_or_default() &&
+        !config.DlssNrRunBeforeSr.value_or_default() && !config.DlssNrDeferredDlss.value_or_default());
 #elif defined(HOYOSHADE_TEST_OWNED_STAGE)
     return Selected(Stage::BeforeSr); // real owned pipeline in the standalone GPU host
 #else
@@ -1147,6 +1156,9 @@ struct NativeColorFacts
 bool AdmitColor(const ColorEndpoint& endpoint, StageResult& result, NativeColorFacts&) noexcept
 {
     result.nativeColor = NativeColorAdmission::NotRequested;
+    if (endpoint.colorMode == ColorMode::SourceValuesBeforeSr)
+        return endpoint.stage == Stage::BeforeSr && endpoint.declaredInput &&
+            bool(ResolveColorFormats(endpoint,endpoint.declaredInput.formats.transport.endpoint));
     return endpoint.sdr && (!endpoint.declaredInput ||
         bool(ResolveColorFormats(endpoint, endpoint.declaredInput.formats.transport.endpoint)));
 }
@@ -1225,14 +1237,16 @@ bool EnsureNativeBinding(uint64_t owner, ID3D12Device *device, ID3D12CommandQueu
 
     Microsoft::WRL::ComPtr<IDXGIFactory4> factory4;
     Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
-    if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory4))) ||
-        FAILED(factory4.As(&factory)))
-        return false;
-
     Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-    const auto luid = device->GetAdapterLuid();
-    if (FAILED(factory4->EnumAdapterByLuid(luid, IID_PPV_ARGS(&adapter))) || !adapter)
-        return false;
+    {
+        PrivateGraphics::Scope privateGraphics;
+        if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory4))) ||
+            FAILED(factory4.As(&factory)))
+            return false;
+        const auto luid = device->GetAdapterLuid();
+        if (FAILED(factory4->EnumAdapterByLuid(luid, IID_PPV_ARGS(&adapter))) || !adapter)
+            return false;
+    }
 
     uint64_t oldOwner = 0;
     {
@@ -1572,9 +1586,9 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         selectionReady = Selection::HasEnabledTechniques(selection) && !selection.mappingDirty &&
             selection.boundRuntime == runtime && selection.boundGeneration == lease.Generation();
     } else if (selectionDonor) {
-        try { selectionReady = Selection::Apply(selection, runtime, lease.Generation()); }
+        try { selectionReady = PrivateGraphics::Invoke([&] { return Selection::Apply(selection, runtime, lease.Generation()); }); }
         catch (...) { return Reason::InternalFailure; } // unsubmitted lease quarantines its real owners
-    } else selectionReady = Selection::Apply(selection, runtime, lease.Generation());
+    } else selectionReady = PrivateGraphics::Invoke([&] { return Selection::Apply(selection, runtime, lease.Generation()); });
     // A reentrant lifecycle change (or an unconfirmed reorder request) must
     // not fall through to warmup using the revoked SDK runtime/handles.
     if (!selectionBoundary.Current() || (!sole && !sourceCurrent()))
@@ -1583,9 +1597,9 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         // Warm only the owned runtime. Never suppress the real game while its
         // selected effect is still missing in this extent/API permutation.
         if (selectionDonor) {
-            try { runtime->render_effects(sdkList, {0}, {0}); }
+            try { PrivateGraphics::Invoke([&] { runtime->render_effects(sdkList, {0}, {0}); }); }
             catch (...) { return Reason::InternalFailure; }
-        } else runtime->render_effects(sdkList, {0}, {0});
+        } else PrivateGraphics::Invoke([&] { runtime->render_effects(sdkList, {0}, {0}); });
         return finishUnrecorded(lease, Reason::SelectionPending);
     }
 
@@ -1818,10 +1832,13 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
             directSlot->owner && directRecording.Current() && !effectWarmup &&
             !(depthEndpointMatches && depthInput.resource && depthInput.reader);
         if (!direct) {
-            if (Get().scratchGeneration != transaction->runtimeGeneration || Get().scratchRuntime != runtime) {
+            if (Get().scratchGeneration != transaction->runtimeGeneration || Get().scratchRuntime != runtime ||
+                (Get().scratchFormat != colorFormats.working || Get().scratchSrgb != colorFormats.srgb)) {
                 Get().scratch.reset();
                 Get().scratchGeneration = transaction->runtimeGeneration;
                 Get().scratchRuntime = runtime;
+                Get().scratchFormat = colorFormats.working;
+                Get().scratchSrgb = colorFormats.srgb;
             }
             if (!Get().scratch) {
                 auto bundle = std::make_unique<OwnedRtvBundle>();
@@ -1929,12 +1946,15 @@ Reason RecordStage(const Request &request, Decision &decision, const ColorEndpoi
         // API20 view pair still follows preset SRGBTexture/SRGBWriteEnabled;
         // source format alone never forces a view or an adapter conversion.
         std::optional<Selection::RenderScope> selectedRender;
-        if (effectInputsReady && endpoint.stage == Stage::BeforeSr) {
-            selectedRender.emplace(selection, runtime, transaction->runtimeGeneration,
-                sdkList, target->linear, target->srgb);
-            if (selectedRender->Ready()) runtime->render_effects(sdkList, target->linear, target->srgb);
-            result.techniques = selectedRender->RecordedTechniques();
-        } else if (effectInputsReady) runtime->render_effects(sdkList, target->linear, target->srgb);
+        {
+            PrivateGraphics::Scope privateGraphics;
+            if (effectInputsReady && endpoint.stage == Stage::BeforeSr) {
+                selectedRender.emplace(selection, runtime, transaction->runtimeGeneration,
+                    sdkList, target->linear, target->srgb);
+                if (selectedRender->Ready()) runtime->render_effects(sdkList, target->linear, target->srgb);
+                result.techniques = selectedRender->RecordedTechniques();
+            } else if (effectInputsReady) runtime->render_effects(sdkList, target->linear, target->srgb);
+        }
         if (recordingRevoked()) return retainRevokedRecording();
         if (depthRead) depthRead->End(runtime, sdkList, transaction->lease.NativeList());
         if (recordingRevoked()) return retainRevokedRecording();
@@ -3930,6 +3950,153 @@ void DirectResizeScope::Complete(HRESULT result) noexcept
     }
 }
 
+namespace {
+struct NativeDx11Inputs {
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> color,depth,motion;
+};
+bool EnsureDx11Binding(uint64_t owner,ID3D11Device* device,ID3D11DeviceContext* context,
+    unsigned width,unsigned height,DXGI_FORMAT runtimeFormat)
+{
+    PrivateGraphics::Scope privateGraphics;
+    if(!owner || !device || !context || !width || !height)return false;
+    const auto& existing=Get().ownedBinding;
+    if(existing.owner==owner && existing.device11==device && existing.context11==context &&
+        existing.width==width && existing.height==height && existing.format==runtimeFormat &&
+        Get().selectionConfigPath==Get().ownedConfigPath)return true;
+    if(Get().ownedBindingGeneration>=UINT64_MAX-1)return false;
+    Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
+    if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))return false;
+    const auto oldOwner=Get().ownedBindingOwner;
+    Get().scratch.reset();Get().scratchRuntime=nullptr;Get().scratchGeneration=0;
+    Get().ownedFactory=factory;Get().ownedDevice.Reset();Get().ownedQueue.Reset();
+    Get().ownedBindingOwner=owner;++Get().ownedBindingGeneration;
+    Get().selectionConfigPath=Get().ownedConfigPath;
+    auto& b=Get().ownedBinding;b={};b.owner=owner;b.generation=Get().ownedBindingGeneration;
+    b.device11=device;b.context11=context;b.factory=factory.Get();b.width=width;b.height=height;b.format=runtimeFormat;
+    b.configPathUtf8=Get().selectionConfigPath.c_str();b.exclusiveRuntime=Get().soleRuntime.load();
+    if(oldOwner){OwnedRuntime::Retire(oldOwner);OwnedRuntime::TryCollect();}
+    return true;
+}
+}
+BeforeSrDx11::BeforeSrDx11(ID3D11DeviceContext* context,const interop::BeforeSrInput* input,uint64_t stream) noexcept
+{
+    if(!Selected(Stage::BeforeSr) || !context || !input || input->query!=interop::BeforeSrQuery::Matched)return;
+    std::lock_guard lifetime(Get().executionMutex);
+    if(stageActive || !Get().accepted.load() || !Get().soleRuntime.load())return;
+    PrivateGraphics::Scope privateGraphics;
+    struct StageGuard {StageGuard(){RevokeObservationDemand();stageActive=true;}~StageGuard(){stageActive=false;}} stage;
+    DrawObservationDx11::InternalScope internal;
+    try {
+        const auto& f=input->frame;
+        if(f.context!=context || !f.color || !f.depth || !f.motion || !f.render_width || !f.render_height ||
+            context->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE ||
+            !interop::BeforeSrTextureMatches(f.color,f.render_width,f.render_height,f.color_storage_format))return;
+        Microsoft::WRL::ComPtr<ID3D11Device> device,owner;context->GetDevice(&device);f.color->GetDevice(&owner);
+        if(!device || owner!=device || FAILED(device->GetDeviceRemovedReason()))return;
+        const BeforeSrBinding binding{context,f.color,f.depth,f.motion,f.color_storage_format,f.color_storage_format,f.render_width,f.render_height};
+        const auto admission=ResolveBeforeSrInput(input,binding);
+        if(!admission.formats)return;
+        const auto& formats=admission.formats.transport;
+        if(Get().workDevice11!=device || Get().workContext11.Get()!=context || !Get().workState11) {
+            Microsoft::WRL::ComPtr<ID3D11DeviceContext1> context1;
+            Microsoft::WRL::ComPtr<ID3DDeviceContextState> state;
+            if(FAILED(context->QueryInterface(IID_PPV_ARGS(&context1))) || FAILED(dx11::CreateContextState(device.Get(),&state)))return;
+            Get().workDevice11=device;Get().workContext11=context1;Get().workState11=state;
+        }
+        dx11::ContextStateGuard state(Get().workContext11.Get(),Get().workState11.Get());
+        OwnedOperation ownedCall;
+        OwnedRuntime::TryCollect();
+        if(!EnsureDx11Binding(stream,device.Get(),context,f.render_width,f.render_height,formats.runtime))return;
+        OwnedRuntime::Detail detail;
+        if(OwnedRuntime::AcquireForRender(Get().ownedBinding,Get().coreModule,Get().api,lease_,&detail)!=OwnedRuntime::Status::Ready)return;
+        auto* runtime=lease_.Runtime();auto* sdk=lease_.Device();auto* list=lease_.List();
+        if(!runtime || !sdk || !list || sdk->get_api()!=reshade::api::device_api::d3d11)return;
+        Depth::ResetReadiness(runtime);
+        if(lease_.BeginFrame(&detail)!=OwnedRuntime::Status::Ready)return;
+        runtime=lease_.Runtime();sdk=lease_.Device();list=lease_.List();
+        auto& selection=Get().soleSelection;
+        Selection::Capture(runtime,Get().api,selection,false,lease_.Generation(),Selection::CaptureAccess::SoleRuntime);
+        Depth::Clear(runtime);
+        if(!Selection::HasEnabledTechniques(selection) || selection.mappingDirty ||
+            selection.boundRuntime!=runtime || selection.boundGeneration!=lease_.Generation())return;
+        const auto requirements=EffectRequirements::Inspect(selection);
+        if(requirements.status!=EffectRequirements::Status::Ready)return;
+        const bool reversed=(f.flags&interop::k_sr_depth_inverted)!=0;
+        const bool depthQualified=f.guides_known &&
+            interop::BeforeSrTextureMatches(f.depth,f.render_width,f.render_height,DXGI_FORMAT_R32_FLOAT) &&
+            Depth::Semantics::InspectDirections(Get().soleCompiledDepth,runtime,selection,reversed,false,OwnedDepthReloadSerial).outcome==Depth::Semantics::Outcome::Ready;
+        if(requirements.depth && !depthQualified)return;
+        if(Get().scratchGeneration!=lease_.Generation() || Get().scratchRuntime!=runtime ||
+            Get().scratchFormat!=formats.working || Get().scratchSrgb!=formats.srgb) {
+            Get().scratch.reset();Get().scratchGeneration=lease_.Generation();Get().scratchRuntime=runtime;
+            Get().scratchFormat=formats.working;Get().scratchSrgb=formats.srgb;
+        }
+        if(!Get().scratch) {
+            auto bundle=std::make_unique<OwnedRtvBundle>();
+            reshade::api::resource_desc d{};d.type=reshade::api::resource_type::texture_2d;
+            d.texture.width=f.render_width;d.texture.height=f.render_height;
+            d.texture.depth_or_layers=d.texture.levels=d.texture.samples=1;d.texture.format=formats.working;
+            d.heap=reshade::api::memory_heap::default_;d.usage=reshade::api::resource_usage::render_target |
+                reshade::api::resource_usage::shader_resource | reshade::api::resource_usage::copy_source | reshade::api::resource_usage::copy_dest;
+            const reshade::api::resource_view_desc linear(formats.linear,0,1,0,1),srgb(formats.srgb,0,1,0,1);
+            if(!sdk->create_resource(d,nullptr,reshade::api::resource_usage::copy_dest,&bundle->color) ||
+                !sdk->create_resource_view(bundle->color,reshade::api::resource_usage::render_target,linear,&bundle->linear) ||
+                !sdk->create_resource_view(bundle->color,reshade::api::resource_usage::render_target,srgb,&bundle->srgb)) {
+                bundle->DestroyGpuObjects(sdk);return;
+            }
+            std::unique_ptr<OwnedRuntime::Resource> resource(std::move(bundle));
+            if(!lease_.AdoptResource(resource,Get().scratch)){resource->DestroyGpuObjects(sdk);return;}
+        }
+        const auto target=Get().scratch;auto* bundle=static_cast<OwnedRtvBundle*>(target.get());
+        auto inputs=std::make_shared<NativeDx11Inputs>();inputs->color=f.color;inputs->depth=f.depth;inputs->motion=f.motion;
+        if(!lease_.KeepAlive(target) || !lease_.KeepAlive(inputs))return;
+        bool depthBound=false;
+        if(depthQualified) {
+            auto& depth=bundle->depth;
+            if(!depth.copy.handle || !depth.srv.handle) {
+                depth.Destroy(sdk); // A partial creation has never been submitted.
+                reshade::api::resource_desc d{};d.type=reshade::api::resource_type::texture_2d;
+                d.texture.width=f.render_width;d.texture.height=f.render_height;d.texture.depth_or_layers=d.texture.levels=d.texture.samples=1;
+                d.texture.format=reshade::api::format::r32_float;d.heap=reshade::api::memory_heap::default_;
+                d.usage=reshade::api::resource_usage::shader_resource | reshade::api::resource_usage::copy_dest;
+                const reshade::api::resource_view_desc view(reshade::api::format::r32_float,0,1,0,1);
+                depth.device=sdk;
+                if(!sdk->create_resource(d,nullptr,reshade::api::resource_usage::shader_resource,&depth.copy) ||
+                    !sdk->create_resource_view(depth.copy,reshade::api::resource_usage::shader_resource,view,&depth.srv)) {
+                    depth.Destroy(sdk); return;
+                }
+            }
+            list->copy_resource({reinterpret_cast<uint64_t>(f.depth)},depth.copy);
+            depthBound=Depth::BindTexture(runtime,depth.srv,reversed,false);
+        }
+        if(requirements.depth && !depthBound)return;
+        list->copy_resource({reinterpret_cast<uint64_t>(f.color)},bundle->color);
+        Selection::RenderScope render(selection,runtime,lease_.Generation(),list,bundle->linear,bundle->srgb);
+        if(!render.Ready())return;
+        runtime->render_effects(list,bundle->linear,bundle->srgb);
+        const auto techniques=render.RecordedTechniques();
+        Depth::Clear(runtime);
+        if(!techniques)return; // permutation compilation is warmup, never filtered input evidence
+        auto* resource=reinterpret_cast<ID3D11Resource*>(bundle->color.handle);
+        if(!resource || FAILED(resource->QueryInterface(IID_PPV_ARGS(&color_))))return;
+        static std::atomic<uint64_t> executed{0};
+        if (OwnedRuntime::ShouldReportDiagnosticCount(++executed))
+        LOG_INFO("HoYoShade BeforeSR native executed source_values={} format={} techniques={} stream={} frame={}",
+            formats.domain==ColorContract::Domain::SourceValues,static_cast<unsigned>(f.color_storage_format),techniques,stream,f.frame);
+    } catch(...) { color_.Reset(); }
+}
+BeforeSrDx11::~BeforeSrDx11()
+{
+    if(!lease_)return;
+    // Caller has restored Color after its actual SR read. The same context EVENT
+    // covers create/update/filter AND SR. Core wait_idle on DX11 is not a fence.
+    std::lock_guard lifetime(Get().executionMutex);
+    DrawObservationDx11::InternalScope internal;
+    OwnedOperation ownedCall;
+    OwnedRuntime::Completion completion;
+    (void)lease_.Submit(completion);
+}
+
 StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
 {
     StageResult result;
@@ -3999,9 +4166,9 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
         // Only the existing legacy SR input contract admits a bounded active
         // rectangle. Native Genshin/picture/output contracts remain exact.
         const bool srRegion = endpoint.stage == Stage::BeforeSr &&
-            endpoint.colorMode == ColorMode::TransferQualified &&
+            (endpoint.colorMode == ColorMode::TransferQualified || endpoint.colorMode == ColorMode::SourceValuesBeforeSr) &&
             (endpoint.naturalContract == NaturalSourceContract::BeforeSrExactDevice ||
-             endpoint.naturalContract == NaturalSourceContract::BeforeSrBridgeInput);
+             endpoint.naturalContract == NaturalSourceContract::BeforeSrInput);
         const bool fullColor = !endpoint.colorX && !endpoint.colorY &&
             desc.Width == endpoint.width && desc.Height == endpoint.height;
         const bool boundedColor = endpoint.colorX <= desc.Width && endpoint.colorY <= desc.Height &&
@@ -4031,7 +4198,7 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
         const auto& device = deviceAccess.devices[0];
         const bool sole = Get().soleRuntime.load(std::memory_order_acquire) &&
             endpoint.stage == Stage::BeforeSr && endpoint.output == OutputKind::Original &&
-            (endpoint.naturalContract == NaturalSourceContract::BeforeSrBridgeInput ||
+            (endpoint.naturalContract == NaturalSourceContract::BeforeSrInput ||
              endpoint.naturalContract == NaturalSourceContract::BeforeSrOwnedRuntimeWithSelectionDonor);
         if (sole) {
             Request request{endpoint.stage, Key(device.Get()), Key(endpoint.queue), 1,
@@ -4159,7 +4326,7 @@ StageResult RenderStage(const ColorEndpoint& endpoint) noexcept
                 observation.associationExit = suppress != natural ? 3 : 4;
                 result.reason = Reason::NaturalUnavailable; return result;
             }
-        } else if (endpoint.naturalContract != NaturalSourceContract::BeforeSrBridgeInput) suppress = natural;
+        } else if (endpoint.naturalContract != NaturalSourceContract::BeforeSrInput) suppress = natural;
         // Natural association above identifies the exact runtime/lifetime.
         // Shared source and suppression runtimes protect the same picture
         // across differing Evaluate/Present endpoint stream identities.

@@ -16,6 +16,7 @@
 #include <Config.h>
 #include <State.h>
 #include <Util.h>
+#include <runtime/GameIdentity.h>
 #include <menu/menu_common.h>
 #include <menu/MenuPages.h>
 #include <menu/UiLocalization.h>
@@ -1361,13 +1362,15 @@ struct NrCommon
     // is never touched -- so asking only that one reports "waiting for the upscaler" over a pass
     // that is demonstrably running.
     bool vulkan;
+    bool sourceOutput;
 };
 
 static NrCommon ReadNrCommon(Config* config)
 {
+    const bool sourceOutput = DlssNr::UsesSourceOutput();
     return { config->DlssNrEnabled.value_or_default(),
-             DlssNr::UsesGenshinPresentPipeline() || config->DlssNrFinishedPicture.value_or_default(),
-             DlssNr::IsRunningVk() };
+             !sourceOutput && config->DlssNrFinishedPicture.value_or_default(),
+             DlssNr::IsRunningVk(), sourceOutput };
 }
 
 static void RenderEnableToggle(Config* config)
@@ -1400,15 +1403,15 @@ static void RenderEnableToggle(Config* config)
 // A loaded model is not proof of current Genshin final-picture consumption or visible output.
 
 
-// Both the current present pipeline and the legacy bridge report publication.
+// Source processing has its own status; model residency alone is not a write.
 static bool CurrentPresentedStatus(const NrCommon& nr)
 {
-    return nr.finishedPicture && !nr.vulkan && DlssNr::UsesGenshinPresentPipeline();
+    return nr.sourceOutput && !nr.vulkan;
 }
 
 static void RenderFinishedPictureStatus(const NrCommon& nr, const char* fallback = "")
 {
-    if (!nr.finishedPicture || nr.vulkan) return;
+    if ((!nr.finishedPicture && !nr.sourceOutput) || nr.vulkan) return;
     const auto status = DlssNr::FinishedPictureStatus();
     if (!status.empty()) MenuText::TextWrapped("%s", NrOptionsStatusChinese(status).c_str());
     else if (fallback[0]) MenuText::TextWrapped("%s", fallback);
@@ -2650,8 +2653,8 @@ static void RenderSharedDlssUpsampling(Config* config, const NrCommon& nr)
     const bool finishedPicture = nr.finishedPicture;
 
     ImGui::BeginDisabled(false);
-    bool beforeSr = config->DlssNrRunBeforeSr.value_or_default() ||
-                    (finishedPicture && config->DlssNrDeferredDlss.value_or_default());
+    bool beforeSr = !nr.sourceOutput && (config->DlssNrRunBeforeSr.value_or_default() ||
+                    (finishedPicture && config->DlssNrDeferredDlss.value_or_default()));
     const auto activeFeature = State::Instance().currentFeature;
     const bool rayReconstruction = activeFeature && activeFeature->GetUpscalerType() == Upscaler::DLSSD;
     // Nested under Finished Picture: a second, independent axis (generate the changes at the
@@ -2691,28 +2694,29 @@ static void RenderOptionsPage(Config* config, float menuResScale, const NrCommon
 
     MenuText::SeparatorText("NR 选项");
 
-    bool beforeSr = config->DlssNrRunBeforeSr.value_or_default() ||
-                    (finishedPicture && config->DlssNrDeferredDlss.value_or_default());
+    bool beforeSr = !nr.sourceOutput && (config->DlssNrRunBeforeSr.value_or_default() ||
+                    (finishedPicture && config->DlssNrDeferredDlss.value_or_default()));
     const auto activeFeature = State::Instance().currentFeature;
     const bool rayReconstruction = activeFeature && activeFeature->GetUpscalerType() == Upscaler::DLSSD;
-    const bool deferredActive = !finishedPicture && config->DlssNrDeferredDlss.value_or_default() && !rayReconstruction;
+    const bool deferredActive = !nr.sourceOutput && !finishedPicture && config->DlssNrDeferredDlss.value_or_default() && !rayReconstruction;
 
 
+    static const bool sourceOutputGame = GameRouting::IsGenshinExecutable(Util::ExePath().filename().wstring());
     const char* placementNames[] = { "超分辨率之后",
                                     "超分辨率之前",
-                                    "最终画面（呈现模式）" };
-    const bool fixedPresent = DlssNr::UsesGenshinPresentPipeline();
-    int placement = fixedPresent || finishedPicture ? 2 : (beforeSr ? 1 : 0);
+                                    sourceOutputGame ? "场景超分输出" : "最终画面（呈现模式）" };
+    const bool sourceOutput = nr.sourceOutput;
+    int placement = sourceOutput || finishedPicture ? 2 : (beforeSr ? 1 : 0);
     bool placementChanged = false;
     ImGui::BeginDisabled(deferredActive);
     placementChanged=MenuText::Segmented("NR 处理位置：",&placement,placementNames,3);
     ImGui::EndDisabled();
-    if (fixedPresent)
-        MenuText::TextDisabled("当前入口：呈现输入 → NR → 细节保留 → FG；每个真实源帧一次。");
+    if (sourceOutput)
+        MenuText::TextDisabled("当前入口：成功超分输出 → NR → 细节保留 → 游戏合成 → FG；每个源帧一次。");
     if (placementChanged)
     {
-        // One selector owns both the normal Evaluate seams and the Genshin
-        // presentation adapter. Never let the latter silently override a choice.
+        // The old persisted selector maps to scene output in Genshin. No
+        // installation INI is rewritten; other games retain their placement.
         config->DlssNrGenshinPresentPipeline = placement == 2;
         if (placement == 0)
         {
@@ -2740,9 +2744,11 @@ static void RenderOptionsPage(Config* config, float menuResScale, const NrCommon
         }
     }
 
-    HelpMarker("NR 的处理位置。\n超分辨率之后：处理超分后的画面。\n超分辨率之前：处理较小输入，开销较低。\n最终画面：处理游戏后期效果后的画面，在插帧前运行。\n模型分辨率是独立设置；切换入口不调整模型尺寸、层数或效果。\n启用光线重建时，NR 总是在其后运行。");
+    HelpMarker(sourceOutputGame ?
+        "场景超分输出：在成功超分的同一次提交中处理 NR；游戏随后继续绘制后处理和 HUD，呈现与插帧不再重复运行模型。\n超分之前与普通超分之后保留各自的输入契约。\n模型分辨率、层数和效果独立设置。" :
+        "NR 的处理位置。\n超分辨率之后：处理超分后的画面。\n超分辨率之前：处理较小输入，开销较低。\n最终画面：处理游戏后期效果后的画面，在插帧前运行。\n模型分辨率是独立设置；切换入口不调整模型尺寸、层数或效果。\n启用光线重建时，NR 总是在其后运行。");
 
-    if (fixedPresent && enabled)
+    if (sourceOutput && enabled)
         MenuText::TextWrapped("%s", NrOptionsStatusChinese(DlssNr::FinishedPictureStatus()).c_str());
     else if (finishedPicture && enabled)
     {
@@ -2758,7 +2764,7 @@ static void RenderOptionsPage(Config* config, float menuResScale, const NrCommon
     }
 
     // Placement and deferred DLSS application are Global controls, independent of layer editors.
-    if (!fixedPresent) RenderSharedDlssUpsampling(config, nr);
+    if (!sourceOutput) RenderSharedDlssUpsampling(config, nr);
 
     int precisionChoice = config->DlssNrPrecision.value_or_default() == 4 ? 1 : 0;
     const char* precisions[] = { "NVIDIA 原版（FP8）", "实验混合精度（FP8+NVFP4）" };
@@ -3337,8 +3343,8 @@ static void RenderSharedResolution(Config* config, float menuResScale, const NrC
 
     // Same definitions as at the top of NR Options.
     const bool finishedPicture = nr.finishedPicture;
-    const bool beforeSr = config->DlssNrRunBeforeSr.value_or_default() ||
-                          (finishedPicture && config->DlssNrDeferredDlss.value_or_default());
+    const bool beforeSr = !nr.sourceOutput && (config->DlssNrRunBeforeSr.value_or_default() ||
+                          (finishedPicture && config->DlssNrDeferredDlss.value_or_default()));
     const auto activeFeature = State::Instance().currentFeature;
     const bool rayReconstruction = activeFeature && activeFeature->GetUpscalerType() == Upscaler::DLSSD;
 
@@ -3457,8 +3463,8 @@ static void RenderHdrPage(Config* config, float menuResScale)
 // ratio the runtime derived from render:output. The same rule the Input page uses for its slider.
 static float AppliedModelScale(Config* config, const NrCommon& nr)
 {
-    const bool beforeSr = config->DlssNrRunBeforeSr.value_or_default() ||
-                          (nr.finishedPicture && config->DlssNrDeferredDlss.value_or_default());
+    const bool beforeSr = !nr.sourceOutput && (config->DlssNrRunBeforeSr.value_or_default() ||
+                          (nr.finishedPicture && config->DlssNrDeferredDlss.value_or_default()));
     const auto activeFeature = State::Instance().currentFeature;
     const bool rayReconstruction = activeFeature && activeFeature->GetUpscalerType() == Upscaler::DLSSD;
     const bool autoActive = config->DlssNrModelResolutionAuto.value_or_default() && (!beforeSr || rayReconstruction);
@@ -4161,9 +4167,11 @@ void RenderMenu(Config* config, float menuResScale, MenuPages::Page page)
     using MenuPages::Page;
     if (MenuPages::NavigationPage(page) == Page::ProFilters)
     {
-        HoYoShadeControls::Render(config, CurrentNativeApi() == NativeApi::Vulkan,
-                                  CurrentNativeApi() == NativeApi::Dx11 &&
-                                  State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12);
+        const auto beforeSrPath = CurrentNativeApi() != NativeApi::Dx11
+            ? HoYoShadeControls::BeforeSrPath::Unavailable
+            : State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12
+                ? HoYoShadeControls::BeforeSrPath::Dx11wDx12 : HoYoShadeControls::BeforeSrPath::Dx11Native;
+        HoYoShadeControls::Render(config, CurrentNativeApi() == NativeApi::Vulkan, beforeSrPath);
         return;
     }
     Profiles::ClampConfiguredModelScalars(*config);

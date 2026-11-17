@@ -3,8 +3,37 @@
 #include <State.h>
 #include <Config.h>
 #include "GuideOrientation.h"
+#include <upscalers/CallerCpuTrace.h>
 
 #include <magic_enum.hpp>
+
+framegen::RuntimeSnapshot IFGFeature_Dx12::RuntimeIdentity(HRESULT result) const
+{
+    framegen::RuntimeSnapshot snapshot;
+    snapshot.provider = reinterpret_cast<uintptr_t>(static_cast<const IFGFeature*>(this));
+    snapshot.instance = _runtimeInstance;
+    snapshot.tickNs = framegen::RuntimeNowNs();
+    snapshot.presentResult = result;
+    return snapshot;
+}
+
+framegen::RuntimeSnapshot IFGFeature_Dx12::RuntimeObservation(UINT, HRESULT result) const
+{
+    auto snapshot = RuntimeIdentity(result);
+    snapshot.sourceFrame = _frameCount;
+    snapshot.status = _waitingNewFrameData ? framegen::RuntimeStatus::InputGap :
+        (_targetFrame && _targetFrame >= _frameCount) ? framegen::RuntimeStatus::Paused :
+        _isActive ? framegen::RuntimeStatus::EnabledUnconfirmed : framegen::RuntimeStatus::Waiting;
+    if (FAILED(result)) snapshot.status = framegen::RuntimeStatus::SdkError;
+    else if (result != S_OK) snapshot.status = framegen::RuntimeStatus::Waiting;
+    return snapshot;
+}
+
+void IFGFeature_Dx12::ObservePresentReturned(IDXGISwapChain* chain, UINT flags, HRESULT result)
+{
+    if ((flags & DXGI_PRESENT_TEST) || chain != _swapChain) return;
+    framegen::RuntimeState().Publish(RuntimeObservation(flags, result));
+}
 
 bool IFGFeature_Dx12::GetResourceCopy(FG_ResourceType type, D3D12_RESOURCE_STATES bufferState, ID3D12Resource* output)
 {
@@ -75,9 +104,14 @@ bool IFGFeature_Dx12::WaitForUIAllocator(UINT index)
     if (completedValue >= fenceValue)
         return true;
 
+    // Only a busy slot waits here. Bind the span to the actual fence owner
+    // and stop it before diagnostics so logging does not inflate the wait.
+    CallerCpuTrace::Scope allocatorCpu(CallerCpuTrace::Op::FgUiAllocatorWait, this,
+        reinterpret_cast<uintptr_t>(_uiFence), _frameCount, index, fenceValue, completedValue, false, true);
     auto result = _uiFence->SetEventOnCompletion(fenceValue, _uiFenceEvent);
     if (FAILED(result))
     {
+        allocatorCpu.Finish(static_cast<UINT>(result), true);
         LOG_ERROR("UI allocator fence SetEventOnCompletion failed. slot {}, fence {}, completed {}, result {:X}", index,
                   fenceValue, completedValue, (UINT) result);
         return false;
@@ -87,6 +121,7 @@ bool IFGFeature_Dx12::WaitForUIAllocator(UINT index)
     // A prior timed-out registration may still signal this shared event. Only
     // this slot's actual fence target proves that its allocator can be reset.
     const auto completedAfterWait = _uiFence->GetCompletedValue();
+    allocatorCpu.Finish(waitResult, true);
     if (waitResult != WAIT_OBJECT_0 || completedAfterWait == UINT64_MAX || completedAfterWait < fenceValue)
     {
         LOG_ERROR("UI allocator fence wait incomplete. slot {}, fence {}, completed {}, waitResult {:X}", index, fenceValue,
@@ -337,7 +372,7 @@ bool IFGFeature_Dx12::FlipResource(Dx12Resource* resource)
             return false;
         }
 
-        const auto orientation = framegen::ResolveGuideOrientation(*Config::Instance());
+        const auto orientation = framegen::ResolveGuideOrientation(*Config::Instance(), resource->preparedRasterGuides);
         const bool velocity = type == FG_ResourceType::Velocity;
         auto result = flip->get()->Dispatch((ID3D12GraphicsCommandList*) cmdList, resource->resource, flipOutput,
             resource->width, resource->height, velocity,

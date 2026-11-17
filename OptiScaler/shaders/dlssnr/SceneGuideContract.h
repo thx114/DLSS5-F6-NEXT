@@ -9,10 +9,10 @@
 
 namespace DlssNr::SceneGuides
 {
-// Producer claims select a request, never grant admission. Native takes precedence:
-// a retained-source claim must not add preparation work to the native endpoint.
+// Producer claims select a request, never grant admission. Native identity takes
+// precedence; both source routes prepare model-only guides on the colour grid.
 enum class Request { None, NativeExisting, RetainedSource };
-enum class Path { Rejected, NativeExisting, PrepareRetained };
+enum class Path { Rejected, PrepareNative, PrepareRetained };
 
 constexpr Request Requested(const DlssNrFrameInfo& f)
 {
@@ -60,7 +60,7 @@ struct Decision
     float phaseUvX = 0.0f, phaseUvY = 0.0f;
     const char* reason = "outside-scene-route";
     bool Admitted() const { return path != Path::Rejected; }
-    bool NeedsPreparation() const { return path == Path::PrepareRetained; }
+    bool NeedsPreparation() const { return Admitted(); }
 };
 
 constexpr bool ValidSerial(uint64_t serial) { return serial != 0 && serial != UINT64_MAX; }
@@ -78,14 +78,17 @@ inline Decision Resolve(const DlssNrFrameInfo& f, const Consumer& c)
     Decision d;
     d.requested = Requested(f);
     const auto reject = [&](const char* reason) { d.reason = reason; return d; };
-    d.routeEligible = d.requested != Request::None && !c.vulkanOrigin && f.FinishedPicture &&
-        !f.BeforeUpscale && f.IndependentCommands && !f.FreshColorResetFallback && !c.spatial;
+    const bool ownedColourStage = (f.FinishedPicture && f.IndependentCommands) ||
+        (f.SourceOutput && f.NativeSceneRoute && f.NativeBaseIdentityVerified && f.NativePresentQueueIdentity);
+    d.routeEligible = d.requested != Request::None && !c.vulkanOrigin && ownedColourStage &&
+        !f.BeforeUpscale && !f.FreshColorResetFallback && !c.spatial;
     if (!d.routeEligible) return d;
     if (!ValidSerial(f.SourceCaptureSerial) || f.SourceCaptureEpoch == UINT64_MAX)
         return reject("source-identity");
     if (d.requested == Request::NativeExisting)
     {
         if (!f.NativeBaseIdentityVerified || !f.NativeCurrentDepthVerified || !f.NativePresentQueueIdentity ||
+            !f.NativeRouteConventionVerified ||
             f.MotionIsPictureFlow)
             return reject("native-source-identity");
     }
@@ -121,13 +124,21 @@ inline Decision Resolve(const DlssNrFrameInfo& f, const Consumer& c)
     if (!c.pictureWidth || !c.pictureHeight || !c.workWidth || !c.workHeight ||
         f.OutputWidth != c.pictureWidth || f.OutputHeight != c.pictureHeight)
         return reject("output-extent-contract");
-    const uint32_t coordinateKey = (c.coordinates.depthRowsFlip ? 1u : 0u) |
-        (c.coordinates.motionRowsFlip ? 2u : 0u) | (c.coordinates.vectorYNegated ? 4u : 0u);
+    // Retained scene guides have their own native mapping even if the picture
+    // uses aligned flow. The native route uses this frame's source declarations.
+    const bool depthAligned = !retained && f.DepthIsPictureAligned;
+    const bool motionAligned = !retained && f.MotionIsPictureAligned;
+    if ((depthAligned && c.coordinates.depthRowsFlip) ||
+        (motionAligned && (c.coordinates.motionRowsFlip || c.coordinates.vectorYNegated)))
+        return reject("source-coordinate-contract");
+    const uint32_t coordinateKey = GuideCoordinates::MakeKey(
+        c.coordinates.depthRowsFlip, c.coordinates.motionRowsFlip, c.coordinates.vectorYNegated,
+        false, depthAligned, motionAligned);
     if (c.coordinates.key != coordinateKey) return reject("source-coordinate-contract");
     d.phaseUvX = f.NativeJitterX / static_cast<float>(c.motionRect.width);
     d.phaseUvY = f.NativeJitterY / static_cast<float>(c.motionRect.height);
-    d.path = retained ? Path::PrepareRetained : Path::NativeExisting;
-    d.reason = retained ? "preparation-required" : "native-existing-guide-path";
+    d.path = retained ? Path::PrepareRetained : Path::PrepareNative;
+    d.reason = retained ? "retained-preparation-required" : "native-phase-preparation-required";
     return d;
 }
 
@@ -147,14 +158,14 @@ inline HistoryKey MakeHistoryKey(const DlssNrFrameInfo& f, const Consumer& c, co
                                 bool preparationRecorded, bool conditionalGeometry)
 {
     HistoryKey key {};
-    if (d.Admitted() && (!d.NeedsPreparation() || preparationRecorded))
+    if (d.Admitted() && preparationRecorded)
     {
         key = { 1ull, f.NativeFeatureFlags, c.depthRect.width, c.depthRect.height,
             c.depthRect.x, c.depthRect.y, c.motionRect.width, c.motionRect.height,
             c.motionRect.x, c.motionRect.y, FloatBits(c.scaleX), FloatBits(c.scaleY),
             c.coordinates.key, c.depth.format, c.motion.format, f.RayReconstruction ? 1ull : 0ull,
             d.NeedsPreparation() && conditionalGeometry ? 1ull : 0ull,
-            f.OutputWidth, f.OutputHeight, d.NeedsPreparation() ? 2ull : 1ull };
+            f.OutputWidth, f.OutputHeight, d.path == Path::PrepareNative ? 3ull : 2ull };
     }
     // Preserve source replacement even on rejected metadata or failed recording.
     // These owner bits are isolation facts, never an admission/completion receipt.

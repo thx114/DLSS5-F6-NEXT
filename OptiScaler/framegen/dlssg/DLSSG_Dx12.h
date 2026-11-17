@@ -3,6 +3,7 @@
 #include <framegen/IFGFeature_Dx12.h>
 #include <framegen/DlssgStateSample.h>
 #include <framegen/Dx12InputPresent.h>
+#include <framegen/GuideOrientation.h>
 #include "DlssgInputContinuity.h"
 #include "DlssgOptionsPolicy.h"
 #include "ZzzFrameScope.h"
@@ -18,6 +19,8 @@
 #include <shaders/depth_scale/DS_Dx12.h>
 #include <runtime/GuideDiagnostics.h>
 #include <runtime/GuideSourceMetadata.h>
+#include <runtime/SourceNrReceipt.h>
+#include <optional>
 
 #include <proxies/Streamline_Proxy.h>
 
@@ -39,9 +42,11 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
         const D3D12_RESOURCE_DESC outputDescription;
         const uintptr_t list;
         const bool bridge;
+        const std::optional<source_colour::Receipt> sourceNr;
         UpscalerColourSource(dlssg::colour::Source k, dlssg::InputOwner o,
-            const GuideDiagnostics::Snapshot& s, D3D12_RESOURCE_DESC d, uintptr_t l, bool b)
-            : key(k), owner(o), snapshot(s), outputDescription(d), list(l), bridge(b) {}
+            const GuideDiagnostics::Snapshot& s, D3D12_RESOURCE_DESC d, uintptr_t l, bool b,
+            std::optional<source_colour::Receipt> nr)
+            : key(k), owner(o), snapshot(s), outputDescription(d), list(l), bridge(b), sourceNr(std::move(nr)) {}
       public:
         ~UpscalerColourSource() = default;
         UINT64 Frame() const noexcept { return key.frame; }
@@ -161,8 +166,9 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     // host drain plus SDK free, or deliberately retained by terminal quarantine.
     std::unique_ptr<DS_Dx12> _guideDepthScale[BUFFER_COUNT];
     std::unique_ptr<RF_Dx12> _guideFlip[BUFFER_COUNT][2];
-    const Dx12Resource* _upscalerGuidePublication=nullptr; // Exact stack publication, never retained.
-    bool FlipOwnedUpscalerGuide(Dx12Resource* input);
+    struct GuidePublication {const Dx12Resource* resource;framegen::GuideOrientation orientation;};
+    const GuidePublication* _upscalerGuidePublication=nullptr; // Exact stack publication, never retained.
+    bool FlipOwnedUpscalerGuide(Dx12Resource* input,const framegen::GuideOrientation& orientation);
     bool _guideContractOwned=false; // Sticky across route changes until actual drain/free.
     // StarRail only: actual successful swapchain creation queue, not a mutable
     // input queue inferred later. Used only for existing optional conversions.
@@ -227,6 +233,8 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     dlssg::options::Acknowledgement<sl::DLSSGOptions> _dlssgOptionsAck;
     dlssg::options::Acknowledgement<sl::ReflexOptions> _reflexOptionsAck;
     dlssg::options::GenerationState _generationState;
+    dlssg::options::ProviderOwner _runtimeObservedOwner {};
+    uint64_t _runtimeRateFloorNs = 0;
     struct OptionsCounts
     {
         UINT64 attempts=0, submitted=0, reused=0, failed=0, forced=0;
@@ -475,6 +483,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     bool OwnsUpscalerDepthContract() const;
     bool OwnsNativeZzzSource() const;
     uint32_t NativeZzzViewport() const { return static_cast<uint32_t>(viewport); }
+    void ObservePresentReturned(IDXGISwapChain* chain, UINT flags, HRESULT result) override final;
     FGExecutionGuard BeginNativeUpscalerInputs(ID3D12Device* device, FG_Constants& fgConstants);
     bool NativeGuidePresentToken(sl::FrameToken*& token, dlssg::NativeSource& source);
     bool BeginNativeGuidePresent(const dlssg::NativeSource& source);
@@ -482,11 +491,13 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     bool PrepareNativeGuideGapPresent();
     // The selected caller supplies the actual feature; global currentFeature
     // can use another base address or change during nested backend calls.
+    enum class GuideTransport { NativeDx12, SharedDx11 };
     bool SetUpscalerGuidePair(IFeature* selectedFeature, ID3D12GraphicsCommandList* list,
         const NVSDK_NGX_Parameter* parameters,
         ID3D12Resource* depth, ID3D12Resource* motion, UINT width, UINT height, UINT mvWidth, UINT mvHeight,
         D3D12_RESOURCE_STATES depthState, D3D12_RESOURCE_STATES motionState,
-        uintptr_t evaluatedOutput=0);
+        uintptr_t evaluatedOutput=0, std::optional<source_colour::Receipt> sourceNr = std::nullopt,
+        GuideTransport transport=GuideTransport::NativeDx12);
     // Called in the same Inputs guard after the actual shared-cache pair.
     bool SealDx11GuideInputs(bool tagsAccepted, ID3D12CommandQueue* sourceQueue);
     UpscalerColourSourcePtr CurrentUpscalerColourSource();

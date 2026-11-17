@@ -34,7 +34,8 @@ struct Owner {
     }
 };
 enum class Completion : unsigned { Abandoned, OriginalReturned, ReplacementReturned, Consumed };
-enum class Slot : unsigned { UiMask, Uid, Count };
+enum class Slot : unsigned { UiMask, Uid, TaaEvidence, TaaJitter, Count };
+inline constexpr auto SlotCount=static_cast<unsigned>(Slot::Count);
 struct ShaderIdentity { uint64_t hash=0,bytes=0; };
 inline constexpr GUID ShaderIdentityKey={0xf566d101,0x4c11,0x46b3,{0xb9,0x18,0x56,0x60,0x11,0x00,0x00,0x01}};
 inline uint64_t ShaderByteHash(const void* data, size_t size) noexcept {
@@ -78,7 +79,7 @@ struct Consumer {
     void (*revoke)() noexcept=nullptr;
     void (*nonDrawWrite)(ID3D11DeviceContext*) noexcept=nullptr;
 };
-inline std::array<std::atomic<const Consumer*>,2> consumers{};
+inline std::array<std::atomic<const Consumer*>,SlotCount> consumers{};
 inline std::atomic_uint active{0};
 inline thread_local unsigned internalDepth=0;
 class InternalScope final {
@@ -105,7 +106,7 @@ inline void Revoke() noexcept {
 // Called once on the existing Present owner, before optional consumers run.
 // The first frame is deliberately unavailable. This is a local draw epoch,
 // independent of the native SR/NR capture owner's provenance.
-inline void Present(ID3D11DeviceContext* context,uint64_t frame) noexcept {
+inline void Present(ID3D11DeviceContext* context) noexcept {
     if(!NeedsDraw() || !context || Internal())return;
     if(owner && owner->Matches(context))for(auto& slot:consumers)
         if(const auto* c=slot.load(std::memory_order_acquire);c && c->present)c->present(context,*owner);
@@ -115,7 +116,10 @@ inline void Present(ID3D11DeviceContext* context,uint64_t frame) noexcept {
     try {
         auto nextOwner=std::make_shared<Owner>();nextOwner->context=context;
         context->GetDevice(&nextOwner->device);nextOwner->thread=GetCurrentThreadId();
-        static std::atomic_uint64_t next{0};nextOwner->epoch=++next;nextOwner->frame=frame;
+        // SR may never execute (including the very case these observers are
+        // diagnosing). Count this public Present boundary independently.
+        static thread_local uint64_t presentFrame=0;
+        static std::atomic_uint64_t next{0};nextOwner->epoch=++next;nextOwner->frame=++presentFrame;
         owner=std::move(nextOwner);
     }catch(...){Revoke();}
 }
@@ -123,8 +127,8 @@ class Scope final {
     ID3D11DeviceContext* context_=nullptr;
     Draw draw_{};
     std::shared_ptr<const Owner> owner_;
-    std::array<const Consumer*,2> tables_{};
-    std::array<uint64_t,2> cookies_{};
+    std::array<const Consumer*,SlotCount> tables_{};
+    std::array<uint64_t,SlotCount> cookies_{};
     Completion completion_=Completion::Abandoned;
 public:
     // Lazy external predicate preserves the inactive R459 path: exactly one

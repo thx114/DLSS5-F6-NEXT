@@ -110,6 +110,8 @@ struct Pending
     float scale = 1;
     bool skipNr = false;
     bool half = false;
+    bool finishedPicture = false;
+    bool sceneLinear = false;
 } pending;
 
 void Say(const std::string& text)
@@ -268,7 +270,7 @@ bool PrepareHalfRate(Generation& g, ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Pa
 
 void Before(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* source,
             unsigned long long epoch, unsigned long long submittedEpoch,
-            ID3D12CommandQueue* queue, bool privateJob = false)
+            ID3D12CommandQueue* queue, const DlssNr::UpscaleSource& colourSource, bool privateJob = false)
 {
     if (pending.cmd && current)
     {
@@ -471,8 +473,19 @@ void Before(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* source,
     // the game's own rule, and the screen's choice is the one reported.
     const bool finishedPicture = cfg.DlssNrFinishedPicture.value_or_default();
     ApplyColourEncoding(frame, finishedPicture ? DlssNrColourEncoding::kAuto : cfg.DlssNrColourEncoding.value_or_default(),
-                        (UInt(source, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags) & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0,
+                        (colourSource.effectiveColorCreateFlags.value_or(UInt(source, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags)) &
+                         NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0,
+                        colourSource.syntheticColorFlagKnown.value_or(true),
                         outDesc.Format, !finishedPicture);
+    // Relative finished-colour gain requires a declared signal domain. An SR
+    // create flag synthesized by TAA cannot authorize a gamma or linear decode.
+    if (finishedPicture && !frame.ColourEncodingFlagKnown)
+    {
+        Barrier(cmd, g.edited, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Say("waiting for a declared scene transfer before finished-picture residual encoding");
+        return;
+    }
+    const bool sceneLinear = frame.ColourEncoding == (uint32_t) DlssNrColourEncoding::Encoding::LinearHdr;
     frame.Reset = UInt(source, NVSDK_NGX_Parameter_Reset) != 0 || g.reset || g.sampleAndHold || privateJob;
     frame.MvScaleX = Float(source, NVSDK_NGX_Parameter_MV_Scale_X, 1);
     frame.MvScaleY = Float(source, NVSDK_NGX_Parameter_MV_Scale_Y, 1);
@@ -496,12 +509,12 @@ void Before(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* source,
         DlssNrConstants encode {}; encode.Mode = DlssNrMode_EncodeResidual;
         encode.Width = g.w; encode.Height = g.h; encode.ExposurePreMul = frame.PreExposure;
         bool ok;
-        if (cfg.DlssNrFinishedPicture.value_or_default())
+        if (finishedPicture)
         {
             encode.Mode = 5; // finished-colour shader: encode relative changes before FP16 storage
             encode.WhitePoint = frame.PreExposure;
             // Relative changes only for linear light; a PQ frame is compared in its own signal, like a tone-mapped one.
-            encode.TransferStrength = frame.ColourEncoding == (uint32_t) DlssNrColourEncoding::Encoding::LinearHdr ? 1.0f : 0.0f;
+            encode.TransferStrength = sceneLinear ? 1.0f : 0.0f;
             encode.MaxRatio = std::clamp(cfg.DlssNrMaxRatio.value_or_default(), 1.0f, 8.0f);
             ok = g.codec->DispatchResidualPass(cmd, encode, color, g.edited, nullptr, nullptr, g.residualInput);
         }
@@ -529,6 +542,8 @@ void Before(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* source,
             p->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
             p->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
             pending = { cmd, source, output, epoch, frame.PreExposure, false, half };
+            pending.finishedPicture = finishedPicture;
+            pending.sceneLinear = sceneLinear;
             LOG_DEBUG("DLSS-NR deferred: Before armed epoch {} half {} preExp {:.4f} reset-carried {}", epoch, half,
                       frame.PreExposure, frame.Reset);
         }
@@ -598,12 +613,11 @@ void After(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* source, unsigned
     else
         LOG_TRACE("DLSS-NR deferred: After applied epoch {} skipNr {} half {}", epoch, pair.skipNr, pair.half);
     g.reset = false;
-    if (cfg.DlssNrFinishedPicture.value_or_default())
+    if (pair.finishedPicture)
     {
-        // Finished Picture is on here, so this scene buffer follows the game's own rule (the override is the screen's).
-        const bool sceneLinear = (UInt(source, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags) &
-            NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0 && FormatCanHoldLinearHdr(g.outputFormat);
-        if (Late::CaptureResidual(cmd, pair.output, g.residualOutput, pair.scale, sceneLinear))
+        // Consume the exact colour contract used by Before, even if parameters
+        // or the UI changed while the main SR call was executing.
+        if (Late::CaptureResidual(cmd, pair.output, g.residualOutput, pair.scale, pair.sceneLinear))
             Say("running: model before SR; changes saved for the finished picture");
         else { g.reset = true; Say("waiting to save the upscaled changes for the finished picture"); }
         return; // Keep the game's SR output clean: no early composition and no second NR evaluation.

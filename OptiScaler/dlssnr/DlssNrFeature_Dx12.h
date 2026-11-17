@@ -1,4 +1,5 @@
 #pragma once
+#include <runtime/SourceNrReceipt.h>
 #include <runtime/GuideCapture.h>
 
 #include "PassLimits.h"
@@ -45,16 +46,11 @@ namespace DlssNr
 // game never does -- so without this the pass runs and never reports what it cost.
 // rayReconstruction identifies the feature for history reset and the SR-only deferred experiment.
 // Placement and model cost controls are shared by SR and RR+SR.
-void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                          ID3D12CommandQueue* timingQueue = nullptr, bool rayReconstruction = false,
-                          unsigned long long submissionEpoch = 0);
 
-// Fixed Genshin route: actual source Present -> NR -> detail retention -> FG.
-// Persisted placement options cannot enable a second NR writer for this game.
-bool UsesGenshinPresentPipeline();
-uint64_t BeginGenshinPresentSource();
-void CompleteGenshinPresentSource(uint64_t attempt, GuideSourceMetadata::Ptr metadata,
-                                 const void* dx11Output, bool succeeded);
+
+// The compatibility placement selects successful scene SR output. Present and
+// generated frames never run a second model for this source.
+bool UsesSourceOutput();
 
 // Source identity comes from this live call, never State's Present-thread globals.
 // Virtual sources use their driver context and successful feature-creation generation, not an NGX handle.
@@ -72,13 +68,31 @@ struct UpscaleSource
     // Immutable facts read at this actual Evaluate boundary. Diagnostic Store
     // snapshots never populate this; it confers no source/queue/fence authority.
     GuideSourceMetadata::Ptr rawMetadata;
+    ID3D12GraphicsCommandList* ownedPreviewRecording = nullptr;
+    bool preparedRasterGuides = false; // authenticated producer: colour-row order, decoded pixel MV; not optical flow
+    // Colour interpretation after SR overrides; raw flags still authenticate guides.
+    std::optional<unsigned> effectiveColorCreateFlags;
+    // Set only for synthetic TAA sources: its default create flag is not a game declaration.
+    std::optional<bool> syntheticColorFlagKnown;
 
     bool operator==(const UpscaleSource& other) const {
         return ngxHandle==other.ngxHandle && virtualContext==other.virtualContext &&
             virtualGeneration==other.virtualGeneration && featureFlags==other.featureFlags &&
-            featureFlagsKnown==other.featureFlagsKnown;
+            featureFlagsKnown==other.featureFlagsKnown && effectiveColorCreateFlags==other.effectiveColorCreateFlags &&
+            syntheticColorFlagKnown==other.syntheticColorFlagKnown;
     }
 };
+
+void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
+                          ID3D12CommandQueue* timingQueue = nullptr, bool rayReconstruction = false,
+                          unsigned long long submissionEpoch = 0, UpscaleSource source = {});
+
+// Called only after the provider identified this call's actual written Output.
+// Reports untouched, partially modified or final NR colour on this source list. The
+// caller still owns Execute, Signal, DX11 handoff and GPU retirement.
+source_colour::Result EvaluateSourceOutput(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
+                          ID3D12Resource* recordedOutput, ID3D12CommandQueue* queue,
+                          unsigned long long sourceOrdinal, bool rayReconstruction, UpscaleSource source);
 
 // Ordinary ZZZ NGX source-call receipt. Begin precedes the existing before-SR capture;
 // Complete receives the actual SR result. Zero is a no-op on every other game/route.

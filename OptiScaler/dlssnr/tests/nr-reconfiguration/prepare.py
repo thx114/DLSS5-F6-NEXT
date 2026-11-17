@@ -50,6 +50,11 @@ def render() -> str:
     raw = {path: path.read_bytes() for path in (LATE, LIFETIME, ORDERED)}
     late, lifetime, ordered = (raw[path].decode("utf-8-sig").replace("\r\n", "\n") for path in raw)
     helper = extract(late, "void RetireCompletedPrivateRecordings(")
+    direct = extract(late, "void PrepareDirectEvaluation(bool sourceOutput)")
+    dispatch = (LATE.parent / "DlssNr_Dx12.cpp").read_text(encoding="utf-8-sig")
+    # The actual source evaluation must advance maintenance before its model gate.
+    if dispatch.count("Late::PrepareDirectEvaluation(sourceOutput);") != 1:
+        raise ValueError("direct source evaluation lost its retirement maintenance entry")
     # Mutation controls run the same scenario assertions. They must fail when a
     # genuine GPU gate, idle-only gate, or failed-Reset retention is removed.
     controls = []
@@ -104,6 +109,7 @@ void TickNrRetired();
 namespace Late {{
 {extract(late, 'bool Finished(const Slot& slot)')}
 {helper}
+{direct}
 // Deliberately unsafe TEST-ONLY copies for assertion sensitivity checks.
 {chr(10).join(controls)}
 }} // namespace Late

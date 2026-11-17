@@ -70,6 +70,7 @@ class OutputCache final
                 stored.SampleDesc.Quality != desc.SampleDesc.Quality)
             {
                 Valid = false;
+                GuideCapture::PreviewOutputUnavailable("Preview output resized; awaiting owner-fence retirement");
                 return false;
             }
         }
@@ -82,7 +83,10 @@ class OutputCache final
                 D3D12_HEAP_PROPERTIES heap {};
                 heap.Type = D3D12_HEAP_TYPE_DEFAULT;
                 if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &copy,
-                    D3D12_RESOURCE_STATE_COPY_SOURCE, nullptr, IID_PPV_ARGS(&Texture)))) return false;
+                    D3D12_RESOURCE_STATE_COPY_SOURCE, nullptr, IID_PPV_ARGS(&Texture)))) {
+                    GuideCapture::PreviewOutputUnavailable("Preview output cache allocation failed");
+                    return false;
+                }
             }
             // Resize/format changes require the owner's fence-based generation
             // cleanup. Never replace storage still referenced by recordings.

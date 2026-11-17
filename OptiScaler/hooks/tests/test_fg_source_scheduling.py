@@ -63,15 +63,25 @@ def function(source, signature):
 fg=read("OptiScaler/hooks/FG_Hooks.cpp")
 hooks=read("OptiScaler/hooks/Streamline_Hooks.cpp")
 interface=read("OptiScaler/framegen/IFGFeature_Dx12.h")
-check("const bool genshinPacing = sourcePacingScope.Owns();" in fg,
+check("const bool sourcePacing = sourcePacingScope.Owns();" in fg,
       "real direct-DLSS source owns pacing independently of disabled FSR bridge")
-check("F6InputPolicy::DirectDlssInputs && (genshinDirectExecutable || starRailTimingRoute)" in fg,
-      "both exact admitted source routes share retained-token lock-free pacing")
-check("SourcePacingScope sourcePacingScope(directDlssSource)" in fg and
-      "if (directDlssSource) presentExecution.Finish();" in fg,
+role=section(fg,"    const bool ownedDlssgSource =","    framegen::SourcePacingScope")
+check("This == state.currentFGSwapchain" in role and "FGInput::Upscaler" in role and
+      "FGOutput::DLSSG" in role and "executionOwner != nullptr" in role and
+      "IsGenshin" not in role and "DirectDlssInputs" not in role,
+      "all authenticated owned DLSSG source roles share the same lock-free pacing")
+native=section(fg,"                    // The native source's SDK frame", "                    if (localToken)")
+check("nativeZzzMarkerSource.sdkFrame" in native and "sl::FrameToken* leaseToken = nullptr" in native and
+      "nativeZzzSourceFailed=" not in native and "tokenResult=" not in native,
+      "optional native lease uses SDK source identity and cannot change FG admission")
+fallback=section(fg,"    if (nativeZzzSourceAttempted && nativeZzzAction!=", "    HookCpuTiming::WallSample starRailSdkWall;")
+check("sourcePacingLease.reset()" in fallback and "sourcePacingStartCalled = sourcePacingEndCalled = false" in fallback,
+      "native fallback revokes every marker and pacing reservation")
+check("SourcePacingScope sourcePacingScope(ownedDlssgSource)" in fg and
+      "if (ownedDlssgSource) presentExecution.Finish();" in fg,
       "StarRail source claims original lease path and fully releases execution before waiting")
-legacy_sleep=section(fg,"        // Genshin's FG execution", "    if (state.swapchainInteropApi == SwapchainInteropApi::None)\n        Hudfix_Dx12::PresentEnd();")
-check("if (!directDlssSource && fgPacingActive()" in legacy_sleep,
+legacy_sleep=section(fg,"        // Source FG execution", "    if (state.swapchainInteropApi == SwapchainInteropApi::None)\n        Hudfix_Dx12::PresentEnd();")
+check("if (!ownedDlssgSource && fgPacingActive()" in legacy_sleep,
       "admitted source cannot duplicate Reflex through the legacy locked branch")
 decision=section(fg,"// FG source pacing decision begin","// FG source pacing decision end")
 check("pacingLease=std::move(sourcePacingLease)" in decision,
@@ -101,7 +111,7 @@ check(decision.index("const auto pacingDecision=")<decision.index("presentMutexR
       decision.index("presentExecution.Finish();"),"immutable pacing decision precedes FG mutex/execution unlock")
 check(fg.index("physicalInput.reset();")<fg.index("presentExecution.FinishWork();"),
       "actual SDK input/output transaction closes before teardown/unlock")
-after=section(fg,"    if (genshinPacing)\n    {\n        // No provider, raw SDK token","    if(collectStarRailPacing)")
+after=section(fg,"    if (sourcePacing)\n    {\n        // No provider, raw SDK token","    if(collectStarRailPacing)")
 for forbidden in ("fg->","executionOwner->","*localToken","ReflexHooks::","Config::","state."):
     check(forbidden not in after,f"post-unlock pacing has no mutable/raw provider access: {forbidden}")
 check("pacingLease->Sleep()" in after and "pacingDecision.frameLimit" in after,

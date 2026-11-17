@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <cstdint>
+#include <runtime/SourceNrReceipt.h>
+#include <optional>
 
 // CPU identity policy only. Queue ordering and GPU retirement stay with the
 // actual producer/NR/provider receipts; these values cannot manufacture either.
@@ -8,6 +10,13 @@ namespace dlssg::colour
 {
 enum class Route { NativePresent, Dx11CopiedPresent };
 enum class Mutation { Original, NrWritten, Uncertain };
+inline Mutation CombinedMutation(const std::optional<source_colour::Receipt>& sourceNr, Mutation present) noexcept
+{
+    if (present == Mutation::Uncertain || (sourceNr && (sourceNr->result == source_colour::Result::Unknown || sourceNr->result == source_colour::Result::Modified)))
+        return Mutation::Uncertain;
+    return present == Mutation::NrWritten || (sourceNr && sourceNr->result == source_colour::Result::NrWritten)
+        ? Mutation::NrWritten : Mutation::Original;
+}
 struct Source
 {
     uint64_t serial=0, frame=0, generation=0, epoch=0, feature=0, configuration=0;

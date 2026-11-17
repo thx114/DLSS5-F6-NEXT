@@ -46,6 +46,15 @@ int main()
                 "already aligned depth and picture motion cannot be corrected twice");
     }
 
+    // TAA prepares raster guides in the source colour grid. Suppress old native
+    // row/sign overrides while retaining raster (not optical-flow) provenance.
+    for(unsigned settings=0;settings<8;++settings) {
+        const auto prepared=Resolve(bool(settings&1),bool(settings&2),bool(settings&4),true,false,true,true);
+        Require(!prepared.depthRowsFlip&&!prepared.motionRowsFlip&&!prepared.vectorYNegated&&prepared.key==48,
+                "prepared raster guides are not transformed a second time");
+        const auto noDepth=Resolve(bool(settings&1),bool(settings&2),bool(settings&4),false,false,true,true);
+        Require(noDepth.key==prepared.key,"prepared missing-depth continuation retains coordinate history identity");
+    }
     // Distinct allocation sizes and nonzero offsets catch allocation-wide flips,
     // a depth rect accidentally applied to picture motion, and double MV scaling.
     const auto regions = DlssNr::ResolveGuideRegions({1300, 830}, {2600, 1640}, {1280, 800}, {2560, 1600},

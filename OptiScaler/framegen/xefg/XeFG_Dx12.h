@@ -19,6 +19,11 @@ class XeFG_Dx12 : public virtual IFGFeature_Dx12
   private:
     xefg_swapchain_handle_t _swapChainContext = nullptr;
     xefg_swapchain_handle_t _fgContext = nullptr;
+    // Status queries and context create/destroy share a lifetime boundary.
+    // UI only reads the scalar RuntimeState cache.
+    std::recursive_mutex _presentStatusMutex;
+    framegen::OutputRateWindow _outputRate;
+    uint64_t _statusEpoch = 0, _statusSequence = 0, _statusEndNs = 0;
 
     uint32_t _width = 0;
     uint32_t _height = 0;
@@ -91,6 +96,7 @@ class XeFG_Dx12 : public virtual IFGFeature_Dx12
     void EvaluateState(ID3D12Device* device, FG_Constants& fgConstants) override final;
 
     bool Present() override final;
+    void ObservePresentReturned(IDXGISwapChain* chain, UINT flags, HRESULT result) override final;
 
     bool SetResource(Dx12Resource* inputResource) override final;
     void SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue) override final;

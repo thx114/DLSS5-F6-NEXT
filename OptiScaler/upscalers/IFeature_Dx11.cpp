@@ -1,5 +1,7 @@
 #include <pch.h>
 #include "IFeature_Dx11.h"
+#include "FeatureProvider_Dx11.h"
+#include <integration/HoYoShadeBeforeSrInput.h>
 #include <State.h>
 #include <resource_tracking/GenericDepth_Dx11.h>
 
@@ -47,11 +49,14 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Par
 
 bool IFeature_Dx11::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext,
                                       NVSDK_NGX_Parameter* InParameters, ID3D11Resource** orderedOutput,
-                                      const interop::BeforeSrInput* /*beforeSr*/)
+                                      const interop::BeforeSrInput* beforeSr)
 {
     if (orderedOutput) *orderedOutput = nullptr;
     // The D3D11 depth finder only runs while the game is not calling an upscaler.
     GenericDepthDx11::NoteUpscalerCall();
+
+    // Native SR is a render owner even when presentation uses the DX12 bridge.
+    HoYoShade::RenderOwnerScope hoYoSettingsOwner;
 
     auto result = true;
 
@@ -292,11 +297,31 @@ bool IFeature_Dx11::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext,
                                bound == currentTarget;
     }
 
+    ID3D11Resource* originalColor=nullptr;
+    if (InParameters->Get(NVSDK_NGX_Parameter_Color,&originalColor) != NVSDK_NGX_Result_Success) {
+        void* resource=nullptr;
+        if (InParameters->Get(NVSDK_NGX_Parameter_Color,&resource) == NVSDK_NGX_Result_Success)
+            originalColor=static_cast<ID3D11Resource*>(resource);
+    }
+    const auto* currentBeforeSr=beforeSr;
+    if(currentBeforeSr && (currentBeforeSr->frame.context!=InDeviceContext || currentBeforeSr->frame.color!=originalColor ||
+        currentBeforeSr->frame.depth!=paramDepth || currentBeforeSr->frame.motion!=paramMotion))currentBeforeSr=nullptr;
+    HoYoShade::BeforeSrDx11 filter(InDeviceContext,currentBeforeSr,reinterpret_cast<uint64_t>(this));
+    struct RestoreColor {
+        NVSDK_NGX_Parameter* parameters;ID3D11Resource* original;bool changed=false;
+        void Restore(){if(changed){parameters->Set(NVSDK_NGX_Parameter_Color,original);changed=false;}}
+        ~RestoreColor(){Restore();}
+    } restoreColor{InParameters,originalColor};
+    if(filter.Color()) {
+        InParameters->Set(NVSDK_NGX_Parameter_Color,static_cast<ID3D11Resource*>(filter.Color()));
+        restoreColor.changed=true;
+    }
     UpscalerTime->Start(InDeviceContext);
 
     auto evalResult = EvaluateInternal(InDeviceContext, InParameters);
 
     UpscalerTime->End(InDeviceContext);
+    restoreColor.Restore();
 
     if (!evalResult)
         result = false;
@@ -421,6 +446,7 @@ void IFeature_Dx11::ReadDetailedGpuTimes(void* deviceContextVoid, std::vector<De
 
 IFeature_Dx11::~IFeature_Dx11()
 {
+    FeatureProvider_Dx11::ForgetFeature(this);
     if (State::Instance().isShuttingDown)
         return;
 

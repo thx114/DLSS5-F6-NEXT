@@ -21,7 +21,7 @@
 #include <native/NativeLowLatency.h>
 #if defined(F6_PRESENTATION_PROBE)
 #include <runtime/F6PresentationProbe.h>
-namespace { F6PresentationProbe::Observe presentationProbe = nullptr; }
+namespace { auto& presentationProbe = F6PresentationProbe::observer; }
 extern "C" __declspec(dllexport) void WINAPI F6_Test_SetPresentationProbe(F6PresentationProbe::Observe observer)
 {
     presentationProbe = observer; // installed by the single-threaded isolated host
@@ -30,6 +30,12 @@ extern "C" __declspec(dllexport) void WINAPI F6_Test_SetPresentationProbe(F6Pres
 
 #include <Util.h>
 #include <Config.h>
+#if defined(F6_PRESENTATION_PROBE)
+extern "C" __declspec(dllexport) void WINAPI F6_Test_SetNrEnabled(BOOL enabled)
+{
+    Config::Instance()->DlssNrEnabled = enabled != FALSE;
+}
+#endif
 #include <dlssnr/DlssNrFeature_Dx12.h>
 #include <dlssnr/DlssNrFgTrace.h>
 #include <upscalers/CallerCpuTrace.h>
@@ -201,7 +207,6 @@ Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Devi
                          bool sourceFrameLatencyOwner, std::optional<UINT> applicationFlags)
     : SwapchainHookBoundary(OperationsFor<Dx11wDx12SC>()),
       _sourceFrameLatencyOwner(sourceFrameLatencyOwner && real != nullptr && fgSC != nullptr),
-      _starRailF5DsTransport(_sourceFrameLatencyOwner && StarRailF5Ds::Selected()),
       _real(real), _fgSwapChain(fgSC), _refcount(1),
       _dx11Device(pDevice), _handle(hWnd)
 {
@@ -472,8 +477,22 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetDevice(REFIID riid, void** ppDevice)
     return _real != nullptr ? _real->GetDevice(riid, ppDevice) : DXGI_ERROR_DEVICE_REMOVED;
 }
 
+bool Dx11wDx12SC::StarRailF5DsTransport() const
+{
+    return _sourceFrameLatencyOwner && StarRailF5Ds::Selected(_dx11Device);
+}
+
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
 {
+    const bool starRailF5DsTransport=StarRailF5DsTransport();
+    if(_sourceFrameLatencyOwner && !(Flags&DXGI_PRESENT_TEST) &&
+       (State::Instance().frameCount<8 || State::Instance().frameCount%600==0))
+        LOG_INFO("DX11 source transport: source_device={} f5ds={}",
+            static_cast<void*>(_dx11Device),starRailF5DsTransport);
+    struct ObservationBoundary {
+        bool open;
+        ~ObservationBoundary(){if(open)GenericDepthDx11::RevokeSourceObservations();}
+    } observationBoundary{(Flags & DXGI_PRESENT_TEST)==0};
     if (_sourceFrameLatencyOwner && !(Flags & DXGI_PRESENT_TEST) &&
         HookCpuTiming::starRailSourceDepth == 0)
         FGHooks::DrainStarRailAttribution();
@@ -503,7 +522,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     if (const auto failure = _fgResizeStatus.Failure(); FAILED(failure))
         return failure;
 
-    if (_starRailF5DsTransport)
+    if (starRailF5DsTransport)
     {
         const auto sourceFailure = _sourceDeviceFailure.load(std::memory_order_acquire);
         if (FAILED(sourceFailure))
@@ -571,17 +590,18 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     // otherwise. Runs here, before FG takes the frame: this is the only present this game gets once Dx11wDx12SC
     // exists, so it is also where the D3D11 depth finder's own frame close has to happen (NativeMotionDx11::
     // OnFGPresent does that), same placement rule Story F used on the D3D12 side.
-    if (!DlssNr::UsesGenshinPresentPipeline())
+    if (!DlssNr::UsesSourceOutput())
     {
         native::nrfilter::OpticalInputScope inputSource(_real, _dx11Device);
         _ApplyNativeInputToFGBackBuffer();
     }
     else
     {
-        // Present NR bypasses the optical adapter. Its native DX11 owner
+        // Source NR bypasses the optical adapter. Its native DX11 owner
         // still closes observations and prepares late-enabled MOD hooks once.
         GenericDepthDx11::OnPresent(_real);
     }
+    observationBoundary.open=false; // GenericDepth either published or revoked its source epoch.
     // The optional overwrite must publish its OWN final signal. Never let an
     // earlier successful raw-copy receipt authorize reads of a partial overwrite.
     if ((_sourceCopyUncertain.load(std::memory_order_acquire) || native::nrfilter::HasUncertainCopy(_nrCopyAllocatorFenceValues)) ||
@@ -646,7 +666,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
         // R862: the factory-admitted StarRail source owns a distinct hidden
         // flip chain. Only ordinary presents may drop that hidden submission;
         // TEST already returned above and special caller flags keep their path.
-        const bool noWaitHidden = _sourceFrameLatencyOwner && !_starRailF5DsTransport && _real3 != nullptr &&
+        const bool noWaitHidden = _sourceFrameLatencyOwner && !starRailF5DsTransport && _real3 != nullptr &&
             (Flags & ~UINT(DXGI_PRESENT_ALLOW_TEARING)) == 0 &&
             SUCCEEDED(_real->GetDesc(&hiddenDesc)) && hiddenDesc.Windowed &&
             hiddenDesc.OutputWindow != nullptr && hiddenDesc.OutputWindow != _handle &&
@@ -678,7 +698,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
         if (FAILED(realPresentResult) &&
             !(noWaitHidden && realPresentResult == DXGI_ERROR_WAS_STILL_DRAWING))
             LOG_WARN("hidden real DX11 Present failed: {:X}", (UINT) realPresentResult);
-        if (_starRailF5DsTransport &&
+        if (starRailF5DsTransport &&
             (realPresentResult == DXGI_ERROR_DEVICE_REMOVED || realPresentResult == DXGI_ERROR_DEVICE_RESET ||
              realPresentResult == DXGI_ERROR_DEVICE_HUNG || realPresentResult == DXGI_ERROR_DRIVER_INTERNAL_ERROR))
         {
@@ -1016,7 +1036,7 @@ framegen::latency::Target Dx11wDx12SC::_SelectFrameLatencyTarget(void* returnAdd
     const auto target = framegen::latency::Select(flags, caller, sdkLoaded,
         _real2 != nullptr, _fgSwapChain != nullptr, false);
     StreamlineHooks::ReportFrameLatencyAccess(this, flags, caller, sdkLoaded, target);
-    const auto preserved = (!_sourceFrameLatencyOwner || _starRailF5DsTransport) &&
+    const auto preserved = (!_sourceFrameLatencyOwner || StarRailF5DsTransport()) &&
         _fgSwapChain != nullptr ? framegen::latency::Target::Provider : framegen::latency::Target::Native;
     return framegen::latency::Resolve(target, preserved);
 }
@@ -1209,6 +1229,9 @@ bool Dx11wDx12SC::_InitInteropObjects()
         if (_sharedBackBufferHandles.size() != colorSlotCount)
             _sharedBackBufferHandles.resize(colorSlotCount, nullptr);
 
+        if (_sharedTextureReaderValues.size() != colorSlotCount)
+            _sharedTextureReaderValues.resize(colorSlotCount, 0);
+
         if (_openedDx11BackBufferStates.size() != colorSlotCount)
             _openedDx11BackBufferStates.resize(colorSlotCount, D3D12_RESOURCE_STATE_COMMON);
 
@@ -1277,12 +1300,23 @@ bool Dx11wDx12SC::_InitInteropObjects()
 
     if (_copyFence == nullptr)
     {
-        result = _dx12Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&_copyFence));
+        result = _dx12Device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&_copyFence));
         if (FAILED(result))
         {
             LOG_ERROR("Create copy fence failed: {:X}", (UINT) result);
             return false;
         }
+    }
+
+    if (!_copyReaderFenceHandle)
+    {
+        result = _dx12Device->CreateSharedHandle(_copyFence, nullptr, GENERIC_ALL, nullptr, &_copyReaderFenceHandle);
+        if (FAILED(result)) return ReportInteropCopyFailure("CopyReaderSharedHandleFailed", result);
+    }
+    if (!_dx11CopyReaderFence)
+    {
+        result = _dx11Device5->OpenSharedFence(_copyReaderFenceHandle, IID_PPV_ARGS(&_dx11CopyReaderFence));
+        if (FAILED(result)) return ReportInteropCopyFailure("CopyReaderFenceOpenFailed", result);
     }
 
     if (_copyFenceEvent == nullptr)
@@ -1337,6 +1371,7 @@ bool Dx11wDx12SC::_InitInteropObjects()
     _sharedDx11BackBufferCopies.assign(colorSlotCount, nullptr);
     _openedDx11BackBuffers.assign(colorSlotCount, nullptr);
     _sharedBackBufferHandles.assign(colorSlotCount, nullptr);
+    _sharedTextureReaderValues.assign(colorSlotCount, 0);
     _openedDx11BackBufferStates.assign(colorSlotCount, D3D12_RESOURCE_STATE_COMMON);
 
     _interopInitialized = true;
@@ -1540,6 +1575,44 @@ bool Dx11wDx12SC::_RequestSharedBackBuffer(UINT index)
     return true;
 }
 
+bool Dx11wDx12SC::_PrepareSharedWriter(UINT textureSlot, CopySlotAdmission& admission)
+{
+    admission.Clear();
+    if (_sourceCopyUncertain.load(std::memory_order_acquire) || !_copyFence || !_copyFenceEvent ||
+        !_dx11CopyReaderFence || !_dx11Context4 || _copyAllocators.empty() ||
+        _copyAllocatorFenceValues.size() != _copyAllocators.size() ||
+        textureSlot >= _sharedTextureReaderValues.size()) return false;
+    const auto completed = _copyFence->GetCompletedValue();
+    if (completed == UINT64_MAX)
+    { _ReportCopyFenceFault("copy-reader-fence-invalid",textureSlot,0,completed,WAIT_FAILED); return false; }
+    UINT recordingSlot = UINT_MAX;
+    UINT oldestSlot = 0;
+    for (UINT n = 0; n < _copyAllocators.size(); ++n)
+    {
+        const UINT slot = (_nextCopyAllocator + n) % static_cast<UINT>(_copyAllocators.size());
+        const auto pending = _copyAllocatorFenceValues[slot];
+        if (!_copyAllocators[slot] || pending == UINT64_MAX) return false;
+        if (pending < _copyAllocatorFenceValues[oldestSlot]) oldestSlot = slot;
+        if (recordingSlot == UINT_MAX && pending <= completed) recordingSlot = slot;
+    }
+    // A GPU Wait cannot authorize allocator Reset. Only when every existing
+    // recording is in flight retain the bounded CPU wait on its actual fence.
+    if (recordingSlot == UINT_MAX)
+    {
+        recordingSlot = oldestSlot;
+        if (!_WaitForCopyAllocator(recordingSlot, _copyAllocatorFenceValues)) return false;
+    }
+    const auto reader = _sharedTextureReaderValues[textureSlot];
+    if (reader == UINT64_MAX || reader > _copyFenceValue) return false;
+    // Reverse interop edge: the old DX12 reader completes before this DX11
+    // write. This immediate-context GPU wait preserves order without sleeping
+    // the render thread. The existing DX11 Signal/Flush -> DX12 Wait follows.
+    if (reader && FAILED(_dx11Context4->Wait(_dx11CopyReaderFence, reader))) return false;
+    admission.Record(this, &_copyAllocatorFenceValues, _copyFence, _copyAllocators[recordingSlot],
+                     recordingSlot, _copyAllocatorFenceValues[recordingSlot], textureSlot, reader);
+    return true;
+}
+
 bool Dx11wDx12SC::_CopyDx11BackBufferToShared(UINT index, CopySlotAdmission& admission)
 {
     admission.Clear();
@@ -1562,16 +1635,8 @@ bool Dx11wDx12SC::_CopyDx11BackBufferToShared(UINT index, CopySlotAdmission& adm
     }
 
     // Interop shared writer admission begin
-    // Move the existing allocator retirement BEFORE the shared texture write.
-    // Both name this exact slot's previous D3D12 reader. The native-parent
-    // optional route keeps its nonblocking Busy policy inside the same helper.
-    // The local proof is consumed at Reset below; no second completion wait.
-    if (_sourceCopyUncertain.load(std::memory_order_acquire) || !_copyFence || !_copyFenceEvent ||
-        copySlot >= _copyAllocators.size() || !_copyAllocators[copySlot] ||
-        !_WaitForCopyAllocator(copySlot, _copyAllocatorFenceValues))
+    if (!_PrepareSharedWriter(copySlot, admission))
         return ReportInteropCopyFailure("CopyReaderNotRetired");
-    admission.Record(this, &_copyAllocatorFenceValues, _copyFence, _copyAllocators[copySlot],
-                     copySlot, _copyAllocatorFenceValues[copySlot]);
     // Interop shared writer admission end
 
     // Re-read selected consumers at the real copy boundary, including changes
@@ -1758,7 +1823,9 @@ bool Dx11wDx12SC::_WaitForCopyAllocator(UINT slot, std::vector<UINT64>& fenceVal
         admission.Clear();
         return ReportInteropCopyFailure("CopyAdmissionUnavailable");
     }
-    return admission.Consume(this, &fenceValues, _copyFence, _copyAllocators[slot], slot, fenceValues[slot]) ? true :
+    if (_currentFakeIndex >= _sharedTextureReaderValues.size()) { admission.Clear(); return false; }
+    return admission.Consume(this, &fenceValues, _copyFence, _copyAllocators[slot], slot, fenceValues[slot],
+                             _currentFakeIndex, _sharedTextureReaderValues[_currentFakeIndex]) ? true :
         ReportInteropCopyFailure("CopyAdmissionChanged");
 }
 
@@ -1766,11 +1833,14 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index, CopySlotAdmi
                                                ID3D12Resource** copiedColour)
 {
     if (copiedColour) *copiedColour=nullptr;
-    const UINT copySlot=_currentFakeIndex;
+    const UINT textureSlot=_currentFakeIndex;
+    const UINT copySlot=admission.RecordingSlot();
     CallerCpuTrace::Scope callerCpuScope(CallerCpuTrace::Op::InteropCopy, this, reinterpret_cast<uint64_t>(_handle), State::Instance().frameCount);
     if (_copyAllocators.empty() || _copyCommandLists.empty() || _dx12CommandQueue == nullptr || _copyFence == nullptr ||
-        _fgSwapChain == nullptr || copySlot >= _openedDx11BackBuffers.size() ||
-        _openedDx11BackBuffers[copySlot] == nullptr)
+        _fgSwapChain == nullptr || textureSlot >= _openedDx11BackBuffers.size() ||
+        textureSlot >= _sharedTextureReaderValues.size() || copySlot >= _copyAllocators.size() ||
+        copySlot >= _copyCommandLists.size() ||
+        _openedDx11BackBuffers[textureSlot] == nullptr)
     {
         return ReportInteropCopyFailure("FgCopyObjectsUnavailable");
     }
@@ -1822,21 +1892,21 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index, CopySlotAdmi
         return ReportInteropCopyFailure("FgBackBufferGetBufferFailed", result);
     }
 
-    auto sourceBefore = _openedDx11BackBufferStates[copySlot];
+    auto sourceBefore = _openedDx11BackBufferStates[textureSlot];
 
-    TransitionResource(_copyCommandLists[copySlot], _openedDx11BackBuffers[copySlot], sourceBefore,
+    TransitionResource(_copyCommandLists[copySlot], _openedDx11BackBuffers[textureSlot], sourceBefore,
                        D3D12_RESOURCE_STATE_COPY_SOURCE);
     TransitionResource(_copyCommandLists[copySlot], fgBackBuffer.Get(), D3D12_RESOURCE_STATE_PRESENT,
                        D3D12_RESOURCE_STATE_COPY_DEST);
 
-    _copyCommandLists[copySlot]->CopyResource(fgBackBuffer.Get(), _openedDx11BackBuffers[copySlot]);
+    _copyCommandLists[copySlot]->CopyResource(fgBackBuffer.Get(), _openedDx11BackBuffers[textureSlot]);
 
     TransitionResource(_copyCommandLists[copySlot], fgBackBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                        D3D12_RESOURCE_STATE_PRESENT);
-    TransitionResource(_copyCommandLists[copySlot], _openedDx11BackBuffers[copySlot], D3D12_RESOURCE_STATE_COPY_SOURCE,
+    TransitionResource(_copyCommandLists[copySlot], _openedDx11BackBuffers[textureSlot], D3D12_RESOURCE_STATE_COPY_SOURCE,
                        sourceBefore);
 
-    _openedDx11BackBufferStates[copySlot] = D3D12_RESOURCE_STATE_COMMON;
+    _openedDx11BackBufferStates[textureSlot] = D3D12_RESOURCE_STATE_COMMON;
 
     // Same upload wait, copy list and completion as final PresentColor.
     result = _copyCommandLists[copySlot]->Close();
@@ -1870,6 +1940,7 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index, CopySlotAdmi
         // This is GPU lifetime denial only; it grants no StarRail/native rights.
         _sourceCopyUncertain.store(true, std::memory_order_release);
         _copyAllocatorFenceValues[copySlot] = UINT64_MAX;
+        _sharedTextureReaderValues[textureSlot] = UINT64_MAX;
         _lastInteropCopyFenceValue = 0;
         AddRef();
         colorQueue->AddRef();
@@ -1882,6 +1953,8 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index, CopySlotAdmi
     }
 
     _copyAllocatorFenceValues[copySlot] = signalValue;
+    _sharedTextureReaderValues[textureSlot] = signalValue;
+    _nextCopyAllocator = (copySlot + 1) % static_cast<UINT>(_copyAllocators.size());
     _lastInteropCopyFenceValue = signalValue;
     // Scope-local reference only, returned after the actual successful Signal.
     // It does not outlive this Present or replace allocator/SDK retirement.
@@ -1890,7 +1963,7 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index, CopySlotAdmi
 
     if (Config::Instance()->DlssNrEnabled.value_or_default() &&
         Config::Instance()->DlssNrFinishedPicture.value_or_default())
-        DlssNrFgTrace::BridgeCopy(State::Instance().frameCount, _openedDx11BackBuffers[copySlot],
+        DlssNrFgTrace::BridgeCopy(State::Instance().frameCount, _openedDx11BackBuffers[textureSlot],
                                   fgBackBuffer.Get(), _fgSwapChain, fgIndex, colorQueue,
                                   _copyFence, signalValue);
     else if (DlssNrFgTrace::armed.load())
@@ -2115,6 +2188,7 @@ void Dx11wDx12SC::_ReleaseInteropBackBuffers()
     _openedDx11BackBufferStates.clear();
     _openedDx11BackBuffers.clear();
     _sharedDx11BackBufferCopies.clear();
+    _sharedTextureReaderValues.clear();
     _sharedBackBufferHandles.clear();
 }
 
@@ -2153,6 +2227,9 @@ bool Dx11wDx12SC::_ReleaseInteropObjects()
     _nrCopyAllocators.clear();
     _nrCopyAllocatorFenceValues.clear();
 
+    SafeRelease(_dx11CopyReaderFence);
+    SafeCloseHandle(_copyReaderFenceHandle);
+    _nextCopyAllocator = 0;
     SafeRelease(_copyFence);
     SafeCloseHandle(_copyFenceEvent);
     _copyFenceValue = 1;

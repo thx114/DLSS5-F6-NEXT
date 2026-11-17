@@ -312,6 +312,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="runtime\F6InputPolicy.h" />
+    <ClInclude Include="runtime\SourceNrReceipt.h" />
     <ClInclude Include="runtime\D3D12DeviceIdentity.h" />
     <ClInclude Include="runtime\NativeObjectContracts.h" />
     <ClInclude Include="hooks\D3D11On12FactoryBoundary.h" />
@@ -334,8 +335,21 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="menu\DlssPresetMenuPolicy.h" />
     <ClInclude Include="upscalers\NgxDx12ResourceView.h" />
     <ClInclude Include="inputs\F6EvalReceiptV1.h" />
+    <ClInclude Include="inputs\taa\TaaProfile.h" />
+    <ClInclude Include="inputs\taa\TaaProjectionJitterDx11.h" />
+    <ClInclude Include="inputs\taa\TaaSelection.h" />
+    <ClInclude Include="inputs\taa\TaaShaderAnalysis.h" />
+    <ClInclude Include="inputs\taa\TaaAutoDx11.h" />
+    <ClInclude Include="inputs\taa\TaaTemporalEvidenceDx11.h" />
+    <ClInclude Include="inputs\taa\TaaConstantBuffer.h" />
+    <ClInclude Include="inputs\taa\TaaPassDx11.h" />
+    <ClInclude Include="inputs\taa\TaaDepthStencilDx11.h" />
+    <ClInclude Include="inputs\taa\TaaInputDx11.h" />
+    <ClCompile Include="inputs\taa\TaaInputDx11.cpp" />
     <ClInclude Include="inputs\NeoBeforeSrV1.h" />
     <ClInclude Include="inputs\BeforeSrInput.h" />
+    <ClInclude Include="inputs\NeoBeforeSrInput.h" />
+    <ClInclude Include="runtime\Dx11ContextState.h" />
     <ClInclude Include="integration\HoYoShadeBeforeSrInput.h" />
     <ClInclude Include="with_dx12\Dx11InteropSwapchainPolicy.h" />
     <ClInclude Include="with_dx12\InteropQueueDrainReceipt.h" />
@@ -1005,7 +1019,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="upscalers\ffx\FFXFeature_Dx12.cpp" />
     <ClCompile Include="upscalers\ffx\FFXFeature_Vk.cpp" />
     <ClCompile Include="upscalers\IFeature_Dx11.cpp" />
-    <ClCompile Include="upscalers\IFeature_Dx11wDx12.cpp" />
+    <ClCompile Include="upscalers\IFeature_Dx11wDx12.cpp">
+      <PreprocessorDefinitions Condition="'$(F6PresentationProbe)'=='true'">F6_PRESENTATION_PROBE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ClInclude Include="upscalers\IFeature_Dx11wDx12.h" />
     <ClCompile Include="Config.cpp" />
     <ClCompile Include="upscalers\fsr2\FSR2Feature.cpp" />

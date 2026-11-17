@@ -97,6 +97,18 @@ public:
 }
 
 
+bool BindTexture(reshade::api::effect_runtime* runtime,reshade::api::resource_view view,bool reversed,bool yFlipped)
+{
+    if(!runtime || !view.handle)return false;
+    ResetReadiness(runtime);runtime->update_texture_bindings("DEPTH",view,view);
+    bool reflected=false;
+    runtime->enumerate_texture_variables(nullptr,[&](auto* r,auto variable) {
+        reshade::api::resource_view a{0},b{0};r->get_texture_binding(variable,&a,&b);
+        reflected|=a.handle==view.handle && b.handle==view.handle;
+    });
+    Access facts;facts.reversed=reversed;facts.yFlipped=yFlipped;
+    Uniforms(runtime,reflected,&facts);return reflected;
+}
 void ResetReadiness(reshade::api::effect_runtime* runtime)
 {
     if (runtime) Uniforms(runtime, false, nullptr);

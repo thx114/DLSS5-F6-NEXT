@@ -19,6 +19,7 @@
 #include <runtime/F6InputPolicy.h>
 #include <framegen/dlssg/DlssgTelemetry.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
+#include <framegen/FgRuntimeStatus.h>
 #include <framegen/GuideOrientation.h>
 #include <dlssnr/DlssNr_ExposureScan.h>
 
@@ -32,6 +33,7 @@
 
 #include <dlssnr/DlssNr.h>
 #include <native/VirtualUpscalerDriver.h>
+#include <inputs/taa/TaaInputDx11.h>
 #include <native/NativeLowLatency.h>
 #include <native/VkPresentBridge.h>
 
@@ -52,6 +54,7 @@
 #include <nvapi/fakenvapi.h>
 #include <hooks/FG_Hooks.h>
 #include <hooks/Reflex_Hooks.h>
+#include <hooks/Streamline_Hooks.h>
 
 #include <version_check.h>
 
@@ -138,9 +141,8 @@ static std::string currentBackendName = "";
 static int refreshRate = 0;
 static ImVec2 lastPosition(-1000.0f, -1000.0f);
 
-// How many frames DLSS frame generation adds per real frame (0: off). A game's own DLSS frame generation reports it on
-// each evaluate; OptiScaler's own DLSSG output (OptiFG input, e.g. Optical F5Low's upscaler) gets no such report back,
-// so there it is the count OptiScaler asked for while its frame generation runs.
+// The game can report an interpolation count through its own NGX parameters.
+// An absent report is unknown; the F6-owned provider has no per-source count here.
 static int DlssgInterpolationCount(const State& state)
 {
     // GetState returns a query-interval total, not a per-source multiplier.
@@ -151,6 +153,25 @@ static int DlssgInterpolationCount(const State& state)
         return reported;
 
     return 0;
+}
+
+static const char* FgRuntimeText(framegen::RuntimeStatus status)
+{
+    switch (status)
+    {
+    case framegen::RuntimeStatus::External: return "外部控制；生成状态未知";
+    case framegen::RuntimeStatus::Off: return "关闭";
+    case framegen::RuntimeStatus::NoRoute: return "未选择可用路线";
+    case framegen::RuntimeStatus::Initializing: return "正在初始化";
+    case framegen::RuntimeStatus::Paused: return "已暂停；等待重建";
+    case framegen::RuntimeStatus::Waiting: return "已启用；等待输入";
+    case framegen::RuntimeStatus::InputGap: return "输入暂缺；显示原始帧";
+    case framegen::RuntimeStatus::OutputObserved: return "已启用；已观测 SDK 输出";
+    case framegen::RuntimeStatus::SdkDisabled: return "SDK 未启用帧生成";
+    case framegen::RuntimeStatus::SdkError: return "输出异常；等待新状态";
+    case framegen::RuntimeStatus::Stale: return "状态已过期；等待新采样";
+    default: return "已启用；生成状态未确认";
+    }
 }
 
 static ImVec2 splashPosition(-1000.0f, -1000.0f);
@@ -1914,6 +1935,8 @@ struct MenuCommon::RenderMenuContext
     bool newFrame = false;
     bool usesSourceStatistics = false;
     std::string frameStatistics;
+    framegen::RuntimeSnapshot fgObservation {};
+    framegen::RuntimeStatus fgStatus = framegen::RuntimeStatus::Off;
 
     VersionCheckStatus versionStatus;
     std::string currentVersionText;
@@ -1954,15 +1977,6 @@ void MenuCommon::UpdateRenderTiming(RenderMenuContext& ctx)
             MenuCommon::Present();
 
         frameTime = lastFrameTime;
-        frameRate = 1000.0 / frameTime;
-    }
-
-    // A dxvk game on the Vulkan bridge: the menu is drawn on the game's presents only, frame generation's swapchain
-    // presents the generated frames past our hooks. The shown frames come that many times as often.
-    if (auto fg = state.currentFG; VkPresentBridge::MenuOnGamePresents() && fg != nullptr && fg->IsActive() &&
-                                   !fg->IsPaused() && frameTime > 0.0)
-    {
-        frameTime /= (double) (fg->GetInterpolatedFrameCount() + 1);
         frameRate = 1000.0 / frameTime;
     }
 
@@ -2335,18 +2349,27 @@ void MenuCommon::UpdateFrameTimeAverages(RenderMenuContext& ctx)
     {
         // Read once for this renderer frame. A missed observation lock keeps
         // the last coherent sample, with its age still checked below.
-        ctx.usesSourceStatistics = state.activeFgOutput == FGOutput::DLSSG ||
+        ctx.fgStatus = framegen::SelectRuntimeStatus({state.externalFrameGeneration,
+            config->FGEnabled.value_or_default(),
+            state.activeFgInput != FGInput::NoFG && state.activeFgOutput != FGOutput::NoFG,
+            state.currentFG != nullptr});
+        const auto sampleNow = framegen::RuntimeNowNs();
+        const bool ownProvider = !state.externalFrameGeneration && config->FGEnabled.value_or_default() &&
+            state.activeFgInput != FGInput::NoFG && state.activeFgOutput != FGOutput::NoFG;
+        if (ownProvider && framegen::RuntimeState().Read(
+            reinterpret_cast<uintptr_t>(state.currentFG), sampleNow, ctx.fgObservation))
+            ctx.fgStatus = ctx.fgObservation.status;
+        ctx.usesSourceStatistics = state.activeFgOutput != FGOutput::NoFG || state.externalFrameGeneration ||
             (F6InputPolicy::DirectDlssInputs && ctx.currentFeature != nullptr);
         struct StatisticsCache {
             GuideDiagnostics::Statistics observed;
-            uint64_t sourceEnd=0,querySequence=0;
+            uint64_t sourceEnd=0,querySequence=0,instance=0,epoch=0;
             bool sourceKnown=false,sdkKnown=false,english=false;
             std::string text;
         };
         static thread_local StatisticsCache cache;
         auto& observed=cache.observed;
         if (ctx.usesSourceStatistics) GuideDiagnostics::ReadStatistics(observed);
-        const auto sampleNow = FrameTrace::NowNs();
         const bool sourceKnown = observed.source.known && std::isfinite(observed.source.hz) &&
             observed.source.hz > 0 && sampleNow >= observed.source.lastNs &&
             sampleNow-observed.source.lastNs <= 3000000000ull;
@@ -2354,21 +2377,21 @@ void MenuCommon::UpdateFrameTimeAverages(RenderMenuContext& ctx)
         {
             frameRate = sourceKnown ? observed.source.hz : 0.0;
             frameTime = frameRate > 0 ? 1000.0/frameRate : 0.0;
-            const bool sdkKnown=observed.sdkSucceeded && observed.intervalKnown && observed.endNs > observed.beginNs &&
-                sampleNow >= observed.endNs && sampleNow-observed.endNs <= 3000000000ull;
+            const auto& sdkRate = ctx.fgObservation.outputRate;
+            const bool sdkKnown = ownProvider && sdkRate.known;
             // Generated-output callbacks reuse text until the actual source,
             // SDK interval or freshness changes. They do not recalculate FPS.
             if (cache.text.empty() || cache.sourceEnd!=observed.source.lastNs ||
-                cache.querySequence!=observed.querySequence || cache.sourceKnown!=sourceKnown || cache.sdkKnown!=sdkKnown ||
+                cache.querySequence!=sdkRate.sequence || cache.sourceKnown!=sourceKnown || cache.sdkKnown!=sdkKnown ||
+                cache.instance!=ctx.fgObservation.instance || cache.epoch!=ctx.fgObservation.epoch ||
                 cache.english!=NextgenUi::English())
             {
-                cache.sourceEnd=observed.source.lastNs;cache.querySequence=observed.querySequence;
+                cache.sourceEnd=observed.source.lastNs;cache.querySequence=sdkRate.sequence;
+                cache.instance=ctx.fgObservation.instance;cache.epoch=ctx.fgObservation.epoch;
                 cache.sourceKnown=sourceKnown;cache.sdkKnown=sdkKnown;cache.english=NextgenUi::English();
-                cache.text=sourceKnown ? StrFmt("源：%.1f Hz",frameRate) : MenuText::Translate("源：未知");
-                if (sdkKnown) cache.text+=StrFmt(" | SDK：%u / %.2f ms",observed.presented,
-                    (observed.endNs-observed.beginNs)*1e-6);
-                else cache.text+=MenuText::Translate(" | SDK：区间未知");
-                cache.text+=MenuText::Translate(" | 实际显示率：未知");
+                cache.text=sourceKnown ? MenuText::Format("源 API：%.1f Hz",frameRate) : MenuText::Translate("源 API：未知");
+                if (sdkKnown) cache.text+=MenuText::Format(" | SDK 输出：%.1f FPS（含 FG）",sdkRate.hz);
+                else cache.text+=MenuText::Translate(" | FG 后输出：未知");
             }
             ctx.frameStatistics=cache.text;
         }
@@ -2717,11 +2740,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             std::string secondLine = "";
             std::string thirdLine = "";
 
-            const bool unmeasuredGenshinFg = ctx.usesSourceStatistics;
-
-            auto fg = state.currentFG;
-            auto fgText = (fg != nullptr && fg->IsActive() && !fg->IsPaused()) ? (" (" + std::string(fg->Name()) + ")")
-                                                                               : std::string();
+            std::string fgText;
 
             const int fakeFramesCount = DlssgInterpolationCount(state);
             auto formatFg = [&](std::string_view name, int maxFakeFrames)
@@ -2730,7 +2749,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                     return MenuText::Format("（%s 不支持超过 %dx）", std::string(name), maxFakeFrames);
 
                 else if (fakeFramesCount == 0)
-                    return MenuText::Format("（%s 已关闭）", std::string(name));
+                    return MenuText::Format("（%s 状态未知）", std::string(name));
 
                 return std::format(" ({} x{})", name, fakeFramesCount + 1);
             };
@@ -2752,13 +2771,13 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             {
                 fgText = formatFg("Combo", Nvngx_FG::getMaxFakeFramesCount());
             }
-            else if (state.activeFgOutput == FGOutput::DLSSG && fg)
+            else if (state.activeFgOutput == FGOutput::DLSSG)
             {
-                // Genshin's requested multiplier is not a measured generated FPS.
-                // Unknown output must not be presented as "DLSSG off".
-                fgText = unmeasuredGenshinFg && fg->IsActive() && !fg->IsPaused()
-                    ? MenuText::Translate("（DLSSG 已运行；实际生成帧率未知）")
-                    : formatFg("DLSSG", fg->GetMaxInterpolationCount());
+                fgText = MenuText::Format("（DLSSG：%s）", FgRuntimeText(ctx.fgStatus));
+            }
+            else if (state.activeFgOutput != FGOutput::NoFG || state.externalFrameGeneration)
+            {
+                fgText = MenuText::Format("（FG：%s）", FgRuntimeText(ctx.fgStatus));
             }
 
             const auto overlayType = config->FpsOverlayType.value_or_default();
@@ -2779,28 +2798,9 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             }
 
 
-            if (unmeasuredGenshinFg)
+            if (ctx.usesSourceStatistics)
             {
                 fpsPart=ctx.frameStatistics; // same immutable reading as footer
-            }
-            else if (fg != nullptr && fg->IsActive() && !fg->IsPaused())
-            {
-                const double baseFps = frameRate / (double) (fg->GetInterpolatedFrameCount() + 1);
-
-                switch (overlayType)
-                {
-                case FpsOverlay_JustFPS:
-                    fpsPart = StrFmt("%6.1f/%5.1f ", frameRate, baseFps);
-                    break;
-
-                case FpsOverlay_Simple:
-                    fpsPart = StrFmt("FPS：%6.1f/%5.1f，%7.2f ms", frameRate, baseFps, frameTime);
-                    break;
-
-                default:
-                    fpsPart = StrFmt("FPS：%6.1f/%5.1f，平均：%6.1f", frameRate, baseFps, 1000.0f / averageFrameTime);
-                    break;
-                }
             }
             else
             {
@@ -2951,7 +2951,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                 {
                     gotData = InputCommon::get_timing_data(timingData);
                     gpuTimings.Capture(config->DlssNrEnabled.value_or_default(),
-                        fg != nullptr ? fg->FrameCount() : 0, state.reflexFrameId);
+                        ctx.fgObservation.sourceFrame, state.reflexFrameId);
                     previousPoll = now;
                 }
 
@@ -3003,7 +3003,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                 {
                     gotData = ReflexHooks::updateTimingData(timingReport);
                     gpuTimings.Capture(config->DlssNrEnabled.value_or_default(),
-                        fg != nullptr ? fg->FrameCount() : 0, state.reflexFrameId);
+                        ctx.fgObservation.sourceFrame, state.reflexFrameId);
                     previousPoll = now;
                 }
 
@@ -3464,6 +3464,85 @@ void MenuCommon::RenderGimiSettings(RenderMenuContext& ctx)
             static_cast<unsigned long long>(mod.executed), static_cast<unsigned long long>(mod.matched), mod.pending, mod.quarantined);
         MenuText::ItemHelp(text("仅为真实运行计数，不代表整包加载、像素正确或游戏兼容验收。",
                                "Actual runtime counts only; they do not establish full-package loading, correct pixels or game compatibility."));
+    }
+}
+
+void MenuCommon::RenderTaaSourceSettings(RenderMenuContext& ctx)
+{
+    auto* config=ctx.config;
+    MenuText::SeparatorText("TAA 输入源（实验）");
+    const auto apply=[&]{taa::Configure(config->TaaMode.value_or_default(),config->TaaProfile.value_or(""),{},config->TaaCandidate.value_or(""));};
+    const char* modes[]{"关闭","发现","自动替换"};
+    int mode=static_cast<int>(config->TaaMode.value_or_default());
+    if (MenuText::Combo("TAA 模式",&mode,modes,3)) {
+        config->TaaMode=static_cast<taa::Mode>(mode);
+        apply();
+    }
+    MenuText::TextWrapped("自动分析 TAA 输入并选择可替换候选；也可手动固定候选。下方仍选择实际超分后端，仅支持 D3D11。");
+    if (mode==0) return;
+    const auto status=taa::ReadStatus();
+    const auto ready=std::count_if(status.candidates.begin(),status.candidates.end(),[](const auto& c){return bool(c.inferred);});
+    MenuText::Text("TAA 候选：已观察 %u／通过输入检查 %u",unsigned(status.candidates.size()),unsigned(ready));
+    if(!status.evidenceDirectory.empty())MenuText::TextWrapped("着色器诊断目录：%s",status.evidenceDirectory.c_str());
+    std::vector<const taa::Candidate*> candidates;
+    for(const auto& c:status.candidates)candidates.push_back(&c);
+    std::stable_sort(candidates.begin(),candidates.end(),[](const auto* a,const auto* b){
+        if(bool(a->inferred)!=bool(b->inferred))return bool(a->inferred);
+        return uint64_t(a->width)*a->height>uint64_t(b->width)*b->height;
+    });
+    std::vector<std::string> labels;labels.reserve(candidates.size()+2);labels.push_back(MenuText::Translate("自动选择"));
+    int selection=0;
+    for(size_t i=0;i<candidates.size();++i) {
+        const auto& c=*candidates[i];
+        labels.push_back(std::format("{} {:016X}  {}x{}{}",c.stage==taa::Stage::Pixel?"PS":"CS",c.hash,c.width,c.height,c.inferred?" *":""));
+        if(c.Key()==status.selected)selection=int(i)+1;
+    }
+    if(status.selected.hash&&selection==0){labels.push_back(taa::KeyText(status.selected));selection=int(labels.size())-1;}
+    std::vector<const char*> choices;choices.reserve(labels.size());for(const auto& label:labels)choices.push_back(label.c_str());
+    if(MenuText::Combo("TAA 候选",&selection,choices.data(),int(choices.size()))) {
+        config->TaaCandidate=selection>0&&size_t(selection)<=candidates.size()?taa::KeyText(candidates[size_t(selection)-1]->Key()):std::string{};
+        config->TaaProfile=std::string{};apply();
+    }
+    MenuText::TextWrapped("带 * 的候选已解析并通过输入检查。未解析的候选可固定查看原因；不会填入猜测的运动或 jitter。");
+    if(status.active.hash)ImGui::Text("%s",taa::KeyText(status.active).c_str());
+    if(status.selected.hash) {
+        const auto selected=std::find_if(status.candidates.begin(),status.candidates.end(),[&](const auto& c){return c.Key()==status.selected;});
+        if(selected!=status.candidates.end()){ImGui::TextWrapped("%s",selected->bindings.c_str());MenuText::TextWrapped("%s",selected->reason.c_str());}
+        else MenuText::TextWrapped("等待选定候选出现；可切回自动选择。");
+    }
+    if(MenuText::Button("恢复自动选择")){config->TaaCandidate=std::string{};config->TaaProfile=std::string{};apply();}
+    if(MenuText::TreeNode("高级 TAA 配置（可选）")) {
+    static std::array<char,1024> profile{};
+    static std::string lastProfile;
+    static bool initialized=false;
+    const auto selected=config->TaaProfile.value_or("");
+    if (!initialized || selected!=lastProfile) {
+        initialized=true;lastProfile=selected;
+        std::snprintf(profile.data(),profile.size(),"%s",selected.c_str());
+    }
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    MenuText::InputText("TAA 配置路径",profile.data(),profile.size());
+    if (MenuText::Button("载入 TAA 配置")) {
+        config->TaaProfile=std::string(profile.data());lastProfile=profile.data();
+        config->TaaCandidate=std::string{};
+        apply();
+    }
+    ImGui::TreePop();
+    }
+    if (!status.ownerReady) MenuText::TextWrapped("等待游戏的 D3D11 输入；D3D12 和 Vulkan 继续使用原有链路。");
+    if (!status.profileError.empty()) MenuText::TextWrapped("%s",status.profileError.c_str());
+    if (!status.detail.empty()) MenuText::TextWrapped("%s",status.detail.c_str());
+    MenuText::Text("TAA：匹配 %llu／调用 %llu／当前输出 %llu",static_cast<unsigned long long>(status.matches),
+        static_cast<unsigned long long>(status.evaluations),static_cast<unsigned long long>(status.outputs));
+    if(!status.active.hash&&mode==2)MenuText::TextWrapped("正在等待可替换候选；展开列表查看每项分析状态。");
+    if (MenuText::TreeNode("TAA 候选着色器")) {
+        for (const auto& candidate:status.candidates) {
+            ImGui::Text("%s %016llX  %llu",candidate.stage==taa::Stage::Pixel?"PS":"CS",
+                static_cast<unsigned long long>(candidate.hash),static_cast<unsigned long long>(candidate.calls));
+            ImGui::TextWrapped("%s",candidate.bindings.c_str());
+            MenuText::TextWrapped("%s",candidate.reason.c_str());
+        }
+        ImGui::TreePop();
     }
 }
 
@@ -4863,6 +4942,9 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         MenuText::TextWrapped(requested
             ? "帧生成请求：已启用。实际插帧与生成帧数尚未确认。"
             : "帧生成请求：已关闭。");
+        MenuText::Text("当前 DLSS-G 状态：");
+        ImGui::SameLine();
+        MenuText::Text("%s", FgRuntimeText(ctx.fgStatus));
     }
     if (genshinDlssgRequested && !dlssgRuntimeControlsReady)
     {
@@ -5341,14 +5423,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         {
             MenuText::Text("当前 DLSS-G 状态：");
             ImGui::SameLine();
-            if (auto count = DlssgInterpolationCount(state); count > 0)
-            {
-                MenuText::TextColored(toneMapColor(ImVec4(0.f, 1.f, 0.25f, 1.f)), "开启 %dx", count + 1);
-            }
-            else
-            {
-                MenuText::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)), "关闭");
-            }
+            MenuText::Text("%s", FgRuntimeText(ctx.fgStatus));
 
             bool fgActive = config->FGEnabled.value_or_default();
             if (MenuText::Checkbox("启用##4", &fgActive))
@@ -5543,7 +5618,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             orientationOverride("FG 运动贴图上下翻转", config->FGMotionTextureFlipY);
             orientationOverride("FG 运动 Y 分量取反", config->FGMotionYInverted);
             ShowHelpMarker("贴图上下翻转改变采样行，Y 分量取反改变运动方向；三项仅作用于 FG，独立于 NR。修改后重建 FG 输入。");
-            const auto fgOrientation = framegen::ResolveGuideOrientation(*config);
+            const auto fgOrientation = framegen::ResolveGuideOrientation(*config, state.currentFG && state.currentFG->PreparedRasterGuides());
             MenuText::Text("FG 当前方向：深度翻转 %s / 运动翻转 %s / Y 取反 %s",
                 fgOrientation.depthFlipY ? "开启" : "关闭",
                 fgOrientation.motionFlipY ? "开启" : "关闭",
@@ -6044,28 +6119,19 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
     {
         SeparatorWithHelpMarker("帧生成（Streamline 输入）", "请在游戏启用 DLSS 插帧");
 
-        auto fgOutput = reinterpret_cast<IFGFeature_Dx12*>(state.currentFG);
-
         if (!ReflexHooks::isReflexHooked())
         {
             MenuText::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)), "Reflex 钩子未安装");
             MenuText::Text("AMD／Intel 显卡需安装 fakenvapi。");
         }
-        else if (fgOutput != nullptr)
+        else if (state.currentFG != nullptr)
         {
             MenuText::Text("当前 Streamline 插帧状态：");
             ImGui::SameLine();
-            if ((state.fgLastFrame - state.dlssgLastFrame) < 3)
+            MenuText::Text("%s", FgRuntimeText(ctx.fgStatus));
+            if (ctx.fgStatus == framegen::RuntimeStatus::Waiting ||
+                ctx.fgStatus == framegen::RuntimeStatus::InputGap)
             {
-                if (fgOutput->IsActive())
-                    MenuText::TextColored(toneMapColor(ImVec4(0.f, 1.f, 0.25f, 1.f)), "ON");
-                else
-                    MenuText::TextColored(toneMapColor(ImVec4(1.0f, 0.647f, 0.0f, 1.f)), "启用插帧");
-            }
-            else
-            {
-                MenuText::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)), "关闭");
-
                 // A feature recreate, cache miss, or a skipped present can leave a few presents
                 // without a matching DLSS-G input even though the game selected FG earlier. Keep
                 // the actionable selection warning for the true never-selected state only.
@@ -8176,6 +8242,7 @@ void MenuCommon::RenderMainMenuPages(RenderMenuContext& ctx)
         case Page::Upscaler:
         {
             const MenuText::ScopedSeparatorOmission heading("超分辨率");
+            section(RenderTaaSourceSettings);
             section(RenderActiveUpscalerSettings);
             break;
         }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <cstdint>
+#include <runtime/SourceNrReceipt.h>
 #include "GuideMetadata.h"
 #include <runtime/GuideSourceMetadata.h>
 
@@ -10,6 +11,8 @@ struct ID3D12CommandQueue;
 // or import shader constants, Config, State, a game name or a graphics SDK.
 struct DlssNrFrameInfo
 {
+    // Optional caller-owned sink; valid only during this synchronous Dispatch.
+    source_colour::Recording* ColourRecording = nullptr;
     DlssNr::GuideMetadata::Provenance GuideProvenance;
     GuideSourceMetadata::Ptr RawSourceMetadata;
     uint64_t GuideObservationTick = 0; // original capture time; completion must not refresh it
@@ -43,6 +46,7 @@ struct DlssNrFrameInfo
     uint32_t InputEncoding = 0;
     uint32_t ColourEncoding = 0;
     bool ColourEncodingForced = false;
+    bool ColourEncodingFlagKnown = true;
 
     // The SR colour input arrives readable, whereas a completed upscaler output normally arrives as
     // a UAV. The DX12 pass uses this to preserve the caller's state and to fall back through a copy
@@ -52,7 +56,12 @@ struct DlssNrFrameInfo
     // FinishedPicture copies use their explicit OutputArrivalState instead.
     bool PrivateColorCopy = false;
     bool FinishedPicture = false;
-    bool GenshinPresentPipeline = false; // sole source-Present writer; no legacy output/cadence reuse
+    // Actual successful SR output, before game HUD/postprocessing. Its caller
+    // owns the source recording and submission; it is not a finished picture
+    // and does not claim an independent NR command list.
+    bool SourceOutput = false;
+    bool PreviewIndependentCommands = false;
+    bool CanRecordPreview() const { return IndependentCommands || PreviewIndependentCommands; }
     // Native DLSS-G input: experimental spatial compression is held off after a device hang.
     bool FrameGenerationInput = false;
     // The motion vectors describe this very picture, HUD and post-processing included, because they were measured on
@@ -61,6 +70,7 @@ struct DlssNrFrameInfo
     bool MotionMatchesPicture = false;
     // Provenance, separate from permission to reuse native HUDless vectors.
     bool MotionIsPictureFlow = false; // optical vectors already in current colour coordinates
+    bool MotionIsPictureAligned = false; // prepared raster vectors: same coordinates, still native scene semantics
     bool DepthIsPictureAligned = false; // depth finder/synthetic guide already aligned to current colour
     // Request the existing native-present guide path, independently of guide validity.
     // Currently populated by the StarRail endpoint. Never select it from an exe name:

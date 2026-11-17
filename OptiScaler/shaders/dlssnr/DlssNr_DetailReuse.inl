@@ -125,7 +125,7 @@ bool CanonicalNativeHistoryPhase(const Frame& f)
     if (!f.nativeTemporalRouteRequested || !DlssNrDetailReuse::NativeGuideAuthority(f) || f.info == nullptr)
         return false;
     const auto& native = *f.info;
-    if (!native.NativeSceneRoute || !native.FinishedPicture || native.BeforeUpscale ||
+    if (!native.NativeSceneRoute || (!native.FinishedPicture && !native.SourceOutput) || native.BeforeUpscale ||
         !native.NativeRouteConventionVerified || !native.NativeGuideMetadataKnown ||
         !native.NativeFeatureFlagsKnown || !native.NativeCurrentJitterKnown || !native.NativeMotionJitterKnown ||
         native.NativeMotionVectorsJittered || !native.MotionVectorsLowResolution ||
@@ -1343,7 +1343,7 @@ void CaptureContribution(const Frame& f, ID3D12Resource* fresh, ID3D12Resource* 
     const bool preview=GuideCapture::HistoryDebugView()==0&&GuideCapture::TryBeginSample(GuideCapture::Stream::History,previewToken);
     const bool offline=GuideCapture::OfflineSampleDue(GuideCapture::Stream::History);
     struct Cancel {GuideCapture::SampleToken& token;~Cancel(){GuideCapture::CancelSample(token);}} cancel{previewToken};
-    if ((!preview&&!offline) || !f.info || !f.info->IndependentCommands || !fresh || !fused || fresh==fused)
+    if ((!preview&&!offline) || !f.info || !f.info->CanRecordPreview() || !fresh || !fused || fresh==fused)
         return;
     GuideCapture::Inputs input;
     input.independentRecording=true;

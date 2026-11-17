@@ -2,6 +2,7 @@
 #include "HoYoShadeApi.h"
 #include <Windows.h>
 #include <d3d12.h>
+#include <d3d11_1.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 #include <cstdint>
@@ -142,12 +143,19 @@ struct Binding
     // not released with per-submit payloads. Quarantined entries keep it.
     std::shared_ptr<void> configLifetime;
     bool exclusiveRuntime = false; // managed main INI: drain/destroy old runtime before creating another
+    // Exactly one native backend per binding. D3D11 uses the actual immediate
+    // context; it never aliases these pointers as a D3D12 queue/device.
+    ID3D11Device* device11 = nullptr;
+    ID3D11DeviceContext* context11 = nullptr;
 };
 
 struct Completion
 {
     Microsoft::WRL::ComPtr<ID3D12Fence> fence;
     uint64_t value = 0;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context11;
+    Microsoft::WRL::ComPtr<ID3D11Query> event11;
+    DWORD contextThread11 = 0;
     // Nonblocking. MAX/device removal is unknown and never authorizes recycling.
     bool IsComplete() const noexcept;
 };

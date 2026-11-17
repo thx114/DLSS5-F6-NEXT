@@ -1,4 +1,5 @@
-#include <pch.h>
+﻿#include <pch.h>
+#include <inputs/taa/TaaSourceOutput.h>
 #include <native/OpticalFgNrPolicy.h>
 #include <integration/HoYoShade.h>
 #include <integration/HoYoShadeNaturalAssociation.h>
@@ -16,6 +17,9 @@
 #include <runtime/HookCpuTiming.h>
 #include <optional>
 #include <format>
+#if defined(F6_PRESENTATION_PROBE)
+#include <runtime/F6PresentationProbe.h>
+#endif
 
 #include <dlssnr/DlssNr.h>
 
@@ -301,6 +305,7 @@ bool IFeature_Dx11wDx12::CreateD3D12Objects()
 
 bool IFeature_Dx11wDx12::ReleaseSharedResources(bool releaseProvider)
 {
+    RecordingOwners::Use recordingUse(*recordingOwners);
     // An exception after Execute but before its successful Signal has no safe
     // fence target. Do not manufacture a future target or release those owners.
     if(submissionUnfenced)return false;
@@ -365,6 +370,8 @@ bool IFeature_Dx11wDx12::ReleaseSharedResources(bool releaseProvider)
         }
     }
 
+    recordingOwners->ForgetAll();
+
     // Final Genshin teardown must release the provider while its borrowed
     // device/queue and creation recordings are still owned by this wrapper.
     // Context-only recreation keeps the provider and uses the default false.
@@ -410,8 +417,7 @@ bool IFeature_Dx11wDx12::ProcessDx11Textures(const NVSDK_NGX_Parameter* InParame
         LOG_DEBUG("AutoExposure enabled!");
 
     const bool reactiveDisabled = Config::Instance()->DisableReactiveMask.value_or(false);
-    const bool reactiveRequired = Config::Instance()->Dx11Upscaler.value_or_default() == Upscaler::XeSS ||
-                                  Config::Instance()->Dx11Upscaler.value_or_default() == Upscaler::XeSS_on12;
+    const bool reactiveRequired = GetUpscalerType() == Upscaler::XeSS || GetUpscalerType() == Upscaler::XeSS_on12;
 
     if (!reactiveDisabled)
         mask |= Dx11WithDx12::ResourceMask::Reactive;
@@ -516,6 +522,7 @@ bool IFeature_Dx11wDx12::ProcessDx11Textures(const NVSDK_NGX_Parameter* InParame
     }
 
     DlssNr::FinishedPictureResetCommandList(Dx12CommandList[commandFrame]);
+    recordingOwners->Forget(commandFrame);
     LOG_DEBUG("Shared handles prepared and synchronized by Dx11WithDx12 cache, frameKey: {}", cacheFrameKey);
     return true;
 }
@@ -689,9 +696,13 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
     if (orderedOutput) *orderedOutput = nullptr;
     HoYoShade::BeginBeforeSrSource(InDeviceContext, reinterpret_cast<uint64_t>(this));
     const uint64_t nrSourceAttempt = nrSourceAttempts.fetch_add(1, std::memory_order_relaxed) + 1;
-    const auto presentSourceAttempt = DlssNr::BeginGenshinPresentSource();
+    const bool preparedRasterGuides = Handle() && taa::source_output::PreparedRasterGuides(Handle()->Id);
+    const bool sourceOutputNr = DlssNr::UsesSourceOutput() &&
+        (!taa::source_output::Selected(taa::OwnsInput()) ||
+         (Handle() && taa::source_output::Authorized(Handle()->Id)));
     // Revoke the last successful observation even on the earliest failure.
     currentInputMetadata.reset();
+    currentSourceNr = {};
     GuideSourceMetadata::Ptr evaluatedInputMetadata;
 
     CallerCpuTrace::Scope callerCpuScope(CallerCpuTrace::Op::Evaluate, this, Handle() ? Handle()->Id : 0, _frameCount, UINT64_MAX, 0, 0, true);
@@ -700,12 +711,19 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
     if (!IsInited() || submissionUnfenced || !InParameters || !InDeviceContext)
         return false;
 
+    // Cached SR features may never receive another Evaluate or Release. Close
+    // only idle private recordings with their actual completed owner fence.
+    const auto retired = RecordingOwners::Poll(recordingOwners.get(), DlssNr::RetireFinishedPictureRecording);
+    if (retired) LOG_DEBUG("Closed {} completed idle DX11 bridge recordings", retired);
+    RecordingOwners::Use recordingUse(*recordingOwners);
+
     // Real bridge owner, before BeforeSR admission and any SDK work.
     HoYoShade::RenderOwnerScope hoYoSettingsOwner;
     // Read DX11 inputs through the caller until translation, then expose only
     // the exact DX12 cache resources to SR/NR. Never write cross-API pointers
     // into a native DX11 NGX table. The private legacy transport retains its
     // separately authenticated parameter identity.
+    const auto* originalParameters = InParameters;
     OptiBridge::NgxDx12ResourceView dx12Parameters(*InParameters);
     InParameters = &dx12Parameters;
     // The prior feature fence was signalled by its DX12 queue. Waiting for
@@ -813,6 +831,7 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
     bool commandListExecuteReturned = false;
     Dx11WithDx12::OutputCopy outputCopy;
     ID3D12Resource* recordedOutput = nullptr;
+    auto sourceNrResult = source_colour::Result::Unknown;
     try
     {
     do
@@ -911,7 +930,7 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
 
             // The actual source chain proves selection through proxy devices.
             // Its backbuffer is association evidence, never the low-resolution SR input.
-            endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrBridgeInput;
+            endpoint.naturalContract = HoYoShade::NaturalSourceContract::BeforeSrInput;
             endpoint.naturalSource = naturalSource.Get();
             if (const auto* proof = naturalSource.Get()) {
                 const auto& observation = proof->Observation();
@@ -971,13 +990,13 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
             if (producerMatches || ((!beforeSr || !beforeSr->HasDeclaration()) && beforeSrFlagsKnown &&
                 !endpoint.colorX && !endpoint.colorY && !depthX && !depthY))
                 endpoint.depth = HoYoShade::Depth::FromBridge(sharedRead, endpoint.width, endpoint.height,
-                    producerMatches ? (beforeSr->frame.flags & neo::interop::k_before_sr_depth_inverted) != 0 :
+                    producerMatches ? (beforeSr->frame.flags & interop::k_sr_depth_inverted) != 0 :
                         (beforeSrFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0);
             const auto filtered = HoYoShade::RenderStage(endpoint);
             if (filtered.Uncertain()) {
                 // No SR consumer may read a color with uncertain barriers or
                 // an unsignalled owned batch. Keep this feature's transport.
-                sharedRead->Quarantine(); submissionUnfenced = true;  break;
+                sharedRead->Quarantine(); SetSubmissionUnfenced(true);  break;
             }
             if (filtered.Submitted()) {
                 // RenderStage submitted and restored THIS input on THIS queue.
@@ -987,7 +1006,7 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
                     filtered.completion.value == UINT64_MAX ||
                     filtered.completion.fence->GetCompletedValue() == UINT64_MAX ||
                     !sharedRead->BindCompletion(filtered.completion.fence.Get(), filtered.completion.value)) {
-                    sharedRead->Quarantine(); submissionUnfenced = true;  break;
+                    sharedRead->Quarantine(); SetSubmissionUnfenced(true);  break;
                 }
                 if (
                     (WithDx12::GetD3D12CommandQueue() != Dx12CommandQueue ||
@@ -995,14 +1014,13 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
                     // Even if provider evaluation later fails, the legacy
                     // D3D11 cache/unknown readers must not race filter copyback.
                     // Failed handoff keeps the actual owners until restart.
-                    sharedRead->Quarantine(); submissionUnfenced = true;  break;
+                    sharedRead->Quarantine(); SetSubmissionUnfenced(true);  break;
                 }
                 beforeSrFilter = filtered;
                 beforeSrInput = endpoint;
             } else sharedRead->CancelUntouched();
         }
-        const bool fixedPresentNr = DlssNr::UsesGenshinPresentPipeline();
-        const bool bridgeFinishedNr = fixedPresentNr || (Config::Instance()->DlssNrFinishedPicture.value_or_default() &&
+        const bool bridgeFinishedNr = !sourceOutputNr && (Config::Instance()->DlssNrFinishedPicture.value_or_default() &&
             !Config::Instance()->DlssNrRunBeforeSr.value_or_default() &&
             !Config::Instance()->DlssNrDeferredDlss.value_or_default());
         CallerCpuTrace::Scope nrBeforeCpu(CallerCpuTrace::Op::NrBefore, this, Handle() ? Handle()->Id : 0, _frameCount, commandFrame);
@@ -1032,26 +1050,22 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
             if(InParameters->Get(NVSDK_NGX_Parameter_MotionVectors,&motion)!=NVSDK_NGX_Result_Success)
                 InParameters->Get(NVSDK_NGX_Parameter_MotionVectors,reinterpret_cast<void**>(&motion));
             evaluatedInputMetadata=GuideSourceMetadata::ReadNgx(*InParameters,std::move(raw),depth,motion);
-        if ( (fixedPresentNr || !native::OpticalFgNrEnabled()) && ((bridgeFinishedNr && Config::Instance()->DlssNrEnabled.value_or_default()) || diagnosticSource))
-            DlssNr::CaptureFinishedPictureDx11Bridge(cmdList, Dx12CommandQueue, InParameters,
-                                                    dx12Feature->GetUpscalerType() == Upscaler::DLSSD,
-                                                    (unsigned) dx12Feature->GetFeatureFlags(),
-                                                    dx12Feature->GetFeatureFlagsKnown(),
-                                                    { dx12Feature->Handle() ? dx12Feature->Handle()->Id : 0,
-                                                      dx12Feature.get(), Handle() ? Handle()->Id : 0,
-                                                      (unsigned)dx12Feature->GetFeatureFlags(), dx12Feature->GetFeatureFlagsKnown(),
-                                                      nrSourceRegion.width, nrSourceRegion.height,
-                                                      nrSourceRegion.width!=0 && nrSourceRegion.height!=0,
-                                                      evaluatedInputMetadata });
-        else if ( !native::OpticalFgNrEnabled() && !bridgeFinishedNr)
-            DlssNr::EvaluateBeforeUpscale(cmdList, InParameters, Dx12CommandQueue, nrSourceAttempt,
-                                      dx12Feature->GetUpscalerType() == Upscaler::DLSSD,
-                                      { dx12Feature->Handle() ? dx12Feature->Handle()->Id : 0,
-                                        dx12Feature.get(), Handle() ? Handle()->Id : 0,
-                                        (unsigned)dx12Feature->GetFeatureFlags(), dx12Feature->GetFeatureFlagsKnown(),
-                                        nrSourceRegion.width, nrSourceRegion.height,
-                                        nrSourceRegion.width != 0 && nrSourceRegion.height != 0,
-                                        evaluatedInputMetadata });
+        DlssNr::UpscaleSource nrSource{dx12Feature->Handle()?dx12Feature->Handle()->Id:0,
+            dx12Feature.get(),Handle()?Handle()->Id:0,
+            (unsigned)dx12Feature->GetFeatureFlags(),dx12Feature->GetFeatureFlagsKnown(),
+            nrSourceRegion.width,nrSourceRegion.height,nrSourceRegion.width!=0&&nrSourceRegion.height!=0,
+            evaluatedInputMetadata,nullptr,preparedRasterGuides,dx12Feature->GetNativeDlssCreateFlags()};
+        if (beforeSr && beforeSr->origin == interop::SrInputOrigin::Taa) {
+            nrSource.syntheticColorFlagKnown = Handle() && beforeSr->TaaHdrFlagDeclared(
+                InDeviceContext,originalParameters,Handle()->Id,restoreParamColor,restoreParamDepth,
+                restoreParamMv,Config::Instance()->HDR.has_value());
+        }
+        if (!sourceOutputNr && !native::OpticalFgNrEnabled() && ((bridgeFinishedNr && Config::Instance()->DlssNrEnabled.value_or_default()) || diagnosticSource))
+            DlssNr::CaptureFinishedPictureDx11Bridge(cmdList,Dx12CommandQueue,InParameters,
+                dx12Feature->GetUpscalerType()==Upscaler::DLSSD,nrSource.featureFlags,nrSource.featureFlagsKnown,nrSource);
+        else if (!sourceOutputNr && !native::OpticalFgNrEnabled() && !bridgeFinishedNr)
+            DlssNr::EvaluateBeforeUpscale(cmdList,InParameters,Dx12CommandQueue,nrSourceAttempt,
+                dx12Feature->GetUpscalerType()==Upscaler::DLSSD,nrSource);
         nrBeforeCpu.Finish();
         CallerCpuTrace::Scope providerEvaluateCpu(CallerCpuTrace::Op::ProviderEvaluate, this, Handle() ? Handle()->Id : 0, _frameCount, commandFrame);
         const auto beforeSrConsumerMatches = [&] {
@@ -1076,7 +1090,7 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
             // Only the authenticated Genshin transport has acquired its
             // selected recording dependencies. Other routes retain their legacy entry.
             if (!beforeSrConsumerMatches()) {  return false; }
-            return HookCpuTiming::Call(HookCpuTiming::Stage::ProviderEvaluate,[&]{return dx12Feature->Evaluate(cmdList, InParameters, orderedOutput ? &recordedOutput : nullptr);},HookCpuTiming::ResultKind::Boolean);
+            return HookCpuTiming::Call(HookCpuTiming::Stage::ProviderEvaluate,[&]{return dx12Feature->Evaluate(cmdList, InParameters, (sourceOutputNr || orderedOutput) ? &recordedOutput : nullptr);},HookCpuTiming::ResultKind::Boolean);
         };
         dx12EvalResult = evaluateProvider();
         providerEvaluateCpu.Finish();
@@ -1091,12 +1105,17 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
         }
 
         CallerCpuTrace::Scope nrAfterCpu(CallerCpuTrace::Op::NrAfter, this, Handle() ? Handle()->Id : 0, _frameCount, commandFrame);
-        if ( !native::OpticalFgNrEnabled() && dx12EvalResult && Config::Instance()->DlssNrEnabled.value_or_default())
+        nrSource.ownedPreviewRecording=sourceOutputNr?cmdList:nullptr;
+        if (sourceOutputNr && dx12EvalResult && recordedOutput && recordedOutput == outputCopy.source)
+            sourceNrResult = DlssNr::EvaluateSourceOutput(cmdList, InParameters, recordedOutput, Dx12CommandQueue,
+                nrSourceAttempt, dx12Feature->GetUpscalerType() == Upscaler::DLSSD,
+                nrSource );
+        else if (!sourceOutputNr && !native::OpticalFgNrEnabled() && dx12EvalResult && Config::Instance()->DlssNrEnabled.value_or_default())
         {
             if (!bridgeFinishedNr)
                 DlssNr::EvaluateAfterUpscale(cmdList, InParameters, Dx12CommandQueue,
                                          dx12Feature->GetUpscalerType() == Upscaler::DLSSD,
-                                         _frameCount);
+                                         _frameCount, nrSource);
 
             // Asked only after the D3D12 path has had its turn. Probing first would have made a D3D11
             // init the very first thing to ever touch the snippet, and if that had left its core
@@ -1104,8 +1123,6 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
             // exactly the games the probe was written to help. Off by default regardless.
             DlssNr::ProbeD3D11(Dx11Device);
         }
-        // Only the existing after-SR inline NR lifecycle is supported here.
-        // Before-SR/deferred/finished-picture and FG retain their previous admission.
         nrAfterCpu.Finish();
 
     } while (false);
@@ -1131,7 +1148,7 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
     {
         ID3D12CommandList* ppCommandLists[] = { cmdList };
         CallerCpuTrace::Scope executeCpu(CallerCpuTrace::Op::Execute, this, Handle() ? Handle()->Id : 0, _frameCount, commandFrame);
-        submissionUnfenced = true; // every bridge Execute needs its own successful Signal
+        SetSubmissionUnfenced(true); // every bridge Execute needs its own successful Signal
         const auto nrSubmitCallbacksBefore = DlssNr::FinishedPictureSubmissionCallbacks();
         GuideCapture::ExecutionReceipt previewReceipt;
 
@@ -1160,7 +1177,9 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
             else
             {
                 Dx12CommandAllocatorFenceValue[commandFrame] = fenceValue;
-                submissionUnfenced = false;
+                SetSubmissionUnfenced(false);
+                recordingOwners->Publish(commandFrame, cmdList, Dx12CommandAllocator[commandFrame],
+                                         Dx12Fence, fenceValue);
                 }
         }
     }
@@ -1175,8 +1194,19 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
         if (!dx12EvalResult || !commandListExecuted)
             break;
 
+        // Optional source NR must not change ordinary SR delivery semantics.
+        // Only callers requesting an ordered output require audited write proof.
         const bool canDeliver = parametersRestored &&
             (!orderedOutput || (recordedOutput && recordedOutput == outputCopy.source));
+#if defined(F6_PRESENTATION_PROBE)
+        if (canDeliver && sourceOutputNr && recordedOutput && recordedOutput == outputCopy.source && F6PresentationProbe::observer)
+        {
+            const F6PresentationProbe::Sample sample {F6PresentationProbe::Stage::SourceOutput, nullptr,
+                recordedOutput, Dx12CommandQueue, Dx12Fence, Dx12CommandAllocatorFenceValue[commandFrame],
+                0, 0, sourceNrResult == source_colour::Result::NrWritten ? 1u : 0u};
+            F6PresentationProbe::observer(&sample);
+        }
+#endif
         // Even an unproven output must return submitted reads to D3D11 before
         // the caller continues its native draw. It may not copy stale pixels.
         if (!CopyBackOutput(outputCopy, canDeliver))
@@ -1194,7 +1224,17 @@ bool IFeature_Dx11wDx12::EvaluateWithOutput(ID3D11DeviceContext* InDeviceContext
     if (evalResult)
         _frameCount++;
     else Dx11WithDx12::ClearLastPreparedUpscalerFrameState();callerCpuScope.Result(evalResult);
-    DlssNr::CompleteGenshinPresentSource(presentSourceAttempt, evaluatedInputMetadata, restoreParamOutput, evalResult);
+    // Legacy SR success alone cannot certify a current source for NR or FG.
+    if (evalResult && sourceOutputNr && recordedOutput && recordedOutput == outputCopy.source)
+    {
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        if (restoreParamOutput && SUCCEEDED(restoreParamOutput->QueryInterface(IID_PPV_ARGS(&texture))))
+            currentSourceNr = { sourceNrResult,
+                reinterpret_cast<uintptr_t>(static_cast<IFeature*>(this)), reinterpret_cast<uintptr_t>(texture.Get()),
+                reinterpret_cast<uintptr_t>(Dx12CommandQueue), reinterpret_cast<uintptr_t>(cmdList),
+                reinterpret_cast<uintptr_t>(Dx12Fence), Handle() ? Handle()->Id : 0, nrSourceAttempt,
+                Dx12CommandAllocatorFenceValue[commandFrame] };
+    }
     if(evalResult)currentInputMetadata=std::move(evaluatedInputMetadata);
     return evalResult;
 }
@@ -1290,6 +1330,7 @@ IFeature_Dx11wDx12::IFeature_Dx11wDx12(unsigned int InHandleId, NVSDK_NGX_Parame
 
 IFeature_Dx11wDx12::~IFeature_Dx11wDx12()
 {
+    RecordingOwners::Use recordingUse(*recordingOwners);
     if (initRetention)
     {
         if (bridgeInitState.RequiresRetention() || bridgeInitState.Ready()) RetainFailedInitialization();

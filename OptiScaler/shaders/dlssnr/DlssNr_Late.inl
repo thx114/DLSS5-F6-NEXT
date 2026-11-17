@@ -13,8 +13,6 @@ using Microsoft::WRL::ComPtr;
 struct Slot
 {
     ComPtr<ID3D12Resource> depth, motion, linear, encoded, residual, zeroMotionUpload;
-    ComPtr<ID3D12Resource> presentWork; // reset from this raw Present, never a prior NR result
-    uint64_t genshinAttempt = 0;
     ComPtr<ID3D12Fence> fence;
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> commands;
@@ -621,18 +619,6 @@ Slot* Acquire(ID3D12GraphicsCommandList* cmd, bool dx11Bridge = false)
         slot.nrFilter.CollectDepth(); // retire completed Readers; stable GPU pool entries stay cached
         if (!slot.pending && !slot.quarantined && Finished(slot))
         {
-            if (UsesGenshinPresentPipeline() && slot.backBufferIdentity)
-            {
-                // Close THIS completed private generation before recapturing
-                // into its guide/scratch textures, not after their next write.
-                const auto identity = DetailReuse::RealSubmittedCommands(slot.commands.Get());
-                if (!g_nrGpuWork.CanResetRecording(identity)) continue;
-                if (FAILED(slot.allocator->Reset()) || FAILED(slot.commands->Reset(slot.allocator.Get(), nullptr)))
-                { slot.quarantined = true; continue; }
-                FinishedPictureResetCommandList(identity);
-                slot.backBufferIdentity = 0;
-                if (FAILED(slot.commands->Close())) { slot.quarantined = true; continue; }
-            }
             next = &slot;
             break;
         }
@@ -787,7 +773,6 @@ void Capture(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, bool r
         // The copy returns to COPY_DEST after the late dispatch.
     }
     slot.frame = {};
-    slot.genshinAttempt = 0;
     auto& frame = slot.frame;
     frame.GuideObservationTick=GuideDiagnostics::Now();
     frame.SceneGuideOwner[0] = source.ngxHandle;
@@ -926,8 +911,6 @@ void Capture(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, bool r
     // Physical/generated output clocks cannot certify its current NGX capture.
     frame.SubmissionEpoch = dx11Bridge ? CaptureEpoch(true) : State::Instance().frameCount;
     Arm(slot, cmd);
-    if (dx11Bridge && UsesGenshinPresentPipeline() && rawBoundary)
-        slot.genshinAttempt = GenshinPresentation::sourceClock.Attempt();
     GuideDiagnostics::ObserveConsumers([&] {
     auto observation=DlssNrGuideObservation::Source(frame);
     observation.colour=DlssNrGuideObservation::Resource(output,{0,0,frame.OutputWidth,frame.OutputHeight});
@@ -1143,6 +1126,16 @@ void RetireCompletedPrivateRecordings(const Slot* nextRecording = nullptr)
         LOG_INFO("DLSS-NR closed {} completed private recordings for NR resource retirement", retired);
     TickNrRetired(); // unchanged Token::Complete release gate
 }
+
+// Model ownership can move from Present back to a direct source evaluation.
+// The old private endpoint may never be selected again, so its idle executable
+// recordings must keep retiring at the new endpoint while a rebuild waits.
+void PrepareDirectEvaluation(bool sourceOutput)
+{
+    Cancel();
+    if (sourceOutput && g_nr.feature == nullptr)
+        RetireCompletedPrivateRecordings();
+}
 } // namespace Late
 
 bool WaitForFinishedPicture()
@@ -1151,10 +1144,6 @@ bool WaitForFinishedPicture()
     // The owned Late endpoint takes its matching PresentScope before GetBuffer.
     // Keep inspecting generations even if NR/tracking has since been disabled.
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
-    if (UsesGenshinPresentPipeline()) {
-        GenshinPresentation::sourceClock.Invalidate();
-        GenshinPresentation::lastWrittenSource = {};
-    }
     // Resize may replace every buffer even when its dimensions are unchanged.
     // Restart only preparation eligibility; all existing waits/owners remain below.
     ++Late::sourceDiagnosticGeneration; // no resource or work-admission authority
@@ -1381,8 +1370,6 @@ void FinishedPictureColorSpace(IDXGISwapChain* swapchain, DXGI_COLOR_SPACE_TYPE 
     SwapchainColorSpace::Write(swapchain, colorSpace);
 }
 
-#include "DlssNr_GenshinPresentation.inl"
-
 static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue, bool dx11Bridge,
                                           ID3D12CommandQueue* orderedProducerQueue = nullptr)
 {
@@ -1432,6 +1419,13 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
         }
     }
     if(dx11Bridge && (!queue || queue->GetDesc().Type!=D3D12_COMMAND_LIST_TYPE_DIRECT))return;
+    // This endpoint reports the current interop copy. Scene NR was already
+    // recorded by successful SR; repeated Presents only copy game composition.
+    if (UsesSourceOutput())
+    {
+        Late::finishedPictureOutcome.reason = FinishedPictureReason::None;
+        return;
+    }
     Late::finishedPictureOutcome.reason = FinishedPictureReason::NoCurrentInput;
     if (g_nr.feature == nullptr && !g_nrGpuWork.Empty())
         Late::RetireCompletedPrivateRecordings();
@@ -2225,9 +2219,8 @@ static void ApplyToFinishedPictureInternal(IDXGISwapChain* swapchain, ID3D12Comm
 FinishedPictureOutcome ApplyToFinishedPicture(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue)
 {
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
-    if (UsesGenshinPresentPipeline()) {
-        // The DX11 wrapper owns the source Present before FG. Physical and
-        // generated SDK callbacks have no permission to record another NR pass.
+    if (UsesSourceOutput()) {
+        // Physical/generated Presents cannot run a second source NR model.
         FinishedPictureOutcome result;
         result.reason = FinishedPictureReason::InvalidEndpoint;
         return result;
@@ -2241,6 +2234,7 @@ bool CaptureFinishedPictureDx11Bridge(ID3D12GraphicsCommandList* cmd, ID3D12Comm
                                      bool retainedFlagsKnown, UpscaleSource source)
 {
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
+    if (UsesSourceOutput()) return false;
     const auto rejectCapture = [] {
         if (Late::DirectDlssSceneBridgeEnabled() || Late::IsStarRailProcess())
         {
@@ -2254,10 +2248,9 @@ bool CaptureFinishedPictureDx11Bridge(ID3D12GraphicsCommandList* cmd, ID3D12Comm
     };
     const auto& cfg = *Config::Instance();
     const bool diagnosticOnly=!cfg.DlssNrEnabled.ObservedValue() && GuideCapture::Wanted(GuideCapture::Stream::Source);
-    const bool fixedPresent = UsesGenshinPresentPipeline();
-    if ((!diagnosticOnly && (!cfg.DlssNrEnabled.ObservedValue() || (!fixedPresent &&
+    if ((!diagnosticOnly && (!cfg.DlssNrEnabled.ObservedValue() ||
         (!cfg.DlssNrFinishedPicture.value_or_default() || cfg.DlssNrRunBeforeSr.value_or_default() ||
-         cfg.DlssNrDeferredDlss.value_or_default())))) ||
+         cfg.DlssNrDeferredDlss.value_or_default()))) ||
         State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx11wDx12 || !cmd || !queue || !params ||
         cmd->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT || queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
         return rejectCapture();
@@ -2292,8 +2285,6 @@ FinishedPictureOutcome ApplyToFinishedPictureDx11Bridge(IDXGISwapChain* swapchai
     // Return this exact invocation under the owning lock, including invalid,
     // disabled, no-input and uncertain paths. Never reuse a later generic result.
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
-    if (UsesGenshinPresentPipeline())
-        return GenshinPresentation::Apply(swapchain, queue, orderedProducerQueue, selectedSource);
     ApplyToFinishedPictureInternal(swapchain, queue, true, orderedProducerQueue);
     // This entry follows the actual source copy/order, before hidden, physical
     // or generated Presents. A skipped NR picture also consumes its boundary.
@@ -2325,7 +2316,7 @@ bool ApplyNativeInput(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* cmd,
                       bool depthReversed, bool reset,
                       DXGI_COLOR_SPACE_TYPE colorSpace, D3D12_RESOURCE_STATES pictureState, unsigned long long epoch, bool opticalFgNr)
 {
-    if (UsesGenshinPresentPipeline()) return false;
+    if (UsesSourceOutput()) return false;
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
     if (!Config::Instance()->DlssNrFinishedPicture.value_or_default() ||
         !Config::Instance()->DlssNrEnabled.value_or_default())
@@ -2501,7 +2492,7 @@ bool EnsureFgTexture(Microsoft::WRL::ComPtr<ID3D12Resource>& texture, ID3D12Devi
 // HUD/alpha. Write both real inputs back before FG, without replacing parameters.
 bool ApplyToFgInput(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params)
 {
-    if (UsesGenshinPresentPipeline()) return false;
+    if (UsesSourceOutput()) return false;
     std::lock_guard<std::recursive_mutex> lock(g_nrMutex);
     if (!Late::ComposeOnGameFg() || !Late::PausedForGameFrameGeneration() || !cmdList || !params ||
         NativeInputBlockedBySwapChainInterop())

@@ -2,9 +2,11 @@
 #include <Config.h>
 #include <windows.h>
 #include <cwchar>
+#include <inputs/taa/TaaInputDx11.h>
 namespace native {
 inline bool OpticalFgNrEnabled()
 {
+    if (taa::OwnsInput()) return false;
     // Experimental ownership is selected only at process startup, after INI loading.
     // A StarRail profile/root value must never change another game's input authority.
     static const bool enabled = [] {

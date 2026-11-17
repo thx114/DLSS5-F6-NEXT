@@ -93,6 +93,7 @@ struct Dx11wDx12SC
     Flags _frameLatencyFlags;
     std::mutex _frameLatencyMutex;
     bool _sourceFrameLatencyOwner = false, _starRailF5DsTransport = false;
+    bool StarRailF5DsTransport() const { return _starRailF5DsTransport; }
     HRESULT SetMaximumFrameLatency(UINT);
     HRESULT GetMaximumFrameLatency(UINT*);
     HANDLE GetFrameLatencyWaitableObject();

@@ -110,5 +110,31 @@ int main()
     Reject("provider resource rebound",[](auto&){D::resourceCache.Output[1].Dx12Resource=&otherSource;});
     Reject("shared resource rebound",[](auto&){D::resourceCache.Output[1].SharedTexture=&otherTexture;});
     Reject("target resource rebound",[](auto&){D::resourceCache.ParamOutput[1]=&otherTexture;});
+    // Providers without current-output proof (FSR/XeSS and rebuild returns)
+    // retain ordinary SR semantics. Only explicit receipts require that proof;
+    // NR observations/publications must never certify their unproven output.
+    for (bool sourceOutputNr : {false, true})
+        for (bool parametersRestored : {false, true})
+            for (bool orderedOutput : {false, true})
+                for (unsigned proof = 0; proof != 3; ++proof)
+                {
+                    expected = Reset();
+                    auto* recordedOutput = proof == 0 ? nullptr : proof == 1 ? &otherSource : &source;
+                    const bool proven = proof == 2;
+                    const bool canDeliver = BridgeDelivery::CanDeliver(parametersRestored, sourceOutputNr,
+                        orderedOutput, recordedOutput, expected);
+                    Check(canDeliver == (parametersRestored && (!orderedOutput || proven)),
+                        "ordinary SR delivery does not require optional source-NR proof");
+                    Check(D::CopyUpscalerOutputToDx11(expected, canDeliver), "current bridge delivery handoff");
+                    Check(commands == (canDeliver ? std::vector<unsigned>{1,2,3} : std::vector<unsigned>{1,3}),
+                        "strict receipt rejection returns reads without copying; ordinary SR still copies");
+                    Check(BridgeDelivery::CanPublish(canDeliver, sourceOutputNr, recordedOutput, expected) ==
+                          (canDeliver && sourceOutputNr && proven),
+                        "source mutation publication requires actual current-output proof");
+                    for (bool observer : {false, true})
+                        Check(BridgeDelivery::CanObserve(canDeliver, sourceOutputNr, observer, recordedOutput, expected) ==
+                              (canDeliver && sourceOutputNr && observer && proven),
+                            "pixel probe never observes missing or mismatched source output");
+                }
     std::printf("PASS actual output-copy admission and command ordering: %u checks\n",checks);
 }

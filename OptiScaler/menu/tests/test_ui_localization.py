@@ -50,6 +50,10 @@ def check_sources(dictionary):
         "menu_common.cpp", "GuideDiagnosticsMenu.cpp", "NextgenNrLayers.h", "HoYoShadeControls.h",
         "NextgenLookControls.h", "NextgenF5Panels.h", "NextgenUi.cpp", "MenuPages.h")]
     paths += [ROOT / "OptiScaler/dlssnr/DlssNr_Menu.cpp", ROOT / "OptiScaler/uid/DrawUidPanel.h"]
+    paths += [ROOT / "OptiScaler" / name for name in (
+        "native/NativeDriver.cpp", "native/NativeDriverDx11.cpp", "native/NativeDriverDx12.cpp",
+        "native/NativeDriverVk.cpp", "resource_tracking/GenericDepth_Dx11.cpp",
+        "resource_tracking/GenericDepth_Dx12.cpp", "resource_tracking/GenericDepth_Vk.cpp")]
     failures = []
     count = 0
     for path in paths:
@@ -132,7 +136,7 @@ def check_negative_controls(dictionary):
         except AssertionError:
             continue
         raise AssertionError("Dictionary checker accepted a broken translation/format/identity")
-    for missing in ("持续保留：深度容差", "GPU完成", "细节持续反馈"):
+    for missing in ("持续保留：深度容差", "GPU完成", "细节持续反馈", "GPU 开始前区间（同份报告）"):
         incomplete = dict(dictionary)
         del incomplete[missing]
         try:
@@ -201,6 +205,6 @@ if __name__ == "__main__":
     count = check_sources(dictionary)
     check_wiring()
     check_negative_controls(dictionary)
-    print(f"PASS: {len(dictionary)} dictionary entries; {count} Chinese UI literals covered; monitor/toast/model wiring preserved; 6 negative controls detected", flush=True)
+    print(f"PASS: {len(dictionary)} dictionary entries; {count} Chinese UI literals covered; monitor/toast/model wiring preserved; 7 negative controls detected", flush=True)
     if args.runtime:
         run_runtime(args.vcvars)

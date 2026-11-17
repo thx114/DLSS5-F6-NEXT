@@ -9,6 +9,7 @@ namespace HoYoShade::ColorContract
 // authority. AdmitColor still authenticates the endpoint's independent contract.
 // The existing API20 path copies all four channels without adapter conversion;
 // the selected techniques retain their original sRGB read/write states.
+enum class Domain { Srgb, SourceValues };
 struct Formats
 {
     DXGI_FORMAT endpoint = DXGI_FORMAT_UNKNOWN;
@@ -16,13 +17,12 @@ struct Formats
     reshade::api::format working = reshade::api::format::unknown;
     reshade::api::format linear = reshade::api::format::unknown;
     reshade::api::format srgb = reshade::api::format::unknown;
+    Domain domain = Domain::Srgb;
     constexpr explicit operator bool() const noexcept { return runtime != DXGI_FORMAT_UNKNOWN; }
 };
 
-// Keep endpoint, private swapchain, working resource and both effect RTVs in
-// one domain. Typeless endpoints have no typed-view receipt here. FP16/PQ/HLG
-// need an authenticated endpoint AND core external-target color semantics;
-// recognizing a format enum or allocating a float texture supplies neither.
+// Display-encoded SDR path. SourceValues below is a separate numeric execution
+// contract; a float format never authenticates scene-linear or display transfer.
 constexpr Formats Resolve(DXGI_FORMAT endpoint) noexcept
 {
     using F = reshade::api::format;
@@ -40,6 +40,32 @@ constexpr Formats Resolve(DXGI_FORMAT endpoint) noexcept
     }
 }
 
+// The private swapchain bootstraps the runtime only. API20 selects the actual
+// effect permutation from the external target. Keep R11/FP16/F32 in their own
+// format and feed identical typed views to both slots: no hidden sRGB conversion,
+// tone mapping, exposure scaling or intermediate 8bit quantization.
+constexpr Formats ResolveSource(DXGI_FORMAT endpoint) noexcept
+{
+    using F = reshade::api::format;
+    auto sdr=Resolve(endpoint);
+    if(sdr) { sdr.srgb=sdr.linear; sdr.domain=Domain::SourceValues; return sdr; }
+    switch(endpoint) {
+    case DXGI_FORMAT_R11G11B10_FLOAT:
+        return {endpoint, DXGI_FORMAT_R16G16B16A16_FLOAT, F::r11g11b10_float,
+            F::r11g11b10_float, F::r11g11b10_float, Domain::SourceValues};
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        return {endpoint, endpoint, F::r16g16b16a16_float,
+            F::r16g16b16a16_float, F::r16g16b16a16_float, Domain::SourceValues};
+    case DXGI_FORMAT_R32G32B32A32_FLOAT:
+        return {endpoint, DXGI_FORMAT_R16G16B16A16_FLOAT, F::r32g32b32a32_float,
+            F::r32g32b32a32_float, F::r32g32b32a32_float, Domain::SourceValues};
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+        return {endpoint, DXGI_FORMAT_R16G16B16A16_FLOAT, F::r10g10b10a2_unorm,
+            F::r10g10b10a2_unorm, F::r10g10b10a2_unorm, Domain::SourceValues};
+    default: return {};
+    }
+}
+
 // The producer supplies the source storage and its actual typed view. The
 // retained bridge input supplies the transport allocation, which may remain
 // typeless. This tuple describes byte-compatible copies, never color transfer.
@@ -49,9 +75,10 @@ struct InputFormats
     Formats transport;
     constexpr explicit operator bool() const noexcept { return bool(transport); }
 };
-constexpr InputFormats ResolveInput(DXGI_FORMAT storage, DXGI_FORMAT view, DXGI_FORMAT transport) noexcept
+constexpr InputFormats ResolveInput(DXGI_FORMAT storage, DXGI_FORMAT view, DXGI_FORMAT transport,
+                                    Domain domain = Domain::Srgb) noexcept
 {
-    const auto typed = Resolve(view);
+    const auto typed = domain == Domain::SourceValues ? ResolveSource(view) : Resolve(view);
     if (!typed) return {};
     if (storage == DXGI_FORMAT_R8G8B8A8_TYPELESS) {
         if (typed.runtime != DXGI_FORMAT_R8G8B8A8_UNORM ||
@@ -61,8 +88,8 @@ constexpr InputFormats ResolveInput(DXGI_FORMAT storage, DXGI_FORMAT view, DXGI_
         formats.endpoint = transport; // Preserve the actual allocation, not the producer's view.
         return {storage, view, formats};
     }
-    const auto formats = Resolve(storage);
-    if (!formats || formats.runtime != typed.runtime || transport != storage) return {};
+    const auto formats = domain == Domain::SourceValues ? ResolveSource(storage) : Resolve(storage);
+    if (!formats || formats.working != typed.working || transport != storage) return {};
     return {storage, view, formats};
 }
 
@@ -80,7 +107,7 @@ struct DeclaredInput
     template<class Endpoint>
     static DeclaredInput Bind(const InputFormats& formats, const Endpoint& e) noexcept
     {
-        if (!formats || !e.sdr) return {};
+        if (!formats || (!e.sdr && formats.transport.domain != Domain::SourceValues)) return {};
         return {formats, e.color, e.queue, e.stream, e.generation, e.frame,
             e.colorX, e.colorY, e.width, e.height};
     }
@@ -98,6 +125,6 @@ struct DeclaredInput
 constexpr bool IsRuntimeFormat(DXGI_FORMAT format) noexcept
 {
     const auto formats = Resolve(format);
-    return formats && formats.runtime == format;
+    return (formats && formats.runtime == format) || format == DXGI_FORMAT_R16G16B16A16_FLOAT;
 }
 }

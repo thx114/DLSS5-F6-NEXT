@@ -15,6 +15,7 @@
 #include <detours/detours.h>
 
 #include <imgui/imgui.h>
+#include <menu/UiLocalization.h>
 #include <menu/SettingsSwitchRow.h>
 
 #include <atomic>
@@ -791,13 +792,13 @@ void DrawStatus()
     switch (DlssNrNativeMode::FinderFor(wanted, g_installed.load(), g_installFailed))
     {
     case DlssNrNativeMode::Finder::Off:
-        ImGui::TextDisabled("深度：关闭。NR 仅使用运动信息，不因游戏超分而让出控制。");
+        MenuText::TextDisabled("深度：关闭。NR 仅使用运动信息，不因游戏超分而让出控制。");
         return;
     case DlssNrNativeMode::Finder::NeedsRestart:
-        ImGui::TextDisabled("深度：需要重启后启用搜索。");
+        MenuText::TextDisabled("深度：需要重启后启用搜索。");
         return;
     case DlssNrNativeMode::Finder::CouldNotStart:
-        ImGui::TextDisabled("深度：搜索器启动失败，请查看日志；NR 仅使用运动信息。");
+        MenuText::TextDisabled("深度：搜索器启动失败，请查看日志；NR 仅使用运动信息。");
         return;
     case DlssNrNativeMode::Finder::Installed:
         break;
@@ -809,23 +810,23 @@ void DrawStatus()
     const char* notReadable = g_notReadable.load();
 
     if (g_core.GameCallsUpscaler())
-        ImGui::TextDisabled("深度：游戏正在调用超分，搜索已暂停；可在游戏设置关闭超分。");
+        MenuText::TextDisabled("深度：游戏正在调用超分，搜索已暂停；可在游戏设置关闭超分。");
     else if (!g_core.Armed())
-        ImGui::TextDisabled("深度：观察中（%llu/%u 帧）…%s",
+        MenuText::TextDisabled("深度：观察中（%llu/%u 帧）…%s",
                             (unsigned long long) (g_core.Presents() - g_core.WarmupStart()), warmup, untilRestart);
     else if (!pick.valid)
-        ImGui::TextDisabled("深度：尚未找到，NR 仅使用运动信息%s。", untilRestart);
+        MenuText::TextDisabled("深度：尚未找到，NR 仅使用运动信息%s。", untilRestart);
     else if (notReadable != nullptr)
-        ImGui::TextDisabled("深度：选中 %ux%u，但%s；NR 仅使用运动信息。", pick.width, pick.height,
+        MenuText::TextDisabled("深度：选中 %ux%u，但%s；NR 仅使用运动信息。", pick.width, pick.height,
                             notReadable);
     else
-        ImGui::Text("深度：选中 %ux%u%s%s", pick.width, pick.height, pick.reversed ? ", reversed-Z" : "",
+        MenuText::Text("深度：选中 %ux%u%s%s", pick.width, pick.height, pick.reversed ? ", reversed-Z" : "",
                     untilRestart);
 
     if (ImGui::IsItemHovered() && pick.valid)
-        ImGui::SetTooltip("Vulkan 格式 %u，候选资源见日志的 Depth finder 记录。", pick.format);
+        MenuText::SetTooltip("Vulkan 格式 %u，候选资源见日志的 Depth finder 记录。", pick.format);
     else if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("候选资源见日志的 Depth finder 记录。");
+        MenuText::SetTooltip("候选资源见日志的 Depth finder 记录。");
 }
 
 void DrawAdvancedUi()
@@ -833,7 +834,7 @@ void DrawAdvancedUi()
     auto* config = Config::Instance();
     bool finder = config->DlssNrNativeDepthFinder.value_or_default();
 
-    if (SettingsUi::SwitchRow("使用游戏深度（改善质量，需重启）##depthfindervk", &finder))
+    if (SettingsUi::SwitchRow(MenuText::StableLabel("使用游戏深度（改善质量，需重启）##depthfindervk").c_str(), &finder))
         config->DlssNrNativeDepthFinder = finder;
 
     if (ImGui::IsItemHovered())

@@ -81,6 +81,7 @@ bool CompletePreviousOpticalFg()
 // null when nothing ran.
 ID3D12Resource* RunFrame(IDXGISwapChain* swapChain, ID3D11Device* device, bool copyBack)
 {
+    if (taa::OwnsInput()) return nullptr;
     // The FG bridge's private input is not the native final-original output.
     // Color-only requests belong to the real native-B copyback route.
     if (!copyBack &&

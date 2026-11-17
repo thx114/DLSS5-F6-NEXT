@@ -1453,8 +1453,9 @@ bool FSRFG_Dx12::SetResource(Dx12Resource* inputResource)
     fResource->width = inputResource->width;
     fResource->height = inputResource->height;
     fResource->cmdList = inputResource->cmdList;
+    fResource->preparedRasterGuides = inputResource->preparedRasterGuides;
 
-    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance());
+    const auto orientation=framegen::ResolveGuideOrientation(*Config::Instance(), fResource->preparedRasterGuides);
     auto willFlip = State::Instance().activeFgInput == FGInput::Upscaler &&
                     ((type == FG_ResourceType::Velocity && orientation.MotionCopy()) ||
                      (type == FG_ResourceType::Depth && orientation.DepthCopy()));

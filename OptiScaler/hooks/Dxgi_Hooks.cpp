@@ -4,6 +4,7 @@
 #include "DxgiFactory_Hooks.h"
 #include "D3D11On12FactoryRoutes.h"
 #include <integration/HoYoShade.h>
+#include <runtime/PrivateGraphicsScope.h>
 
 #include <proxies/Dxgi_Proxy.h>
 #include <proxies/D3D12_Proxy.h>
@@ -90,6 +91,9 @@ static void CheckLumaAndReShade(IDXGIFactory* factory)
 VALIDATE_HOOK(hkCreateDXGIFactory, DxgiProxy::PFN_CreateDxgiFactory)
 inline static HRESULT hkCreateDXGIFactory(REFIID riid, IDXGIFactory** ppFactory)
 {
+    if (PrivateGraphics::Active())
+        return o_CreateDXGIFactory(riid, ppFactory);
+
     DxgiProxy::ScopedFactoryCreation factoryCreation {};
     auto caller = Util::WhoIsTheCaller(_ReturnAddress());
     LOG_DEBUG("Caller: {}", caller);
@@ -150,6 +154,9 @@ inline static HRESULT hkCreateDXGIFactory(REFIID riid, IDXGIFactory** ppFactory)
 VALIDATE_HOOK(hkCreateDXGIFactory1, DxgiProxy::PFN_CreateDxgiFactory1)
 inline static HRESULT hkCreateDXGIFactory1(REFIID riid, IDXGIFactory1** ppFactory)
 {
+    if (PrivateGraphics::Active())
+        return o_CreateDXGIFactory1(riid, ppFactory);
+
     DxgiProxy::ScopedFactoryCreation factoryCreation {};
     auto caller = Util::WhoIsTheCaller(_ReturnAddress());
     LOG_DEBUG("Caller: {}", caller);
@@ -218,6 +225,9 @@ inline static HRESULT hkCreateDXGIFactory2(UINT Flags, REFIID riid, IDXGIFactory
         const auto result = o_CreateDXGIFactory2(Flags, riid, ppFactory);
         return D3D11On12FactoryBoundary::Returned(result, Flags, riid, reinterpret_cast<void**>(ppFactory));
     }
+
+    if (PrivateGraphics::Active())
+        return o_CreateDXGIFactory2(Flags, riid, ppFactory);
 
     if (creatingD3D12DeviceForLuma)
     {

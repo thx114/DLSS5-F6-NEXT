@@ -58,8 +58,8 @@ class HandoffWiring(unittest.TestCase):
         self.assertLess(body.index('GuardExecution(FGExecutionScope::Inputs)'), body.index('SetUpscalerGuidePair('))
         start = body.index('const bool tagged=own->SetUpscalerGuidePair(')
         end = body.index('return;', start)
-        self.assertIn('game==GameRouting::Identity::Genshin', body[start:end])
-        self.assertIn('game==GameRouting::Identity::StarRail && !starRailDiagnosticRead', body[start:end])
+        self.assertIn('DLSSG_Dx12::GuideTransport::SharedDx11', body[start:end])
+        self.assertIn('if (!GuideCapture::NeedsOpenFgGuideRecording())', body[start:end])
         self.assertIn('GuideCapture::NeedsOpenFgGuideRecording()', body[start:end])
         self.assertNotIn('GetPreviewDemand()', body[start:end])
         self.assertIn('own->SealDx11GuideInputs(tagged,_dx12CommandQueue)', body[start:end])
@@ -97,7 +97,8 @@ class HandoffWiring(unittest.TestCase):
         self.assertLess(sealing.index('other!=slot && _dx11GuideBorrowed[other]'),
                         sealing.index('if (!_dx11GuideBorrowed[slot])'))
         pair = parser.extract(FG, 'bool DLSSG_Dx12::SetUpscalerGuidePair(')
-        self.assertIn('game==GameRouting::Identity::StarRail', pair)
+        self.assertIn('transport==GuideTransport::SharedDx11', pair)
+        self.assertNotIn('game==GameRouting::Identity::StarRail', pair[:pair.index('const auto borrowDx11Guides')])
         present = parser.extract(FG, 'bool DLSSG_Dx12::Present(')
         self.assertLess(present.index('SealDx11GuideInputs(true,_gameCommandQueue)'),
                         present.index('if (IsStarRailUiOwner())'))

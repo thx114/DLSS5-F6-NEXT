@@ -8,7 +8,7 @@ import re
 ROOT = Path(__file__).resolve().parents[3]
 late = (ROOT / "OptiScaler/shaders/dlssnr/DlssNr_Late.inl").read_text(encoding="utf-8")
 interop = (ROOT / "OptiScaler/with_dx12/dx11_with_dx12_sc.cpp").read_text(encoding="utf-8")
-presentation = (ROOT / "OptiScaler/shaders/dlssnr/DlssNr_GenshinPresentation.inl").read_text(encoding="utf-8")
+fg = (ROOT / "OptiScaler/framegen/dlssg/DLSSG_Dx12_Inputs.cpp").read_text(encoding="utf-8")
 backend = (ROOT / "OptiScaler/shaders/dlssnr/DlssNr_Dx12.cpp").read_text(encoding="utf-8")
 feature = (ROOT / "OptiScaler/upscalers/IFeature_Dx11wDx12.cpp").read_text(encoding="utf-8")
 
@@ -69,60 +69,61 @@ require(present.index("_CopyDx11SharedToDx12FGBackBuffer") < present.index("Dlss
 require(present.index("DlssNr::ApplyToFinishedPictureDx11Bridge") < present.index("_fgSwapChain->Present"),
         "source NR completes its queue ordering before SDK FG Present")
 
-# The fixed Genshin route is wired independently of the preserved generic path.
-# CPU source tests and DX12 output tests exercise the corresponding real helpers.
+# Genshin owns NR at successful source output. These are wiring guards;
+# actual-DLL pixel tests independently exercise copyback and repeated Present.
 evaluate = block(backend, "void EvaluateInternal(")
-require("if (UsesGenshinPresentPipeline()) return;" in evaluate,
-        "fixed presentation route cannot also run NR at Evaluate")
-generic = block(late, "FinishedPictureOutcome ApplyToFinishedPicture(")
-require("UsesGenshinPresentPipeline()" in generic and "return result;" in generic,
-        "physical/generated Present cannot enter fixed source NR")
-require("BeginGenshinPresentSource()" in feature and "CompleteGenshinPresentSource(presentSourceAttempt" in feature,
-        "real Evaluate entry and successful copyback delimit the current source")
-require("slot.genshinAttempt == attempt" in presentation and "slot.frame.RawSourceMetadata == currentMetadata" in presentation,
-        "guide capture belongs to this attempt and immutable Evaluate metadata")
-require("selectedSource && selectedSource != currentMetadata" in presentation,
-        "selected FG source cannot be mixed with a different NR source")
-require(presentation.index("sourceClock.Claim(attempt, source)") < presentation.index("g_compose->Dispatch("),
-        "source is claimed before any model recording")
-claimed = presentation[presentation.index("auto& slot = *selected;"):]
-require(claimed.index("sourceClock.Claim(attempt, source)") < claimed.index("slot.nrFilter.BeforeNr("),
-        "active source claim precedes filter submission, not just the disabled branch")
-require(claimed.index("slot.pending = false") < claimed.index("slot.nrFilter.BeforeNr(") <
-        claimed.index("slot.allocator->Reset()"),
-        "single source is consumed before filtering, before any NR private recording")
-require(claimed.index("Late::FilterDepthCapture(slot)") < claimed.index("slot.nrFilter.BeforeNr(") <
-        claimed.index("frame.SourceCaptureEpoch = source.generation"),
-        "filter freezes capture identity before presentation epochs replace model scalars")
-require("present->Wait(slot.fence.Get(), slot.ready)" in claimed and
-        "true, orderedProducerQueue, filterDepth" in claimed,
-        "actual capture fence is ordered while BridgeScope keeps original queue identities")
-require(present.index("bridgeOutcome.result == DlssNr::FinishedPictureResult::FailedUncertain") <
-        present.index("colourOwner->JoinUpscalerFinalColour") < present.index("_fgSwapChain->Present"),
-        "uncertain filter/NR handoff stops both FG join and child Present")
-require(presentation.count("NrPresentation::RecordPublish(") == 1,
-        "only one final publication site exists")
-require("pq ? slot.presentWork.Get() : color.Get()" in presentation and
-        "frame.InputArrivalState" in presentation and
-        presentation.index("g_compose->Dispatch(") <
-        presentation.index("NrPresentation::RecordPublish("),
-        "current read-only input precedes NR and one final publication")
-require(not any(name in presentation for name in ("pictureFlow->", "ApplyNativeInput(", "CaptureResidual(")),
-        "fixed path has no optical or reused-colour writer")
-require("colourSource ? colourSource->SourceMetadata()" in present,
-        "actual selected FG metadata reaches the NR endpoint")
-require("(frame.GenshinPresentPipeline && frame.Reset)" in backend,
-        "source cuts invalidate presentation detail independently of the model-reset option")
-require("if (!DispatchPass(cmdList, encodeParams" in backend and
-        "if (!DispatchPass(cmdList, down, modelInput" in backend,
-        "failed encode/resize cannot fall through to a model reading previous scratch")
-require("composed = DispatchPass(cmdList, resolveParams" in backend and
-        "if (composed && !targetSupportsUav)" in backend,
-        "only a recorded current resolve can authorize copyback and successful publication")
-require("else if (!targetSupportsUav)" in backend and
-        "if (readOnlyInput) TransitionTarget((D3D12_RESOURCE_STATES)frame.InputArrivalState);" in backend,
-        "failed separate-input and non-UAV paths also restore their resource states")
-require("GameRouting::UseGenshinPresentPipeline(" in backend and
-        "DlssNrGenshinPresentPipeline.value_or_default()" in backend,
-        "Evaluate bypass obeys the tested placement policy rather than executable alone")
+require("if (UsesSourceOutput() && !sourceOutput) return;" in evaluate,
+        "ordinary callbacks cannot duplicate the selected source writer")
+source = block(backend, "source_colour::Result EvaluateSourceOutput(")
+require("GetResource(params, NVSDK_NGX_Parameter_Output, \"DLSSD.Output\") != recordedOutput" in source,
+        "only the provider's actual current output can enter NR")
+require("recording.resolved" in source and "return recording.Outcome();" in source and "successfulDispatches" not in source,
+        "the recorded final resolve, rather than SDK success, identifies a write")
+require("frame.SourceOutput = sourceOutput" in evaluate and "frame.FullModelRequired = sourceOutput" in evaluate,
+        "scene output has explicit placement and requires the current complete model")
+require("frame.FinishedPicture =" not in evaluate and "frame.IndependentCommands =" not in evaluate,
+        "source recording cannot impersonate a finished picture or a private NR list")
+require("source.ownedPreviewRecording == cmdList && cmdList &&" in evaluate and
+        "cmdList->GetType() == D3D12_COMMAND_LIST_TYPE_DIRECT" in evaluate,
+        "preview authority requires this exact caller-owned DIRECT recording")
+source_feature = block(feature, "bool IFeature_Dx11wDx12::EvaluateWithOutput(")
+preview_lease = re.search(r"nrSource\.ownedPreviewRecording\s*=\s*sourceOutputNr\s*\?\s*cmdList\s*:\s*nullptr\s*;", source_feature)
+source_call = re.search(r"sourceNrResult\s*=\s*DlssNr::EvaluateSourceOutput\([\s\S]*?\bnrSource\s*\);", source_feature)
+require(preview_lease is not None and source_call is not None and preview_lease.end() < source_call.start(),
+        "source-output bridge passes its current private recording rather than a retained unrelated list")
+require("if (pass==0 && frame.CanRecordPreview())" in backend and "if(frame.CanRecordPreview())" in backend,
+        "actual model input and raw input preview accept preview-only caller ownership")
+require("frame.SourceCaptureSerial = submissionEpoch" in evaluate and "frame.SourceCaptureEpoch = source.virtualGeneration" in evaluate,
+        "history uses real input attempts and the stable live feature generation")
+require("EvaluateGuides::Read(frame, *params, source, depth, motion)" in evaluate,
+        "the exact source boundary carries original guide metadata")
+require("recordedOutput && recordedOutput == outputCopy.source" in feature,
+        "SR output must be proved against the real copyback source")
+require(source_feature.index("sourceNrResult = DlssNr::EvaluateSourceOutput") < source_feature.index("const auto closeResult = cmdList->Close()") <
+        source_feature.index("Dx12CommandQueue->ExecuteCommandLists") < source_feature.index("if (!CopyBackOutput(outputCopy, canDeliver))"),
+        "NR records before the same source Execute and original DX11 handoff")
+require("(sourceOutputNr || orderedOutput) ? &recordedOutput : nullptr" in feature,
+        "legacy and receipt ABI both require the provider's current written output")
+require("currentSourceNr = {};" in feature and feature.index("if (!CopyBackOutput(outputCopy, canDeliver))") <
+        feature.index("currentSourceNr = { sourceNrResult"),
+        "failed attempts revoke old colour; only actual successful copyback publishes source mutation")
+require("Dx12CommandAllocatorFenceValue[commandFrame]" in feature,
+        "source receipt preserves the real source submission fence")
+require("DlssNr_GenshinPresentation.inl" not in late and
+        not (ROOT / "OptiScaler/shaders/dlssnr/DlssNr_GenshinPresentation.inl").exists(),
+        "the old separate Present writer and state machine were removed")
+require("if (UsesSourceOutput())" in late and "Scene NR was already" in late,
+        "the current Present endpoint reports the copy without running NR")
+require("!DlssNr::UsesSourceOutput()" in present,
+        "the source route cannot fall into a second optical NR adapter")
+require("CombinedMutation(source->sourceNr," in fg and "source-nr-receipt-mismatch" in fg,
+        "FG freezes the real source mutation independently of diagnostic metadata")
+require("(frame.SourceOutput && frame.Reset)" in backend,
+        "source cuts invalidate residual history independently of model reset policy")
+require("if (!DispatchPass(cmdList, encodeParams" in backend and "if (!DispatchPass(cmdList, down, modelInput" in backend,
+        "failed encode/resize cannot read old scratch as a current model input")
+require("composed = DispatchPass(cmdList, resolveParams" in backend and "if (composed && !targetSupportsUav)" in backend,
+        "only a recorded current resolve authorizes final copyback")
+require("GameRouting::UseGenshinSourceOutput(" in backend and "DlssNrGenshinPresentPipeline.value_or_default()" in backend,
+        "the persisted compatibility setting maps to the tested source-output placement")
 print(f"Direct DLSS scene wiring: {checks} checks passed (static only)")

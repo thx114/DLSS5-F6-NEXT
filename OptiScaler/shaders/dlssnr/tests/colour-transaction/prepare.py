@@ -39,3 +39,10 @@ end = source.index(';', source.index('ID3D12Resource* resolveTarget =', start)) 
 (out / 'colour-bindings.inl').write_text(
     source[start:end].replace('ID3D12Resource*', 'const Image*'), encoding='utf-8')
 print('Extracted current colour admission, binding and failure control flow')
+
+(out / 'colour-write.inl').write_text(guard('const auto RecordColorWrite =') + ';', encoding='utf-8')
+(out / 'colour-lut-commit.inl').write_text(guard('if (graded)'), encoding='utf-8')
+hold = source.index('// Held: restore the frozen frame')
+start = source.index('const D3D12_RESOURCE_STATES priorTargetState =', hold)
+end = source.index('TransitionTarget(priorTargetState);', start) + len('TransitionTarget(priorTargetState);')
+(out / 'colour-hold-commit.inl').write_text(source[start:end], encoding='utf-8')

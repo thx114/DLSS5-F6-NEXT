@@ -1,5 +1,7 @@
 ﻿#include "pch.h"
 #include <resource_tracking/DrawObservation_Dx11.h>
+#include <inputs/taa/TaaInputDx11.h>
+#include <inputs/taa/TaaPassDx11.h>
 #include <ui_mask/DrawUiMask.h>
 
 #include <native/OpticalFgNrPolicy.h>
@@ -10,6 +12,7 @@
 #include "GenericDepth_Dx11.h"
 #include <mods/gimi/GimiRuntime.h>
 #include <hooks/D3D11_Hooks.h>
+#include <hooks/RoutedHook.h>
 
 
 #include <Config.h>
@@ -23,6 +26,7 @@
 #include <detours/detours.h>
 
 #include <imgui/imgui.h>
+#include <menu/UiLocalization.h>
 #include <menu/SettingsSwitchRow.h>
 
 #include <d3d11_4.h>
@@ -45,101 +49,88 @@
 namespace
 {
 
-typedef void(STDMETHODCALLTYPE* PFN_OMSetRenderTargets)(ID3D11DeviceContext* This, UINT NumViews,
-                                                        ID3D11RenderTargetView* const* ppRenderTargetViews,
-                                                        ID3D11DepthStencilView* pDepthStencilView);
-typedef void(STDMETHODCALLTYPE* PFN_OMSetRenderTargetsAndUnorderedAccessViews)(
-    ID3D11DeviceContext* This, UINT NumRTVs, ID3D11RenderTargetView* const* ppRenderTargetViews,
-    ID3D11DepthStencilView* pDepthStencilView, UINT UAVStartSlot, UINT NumUAVs,
-    ID3D11UnorderedAccessView* const* ppUnorderedAccessViews, const UINT* pUAVInitialCounts);
-typedef void(STDMETHODCALLTYPE* PFN_ClearDepthStencilView)(ID3D11DeviceContext* This, ID3D11DepthStencilView* pView,
-                                                           UINT ClearFlags, FLOAT Depth, UINT8 Stencil);
-typedef void(STDMETHODCALLTYPE* PFN_RSSetViewports)(ID3D11DeviceContext* This, UINT NumViewports,
-                                                    const D3D11_VIEWPORT* pViewports);
-typedef void(STDMETHODCALLTYPE* PFN_Draw)(ID3D11DeviceContext* This, UINT VertexCount, UINT StartVertexLocation);
-typedef void(STDMETHODCALLTYPE* PFN_DrawIndexed)(ID3D11DeviceContext* This, UINT IndexCount, UINT StartIndexLocation,
-                                                 INT BaseVertexLocation);
-typedef void(STDMETHODCALLTYPE* PFN_DrawInstanced)(ID3D11DeviceContext* This, UINT VertexCountPerInstance,
-                                                   UINT InstanceCount, UINT StartVertexLocation,
-                                                   UINT StartInstanceLocation);
-typedef void(STDMETHODCALLTYPE* PFN_DrawIndexedInstanced)(ID3D11DeviceContext* This, UINT IndexCountPerInstance,
-                                                          UINT InstanceCount, UINT StartIndexLocation,
-                                                          INT BaseVertexLocation, UINT StartInstanceLocation);
-typedef void(STDMETHODCALLTYPE* PFN_DrawAuto)(ID3D11DeviceContext* This);
-typedef void(STDMETHODCALLTYPE* PFN_DrawIndirect)(ID3D11DeviceContext* This, ID3D11Buffer* pBufferForArgs,
-                                                  UINT AlignedByteOffsetForArgs);
-typedef void(STDMETHODCALLTYPE* PFN_Dispatch)(ID3D11DeviceContext* This, UINT X, UINT Y, UINT Z);
-typedef void(STDMETHODCALLTYPE* PFN_SetConstantBuffers)(ID3D11DeviceContext* This, UINT StartSlot,
-                                                         UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers);
-
-PFN_OMSetRenderTargets o_OMSetRenderTargets = nullptr;
-PFN_OMSetRenderTargetsAndUnorderedAccessViews o_OMSetRenderTargetsAndUAV = nullptr;
-PFN_ClearDepthStencilView o_ClearDepthStencilView = nullptr;
-PFN_RSSetViewports o_RSSetViewports = nullptr;
-using PFN_ClearRtv=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11RenderTargetView*,const FLOAT*);
-using PFN_ClearUavUint=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11UnorderedAccessView*,const UINT*);
-using PFN_ClearUavFloat=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11UnorderedAccessView*,const FLOAT*);
-PFN_ClearRtv o_ClearRtv=nullptr;PFN_ClearUavUint o_ClearUavUint=nullptr;PFN_ClearUavFloat o_ClearUavFloat=nullptr;
-using PFN_CreateDepthCs=HRESULT(STDMETHODCALLTYPE*)(ID3D11Device*,const void*,SIZE_T,ID3D11ClassLinkage*,ID3D11ComputeShader**);
-PFN_CreateDepthCs o_CreateDepthCs=nullptr;
-using PFN_CopyStructure=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11Buffer*,UINT,ID3D11UnorderedAccessView*);
-PFN_CopyStructure o_DepthCopyStructure=nullptr;
-using PFN_CopyResource=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11Resource*,ID3D11Resource*);
-using PFN_CopyRegion=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11Resource*,UINT,UINT,UINT,UINT,ID3D11Resource*,UINT,const D3D11_BOX*);
-using PFN_Update=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11Resource*,UINT,const D3D11_BOX*,const void*,UINT,UINT);
-using PFN_Map=HRESULT(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11Resource*,UINT,D3D11_MAP,UINT,D3D11_MAPPED_SUBRESOURCE*);
-using PFN_Unmap=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11Resource*,UINT);
-using PFN_Resolve=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11Resource*,UINT,ID3D11Resource*,UINT,DXGI_FORMAT);
-using PFN_Mips=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,ID3D11ShaderResourceView*);
-using PFN_CopyRegion1=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext1*,ID3D11Resource*,UINT,UINT,UINT,UINT,ID3D11Resource*,UINT,const D3D11_BOX*,UINT);
-using PFN_Update1=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext1*,ID3D11Resource*,UINT,const D3D11_BOX*,const void*,UINT,UINT,UINT);
-using PFN_ClearView=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext1*,ID3D11View*,const FLOAT*,const D3D11_RECT*,UINT);
-PFN_CopyRegion1 o_DepthCopyRegion1=nullptr;PFN_Update1 o_DepthUpdate1=nullptr;PFN_ClearView o_DepthClearView=nullptr;
-PFN_DrawIndirect o_DepthDispatchIndirect=nullptr;
-PFN_CopyResource o_DepthCopyResource=nullptr;PFN_CopyRegion o_DepthCopyRegion=nullptr;PFN_Update o_DepthUpdate=nullptr;
-PFN_Map o_DepthMap=nullptr;PFN_Unmap o_DepthUnmap=nullptr;PFN_Resolve o_DepthResolve=nullptr;PFN_Mips o_DepthMips=nullptr;
-PFN_Draw o_Draw = nullptr;
-PFN_DrawIndexed o_DrawIndexed = nullptr;
-PFN_DrawInstanced o_DrawInstanced = nullptr;
-PFN_DrawIndexedInstanced o_DrawIndexedInstanced = nullptr;
-PFN_DrawAuto o_DrawAuto = nullptr;
-PFN_DrawIndirect o_DrawIndexedInstancedIndirect = nullptr;
-PFN_DrawIndirect o_DrawInstancedIndirect = nullptr;
-PFN_Dispatch o_Dispatch = nullptr;
-PFN_SetConstantBuffers o_VSSetConstantBuffers = nullptr;
-PFN_SetConstantBuffers o_PSSetConstantBuffers = nullptr;
-PFN_SetConstantBuffers o_CSSetConstantBuffers = nullptr;
-using PFN_ClearState = void (STDMETHODCALLTYPE*)(ID3D11DeviceContext*);
-using PFN_ExecuteCommandList = void (STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11CommandList*, BOOL);
-using PFN_FinishCommandList = HRESULT (STDMETHODCALLTYPE*)(ID3D11DeviceContext*, BOOL, ID3D11CommandList**);
-using PFN_DiscardResource = void (STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, ID3D11Resource*);
-using PFN_DiscardView = void (STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, ID3D11View*);
-using PFN_DiscardView1 = void (STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, ID3D11View*, const D3D11_RECT*, UINT);
-using PFN_SwapDeviceContextState = void (STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, ID3DDeviceContextState*, ID3DDeviceContextState**);
-PFN_ClearState o_ClearState = nullptr;
-PFN_ExecuteCommandList o_ExecuteCommandList = nullptr;
-PFN_FinishCommandList o_FinishCommandList = nullptr;
-PFN_DiscardResource o_DiscardResource = nullptr;
-PFN_DiscardView o_DiscardView = nullptr;
-PFN_DiscardView1 o_DiscardView1 = nullptr;
-PFN_SwapDeviceContextState o_SwapDeviceContextState = nullptr;
-// ID3D11DeviceContext vtable indices (checked against the SDK header with offsetof; see tests/ -- a host-only sanity program,
-// not shipped): DrawIndexed 12, Draw 13, DrawIndexedInstanced 20, DrawInstanced 21, OMSetRenderTargets 33,
-// OMSetRenderTargetsAndUnorderedAccessViews 34, SOSetTargets 37, DrawAuto 38, DrawIndexedInstancedIndirect 39, DrawInstancedIndirect 40,
-// Dispatch 41, RSSetViewports 44, ClearDepthStencilView 53. The constant-buffer
-// setter indices below are pinned to the same Windows SDK ID3D11DeviceContext
-// declaration: VS 7, PS 16 and CS 71.
-constexpr int kDrawIndexed = 12, kDraw = 13, kDrawIndexedInstanced = 20, kDrawInstanced = 21, kOMSetRenderTargets = 33,
-             kOMSetRenderTargetsAndUAV = 34, kSOSetTargets = 37, kDrawAuto = 38, kDrawIndexedInstancedIndirect = 39,
-             kDrawInstancedIndirect = 40, kDispatch = 41, kRSSetViewports = 44, kClearDepthStencilView = 53,
-             kVSSetConstantBuffers = 7, kPSSetConstantBuffers = 16, kCSSetConstantBuffers = 71;
-
-// These process-wide function targets are immutable after the first common
-// installation. A later bridge upgrade must use the same complete hook set.
-constexpr std::array<int,12> kCommonHookSlots {kDrawIndexed,kDraw,kDrawIndexedInstanced,kDrawInstanced,
-    kOMSetRenderTargets,kOMSetRenderTargetsAndUAV,kDrawAuto,kDrawIndexedInstancedIndirect,
-    kDrawInstancedIndirect,kDispatch,kRSSetViewports,kClearDepthStencilView};
-std::array<PVOID,kCommonHookSlots.size()> g_commonHookTargets {};
+// A context can switch method implementations after SwapDeviceContextState.
+// Each implementation keeps its own trampoline; no context borrows the first
+// device's original. Method-local recursion preserves the existing observers.
+void STDMETHODCALLTYPE hkDrawIndexed(ID3D11DeviceContext* c, UINT count, UINT first, INT base);
+void STDMETHODCALLTYPE hkDraw(ID3D11DeviceContext* c, UINT count, UINT first);
+void STDMETHODCALLTYPE hkDrawIndexedInstanced(ID3D11DeviceContext* c, UINT count, UINT instances, UINT first, INT base, UINT firstInstance);
+void STDMETHODCALLTYPE hkDrawInstanced(ID3D11DeviceContext* c, UINT count, UINT instances, UINT first, UINT firstInstance);
+void STDMETHODCALLTYPE hkOMSetRenderTargets(ID3D11DeviceContext* This, UINT NumViews,
+                                            ID3D11RenderTargetView* const* ppRenderTargetViews,
+                                            ID3D11DepthStencilView* pDepthStencilView);
+void STDMETHODCALLTYPE hkOMSetRenderTargetsAndUAV(ID3D11DeviceContext* This, UINT NumRTVs,
+                                                  ID3D11RenderTargetView* const* ppRenderTargetViews,
+                                                  ID3D11DepthStencilView* pDepthStencilView, UINT UAVStartSlot,
+                                                  UINT NumUAVs, ID3D11UnorderedAccessView* const* ppUnorderedAccessViews,
+                                                  const UINT* pUAVInitialCounts);
+void STDMETHODCALLTYPE hkDrawAuto(ID3D11DeviceContext* c);
+void STDMETHODCALLTYPE hkDrawIndexedInstancedIndirect(ID3D11DeviceContext* c, ID3D11Buffer* args, UINT offset);
+void STDMETHODCALLTYPE hkDrawInstancedIndirect(ID3D11DeviceContext* c, ID3D11Buffer* args, UINT offset);
+void STDMETHODCALLTYPE hkDispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT z);
+void STDMETHODCALLTYPE hkRSSetViewports(ID3D11DeviceContext* c,UINT count,const D3D11_VIEWPORT* views);
+void STDMETHODCALLTYPE hkClearDepthStencilView(ID3D11DeviceContext* This, ID3D11DepthStencilView* pView,
+                                               UINT ClearFlags, FLOAT Depth, UINT8 Stencil);
+void STDMETHODCALLTYPE hkDepthDispatchIndirect(ID3D11DeviceContext* c, ID3D11Buffer* args, UINT offset);
+HRESULT STDMETHODCALLTYPE hkDepthMap(ID3D11DeviceContext* c,ID3D11Resource* r,UINT sub,D3D11_MAP type,UINT flags,D3D11_MAPPED_SUBRESOURCE* mapped);
+void STDMETHODCALLTYPE hkDepthUnmap(ID3D11DeviceContext* c,ID3D11Resource* r,UINT sub);
+void STDMETHODCALLTYPE hkDepthCopyRegion(ID3D11DeviceContext* c,ID3D11Resource* d,UINT sub,UINT x,UINT y,UINT z,ID3D11Resource* s,UINT ss,const D3D11_BOX* box);
+void STDMETHODCALLTYPE hkDepthCopyResource(ID3D11DeviceContext* c,ID3D11Resource* d,ID3D11Resource* s);
+void STDMETHODCALLTYPE hkDepthUpdate(ID3D11DeviceContext* c,ID3D11Resource* d,UINT sub,const D3D11_BOX* box,const void* data,UINT row,UINT slice);
+void STDMETHODCALLTYPE hkDepthCopyStructure(ID3D11DeviceContext* c,ID3D11Buffer* d,UINT offset,ID3D11UnorderedAccessView* view);
+void STDMETHODCALLTYPE hkClearRtv(ID3D11DeviceContext* c,ID3D11RenderTargetView* view,const FLOAT* values);
+void STDMETHODCALLTYPE hkClearUavUint(ID3D11DeviceContext* c,ID3D11UnorderedAccessView* view,const UINT* values);
+void STDMETHODCALLTYPE hkClearUavFloat(ID3D11DeviceContext* c,ID3D11UnorderedAccessView* view,const FLOAT* values);
+void STDMETHODCALLTYPE hkDepthMips(ID3D11DeviceContext* c,ID3D11ShaderResourceView* view);
+void STDMETHODCALLTYPE hkDepthResolve(ID3D11DeviceContext* c,ID3D11Resource* d,UINT sub,ID3D11Resource* s,UINT ss,DXGI_FORMAT format);
+void STDMETHODCALLTYPE hkExecuteCommandList(ID3D11DeviceContext* c,ID3D11CommandList* list,BOOL restore);
+void STDMETHODCALLTYPE hkClearState(ID3D11DeviceContext* c);
+HRESULT STDMETHODCALLTYPE hkFinishCommandList(ID3D11DeviceContext* c,BOOL restore,ID3D11CommandList** list);
+void STDMETHODCALLTYPE hkDepthCopyRegion1(ID3D11DeviceContext1* c,ID3D11Resource* d,UINT sub,UINT x,UINT y,UINT z,ID3D11Resource* s,UINT ss,const D3D11_BOX* box,UINT flags);
+void STDMETHODCALLTYPE hkDepthUpdate1(ID3D11DeviceContext1* c,ID3D11Resource* d,UINT sub,const D3D11_BOX* box,const void* data,UINT row,UINT slice,UINT flags);
+void STDMETHODCALLTYPE hkDiscardResource(ID3D11DeviceContext1* c,ID3D11Resource* resource);
+void STDMETHODCALLTYPE hkDiscardView(ID3D11DeviceContext1* c,ID3D11View* view);
+void STDMETHODCALLTYPE hkSwapDeviceContextState(ID3D11DeviceContext1* c,ID3DDeviceContextState* state,ID3DDeviceContextState** previous);
+void STDMETHODCALLTYPE hkDepthClearView(ID3D11DeviceContext1* c,ID3D11View* view,const FLOAT* values,const D3D11_RECT* rects,UINT count);
+void STDMETHODCALLTYPE hkDiscardView1(ID3D11DeviceContext1* c,ID3D11View* view,const D3D11_RECT* rects,UINT count);
+void STDMETHODCALLTYPE hkModSOSetTargets(ID3D11DeviceContext* c,UINT count,ID3D11Buffer* const* buffers,const UINT* offsets);
+template<size_t Index> struct ContextMethodDomain {};
+template<auto Callback,size_t Index> using ContextRoute=HookOwnership::RoutedHook<Callback,Index,ContextMethodDomain<Index>>;
+ContextRoute<&hkDrawIndexed,12> o_DrawIndexed;
+ContextRoute<&hkDraw,13> o_Draw;
+ContextRoute<&hkDrawIndexedInstanced,20> o_DrawIndexedInstanced;
+ContextRoute<&hkDrawInstanced,21> o_DrawInstanced;
+ContextRoute<&hkOMSetRenderTargets,33> o_OMSetRenderTargets;
+ContextRoute<&hkOMSetRenderTargetsAndUAV,34> o_OMSetRenderTargetsAndUAV;
+ContextRoute<&hkDrawAuto,38> o_DrawAuto;
+ContextRoute<&hkDrawIndexedInstancedIndirect,39> o_DrawIndexedInstancedIndirect;
+ContextRoute<&hkDrawInstancedIndirect,40> o_DrawInstancedIndirect;
+ContextRoute<&hkDispatch,41> o_Dispatch;
+ContextRoute<&hkRSSetViewports,44> o_RSSetViewports;
+ContextRoute<&hkClearDepthStencilView,53> o_ClearDepthStencilView;
+ContextRoute<&hkDepthDispatchIndirect,42> o_DepthDispatchIndirect;
+ContextRoute<&hkDepthMap,14> o_DepthMap;
+ContextRoute<&hkDepthUnmap,15> o_DepthUnmap;
+ContextRoute<&hkDepthCopyRegion,46> o_DepthCopyRegion;
+ContextRoute<&hkDepthCopyResource,47> o_DepthCopyResource;
+ContextRoute<&hkDepthUpdate,48> o_DepthUpdate;
+ContextRoute<&hkDepthCopyStructure,49> o_DepthCopyStructure;
+ContextRoute<&hkClearRtv,50> o_ClearRtv;
+ContextRoute<&hkClearUavUint,51> o_ClearUavUint;
+ContextRoute<&hkClearUavFloat,52> o_ClearUavFloat;
+ContextRoute<&hkDepthMips,54> o_DepthMips;
+ContextRoute<&hkDepthResolve,57> o_DepthResolve;
+ContextRoute<&hkExecuteCommandList,58> o_ExecuteCommandList;
+ContextRoute<&hkClearState,110> o_ClearState;
+ContextRoute<&hkFinishCommandList,114> o_FinishCommandList;
+ContextRoute<&hkDepthCopyRegion1,115> o_DepthCopyRegion1;
+ContextRoute<&hkDepthUpdate1,116> o_DepthUpdate1;
+ContextRoute<&hkDiscardResource,117> o_DiscardResource;
+ContextRoute<&hkDiscardView,118> o_DiscardView;
+ContextRoute<&hkSwapDeviceContextState,131> o_SwapDeviceContextState;
+ContextRoute<&hkDepthClearView,132> o_DepthClearView;
+ContextRoute<&hkDiscardView1,133> o_DiscardView1;
+ContextRoute<&hkModSOSetTargets,37> o_ModSOSetTargets;
 
 std::mutex g_mutex;
 native::DepthFinderCore g_core;
@@ -151,7 +142,6 @@ native::DepthFinderCore g_core;
 // on the present thread only.
 ID3D11DeviceContext* g_context = nullptr;
 std::atomic<uint64_t> g_contextId = 0; // g_context, as the core's id for it; read by the hooks on the game's threads
-PVOID g_hookedOMSetRenderTargets = nullptr; // the function hooked, to tell whether a context runs the hooks at all
 // The watched context set render targets since the last present (it is still the one the game draws through).
 std::atomic<uint64_t> g_watchedActivity = 0;
 
@@ -169,34 +159,86 @@ thread_local bool t_copying = false;
 
 thread_local bool t_modExecuting = false;
 bool TrackingInternal() { return t_copying || t_modExecuting || DrawObservationDx11::Internal(); }
-std::atomic_bool g_installed{false}, g_installFailed{false}, g_modWriteHooksComplete{false};
+std::atomic_bool g_installed{false}, g_installFailed{false};
 std::atomic_flag g_installing = ATOMIC_FLAG_INIT;
-std::array<HookOwnership::Own::Slot,12> commonOwners;
-std::array<HookOwnership::Own::Slot,21> writeOwners;
-HookOwnership::Own::Slot soOwner;
-constexpr std::array<int,21> writeSlots{14,15,46,47,48,49,50,51,52,54,57,58,110,114,115,116,117,118,131,132,133};
-std::atomic_bool soComplete{false};
-template<size_t N> bool Covered(PVOID* table, const std::array<int,N>& slots,
-    const std::array<HookOwnership::Own::Slot,N>& owners) noexcept
-{
+struct ContextMethod {
+    size_t index;
+    bool (*covered)(PVOID) noexcept;
+    LONG (*add)(HookOwnership::Own::Batch&,PVOID) noexcept;
+};
+template<auto& Method> constexpr ContextMethod MethodBinding() {
+    return {std::remove_cvref_t<decltype(Method)>::method_index,
+        +[](PVOID entry) noexcept {return Method.Covers(entry);},
+        +[](HookOwnership::Own::Batch& batch,PVOID entry) noexcept {return Method.Add(batch,entry);}};
+}
+const std::array kCommonMethods {
+    MethodBinding<o_DrawIndexed>(),
+    MethodBinding<o_Draw>(),
+    MethodBinding<o_DrawIndexedInstanced>(),
+    MethodBinding<o_DrawInstanced>(),
+    MethodBinding<o_OMSetRenderTargets>(),
+    MethodBinding<o_OMSetRenderTargetsAndUAV>(),
+    MethodBinding<o_DrawAuto>(),
+    MethodBinding<o_DrawIndexedInstancedIndirect>(),
+    MethodBinding<o_DrawInstancedIndirect>(),
+    MethodBinding<o_Dispatch>(),
+    MethodBinding<o_RSSetViewports>(),
+    MethodBinding<o_ClearDepthStencilView>(),
+    MethodBinding<o_DepthDispatchIndirect>()
+};
+const std::array kWriteMethods {
+    MethodBinding<o_DepthMap>(),
+    MethodBinding<o_DepthUnmap>(),
+    MethodBinding<o_DepthCopyRegion>(),
+    MethodBinding<o_DepthCopyResource>(),
+    MethodBinding<o_DepthUpdate>(),
+    MethodBinding<o_DepthCopyStructure>(),
+    MethodBinding<o_ClearRtv>(),
+    MethodBinding<o_ClearUavUint>(),
+    MethodBinding<o_ClearUavFloat>(),
+    MethodBinding<o_DepthMips>(),
+    MethodBinding<o_DepthResolve>(),
+    MethodBinding<o_ExecuteCommandList>(),
+    MethodBinding<o_ClearState>(),
+    MethodBinding<o_FinishCommandList>(),
+    MethodBinding<o_DepthCopyRegion1>(),
+    MethodBinding<o_DepthUpdate1>(),
+    MethodBinding<o_DiscardResource>(),
+    MethodBinding<o_DiscardView>(),
+    MethodBinding<o_SwapDeviceContextState>(),
+    MethodBinding<o_DepthClearView>(),
+    MethodBinding<o_DiscardView1>()
+};
+template<size_t N> bool Covered(PVOID* table,const std::array<ContextMethod,N>& methods) noexcept {
     if(!table)return false;
-    for(size_t i=0;i<N;++i) {
-        const auto& own=owners[i];
-        if(!own.live || own.entry!=table[slots[i]] || !own.executed || *own.executed!=own.transaction)return false;
-    }
+    for(const auto& method:methods)if(!method.covered(table[method.index]))return false;
     return true;
 }
 bool CommonCovered(ID3D11DeviceContext* c) noexcept {
-    return c && Covered(*reinterpret_cast<PVOID**>(c),kCommonHookSlots,commonOwners);
+    return c && Covered(*reinterpret_cast<PVOID**>(c),kCommonMethods);
 }
-// All callbacks observe the immediate base pointer. Reject an alternate alias
-// or dispatch table rather than certifying methods these callbacks cannot see.
+template<size_t N> bool InstallMethods(PVOID* table,const std::array<ContextMethod,N>& methods,const char* group) noexcept {
+    if(Covered(table,methods))return true;
+    HookOwnership::Own::Batch batch;
+    for(const auto& method:methods)method.add(batch,table[method.index]);
+    const auto result=batch.Commit();
+    if(result!=NO_ERROR) {
+        static std::atomic_uint reports{0};
+        if(reports.fetch_add(1,std::memory_order_relaxed)<8)
+            LOG_WARN("D3D11 context hooks: group={} result={}",group,result);
+        return false;
+    }
+    LOG_INFO("D3D11 context hooks: covered {} implementations for {}",N,group);
+    return Covered(table,methods);
+}
+// All callbacks observe the immediate base pointer. Alternate aliases still
+// require their own original routing and are not certified by a successful batch.
 bool ModContextCovered(ID3D11DeviceContext* c, bool requireHooks=true) noexcept {
     if(!c || !CommonCovered(c))return false;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> one;
     if(FAILED(c->QueryInterface(IID_PPV_ARGS(&one))) || one.Get()!=c)return false;
     auto* table=*reinterpret_cast<PVOID**>(one.Get());
-    if(requireHooks && !Covered(table,writeSlots,writeOwners))return false;
+    if(requireHooks && !Covered(table,kWriteMethods))return false;
     const auto alias=[&]<class T>() {
         Microsoft::WRL::ComPtr<T> value;
         const auto hr=c->QueryInterface(IID_PPV_ARGS(&value));
@@ -205,6 +247,7 @@ bool ModContextCovered(ID3D11DeviceContext* c, bool requireHooks=true) noexcept 
     return alias.template operator()<ID3D11DeviceContext2>() &&
            alias.template operator()<ID3D11DeviceContext3>() && alias.template operator()<ID3D11DeviceContext4>();
 }
+bool EnsureContextWriteHooks(ID3D11DeviceContext* context,bool coveredStateSwitch=false) noexcept;
 bool Watched(ID3D11DeviceContext* context)
 {
     return !TrackingInternal() && (uint64_t) (size_t) context == g_contextId.load(std::memory_order_relaxed);
@@ -409,6 +452,7 @@ void STDMETHODCALLTYPE hkClearDepthStencilView(ID3D11DeviceContext* This, ID3D11
     }
 
     r448Hook.Original([&]{return o_ClearDepthStencilView(This, pView, ClearFlags, Depth, Stencil);});
+    if(!TrackingInternal())taa::DepthCleared(This,pView,ClearFlags,Depth);
 }
 
 
@@ -419,97 +463,124 @@ void STDMETHODCALLTYPE hkRSSetViewports(ID3D11DeviceContext* c,UINT count,const 
 }
 void STDMETHODCALLTYPE hkDraw(ID3D11DeviceContext* c, UINT count, UINT first)
 {
+    taa::Scope taaPass(c,{taa::Stage::Pixel,count},Watched(c));
     DrawObservationDx11::Scope observed(c, {DrawObservationDx11::Kind::Draw,count,first}, []() noexcept {return !TrackingInternal();});
     gimi::runtime::RasterReturnScope returned(c);
-    if (gimi::runtime::Enabled() && !TrackingInternal() && gimi::runtime::TryDraw(c,count,first,o_Draw,&returned))
-    { observed.Returned(DrawObservationDx11::Completion::Consumed); return; }
+    if (gimi::runtime::Enabled() && !TrackingInternal() && gimi::runtime::TryDraw(c,count,first,o_Draw.Forward,&returned))
+    { if(!taaPass.Capturing())taa::ConsumerWrite(c,nullptr,"draw consumed by external hook"); observed.Returned(DrawObservationDx11::Completion::Consumed); return; }
     if (Watched(c)) {g_core.OnDraw(reinterpret_cast<uint64_t>(c),count,1); native::lowlatency::OnFirstSubmit();}
-    o_Draw(c,count,first); returned.Returned(); observed.Returned();
+    taa::ConsumerScope consumer(c,{false,count,first},Watched(c)&&!taaPass.Capturing());
+    o_Draw(c,count,first); returned.Returned(); observed.Returned(); consumer.Returned(); taaPass.Returned();
     if (gimi::runtime::Enabled() && !TrackingInternal()) gimi::runtime::StreamOutputDrawn(c,count);
 }
 void STDMETHODCALLTYPE hkDrawIndexed(ID3D11DeviceContext* c, UINT count, UINT first, INT base)
 {
+    taa::Scope taaPass(c,{taa::Stage::Pixel,count},Watched(c));
     DrawObservationDx11::Scope observed(c,{DrawObservationDx11::Kind::Indexed,count,first,base},[]() noexcept {return !TrackingInternal();});
     gimi::runtime::RasterReturnScope returned(c);
-    if (gimi::runtime::Enabled() && !TrackingInternal() && gimi::runtime::TryDrawIndexed(c,count,first,base,o_DrawIndexed,&returned))
-    { observed.Returned(DrawObservationDx11::Completion::Consumed); return; }
+    if (gimi::runtime::Enabled() && !TrackingInternal() && gimi::runtime::TryDrawIndexed(c,count,first,base,o_DrawIndexed.Forward,&returned))
+    { if(!taaPass.Capturing())taa::ConsumerWrite(c,nullptr,"draw consumed by external hook"); observed.Returned(DrawObservationDx11::Completion::Consumed); return; }
     if (Watched(c)) {g_core.OnDraw(reinterpret_cast<uint64_t>(c),count,1); native::lowlatency::OnFirstSubmit();}
-    o_DrawIndexed(c,count,first,base); returned.Returned(); observed.Returned();
+    taa::ConsumerScope consumer(c,{true,count,first,1,0,base},Watched(c)&&!taaPass.Capturing());
+    o_DrawIndexed(c,count,first,base); returned.Returned(); observed.Returned(); consumer.Returned(); taaPass.Returned();
     if (gimi::runtime::Enabled() && !TrackingInternal()) gimi::runtime::StreamOutputDrawn(c,count);
 }
 void STDMETHODCALLTYPE hkDrawInstanced(ID3D11DeviceContext* c, UINT count, UINT instances, UINT first, UINT firstInstance)
 {
+    taa::Scope taaPass(c,{taa::Stage::Pixel,count,instances},Watched(c));
     DrawObservationDx11::Scope observed(c,{DrawObservationDx11::Kind::Instanced,count,first,0,instances,firstInstance},[]() noexcept {return !TrackingInternal();});
     if (Watched(c)) {g_core.OnDraw(reinterpret_cast<uint64_t>(c),count,instances); native::lowlatency::OnFirstSubmit();}
-    o_DrawInstanced(c,count,instances,first,firstInstance); observed.Returned();
+    taa::ConsumerScope consumer(c,{false,count,first,instances,firstInstance},Watched(c)&&!taaPass.Capturing());
+    o_DrawInstanced(c,count,instances,first,firstInstance); observed.Returned(); consumer.Returned(); taaPass.Returned();
     if (gimi::runtime::Enabled() && !TrackingInternal()) gimi::runtime::StreamOutputDrawn(c,count,instances);
 }
 void STDMETHODCALLTYPE hkDrawIndexedInstanced(ID3D11DeviceContext* c, UINT count, UINT instances, UINT first, INT base, UINT firstInstance)
 {
+    taa::Scope taaPass(c,{taa::Stage::Pixel,count,instances},Watched(c));
     DrawObservationDx11::Scope observed(c,{DrawObservationDx11::Kind::IndexedInstanced,count,first,base,instances,firstInstance},[]() noexcept {return !TrackingInternal();});
     gimi::runtime::RasterReturnScope returned(c);
-    if (gimi::runtime::Enabled() && !TrackingInternal() && gimi::runtime::TryDrawIndexedInstanced(c,count,instances,first,base,firstInstance,o_DrawIndexedInstanced,&returned))
-    { observed.Returned(DrawObservationDx11::Completion::Consumed); return; }
+    if (gimi::runtime::Enabled() && !TrackingInternal() && gimi::runtime::TryDrawIndexedInstanced(c,count,instances,first,base,firstInstance,o_DrawIndexedInstanced.Forward,&returned))
+    { if(!taaPass.Capturing())taa::ConsumerWrite(c,nullptr,"draw consumed by external hook"); observed.Returned(DrawObservationDx11::Completion::Consumed); return; }
     if (Watched(c)) {g_core.OnDraw(reinterpret_cast<uint64_t>(c),count,instances); native::lowlatency::OnFirstSubmit();}
-    o_DrawIndexedInstanced(c,count,instances,first,base,firstInstance); returned.Returned(); observed.Returned();
+    taa::ConsumerScope consumer(c,{true,count,first,instances,firstInstance,base},Watched(c)&&!taaPass.Capturing());
+    o_DrawIndexedInstanced(c,count,instances,first,base,firstInstance); returned.Returned(); observed.Returned(); consumer.Returned(); taaPass.Returned();
     if (gimi::runtime::Enabled() && !TrackingInternal()) gimi::runtime::StreamOutputDrawn(c,count,instances);
 }
 void STDMETHODCALLTYPE hkDrawAuto(ID3D11DeviceContext* c)
 {
+    taa::Scope taaPass(c,{taa::Stage::Pixel,0,1,0,0,0,false},Watched(c));
     DrawObservationDx11::Scope observed(c,{DrawObservationDx11::Kind::Auto,0,0,0,1,0,false},[]() noexcept {return !TrackingInternal();});
     if (Watched(c)) g_core.OnIndirect(reinterpret_cast<uint64_t>(c),1);
-    o_DrawAuto(c); observed.Returned();
+    taa::ConsumerScope consumer(c,{},Watched(c)&&!taaPass.Capturing());
+    o_DrawAuto(c); observed.Returned(); consumer.Returned(); taaPass.Returned();
     if (gimi::runtime::Enabled() && !TrackingInternal()) gimi::runtime::StreamOutputUnknownDraw(c);
 }
 void STDMETHODCALLTYPE hkDrawIndexedInstancedIndirect(ID3D11DeviceContext* c, ID3D11Buffer* args, UINT offset)
 {
+    taa::Scope taaPass(c,{taa::Stage::Pixel,0,1,0,0,0,false},Watched(c));
     DrawObservationDx11::Scope observed(c,{DrawObservationDx11::Kind::IndexedIndirect,0,0,0,1,0,false,args,offset},[]() noexcept {return !TrackingInternal();});
     if (Watched(c)) g_core.OnIndirect(reinterpret_cast<uint64_t>(c),1);
-    o_DrawIndexedInstancedIndirect(c,args,offset); observed.Returned();
+    taa::ConsumerScope consumer(c,{},Watched(c)&&!taaPass.Capturing());
+    o_DrawIndexedInstancedIndirect(c,args,offset); observed.Returned(); consumer.Returned(); taaPass.Returned();
     if (gimi::runtime::Enabled() && !TrackingInternal()) gimi::runtime::StreamOutputUnknownDraw(c);
 }
 void STDMETHODCALLTYPE hkDrawInstancedIndirect(ID3D11DeviceContext* c, ID3D11Buffer* args, UINT offset)
 {
+    taa::Scope taaPass(c,{taa::Stage::Pixel,0,1,0,0,0,false},Watched(c));
     DrawObservationDx11::Scope observed(c,{DrawObservationDx11::Kind::Indirect,0,0,0,1,0,false,args,offset},[]() noexcept {return !TrackingInternal();});
     if (Watched(c)) g_core.OnIndirect(reinterpret_cast<uint64_t>(c),1);
-    o_DrawInstancedIndirect(c,args,offset); observed.Returned();
+    taa::ConsumerScope consumer(c,{},Watched(c)&&!taaPass.Capturing());
+    o_DrawInstancedIndirect(c,args,offset); observed.Returned(); consumer.Returned(); taaPass.Returned();
     if (gimi::runtime::Enabled() && !TrackingInternal()) gimi::runtime::StreamOutputUnknownDraw(c);
 }
 void STDMETHODCALLTYPE hkDispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT z)
 {
+    taa::Scope taaPass(c,{taa::Stage::Compute,0,1,x,y,z},Watched(c));
     if (DrawObservationDx11::NeedsDraw() && !TrackingInternal()) DrawObservationDx11::NonDrawWrite(c);
     if (g_core.Active() && Watched(c)) g_core.Counters().dispatches.fetch_add(1,std::memory_order_relaxed);
+    if(!taaPass.Capturing()&&!TrackingInternal())taa::ConsumerDispatch(c);
     o_Dispatch(c,x,y,z);
+    taaPass.Returned();
+}
+void STDMETHODCALLTYPE hkDepthDispatchIndirect(ID3D11DeviceContext* c, ID3D11Buffer* args, UINT offset) {
+    taa::Scope taaPass(c,{taa::Stage::Compute,0,1,0,0,0,false},Watched(c));
+    if (DrawObservationDx11::NeedsDraw() && !TrackingInternal()) DrawObservationDx11::NonDrawWrite(c);
+    if(!taaPass.Capturing()&&!TrackingInternal())taa::ConsumerDispatch(c);
+    o_DepthDispatchIndirect(c,args,offset);taaPass.Returned();
 }
 
-void NoteWrite(ID3D11DeviceContext* c,ID3D11Resource* resource) {
+void NoteWrite(ID3D11DeviceContext* c,ID3D11Resource* resource,bool invalidateConstants=true) {
+    if (taa::NeedsHooks()) {if(invalidateConstants)taa::constants::Written(resource);else taa::constants::GeometryWrite(resource);}
     if(DrawObservationDx11::NeedsDraw() && !TrackingInternal())DrawObservationDx11::NonDrawWrite(c);
+    if(!TrackingInternal())taa::ConsumerWrite(c,resource);
     if(gimi::runtime::Enabled() && !TrackingInternal())gimi::runtime::Written(c,resource);
 }
 void STDMETHODCALLTYPE hkDepthCopyRegion1(ID3D11DeviceContext1* c,ID3D11Resource* d,UINT sub,UINT x,UINT y,UINT z,ID3D11Resource* s,UINT ss,const D3D11_BOX* box,UINT flags) {
     NoteWrite(c,d);
     auto payload=gimi::runtime::Enabled()&&!TrackingInternal()?gimi::runtime::CpuContentSubmission::Copy(c,d,s,sub,x,y,z,ss,box,flags,false):gimi::runtime::CpuContentSubmission{};
-    o_DepthCopyRegion1(c,d,sub,x,y,z,s,ss,box,flags);if(payload)payload.Returned();
+    o_DepthCopyRegion1(c,d,sub,x,y,z,s,ss,box,flags);if(payload)payload.Returned();if(!TrackingInternal())taa::ConsumerCopy(c,d,s,!sub&&!ss&&!x&&!y&&!z&&!box&&!flags);
 }
 void STDMETHODCALLTYPE hkDepthUpdate1(ID3D11DeviceContext1* c,ID3D11Resource* d,UINT sub,const D3D11_BOX* box,const void* data,UINT row,UINT slice,UINT flags) {
-    NoteWrite(c,d);
+    NoteWrite(c,d,false);
     auto payload=gimi::runtime::Enabled()&&!TrackingInternal()?gimi::runtime::CpuContentSubmission::Update(c,d,sub,box,data,flags):gimi::runtime::CpuContentSubmission{};
     o_DepthUpdate1(c,d,sub,box,data,row,slice,flags);if(payload)payload.Returned();
+    if (taa::NeedsHooks()) taa::constants::Updated(c,d,sub,box,data,flags);
 }
 void STDMETHODCALLTYPE hkDepthCopyResource(ID3D11DeviceContext* c,ID3D11Resource* d,ID3D11Resource* s) {
     NoteWrite(c,d);
     auto payload=gimi::runtime::Enabled()&&!TrackingInternal()?gimi::runtime::CpuContentSubmission::Copy(c,d,s):gimi::runtime::CpuContentSubmission{};
-    o_DepthCopyResource(c,d,s);if(payload)payload.Returned();
+    o_DepthCopyResource(c,d,s);if(payload)payload.Returned();if(!TrackingInternal())taa::ConsumerCopy(c,d,s,true);
 }
 void STDMETHODCALLTYPE hkDepthCopyRegion(ID3D11DeviceContext* c,ID3D11Resource* d,UINT sub,UINT x,UINT y,UINT z,ID3D11Resource* s,UINT ss,const D3D11_BOX* box) {
     NoteWrite(c,d);
     auto payload=gimi::runtime::Enabled()&&!TrackingInternal()?gimi::runtime::CpuContentSubmission::Copy(c,d,s,sub,x,y,z,ss,box,0,false):gimi::runtime::CpuContentSubmission{};
-    o_DepthCopyRegion(c,d,sub,x,y,z,s,ss,box);if(payload)payload.Returned();
+    o_DepthCopyRegion(c,d,sub,x,y,z,s,ss,box);if(payload)payload.Returned();if(!TrackingInternal())taa::ConsumerCopy(c,d,s,!sub&&!ss&&!x&&!y&&!z&&!box);
 }
 void STDMETHODCALLTYPE hkDepthUpdate(ID3D11DeviceContext* c,ID3D11Resource* d,UINT sub,const D3D11_BOX* box,const void* data,UINT row,UINT slice) {
-    NoteWrite(c,d);
+    NoteWrite(c,d,false);
     auto payload=gimi::runtime::Enabled()&&!TrackingInternal()?gimi::runtime::CpuContentSubmission::Update(c,d,sub,box,data,0):gimi::runtime::CpuContentSubmission{};
     o_DepthUpdate(c,d,sub,box,data,row,slice);if(payload)payload.Returned();
+    if (taa::NeedsHooks()) taa::constants::Updated(c,d,sub,box,data);
 }
 void STDMETHODCALLTYPE hkDepthCopyStructure(ID3D11DeviceContext* c,ID3D11Buffer* d,UINT offset,ID3D11UnorderedAccessView* view) {
     NoteWrite(c,d);o_DepthCopyStructure(c,d,offset,view);
@@ -517,6 +588,7 @@ void STDMETHODCALLTYPE hkDepthCopyStructure(ID3D11DeviceContext* c,ID3D11Buffer*
 void NoteViewWrite(ID3D11DeviceContext* c,ID3D11View* view) {
     if(TrackingInternal())return;
     if(DrawObservationDx11::NeedsDraw())DrawObservationDx11::NonDrawWrite(c);
+    if(view){Microsoft::WRL::ComPtr<ID3D11Resource> resource;view->GetResource(&resource);taa::ConsumerWrite(c,resource.Get());}
     if(gimi::runtime::Enabled())gimi::runtime::ViewWritten(c,view);
 }
 void STDMETHODCALLTYPE hkDiscardResource(ID3D11DeviceContext1* c,ID3D11Resource* resource) {
@@ -534,8 +606,15 @@ void STDMETHODCALLTYPE hkDepthClearView(ID3D11DeviceContext1* c,ID3D11View* view
 
 HRESULT STDMETHODCALLTYPE hkDepthMap(ID3D11DeviceContext* c,ID3D11Resource* r,UINT sub,D3D11_MAP type,UINT flags,D3D11_MAPPED_SUBRESOURCE* mapped)
 {
+    // A lost-device Unity caller can pass a null resource (PID55284). It is not
+    // a valid Map request; do not forward it into the runtime or publish a write.
+    // pMappedResource may legitimately be null for D3D11.3 default textures.
+    if (!r) return E_INVALIDARG;
     const auto generation = gimi::runtime::Enabled() && !TrackingInternal() ? gimi::runtime::VertexMapStarting(c,r,sub,type) : 0;
+    if(type!=D3D11_MAP_READ&&!TrackingInternal())taa::ConsumerWrite(c,r);
+    if(taa::NeedsHooks()&&type!=D3D11_MAP_READ)taa::constants::GeometryWrite(r);
     const auto result = o_DepthMap(c,r,sub,type,flags,mapped);
+    if (taa::NeedsHooks()) taa::constants::Mapped(c,r,sub,type,mapped,result);
     if (generation)
     {
         if (FAILED(result)) gimi::runtime::VertexMapFailed(c,r,sub,generation);
@@ -549,28 +628,37 @@ void STDMETHODCALLTYPE hkDepthUnmap(ID3D11DeviceContext* c,ID3D11Resource* r,UIN
     const bool observe = gimi::runtime::Enabled() && !TrackingInternal();
     auto payload = observe || gimi::runtime::CpuContentSubmission::HasPendingMaps() ?
         gimi::runtime::CpuContentSubmission::Unmap(c,r,sub,observe) : gimi::runtime::CpuContentSubmission{};
+    // GIMI can redirect Map to CPU staging. Freeze the actual driver bytes
+    // after its mandatory writeback and before the real Unmap consumes them.
+    if (taa::NeedsHooks()) taa::constants::BeforeUnmap(c,r,sub);
     o_DepthUnmap(c,r,sub);
+    if (taa::NeedsHooks()) taa::constants::AfterUnmap(c,r,sub);
     if (payload) payload.Returned();
     if (observe) gimi::runtime::VertexUnmapped(c,r,sub);
 }
 
 void STDMETHODCALLTYPE hkDepthResolve(ID3D11DeviceContext* c,ID3D11Resource* d,UINT sub,ID3D11Resource* s,UINT ss,DXGI_FORMAT format) {
+    if(!TrackingInternal())taa::ConsumerWrite(c,d);
     if(gimi::runtime::Enabled() && !TrackingInternal())gimi::runtime::Written(c,d);
     o_DepthResolve(c,d,sub,s,ss,format);
 }
 void STDMETHODCALLTYPE hkDepthMips(ID3D11DeviceContext* c,ID3D11ShaderResourceView* view) {
+    if(!TrackingInternal()&&view){Microsoft::WRL::ComPtr<ID3D11Resource> resource;view->GetResource(&resource);taa::ConsumerWrite(c,resource.Get());}
     if(gimi::runtime::Enabled() && !TrackingInternal())gimi::runtime::ViewWritten(c,view);
     o_DepthMips(c,view);
 }
 void STDMETHODCALLTYPE hkClearRtv(ID3D11DeviceContext* c,ID3D11RenderTargetView* view,const FLOAT* values) {
+    if(!TrackingInternal()&&view){Microsoft::WRL::ComPtr<ID3D11Resource> resource;view->GetResource(&resource);taa::ConsumerWrite(c,resource.Get());}
     if(gimi::runtime::Enabled() && !TrackingInternal())gimi::runtime::ViewWritten(c,view);
     o_ClearRtv(c,view,values);
 }
 void STDMETHODCALLTYPE hkClearUavUint(ID3D11DeviceContext* c,ID3D11UnorderedAccessView* view,const UINT* values) {
+    if(!TrackingInternal()&&view){Microsoft::WRL::ComPtr<ID3D11Resource> resource;view->GetResource(&resource);taa::ConsumerWrite(c,resource.Get());}
     if(gimi::runtime::Enabled() && !TrackingInternal())gimi::runtime::ViewWritten(c,view);
     o_ClearUavUint(c,view,values);
 }
 void STDMETHODCALLTYPE hkClearUavFloat(ID3D11DeviceContext* c,ID3D11UnorderedAccessView* view,const FLOAT* values) {
+    if(!TrackingInternal()&&view){Microsoft::WRL::ComPtr<ID3D11Resource> resource;view->GetResource(&resource);taa::ConsumerWrite(c,resource.Get());}
     if(gimi::runtime::Enabled() && !TrackingInternal())gimi::runtime::ViewWritten(c,view);
     o_ClearUavFloat(c,view,values);
 }
@@ -652,6 +740,9 @@ void STDMETHODCALLTYPE hkClearState(ID3D11DeviceContext* c) {
     if (gimi::runtime::Enabled() && !TrackingInternal()) gimi::runtime::StreamOutputCleared(c);
 }
 void STDMETHODCALLTYPE hkExecuteCommandList(ID3D11DeviceContext* c,ID3D11CommandList* list,BOOL restore) {
+    taa::constants::GeometrySubmission geometrySubmission(taa::NeedsHooks()?c:nullptr);
+    if(!TrackingInternal())taa::ConsumerWrite(c,nullptr,"opaque command-list submission");
+    if (taa::NeedsHooks()) taa::constants::OpaqueWrite(c);
     if (gimi::runtime::Enabled() && !TrackingInternal()) gimi::runtime::OpaqueBoundary(c);
     o_ExecuteCommandList(c,list,restore);
 }
@@ -661,57 +752,43 @@ HRESULT STDMETHODCALLTYPE hkFinishCommandList(ID3D11DeviceContext* c,BOOL restor
 }
 void STDMETHODCALLTYPE hkSwapDeviceContextState(ID3D11DeviceContext1* c,ID3DDeviceContextState* state,ID3DDeviceContextState** previous) {
     if (gimi::runtime::Enabled() && !TrackingInternal()) gimi::runtime::OpaqueBoundary(c);
+    const bool coveredStateSwitch=ModContextCovered(c);
     o_SwapDeviceContextState(c,state,previous);
+    // Certify the implementation at the switch itself. A frame can enter an
+    // unseen table, write a CB, then return to a known table before Present.
+    if (taa::NeedsHooks()) EnsureContextWriteHooks(c,coveredStateSwitch);
     if (gimi::runtime::Enabled() && c==g_context) GenericDepthDx11::BindModRuntime(g_contextDevice);
 }
-using PFN_ModSOSetTargets = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,UINT,ID3D11Buffer* const*,const UINT*);
-PFN_ModSOSetTargets o_ModSOSetTargets = nullptr;
 void STDMETHODCALLTYPE hkModSOSetTargets(ID3D11DeviceContext* c,UINT count,ID3D11Buffer* const* buffers,const UINT* offsets) {
     o_ModSOSetTargets(c,count,buffers,offsets);
     if (gimi::runtime::Enabled() && !TrackingInternal()) gimi::runtime::StreamOutputTargets(c,count,buffers,offsets);
 }
 // Both native and interop Present publish MOD coverage through BindModRuntime.
 // Install only missing methods, including after MODs are enabled mid-session.
-bool ModStreamOutputCovered(PVOID* table) noexcept
+bool ModStreamOutputCovered(PVOID* table) noexcept {return table && o_ModSOSetTargets.Covers(table[37]);}
+bool EnsureContextWriteHooks(ID3D11DeviceContext* context,bool coveredStateSwitch) noexcept
 {
-    return soComplete && soOwner.live && soOwner.entry==table[37] &&
-        soOwner.executed && *soOwner.executed==soOwner.transaction;
-}
-bool EnsureModContextHooks(ID3D11DeviceContext* context) noexcept
-{
-    if(!gimi::runtime::Enabled() || !ModContextCovered(context,false))return false;
+    if((!gimi::runtime::Enabled() && !taa::NeedsHooks()) || !context)return false;
     auto* table=*reinterpret_cast<PVOID**>(context);
-    const bool writesCovered=g_modWriteHooksComplete && Covered(table,writeSlots,writeOwners);
-    if(writesCovered && ModStreamOutputCovered(table))return true;
+    const bool writesCovered=ModContextCovered(context,false) && Covered(table,kWriteMethods);
+    if(writesCovered && (!gimi::runtime::Enabled() || ModStreamOutputCovered(table)))return true;
     if(g_installing.test_and_set(std::memory_order_acquire))return writesCovered;
     struct Release {~Release(){g_installing.clear(std::memory_order_release);}} release;
-    if(!writesCovered)
-    {
-        HookOwnership::Own::Batch writes;
-        size_t next=0;
-        const auto write=[&](auto& original,unsigned index,auto hook) {
-            writes.Add(writeOwners[next++],reinterpret_cast<PVOID*>(&original),nullptr,table[index],reinterpret_cast<PVOID>(hook));
-        };
-        write(o_DepthMap,14,hkDepthMap);write(o_DepthUnmap,15,hkDepthUnmap);
-        write(o_DepthCopyRegion,46,hkDepthCopyRegion);write(o_DepthCopyResource,47,hkDepthCopyResource);
-        write(o_DepthUpdate,48,hkDepthUpdate);write(o_DepthCopyStructure,49,hkDepthCopyStructure);
-        write(o_ClearRtv,50,hkClearRtv);write(o_ClearUavUint,51,hkClearUavUint);write(o_ClearUavFloat,52,hkClearUavFloat);
-        write(o_DepthMips,54,hkDepthMips);write(o_DepthResolve,57,hkDepthResolve);
-        write(o_ExecuteCommandList,58,hkExecuteCommandList);write(o_ClearState,110,hkClearState);write(o_FinishCommandList,114,hkFinishCommandList);
-        write(o_DepthCopyRegion1,115,hkDepthCopyRegion1);write(o_DepthUpdate1,116,hkDepthUpdate1);
-        write(o_DiscardResource,117,hkDiscardResource);write(o_DiscardView,118,hkDiscardView);
-        write(o_SwapDeviceContextState,131,hkSwapDeviceContextState);write(o_DepthClearView,132,hkDepthClearView);
-        write(o_DiscardView1,133,hkDiscardView1);
-        g_modWriteHooksComplete=writes.Commit()==NO_ERROR;
-    }
-    if(!g_modWriteHooksComplete || !Covered(table,writeSlots,writeOwners))return false;
-    if(!ModStreamOutputCovered(table))
-    {
+    // An observed state switch executes under our already-covered context;
+    // only the context's state implementation changes, with no intervening
+    // resource command. Install its methods before returning to the caller.
+    // Unobserved implementations still revoke this device's earlier mirrors.
+    if(!writesCovered&&!coveredStateSwitch&&taa::NeedsHooks())taa::constants::OpaqueWrite(context);
+    if(!InstallMethods(table,kCommonMethods,"draw/dispatch") || !ModContextCovered(context,false))return false;
+    if(!InstallMethods(table,kWriteMethods,"resource writes"))return false;
+    Microsoft::WRL::ComPtr<ID3D11Device> coveredDevice;context->GetDevice(&coveredDevice);
+    LOG_INFO("TAA write coverage established: device=0x{:X} context=0x{:X} observed_state_switch={} revoked={}",reinterpret_cast<uintptr_t>(coveredDevice.Get()),reinterpret_cast<uintptr_t>(context),coveredStateSwitch,!writesCovered&&!coveredStateSwitch);
+    if(gimi::runtime::Enabled() && !ModStreamOutputCovered(table)) {
         HookOwnership::Own::Batch so(HookOwnership::InstallRequirement::Optional);
-        so.Add(soOwner,reinterpret_cast<PVOID*>(&o_ModSOSetTargets),nullptr,table[37],reinterpret_cast<PVOID>(hkModSOSetTargets));
-        soComplete=so.Commit()==NO_ERROR;
+        o_ModSOSetTargets.Add(so,table[37]);
+        if(so.Commit()!=NO_ERROR)return false;
     }
-    return true;
+    return ModContextCovered(context);
 }
 const gimi::runtime::HookServices kModHooks{
     +[](ID3D11DeviceContext* c,uint64_t& token) noexcept {if(c!=g_context || TrackingInternal())return false; token=t_modExecuting;t_modExecuting=true;return true;},
@@ -729,14 +806,23 @@ const gimi::runtime::HookServices kModHooks{
 
 namespace GenericDepthDx11 {
 bool ModInternal() noexcept {return TrackingInternal();}
+bool EnsureTaaWriteCoverage(ID3D11Device* device) noexcept {
+    if(!device || !taa::NeedsHooks())return false;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> raw;
+    device->GetImmediateContext(&raw);
+    if(!raw)return false;
+    ID3D11DeviceContext* real=nullptr;
+    if(!Util::CheckForRealObject(__FUNCTION__,raw.Get(),(IUnknown**)&real))real=raw.Get();
+    return EnsureContextWriteHooks(real);
+}
 bool Installed() {return g_installed;}
 bool InstallFailed() {return g_installFailed;}
 namespace {
 void BindModRuntimePair(ID3D11Device* device, ID3D11DeviceContext* context,
                         gimi::runtime::CaptureSource source, const gimi::runtime::NativePresentSourcePtr& nativeSource = {}) noexcept {
     if (!gimi::runtime::Enabled() || !device || !context) return;
-    const bool contextCovered = g_installed && EnsureModContextHooks(context);
-    auto hooks=kModHooks;hooks.draw=o_Draw;hooks.drawIndexed=o_DrawIndexed;hooks.drawIndexedInstanced=o_DrawIndexedInstanced;
+    const bool contextCovered = g_installed && EnsureContextWriteHooks(context);
+    auto hooks=kModHooks;hooks.draw=o_Draw.Forward;hooks.drawIndexed=o_DrawIndexed.Forward;hooks.drawIndexedInstanced=o_DrawIndexedInstanced.Forward;
     gimi::runtime::DeviceCreated(device,context,hooks,contextCovered,source,nativeSource);
     gimi::runtime::StreamOutputCoverage(device,context,contextCovered &&
         ModStreamOutputCovered(*reinterpret_cast<PVOID**>(context)));
@@ -763,7 +849,7 @@ void RevokeModStreamOutputCoverage() noexcept {
 void Install(ID3D11Device* device)
 {
     const bool mods=gimi::runtime::Enabled();
-    if(!device || (!mods && !DrawObservationDx11::NeedsDraw() &&
+    if(!device || (!mods && !taa::NeedsHooks() && !DrawObservationDx11::NeedsDraw() &&
         !Config::Instance()->DrawUiMaskEnabled.value_or_default() &&
         !Config::Instance()->DlssNrNativeDepthFinder.value_or_default()))return;
     if(g_installing.test_and_set(std::memory_order_acquire))return;
@@ -775,22 +861,14 @@ void Install(ID3D11Device* device)
     if(!Util::CheckForRealObject(__FUNCTION__,raw.Get(),(IUnknown**)&real))real=raw.Get();
     context=real;
     auto* table=*reinterpret_cast<PVOID**>(context.Get());
-    {
-        HookOwnership::Own::Batch common;
-        size_t next=0;
-        const auto add=[&](auto& original,unsigned index,auto hook) {
-            common.Add(commonOwners[next++],reinterpret_cast<PVOID*>(&original),nullptr,table[index],reinterpret_cast<PVOID>(hook));
-        };
-        add(o_DrawIndexed,12,hkDrawIndexed);add(o_Draw,13,hkDraw);add(o_DrawIndexedInstanced,20,hkDrawIndexedInstanced);
-        add(o_DrawInstanced,21,hkDrawInstanced);add(o_OMSetRenderTargets,33,hkOMSetRenderTargets);
-        add(o_OMSetRenderTargetsAndUAV,34,hkOMSetRenderTargetsAndUAV);add(o_DrawAuto,38,hkDrawAuto);
-        add(o_DrawIndexedInstancedIndirect,39,hkDrawIndexedInstancedIndirect);add(o_DrawInstancedIndirect,40,hkDrawInstancedIndirect);
-        add(o_Dispatch,41,hkDispatch);add(o_RSSetViewports,44,hkRSSetViewports);add(o_ClearDepthStencilView,53,hkClearDepthStencilView);
-        if(common.Commit()!=NO_ERROR){g_installFailed=true;return;}
+    if(!InstallMethods(table,kCommonMethods,"draw/dispatch")){g_installFailed=true;return;}
+    if((mods||taa::NeedsHooks())&&!Covered(table,kWriteMethods)) {
+        // Establish write coverage before returning the device to the game.
+        // Static geometry created next retains its observed initial contents;
+        // implementations first seen later still revoke earlier mirrors.
+        if(taa::NeedsHooks())taa::constants::OpaqueWrite(context.Get());
+        if(!InstallMethods(table,kWriteMethods,"resource writes")){g_installFailed=true;return;}
     }
-    if(!CommonCovered(context.Get())){g_installFailed=true;return;}
-    for(size_t i=0;i<kCommonHookSlots.size();++i)g_commonHookTargets[i]=table[kCommonHookSlots[i]];
-    g_hookedOMSetRenderTargets=table[33];
     // Device initialization proves function coverage only. The actual Present
     // owner follows a replacement context; auxiliary devices cannot steal it.
     if(!g_context)UseContext(context.Get());
@@ -850,9 +928,18 @@ gimi::runtime::NativePresentSourcePtr PrepareModPresent(IDXGISwapChain* swapChai
     } catch (...) { gimi::runtime::StopAccepting(); return {}; }
 }
 
+void RevokeSourceObservations() noexcept {
+    DrawObservationDx11::Revoke();
+    taa::RevokeOwner();
+}
+
 void OnPresent(IDXGISwapChain* swapChain)
 {
-    if (!g_installed.load() && swapChain && (DrawObservationDx11::NeedsDraw() ||
+    struct SourceEpoch {
+        bool published=false;
+        ~SourceEpoch(){if(!published)RevokeSourceObservations();}
+    } sourceEpoch;
+    if (!g_installed.load() && swapChain && (taa::NeedsHooks() || DrawObservationDx11::NeedsDraw() ||
         Config::Instance()->DrawUiMaskEnabled.value_or_default() || gimi::runtime::Enabled()))
     {
         Microsoft::WRL::ComPtr<ID3D11Device> device;
@@ -875,7 +962,9 @@ void OnPresent(IDXGISwapChain* swapChain)
     if (!havePresentDevice)
         return;
 
-    DrawObservationDx11::Present(g_context, State::Instance().frameCount);
+    taa::OnPresent(g_context,taa::NeedsHooks() && EnsureContextWriteHooks(g_context));
+    DrawObservationDx11::Present(g_context);
+    sourceEpoch.published=true;
     DrawUiMask::Present(swapChain,g_context);
 
     // The copy taken is NOT forgotten here: the mid-frame "unbind" events that call TakeSnapshot happen while the game renders
@@ -990,13 +1079,13 @@ void DrawStatus()
     switch (DlssNrNativeMode::FinderFor(wanted, g_installed, g_installFailed))
     {
     case DlssNrNativeMode::Finder::Off:
-        ImGui::TextDisabled("深度：关闭。NR 仅使用运动信息，不因游戏超分而让出控制。");
+        MenuText::TextDisabled("深度：关闭。NR 仅使用运动信息，不因游戏超分而让出控制。");
         return;
     case DlssNrNativeMode::Finder::NeedsRestart:
-        ImGui::TextDisabled("深度：需要重启后启用搜索。");
+        MenuText::TextDisabled("深度：需要重启后启用搜索。");
         return;
     case DlssNrNativeMode::Finder::CouldNotStart:
-        ImGui::TextDisabled("深度：搜索器启动失败，请查看日志；NR 仅使用运动信息。");
+        MenuText::TextDisabled("深度：搜索器启动失败，请查看日志；NR 仅使用运动信息。");
         return;
     case DlssNrNativeMode::Finder::Installed:
         break;
@@ -1007,20 +1096,20 @@ void DrawStatus()
     const char* untilRestart = wanted ? "" : " (finder off at next start)";
 
     if (g_core.GameCallsUpscaler())
-        ImGui::TextDisabled("深度：游戏正在调用超分，搜索已暂停；可在游戏设置关闭超分。");
+        MenuText::TextDisabled("深度：游戏正在调用超分，搜索已暂停；可在游戏设置关闭超分。");
     else if (!g_core.Armed())
-        ImGui::TextDisabled("深度：观察中（%llu/%u 帧）…%s",
+        MenuText::TextDisabled("深度：观察中（%llu/%u 帧）…%s",
                             (unsigned long long) (g_core.Presents() - g_core.WarmupStart()), warmup, untilRestart);
     else if (!pick.valid)
-        ImGui::TextDisabled("深度：尚未找到，NR 仅使用运动信息%s。", untilRestart);
+        MenuText::TextDisabled("深度：尚未找到，NR 仅使用运动信息%s。", untilRestart);
     else
-        ImGui::Text("深度：选中 %ux%u%s%s", pick.width, pick.height, pick.reversed ? ", reversed-Z" : "",
+        MenuText::Text("深度：选中 %ux%u%s%s", pick.width, pick.height, pick.reversed ? ", reversed-Z" : "",
                     untilRestart);
 
     if (ImGui::IsItemHovered() && pick.valid)
-        ImGui::SetTooltip("格式 %u，候选资源见日志的 Depth finder 记录。", pick.format);
+        MenuText::SetTooltip("格式 %u，候选资源见日志的 Depth finder 记录。", pick.format);
     else if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("候选资源见日志的 Depth finder 记录。");
+        MenuText::SetTooltip("候选资源见日志的 Depth finder 记录。");
 }
 
 void DrawAdvancedUi()
@@ -1028,7 +1117,7 @@ void DrawAdvancedUi()
     auto* config = Config::Instance();
     bool finder = config->DlssNrNativeDepthFinder.value_or_default();
 
-    if (SettingsUi::SwitchRow("使用游戏深度（改善质量，需重启）##depthfinder11", &finder))
+    if (SettingsUi::SwitchRow(MenuText::StableLabel("使用游戏深度（改善质量，需重启）##depthfinder11").c_str(), &finder))
         config->DlssNrNativeDepthFinder = finder;
 
     if (ImGui::IsItemHovered())

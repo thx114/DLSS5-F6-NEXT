@@ -7,6 +7,7 @@
 #include "HoYoShadeOwnedRuntime.h"
 #include "HoYoShadeColorContract.h"
 #include "HoYoShadeTypedCreationOwner.h"
+#include <runtime/PrivateGraphicsScope.h>
 #include <array>
 #include <atomic>
 #include <cstring>
@@ -46,6 +47,9 @@ struct Entry
     UpdateRuntime update = nullptr;
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
+    ComPtr<ID3D11Device> device11;
+    ComPtr<ID3D11DeviceContext> context11;
+    ComPtr<ID3D11Query> event11;
     ComPtr<IDXGIFactory2> factory;
     ComPtr<IDXGISwapChain1> swapchain;
     ComPtr<ID3D12Fence> fence;
@@ -156,6 +160,11 @@ Testing::Hooks testHooks;
 #endif
 HRESULT Signal(Entry& entry, uint64_t value)
 {
+    if(entry.context11) {
+        if(!entry.event11 || FAILED(entry.device11->GetDeviceRemovedReason())) return E_FAIL;
+        entry.context11->End(entry.event11.Get());
+        return S_OK;
+    }
 #ifdef HOYOSHADE_OWNED_RUNTIME_TEST
     if (testHooks.signal) return testHooks.signal(entry.queue.Get(), entry.fence.Get(), value);
 #endif
@@ -192,6 +201,8 @@ HWND CreateOwnedWindow(const Binding& b)
 }
 HRESULT CreateOwnedSwapchain(Entry& e, const DXGI_SWAP_CHAIN_DESC1& desc)
 {
+    PrivateGraphics::Scope privateGraphics;
+    if(e.device11) return e.factory->CreateSwapChainForHwnd(e.device11.Get(),e.window,&desc,nullptr,nullptr,&e.swapchain);
     const auto hr = e.swapchainOwner.Create(e.device.Get(), [&](IDXGISwapChain1** out) {
 #ifdef HOYOSHADE_OWNED_RUNTIME_TEST
         if (testHooks.createSwapchain) return testHooks.createSwapchain(e.factory.Get(), e.queue.Get(), e.window, &desc, out);
@@ -203,6 +214,7 @@ HRESULT CreateOwnedSwapchain(Entry& e, const DXGI_SWAP_CHAIN_DESC1& desc)
 }
 HRESULT CreateOwnedFence(Entry& e)
 {
+    if(e.device11) {D3D11_QUERY_DESC desc{D3D11_QUERY_EVENT,0};return e.device11->CreateQuery(&desc,&e.event11);}
     const auto hr = e.fenceOwner.Create(e.device.Get(), [&](ID3D12Fence** out) {
 #ifdef HOYOSHADE_OWNED_RUNTIME_TEST
         if (testHooks.createFence) return testHooks.createFence(e.device.Get(), out);
@@ -214,18 +226,30 @@ HRESULT CreateOwnedFence(Entry& e)
 }
 bool QueueCurrent(const Entry& e)
 {
+    if(e.device11) {
+        if(!e.context11 || e.context11->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE ||
+            FAILED(e.device11->GetDeviceRemovedReason())) return false;
+        ComPtr<ID3D11Device> owner;e.context11->GetDevice(&owner);return owner.Get()==e.device11.Get();
+    }
     if (!e.device || !e.queue || e.queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) return false;
     ComPtr<ID3D12Device> owner;
     return SUCCEEDED(e.queue->GetDevice(IID_PPV_ARGS(&owner))) && owner.Get() == e.device.Get();
 }
 bool ValidBinding(const Binding& b)
 {
-    if (!b.owner || !b.generation || !b.device || !b.queue || !b.factory ||
+    const bool dx11=b.device11 && b.context11 && !b.device && !b.queue;
+    const bool dx12=b.device && b.queue && !b.device11 && !b.context11;
+    if (!b.owner || !b.generation || (!dx11 && !dx12) || !b.factory ||
         b.width < 160 || b.height < 120 || b.width > 16384 || b.height > 16384 ||
         !b.configPathUtf8 || !b.configPathUtf8[0] ||
         strnlen_s(b.configPathUtf8, MaxPath) >= MaxPath ||
         !ColorContract::IsRuntimeFormat(b.format)) return false;
     if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, b.configPathUtf8, -1, nullptr, 0)) return false;
+    if(dx11) {
+        ComPtr<ID3D11Device> owner;b.context11->GetDevice(&owner);
+        return owner.Get()==b.device11 && b.context11->GetType()==D3D11_DEVICE_CONTEXT_IMMEDIATE &&
+            SUCCEEDED(b.device11->GetDeviceRemovedReason());
+    }
     if (b.queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT || FAILED(b.device->GetDeviceRemovedReason())) return false;
     ComPtr<ID3D12Device> queueDevice;
     if (FAILED(b.queue->GetDevice(IID_PPV_ARGS(&queueDevice))) || queueDevice.Get() != b.device) return false;
@@ -265,7 +289,8 @@ bool ReadExports(HMODULE core, const CoreApi& apiBridge, CreateRuntime& create,
 }
 bool Matches(const Entry& e, const Binding& b, HMODULE core)
 {
-    return e.device.Get() == b.device && e.queue.Get() == b.queue && e.factory.Get() == b.factory &&
+    return e.device.Get() == b.device && e.queue.Get() == b.queue &&
+        e.device11.Get()==b.device11 && e.context11.Get()==b.context11 && e.factory.Get() == b.factory &&
         e.width == b.width && e.height == b.height && e.format == b.format && e.core == core &&
         std::strcmp(e.config.data(), b.configPathUtf8) == 0 && e.exclusiveRuntime == b.exclusiveRuntime;
 }
@@ -289,17 +314,28 @@ Entry* Active(uint32_t slot, uint64_t token, DWORD thread, bool submitted)
     auto& e = Get().entries[slot];
     return e.token == token && e.active && e.phase == Phase::Live ? &e : nullptr;
 }
+bool NativeObjectsCurrent(Entry& e, HRESULT& hr)
+{
+    if(!QueueCurrent(e))return false;
+    if(e.device11) {
+        if(!e.swapchain || !e.event11)return false;
+        ComPtr<ID3D11Device> chainOwner,queryOwner;
+        hr=e.swapchain->GetDevice(IID_PPV_ARGS(&chainOwner));
+        e.event11->GetDevice(&queryOwner);
+        return SUCCEEDED(hr) && chainOwner.Get()==e.device11.Get() && queryOwner.Get()==e.device11.Get();
+    }
+    return e.swapchainOwner.Current(e.device.Get(),e.swapchain.Get(),hr) &&
+        e.fenceOwner.Current(e.device.Get(),e.fence.Get(),hr);
+}
 bool RuntimeMatches(Entry& e)
 {
     HRESULT ownerHr = E_PENDING;
-    if (!e.runtime || !QueueCurrent(e) ||
-        !e.swapchainOwner.Current(e.device.Get(), e.swapchain.Get(), ownerHr) ||
-        !e.fenceOwner.Current(e.device.Get(), e.fence.Get(), ownerHr)) return false;
+    if (!e.runtime || !NativeObjectsCurrent(e,ownerHr)) return false;
     auto* d = e.runtime->get_device();
     auto* q = e.runtime->get_command_queue();
-    if (!d || !q || d->get_api() != api::device_api::d3d12 || q->get_device() != d ||
-        d->get_native() != reinterpret_cast<uint64_t>(e.device.Get()) ||
-        q->get_native() != reinterpret_cast<uint64_t>(e.queue.Get()) ||
+    if (!d || !q || d->get_api() != (e.device11?api::device_api::d3d11:api::device_api::d3d12) || q->get_device() != d ||
+        d->get_native() != reinterpret_cast<uint64_t>(e.device11?static_cast<void*>(e.device11.Get()):static_cast<void*>(e.device.Get())) ||
+        q->get_native() != reinterpret_cast<uint64_t>(e.context11?static_cast<void*>(e.context11.Get()):static_cast<void*>(e.queue.Get())) ||
         e.runtime->get_hwnd() != e.window ||
         (e.sdkDevice && e.sdkDevice != d) || (e.sdkQueue && e.sdkQueue != q)) return false;
     e.sdkDevice = d;
@@ -310,6 +346,7 @@ bool GetList(Entry& e)
 {
     e.sdkList = e.sdkQueue->get_immediate_command_list();
     if (!e.sdkList || e.sdkList->get_device() != e.sdkDevice) return false;
+    if(e.device11)return e.sdkList->get_native()==reinterpret_cast<uint64_t>(e.context11.Get());
     auto* native = reinterpret_cast<ID3D12GraphicsCommandList*>(e.sdkList->get_native());
     if (!native || native->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT) return false;
     ComPtr<ID3D12Device> device;
@@ -342,14 +379,22 @@ bool ReleasePayloads(Entry& e)
 
 Status CompletionStatus(Entry& e, Diagnostics* report = nullptr)
 {
+    // GetData uses the game immediate context; the pool mutex does not serialize
+    // another game thread. Collect only at its original execution boundary.
+    if (e.context11 && GetCurrentThreadId() != e.windowThread) return Status::WrongThread;
     if (report) report->At(DiagnosticOperation::CompletionDevice);
     HRESULT hr = S_OK;
-    if (!QueueCurrent(e) || !e.fenceOwner.Current(e.device.Get(), e.fence.Get(), hr))
+    if (!NativeObjectsCurrent(e,hr))
     {
         if (report && FAILED(hr)) report->Code(CodeKind::HResult, static_cast<uint32_t>(hr));
         return Status::CompletionUnknown;
     }
     if (!e.fenceValue) return Status::Ready;
+    if(e.context11) {
+        BOOL done=FALSE;hr=e.context11->GetData(e.event11.Get(),&done,sizeof(done),D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        if(FAILED(hr))return Status::CompletionUnknown;
+        return hr==S_OK && done?Status::Ready:Status::GpuPending;
+    }
     if (report) report->At(DiagnosticOperation::CompletionFence);
     const auto value = Completed(e.fence.Get());
     if (value == MaxValue) return Status::CompletionUnknown;
@@ -387,6 +432,12 @@ WallScope::~WallScope() noexcept
 
 bool Completion::IsComplete() const noexcept
 {
+    if(context11 && event11 && value) {
+        if (!contextThread11 || GetCurrentThreadId() != contextThread11) return false;
+        ComPtr<ID3D11Device> device;context11->GetDevice(&device);
+        if(!device || FAILED(device->GetDeviceRemovedReason()))return false;
+        BOOL done=FALSE;return context11->GetData(event11.Get(),&done,sizeof(done),D3D11_ASYNC_GETDATA_DONOTFLUSH)==S_OK && done;
+    }
     if (!fence || !value || value == MaxValue) return false;
     ComPtr<ID3D12Device> device;
     if (FAILED(fence->GetDevice(IID_PPV_ARGS(&device))) || FAILED(device->GetDeviceRemovedReason())) return false;
@@ -508,8 +559,10 @@ Status Lease::BeginFrame(Detail* detail) noexcept
         }
         // The sole runtime has no natural Present. Suppress its private target,
         // process reloads, then borrow the new frame's real immediate list.
-        e->runtime->render_effects(e->sdkList, {0}, {0});
-        e->update(e->runtime);
+        PrivateGraphics::Invoke([&] {
+            e->runtime->render_effects(e->sdkList, {0}, {0});
+            e->update(e->runtime);
+        });
         if (!RuntimeMatches(*e) || !GetList(*e)) {
             Quarantine(*e); return report.Result(Status::IdentityMismatch);
         }
@@ -542,24 +595,29 @@ Status Lease::Submit(Completion& completion, Detail* detail, const WarmupTrace* 
         // it or inferring its owner from the created swapchain/fence owner.
         report.At(DiagnosticOperation::RuntimeIdentity);
         ComPtr<ID3D12Device> listOwner;
-        if (!RuntimeMatches(*e) || !e->sdkList || !e->nativeList ||
-            e->sdkList->get_device() != e->sdkDevice ||
-            e->sdkList->get_native() != reinterpret_cast<uint64_t>(e->nativeList.Get()) ||
-            e->nativeList->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT ||
-            FAILED(e->nativeList->GetDevice(IID_PPV_ARGS(&listOwner))) || listOwner.Get() != e->device.Get())
+        const bool listCurrent=e->context11 ? e->sdkList &&
+            e->sdkList->get_native()==reinterpret_cast<uint64_t>(e->context11.Get()) :
+            e->sdkList && e->nativeList && e->sdkList->get_native()==reinterpret_cast<uint64_t>(e->nativeList.Get()) &&
+            e->nativeList->GetType()==D3D12_COMMAND_LIST_TYPE_DIRECT &&
+            SUCCEEDED(e->nativeList->GetDevice(IID_PPV_ARGS(&listOwner))) && listOwner.Get()==e->device.Get();
+        if (!RuntimeMatches(*e) || !listCurrent || e->sdkList->get_device() != e->sdkDevice)
         { Quarantine(*e); return report.Result(Status::IdentityMismatch); }
         report.At(DiagnosticOperation::FlushImmediateList);
-        MeasureWarmup(measured, WallOperation::Flush, [&] { e->sdkQueue->flush_immediate_command_list(); });
+        MeasureWarmup(measured, WallOperation::Flush, [&] {
+            PrivateGraphics::Invoke([&] { e->sdkQueue->flush_immediate_command_list(); });
+        });
         if (!_updated) {
             report.At(DiagnosticOperation::UpdateRuntime);
-            MeasureWarmup(measured, WallOperation::UpdateRuntime, [&] { e->update(e->runtime); });
+            MeasureWarmup(measured, WallOperation::UpdateRuntime, [&] {
+                PrivateGraphics::Invoke([&] { e->update(e->runtime); });
+            });
         }
         report.At(DiagnosticOperation::FenceValue);
         if (e->fenceValue >= MaxValue - 1)
         { Quarantine(*e); return report.Result(Status::SignalFailed); }
         report.At(DiagnosticOperation::SignalDevice);
         HRESULT deviceHr = S_OK;
-        if (!QueueCurrent(*e) || !e->fenceOwner.Current(e->device.Get(), e->fence.Get(), deviceHr))
+        if (!NativeObjectsCurrent(*e,deviceHr))
         { if (FAILED(deviceHr)) report.Code(CodeKind::HResult, static_cast<uint32_t>(deviceHr));
           Quarantine(*e); return report.Result(Status::SignalFailed); }
         report.At(DiagnosticOperation::Signal);
@@ -569,6 +627,8 @@ Status Lease::Submit(Completion& completion, Detail* detail, const WarmupTrace* 
         ++e->fenceValue;
         ObservePayloads(*e,PayloadEvent::Submitted);
         completion.fence = e->fence;
+        completion.context11=e->context11;completion.event11=e->event11;
+        completion.contextThread11=e->context11?e->windowThread:0;
         completion.value = e->fenceValue;
         return report.Result(Status::Ready);
     }
@@ -658,6 +718,7 @@ Status AcquireForRender(const Binding& b, HMODULE loadedCore, const CoreApi& acc
                 e.token = ++pool.nextToken;
                 e.owner = b.owner; e.generation = b.generation;
                 e.device = b.device; e.queue = b.queue; e.factory = b.factory;
+                e.device11=b.device11;e.context11=b.context11;
                 e.width = b.width; e.height = b.height; e.format = b.format;
                 std::memcpy(e.config.data(), b.configPathUtf8, std::strlen(b.configPathUtf8) + 1);
                 e.configLifetime = b.configLifetime;
@@ -691,12 +752,12 @@ Status AcquireForRender(const Binding& b, HMODULE loadedCore, const CoreApi& acc
               Quarantine(e); return report.Result(Status::CreateFailed); }
             report.At(DiagnosticOperation::CreateFence);
             const auto fenceHr = MeasureWarmup(measured, WallOperation::CreateFence, [&] { return CreateOwnedFence(e); });
-            if (FAILED(fenceHr) || !e.fence)
+            if (FAILED(fenceHr) || (!e.fence && !e.event11))
             { if (FAILED(fenceHr)) report.Code(CodeKind::HResult, static_cast<uint32_t>(fenceHr));
               Quarantine(e); return report.Result(Status::CreateFailed); }
             report.At(DiagnosticOperation::SwapchainDevice);
             HRESULT swapDeviceHr = E_PENDING;
-            if (!e.swapchainOwner.Current(e.device.Get(), e.swapchain.Get(), swapDeviceHr))
+            if (!NativeObjectsCurrent(e,swapDeviceHr))
             {
                 if (FAILED(swapDeviceHr)) report.Code(CodeKind::HResult, static_cast<uint32_t>(swapDeviceHr));
                 Quarantine(e); return report.Result(Status::IdentityMismatch);
@@ -705,19 +766,23 @@ Status AcquireForRender(const Binding& b, HMODULE loadedCore, const CoreApi& acc
             // A different returned owner is local to this exact fence, not an
             // exception to queue/list/resource device ownership.
             HRESULT fenceDeviceHr = E_PENDING;
-            if (!e.fenceOwner.Current(e.device.Get(), e.fence.Get(), fenceDeviceHr))
+            if (!NativeObjectsCurrent(e,fenceDeviceHr))
             {
                 if (FAILED(fenceDeviceHr)) report.Code(CodeKind::HResult, static_cast<uint32_t>(fenceDeviceHr));
                 Quarantine(e); return report.Result(Status::IdentityMismatch);
             }
             report.At(DiagnosticOperation::CreateRuntime);
             const bool created = MeasureWarmup(measured, WallOperation::CreateRuntime, [&] {
+                PrivateGraphics::Scope privateGraphics;
 #ifdef HOYOSHADE_OWNED_RUNTIME_TEST
                 return testHooks.createRuntime ? testHooks.createRuntime(api::device_api::d3d12, e.device.Get(), e.queue.Get(), e.swapchain.Get(), e.config.data(), &e.runtime) :
 #else
                 return
 #endif
-                create(api::device_api::d3d12, e.device.Get(), e.queue.Get(), e.swapchain.Get(), e.config.data(), &e.runtime);
+                create(e.device11?api::device_api::d3d11:api::device_api::d3d12,
+                    e.device11?static_cast<void*>(e.device11.Get()):static_cast<void*>(e.device.Get()),
+                    e.context11?static_cast<void*>(e.context11.Get()):static_cast<void*>(e.queue.Get()),
+                    e.swapchain.Get(), e.config.data(), &e.runtime);
             });
             if (trace) { *trace = TraceEntry(*trace, e); e.warmupTrace = *trace; }
             if (acquireWall) acquireWall->Context(*trace);
@@ -725,7 +790,7 @@ Status AcquireForRender(const Binding& b, HMODULE loadedCore, const CoreApi& acc
             {
                 if (!created) report.Code(CodeKind::Boolean, 0);
                 HRESULT ownerHr = E_PENDING;
-                if (e.runtime || !QueueCurrent(e) || !e.fenceOwner.Current(e.device.Get(), e.fence.Get(), ownerHr) ||
+                if (e.runtime || !NativeObjectsCurrent(e,ownerHr) ||
                     FAILED(Signal(e, 1))) { Quarantine(e); return report.Result(Status::CreateFailed); }
                 std::lock_guard lock(pool.mutex);
                 e.fenceValue = 1; e.retiring = true; e.phase = Phase::Live;
@@ -740,7 +805,7 @@ Status AcquireForRender(const Binding& b, HMODULE loadedCore, const CoreApi& acc
         {
             const auto completed = CompletionStatus(e, &report);
             if (completed == Status::CompletionUnknown) { Quarantine(e); return report.Result(completed); }
-            if (completed == Status::GpuPending)
+            if (completed == Status::GpuPending || completed == Status::WrongThread)
             {
                 std::lock_guard lock(pool.mutex); e.phase = Phase::Live;
                 return report.Result(completed);
@@ -828,7 +893,7 @@ Retirement ResourceCollection::Poll() noexcept
     }
     try {
         const auto status = CompletionStatus(e);
-        if (status == Status::GpuPending) {
+        if (status == Status::GpuPending || status == Status::WrongThread) {
             std::lock_guard lock(pool.mutex); e.phase = Phase::Live;
             return Retirement::Pending;
         }
@@ -884,6 +949,10 @@ Collection TryCollect() noexcept
             const auto completed = CompletionStatus(e);
             if (completed == Status::CompletionUnknown)
             { Quarantine(e); ++result.quarantined; continue; }
+            if (completed == Status::WrongThread)
+            {
+                std::lock_guard lock(pool.mutex); e.phase = Phase::Live; ++result.wrongThread; continue;
+            }
             if (completed == Status::GpuPending)
             {
                 std::lock_guard lock(pool.mutex); e.phase = Phase::Live; ++result.pending; continue;
@@ -905,6 +974,7 @@ Collection TryCollect() noexcept
                 if (GetCurrentThreadId() != e.windowThread)
                 { e.phase = Phase::Live; ++result.wrongThread; continue; }
             }
+            PrivateGraphics::Scope privateGraphics;
             if (e.runtime) {
                 const auto trace = TraceEntry(e.warmupTrace, e);
                 MeasureWarmup(trace.attempt ? &trace : nullptr, WallOperation::DestroyRuntime, [&] { e.destroy(e.runtime); });
@@ -922,6 +992,7 @@ Collection TryCollect() noexcept
             // collecting reservation, but never hold the pool mutex across it.
             e.fence.Reset();
             e.fenceOwner = {};
+            e.event11.Reset();e.context11.Reset();e.device11.Reset();
             e.factory.Reset(); e.queue.Reset(); e.device.Reset();
             std::lock_guard lock(pool.mutex);
             e = Entry{};

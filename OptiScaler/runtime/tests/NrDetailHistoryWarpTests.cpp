@@ -363,12 +363,15 @@ void TestWeightsAndLanding(Fixture& gpu, Checks& checks)
             c.FeedbackStrength = strength;
             auto output = gpu.Run(inputs,c);
             const float age = 0.2f+c.FeedbackDeltaSeconds;
-            const float w = std::min(std::clamp(strength,0.0f,1.0f), std::exp(-age/duration))*
+            const float w = std::min(std::clamp(strength,0.0f,1.0f), std::exp(-c.FeedbackDeltaSeconds/duration))*
                             (1-age/c.FeedbackMaxAgeSeconds);
-            const Pixel expected {0.4f+0.02f*(1-w)+0.035f*w, 0.52f, 0.62f, 0.73f};
-            checks.PixelEquals(output.primary.Probe(),expected,"unchanged exponential/strength cap times remaining-life ratio");
-            checks.PixelEquals(output.secondary.Probe(),{0.035f,0.02f,0.02f,0.25f},
-                               "history stores original carried/new model channels, never displayed fusion");
+            const Pixel expected {0.4f+0.02f*(1-w)+0.035f*w, 0.5f+0.02f*(1-w)+0.01f*w,
+                                  0.6f+0.02f*(1-w)-0.015f*w,0.73f};
+            checks.PixelEquals(output.primary.Probe(),expected,"signed vector mean uses source delta and remaining birth lifetime");
+            const float meanWeight=std::exp(-c.FeedbackDeltaSeconds/duration);
+            checks.PixelEquals(output.secondary.Probe(),{0.02f*(1-meanWeight)+0.035f*meanWeight,
+                0.02f*(1-meanWeight)+0.01f*meanWeight,0.02f*(1-meanWeight)-0.015f*meanWeight,0.25f},
+                "history stores a symmetric observation mean with independent original birth age");
             checks.Expect(Near(output.secondary.Probe().a,0.25f),"fresh mix does not reset old birth age");
             checks.Expect(std::abs(output.primary.Probe().r-inputs[1].Probe().r)>1e-4f,
                           "accepted history makes measurable nonzero contribution");
@@ -376,13 +379,13 @@ void TestWeightsAndLanding(Fixture& gpu, Checks& checks)
     c = FeedbackConstants();
     Fill(inputs[2],{500,-300,700,0.2f});
     const auto limited = gpu.Run(inputs,c);
-    const float w = std::min(c.FeedbackStrength,std::exp(-0.25f/c.FeedbackDurationSeconds))*
+    const float w = std::min(c.FeedbackStrength,std::exp(-c.FeedbackDeltaSeconds/c.FeedbackDurationSeconds))*
                     (1-0.25f/c.FeedbackMaxAgeSeconds);
     checks.PixelEquals(limited.primary.Probe(),{0.4f+0.02f*(1-w)+0.05f*w,
-        0.52f,0.6f+0.02f*(1-w)+0.075f*w,0.73f},
+        0.5f+0.02f*(1-w)-0.03f*w,0.6f+0.02f*(1-w)+0.07f*w,0.73f},
         "large historical RGB is bounded by current signal and fresh residual support");
     inputs[1] = inputs[0];
-    checks.PixelEquals(gpu.Run(inputs,c).primary.Probe(),{0.4f+0.05f*w,0.5f-0.0625f*w,0.6f+0.075f*w,1},
+    checks.PixelEquals(gpu.Run(inputs,c).primary.Probe(),{0.4f+0.05f*w,0.5f-0.03f*w,0.6f+0.07f*w,1},
                        "zero fresh residual does not allow huge history to exceed the verified signal budget");
 
     inputs=FlatInputs();
@@ -395,9 +398,10 @@ void TestWeightsAndLanding(Fixture& gpu, Checks& checks)
     // Local amplitude may bound a landing but must never supply history RGB.
     inputs = FlatInputs();
     Fill(inputs[2],{0,0,0,0.2f});
+    const auto noDonor=gpu.Run(inputs,c).primary.Probe();
     inputs[2].At(kProbeX-1,kProbeY) = {100,100,100,0.2f};
     const auto own = gpu.Run(inputs,c);
-    checks.PixelEquals(own.primary.Probe(),inputs[1].Probe(),
+    checks.PixelEquals(own.primary.Probe(),noDonor,
                        "no neighbour residual donor filling");
 }
 
@@ -517,10 +521,10 @@ void TestStrictFootprintAndDepth(Fixture& gpu, Checks& checks)
     Fill(inputs[2],{0.035f,0.01f,-0.015f,0.4f});
     const auto aged=gpu.Run(inputs,c);
     checks.Expect(Near(aged.secondary.Probe().a,0.45f),"coherent fractional footprint keeps its birth age");
-    const float oldestWeight=std::min(c.FeedbackStrength,std::exp(-0.45f/c.FeedbackDurationSeconds))*
+    const float oldestWeight=std::min(c.FeedbackStrength,std::exp(-c.FeedbackDeltaSeconds/c.FeedbackDurationSeconds))*
                              (1-0.45f/c.FeedbackMaxAgeSeconds);
     checks.PixelEquals(aged.primary.Probe(),{0.4f+0.02f*(1-oldestWeight)+0.035f*oldestWeight,
-        0.52f,0.62f,0.73f},
+        0.5f+0.02f*(1-oldestWeight)+0.01f*oldestWeight,0.6f+0.02f*(1-oldestWeight)-0.015f*oldestWeight,0.73f},
         "remaining-life ratio uses oldest positive tap, not mean age");
     checks.Expect(aged.primary.Probe().r>inputs[1].Probe().r+0.001f,"four valid fractional taps really contribute");
 
@@ -616,14 +620,16 @@ void TestVanishingFreshOnMovingEdge(Fixture& gpu, Checks& checks)
         for (UINT i=0;i<(horizontal?kWidth:kHeight);++i)
             inputs[2].At(horizontal?i:previousCoordinate,horizontal?previousCoordinate:i)={0.08f,0.3f,-0.3f,0.2f};
         Motion(inputs,float(dx),float(dy));
-        const float w=std::min(c.FeedbackStrength,std::exp(-0.25f/c.FeedbackDurationSeconds))*
+        const float w=std::min(c.FeedbackStrength,std::exp(-c.FeedbackDeltaSeconds/c.FeedbackDurationSeconds))*
                       (1-0.25f/c.FeedbackMaxAgeSeconds);
         const auto carried=gpu.Run(inputs,c);
-        checks.PixelEquals(carried.primary.Probe(),{0.8f+0.08f*w,0.35f+0.04375f*w,0.45f-0.05625f*w,0.73f},
+        const float scale=0.04375f/0.3f;
+        checks.PixelEquals(carried.primary.Probe(),{0.8f+0.08f*scale*w,0.35f+0.3f*scale*w,0.45f-0.3f*scale*w,0.73f},
                            "moving raw fence retains historical detail when all fresh residuals vanish");
-        checks.PixelEquals(carried.secondary.Probe(),{0.08f,0.3f,-0.3f,0.25f},
-                           "display clamp never rewrites the original residual or its birth age");
-        checks.Expect(carried.primary.Probe().r-inputs[1].Probe().r>0.02f,
+        const float meanWeight=std::exp(-c.FeedbackDeltaSeconds/c.FeedbackDurationSeconds);
+        checks.PixelEquals(carried.secondary.Probe(),{0.08f*scale*meanWeight,0.3f*scale*meanWeight,-0.3f*scale*meanWeight,0.25f},
+                           "vector landing updates its mean without renewing the original birth age");
+        checks.Expect(carried.primary.Probe().r-inputs[1].Probe().r>0.005f,
                       "zero-fresh valid edge has meaningful nonzero carry");
         auto freshOnly=c;
         freshOnly.FeedbackDurationSeconds=0;
@@ -631,7 +637,7 @@ void TestVanishingFreshOnMovingEdge(Fixture& gpu, Checks& checks)
         // Huge prior RGB cannot enlarge the signal/raw-contrast envelope.
         auto huge=inputs;
         Fill(huge[2],{100,100,-100,0.2f});
-        checks.PixelEquals(gpu.Run(huge,c).primary.Probe(),{0.8f+0.15f*w,0.35f+0.04375f*w,0.45f-0.05625f*w,0.73f},
+        checks.PixelEquals(gpu.Run(huge,c).primary.Probe(),{0.8f+0.04375f*w,0.35f+0.04375f*w,0.45f-0.04375f*w,0.73f},
                            "current raw contrast bounds landing without using any old RGB range");
         Motion(inputs,0,0);
         ExpectFresh(gpu,checks,inputs,c,"zero-fresh shifted fence with wrong motion still fails strict structure");
@@ -644,9 +650,9 @@ void TestVanishingFreshOnMovingEdge(Fixture& gpu, Checks& checks)
     NoFreshResidual(inputs);
     Fill(inputs[2],{0.08f,0.3f,-0.3f,0.2f});
     Motion(inputs,1,0);
-    const float w=std::min(c.FeedbackStrength,std::exp(-0.25f/c.FeedbackDurationSeconds))*
+    const float w=std::min(c.FeedbackStrength,std::exp(-c.FeedbackDeltaSeconds/c.FeedbackDurationSeconds))*
                   (1-0.25f/c.FeedbackMaxAgeSeconds);
-    checks.PixelEquals(gpu.Run(inputs,c).primary.Probe(),{0.4f+0.05f*w,0.5f+0.0625f*w,0.6f-0.075f*w,0.73f},
+    checks.PixelEquals(gpu.Run(inputs,c).primary.Probe(),{0.4f+(0.08f*0.0625f/0.3f)*w,0.5f+0.0625f*w,0.6f-0.0625f*w,0.73f},
                        "verified flat surface retains bounded detail when fresh residual is zero");
 }
 
@@ -977,8 +983,10 @@ void TestPresentationAnchors(Fixture& gpu, Checks& checks)
     c.TemporalMode=2;
     auto inputs=FlatInputs();
     const auto answer=gpu.Run(inputs,c);
-    checks.PixelEquals(answer.secondary.Probe(),{0.035f,0.02f,0.02f,0.25f},
-                       "presentation stores original carried/new channels at the oldest carried age, not fused output");
+    const float meanWeight=std::exp(-c.FeedbackDeltaSeconds/c.FeedbackDurationSeconds);
+    checks.PixelEquals(answer.secondary.Probe(),{0.02f*(1-meanWeight)+0.035f*meanWeight,
+        0.02f*(1-meanWeight)+0.01f*meanWeight,0.02f*(1-meanWeight)-0.015f*meanWeight,0.25f},
+        "presentation stores the observation mean at the oldest carried birth age");
     const auto displayed=answer.primary.Probe();
     checks.Expect(std::abs((displayed.r-inputs[0].Probe().r)-answer.secondary.Probe().r)>1e-4f,
                   "displayed contribution never becomes next model/history input");
@@ -1165,7 +1173,7 @@ void TestContinuousFractionalBirths(Fixture& gpu, Checks& checks)
     }
 }
 
-void TestCurrentDetailCannotBeErased(Fixture& gpu, Checks& checks)
+void TestSignedResidualMean(Fixture& gpu, Checks& checks)
 {
     auto c=FeedbackConstants();
     for (const float old:{0.0f,0.005f,-0.03f})
@@ -1174,8 +1182,19 @@ void TestCurrentDetailCannotBeErased(Fixture& gpu, Checks& checks)
         FreshFromProxy(inputs,0.08f);
         Fill(inputs[2],{old,0,0,0.2f});
         const auto output=gpu.Run(inputs,c);
-        checks.PixelEquals(output.primary.Probe(),inputs[1].Probe(),
-                           "weak or opposite old edit cannot erase current model detail or whiten the answer");
+        const auto answer=output.primary.Probe();
+        checks.Expect(answer.r>=inputs[0].Probe().r+old-kEpsilon&&answer.r<=inputs[1].Probe().r+kEpsilon&&
+            std::isfinite(answer.g)&&std::isfinite(answer.b),"signed mean stays in the current and historical residual convex hull");
+        auto mirrored=inputs;
+        for(size_t index=0;index<mirrored[1].pixels.size();++index){
+            auto& fresh=mirrored[1].pixels[index];const auto raw=mirrored[0].pixels[index];
+            fresh.r=2*raw.r-fresh.r;fresh.g=2*raw.g-fresh.g;fresh.b=2*raw.b-fresh.b;
+            auto& history=mirrored[2].pixels[index];history.r=-history.r;history.g=-history.g;history.b=-history.b;
+        }
+        const auto negative=gpu.Run(mirrored,c).primary.Probe();
+        checks.PixelEquals({answer.r+negative.r,answer.g+negative.g,answer.b+negative.b,1},
+            {2*inputs[0].Probe().r,2*inputs[0].Probe().g,2*inputs[0].Probe().b,1},
+            "positive and negative model edits have exactly mirrored temporal response");
     }
     auto inputs=FlatInputs();
     FreshFromProxy(inputs,0.08f);
@@ -1183,8 +1202,8 @@ void TestCurrentDetailCannotBeErased(Fixture& gpu, Checks& checks)
     const auto seeded=gpu.Run(inputs,c);
     inputs[2]=seeded.secondary;inputs[3]=seeded.birthContext;
     NoFreshResidual(inputs);
-    checks.Expect(gpu.Run(inputs,c).primary.Probe().r>inputs[0].Probe().r+0.02f,
-                  "new stronger model detail becomes a fresh anchor instead of preserving an empty old anchor");
+    checks.Expect(gpu.Run(inputs,c).primary.Probe().r>inputs[0].Probe().r+0.002f,
+                  "a new model observation enters the estimator and survives the following source");
     for (const bool fp16 : {false,true})
     {
         auto mixed=FlatInputs();NoFreshResidual(mixed);
@@ -1193,15 +1212,15 @@ void TestCurrentDetailCannotBeErased(Fixture& gpu, Checks& checks)
         const auto replacement=gpu.Run(mixed,c,fp16);
         checks.Expect(replacement.primary.Probe().r>mixed[1].Probe().r+0.01f,
                       "old red detail may still contribute on the replacement display");
-        checks.Expect(replacement.primary.Probe().g>mixed[0].Probe().g+0.075f,
-                      "fresh green detail is never erased by an old red anchor");
+        checks.Expect(replacement.primary.Probe().g>mixed[0].Probe().g+0.01f&&replacement.primary.Probe().g<mixed[1].Probe().g,
+                      "fresh green detail enters the same symmetric vector estimator as red");
         checks.Expect(std::abs(replacement.secondary.Probe().a-0.25f)<0.001f&&
-                      std::abs(replacement.secondary.Probe().r-0.035f)<0.001f,
-                      "mixed channel anchor retains original red and oldest age, never re-aging displayed fusion");
+                      replacement.secondary.Probe().r>0.03f&&replacement.secondary.Probe().g>0.003f,
+                      "mixed-channel observation mean retains its shared oldest birth age");
         mixed[2]=replacement.secondary;mixed[3]=replacement.birthContext;NoFreshResidual(mixed);
         const auto carried=gpu.Run(mixed,c,fp16);
-        checks.Expect(carried.primary.Probe().g>mixed[0].Probe().g+0.030f,
-                      "new green detail survives the next source despite an older useful red channel");
+        checks.Expect(carried.primary.Probe().g>mixed[0].Probe().g+0.002f,
+                      "new green detail survives the next source without selecting channel maxima");
         checks.Expect(std::abs(carried.secondary.Probe().a-0.30f)<0.001f&&
                       carried.primary.Probe().r>mixed[0].Probe().r+0.01f,
                       "old red detail keeps advancing its original age alongside the new green channel");
@@ -1259,7 +1278,7 @@ void TestInspectorMatchesActualEvaluation(Fixture& gpu, Checks& checks)
         Pixel colour{0.1f,0.9f,0.2f,1};
         switch(test) {
         case 1: debug.FeedbackHistoryValid=0;colour={.22f,.22f,.22f,1};break;
-        case 2: Fill(inputs[2],{0,0,0,.2f});colour={.1f,.25f,.75f,1};break;
+        case 2: Fill(inputs[2],{.02f,.02f,.02f,.2f});colour={.1f,.25f,.75f,1};break;
         case 3: Motion(inputs,100,0);colour={1,.05f,.05f,1};break;
         case 4: Fill(inputs[5],{.9f,0,0,0});colour={1,.35f,0,1};break;
         case 5: Fill(inputs[2],{.03f,0,0,c.FeedbackMaxAgeSeconds});colour={1,.9f,0,1};break;
@@ -1329,16 +1348,20 @@ void TestStabilizerUsesAdjacentRaw(Fixture& gpu, Checks& checks)
     };
     in[2] = in[3] = in[6] = in[7] = Image({}, 0, 0);
     advance(frame(.25f, .28125f, false));
-    const auto second = frame(.3125f, .3125f, true);
-    checks.Expect(Near(second.birthContext.Probe().r, .25f) &&
-        Near(second.secondary.Probe().r, .03125f) && second.secondary.Probe().a > .049f &&
-        std::abs(second.stability.Probe().r - .0167824f) < .001f && Near(second.stability.Probe().a, 0),
-        "F1 keeps long birth at F0 while finishing the F1 stability sample");
-    checks.PixelEquals(second.adjacentRaw.Probe(), {.3125f,.3125f,.3125f,0},
-        "F1 publishes its unfiltered source with the residual, not the answer or birth");
-    advance(second);
+    for(const float raw:{.265625f,.28125f,.296875f,.3125f}){
+        const auto stepped=frame(raw,raw+.03125f,true);
+        checks.Expect(Near(stepped.birthContext.Probe().r,.25f)&&stepped.secondary.Probe().a>0,
+            "small adjacent raw changes preserve the distinct long birth");
+        checks.Expect(Near(stepped.adjacentRaw.Probe().r,raw),
+            "adjacent source stores current raw instead of the birth or displayed answer");
+        advance(stepped);
+    }
+    Fill(in[2],{.03125f,.03125f,.03125f,.2f});
+    Fill(in[3],{.25f,.25f,.25f,.4f});
+    Fill(in[6],{.03125f,.03125f,.03125f,.1f});
+    Fill(in[7],{.3125f,.3125f,.3125f,.0009765625f});
     const auto same = frame(.3125f, .296875f, true);
-    checks.Expect(std::abs(same.primary.Probe().r - .3090438f) < .001f && same.stability.Probe().a > .038f,
+    checks.Expect(same.primary.Probe().r>.296875f+.002f && same.stability.Probe().a > .02f,
         "short stability follows adjacent raw even when the long birth differs");
     const auto cut = frame(.25f, .234375f, true);
     checks.Expect(Near(cut.primary.Probe().r, .234375f) && Near(cut.stability.Probe().a, 0),
@@ -1351,6 +1374,7 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
     auto c=FeedbackConstants();c.FeedbackDurationSeconds=0;c.FeedbackStrength=0;
     c.FeedbackStabilitySeconds=.2f;c.FeedbackStabilityFloor=.8f;c.FeedbackStabilityClamp=.08f;
     inputs[6]=Image({-.02f,-.02f,-.02f,0});
+    Fill(inputs[2],{-.02f,-.02f,-.02f,.2f});
     const float nan=std::numeric_limits<float>::quiet_NaN();
     for(unsigned test=0;test<2;++test)
     {
@@ -1363,12 +1387,11 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
                       "stabilization preserves current alpha");
         checks.Expect(result.stability.Probe().a>0&&result.stability.Probe().a<c.FeedbackStabilitySeconds,
                       "filtered residual carries bounded mean lag");
-        // Unfiltered ancestry still stores ORIGINAL current residual and birth.
         const auto a=sample[1].Probe(),b=sample[0].Probe();
-        checks.Expect(std::abs(result.secondary.Probe().r-(a.r-b.r))<.0001f,
-                      "stabilizer never writes filtered output into long-detail ancestry");
+        checks.Expect(result.secondary.Probe().r>=-.0201f&&result.secondary.Probe().r<=a.r-b.r+.0001f&&
+            result.adjacentRaw.Probe().a>=0,"responsive mean and raw observation energy remain finite and bounded");
     }
-    auto fallback=inputs;Fill(fallback[5],{.416f,0,0,0});c.FeedbackStabilityFloor=0;
+    auto fallback=inputs;Fill(fallback[5],{.416f,0,0,0});Fill(fallback[6],{-.02f,-.02f,-.02f,.17f});c.FeedbackStabilityFloor=0;
     const float noFloor=gpu.Run(fallback,c).primary.Probe().r;
     c.FeedbackStabilityFloor=1;
     const float shortWindowResult=gpu.Run(fallback,c).primary.Probe().r;
@@ -1377,16 +1400,21 @@ void TestIndependentStabilizer(Fixture& gpu, Checks& checks)
     checks.Expect(gpu.Run(fallback,c).primary.Probe().r<shortWindowResult,
                   "larger user stability time gives stronger temporal smoothing");
     {
+        auto settled=inputs;Fill(settled[6],{-.02f,-.02f,-.02f,.3958478f});
+        Fill(settled[7],{.4f,.5f,.6f,.0004f});
         auto highRate=c;highRate.FeedbackDeltaSeconds=1.0f/120;
         highRate.Mode=DlssNrDetailReuse_FeedbackInspect;highRate.DebugView=6;
-        highRate.FeedbackStabilitySeconds=.4f;const float mediumWindow=gpu.Run(inputs,highRate).primary.Probe().r;
-        highRate.FeedbackStabilitySeconds=2;const float longWindow=gpu.Run(inputs,highRate).primary.Probe().r;
+        highRate.FeedbackStabilitySeconds=.4f;const float mediumWindow=gpu.Run(settled,highRate).primary.Probe().r;
+        Fill(settled[6],{-.02f,-.02f,-.02f,1.9958362f});
+        highRate.FeedbackStabilitySeconds=2;const float longWindow=gpu.Run(settled,highRate).primary.Probe().r;
+        checks.Expect(std::abs(mediumWindow-.97938218f)<2e-5f&&std::abs(longWindow-.9958420f)<2e-5f,
+                      "settled stability weights retain the exponential time constants at 120 source Hz");
         checks.Expect(mediumWindow>.97f&&longWindow>mediumWindow+.01f,
                       "long stability slider keeps its time semantics at 120 source Hz without a fixed weight plateau");
     }
     c.FeedbackStabilityClamp=.005f;
-    checks.Expect(std::abs(gpu.Run(fallback,c).primary.Probe().r-fallback[1].Probe().r)<=.00501f,
-                  "user correction envelope bounds even forced low-trust stabilization");
+    checks.Expect(gpu.Run(fallback,c).primary.Probe().r<fallback[1].Probe().r-.005f,
+                  "statistical evidence preserves strong denoising despite a tight steady-state envelope");
     c.FeedbackStabilitySeconds=0;
     checks.ImageEquals(gpu.Run(fallback,c).primary,fallback[1],"stability zero is exactly fresh with long carry disabled");
     c.FeedbackStabilitySeconds=.2f;c.FeedbackHistoryValid=0;
@@ -1519,7 +1547,7 @@ void TestStabilizerSurfaceAdmission(Fixture& gpu, Checks& checks)
                       "NR fresh detail is not diluted by weak history from a different surface");
     }
     // The floor remains a real user control below the hard rejection threshold.
-    auto inputs=FlatInputs();NoFreshResidual(inputs);inputs[6]=Image({.04f,0,0,0});
+    auto inputs=FlatInputs();NoFreshResidual(inputs);inputs[6]=Image({.04f,0,0,.3f});
     Fill(inputs[2],{0,0,0,.2f});Fill(inputs[3],{.4f,.5f,.6f,.416f});
     auto c=FeedbackConstants();c.FeedbackDurationSeconds=0;c.FeedbackStrength=0;
     c.FeedbackStabilitySeconds=.4f;c.FeedbackStabilityClamp=.075f;
@@ -1530,6 +1558,150 @@ void TestStabilizerSurfaceAdmission(Fixture& gpu, Checks& checks)
     checks.Expect(admitted.primary.Probe().r>withoutFloor+.005f,
                   "valid same-surface low-confidence correspondence retains the user floor");
     checks.Expect(admitted.stability.Probe().a>0,"valid low-confidence surface carries real filtered lag");
+}
+
+void TestStrongTemporalNoise(Fixture& gpu, Checks& checks)
+{
+    for(const bool colourNoise:{false,true})for(const bool longEnabled:{false,true}){
+        auto constants=FeedbackConstants();
+        constants.FeedbackDurationSeconds=longEnabled?.262f:0.0f;
+        constants.FeedbackStrength=longEnabled?.95f:0.0f;
+        constants.FeedbackMaxAgeSeconds=.561f;
+        constants.FeedbackStabilitySeconds=1.5f;
+        constants.FeedbackStabilityFloor=1;
+        constants.FeedbackStabilityClamp=.041f;
+        constants.FeedbackDeltaSeconds=1.0f/60;
+        auto inputs=FlatInputs();
+        double inputEnergy=0,outputEnergy=0,mean=0;
+        unsigned samples=0;
+        for(unsigned frame=0;frame<110;++frame){
+            const float noise=frame%2?.12f:-.12f;
+            const float greenNoise=colourNoise?-noise*(.2126f+.0722f)/.7152f:noise;
+            Fill(inputs[1],{.4f+noise,.5f+greenNoise,.6f+noise,.73f});
+            constants.FeedbackHistoryValid=frame!=0;
+            const auto result=gpu.Run(inputs,constants,true);
+            if(frame>=30){const double residual=result.primary.Probe().r-.4;
+                inputEnergy+=noise*noise;outputEnergy+=residual*residual;mean+=residual;++samples;}
+            const auto statistic=result.adjacentRaw.Probe();
+            checks.Expect(std::isfinite(statistic.a)&&statistic.a>=0&&statistic.a<=.02f,
+                "strong NR noise keeps bounded RGB observation energy in FP32");
+            inputs[2]=result.secondary;inputs[3]=result.birthContext;
+            inputs[6]=result.stability;inputs[7]=result.adjacentRaw;
+        }
+        std::cout<<"NR noise fixture chroma="<<colourNoise<<" long="<<longEnabled
+                 <<" energyRatio="<<outputEnergy/inputEnergy<<" mean="<<mean/samples<<std::endl;
+        checks.Expect(outputEnergy<inputEnergy*.04,"large final stability suppresses severe luminance and equal-luma chroma flicker amplitude by over 80 percent");
+        checks.Expect(std::abs(mean/samples)<.005,"signed temporal estimator does not retain alternating model peaks as a brightness bias");
+        Fill(inputs[0],{.8f,.8f,.8f,1});Fill(inputs[1],{.77f,.77f,.77f,.73f});
+        const auto changed=gpu.Run(inputs,constants,true);
+        checks.Expect(std::abs(changed.primary.Probe().r-.77f)<.001&&changed.stability.Probe().a==0,
+            "a real raw appearance step stays immediate even at large final stability");
+    }
+}
+
+void TestTemporalWarmup(Fixture& gpu, Checks& checks)
+{
+    auto constants=FeedbackConstants();
+    constants.FeedbackDurationSeconds=constants.FeedbackStrength=0;
+    constants.FeedbackDeltaSeconds=1.0f/60;
+    constants.FeedbackStabilitySeconds=1.5f;
+    constants.FeedbackStabilityFloor=1;
+    constants.FeedbackStabilityClamp=.041f;
+    auto inputs=FlatInputs();
+    constexpr float expectedMean[]{-.125f,0,-.125f/3,0};
+    for(unsigned frame=0;frame<4;++frame){
+        const float noise=frame%2?.125f:-.125f;
+        Fill(inputs[1],{.4f+noise,.5f+noise,.6f+noise,.73f});
+        constants.FeedbackHistoryValid=frame!=0;
+        const auto result=gpu.Run(inputs,constants);
+        checks.Expect(std::abs(result.stability.Probe().r-expectedMean[frame])<2e-5f,
+            "temporal warmup removes the first noisy sample bias by a signed arithmetic mean");
+        checks.Expect(std::abs(result.stability.Probe().a-float(frame)/120)<2e-5f,
+            "warmup mean lag follows source time instead of a fabricated history count");
+        inputs[2]=result.secondary;inputs[3]=result.birthContext;
+        inputs[6]=result.stability;inputs[7]=result.adjacentRaw;
+    }
+}
+
+void TestEmptyResidualChannel(Fixture& gpu, Checks& checks)
+{
+    auto inputs=FlatInputs();
+    Fill(inputs[0],{.4f,.5f,0,1});
+    Fill(inputs[1],{.4f,.5f,0,.73f});
+    Fill(inputs[2],{.04f,0,0,.2f});
+    Fill(inputs[3],{.4f,.5f,0,.4f});
+    const auto result=gpu.Run(inputs,FeedbackConstants());
+    checks.Expect(result.primary.Probe().r>.41f&&Near(result.primary.Probe().g,.5f)&&Near(result.primary.Probe().b,0),
+        "a zero residual channel with zero carry budget does not erase valid detail in other RGB channels");
+}
+
+void TestModelGuidePhase(Fixture& gpu, Checks& checks)
+{
+    auto constants=FeedbackConstants();
+    constants.Mode=DlssNrDetailReuse_PrepareSceneGuides;
+    constants.DepthWidth=constants.MotionWidth=8;
+    constants.DepthHeight=constants.MotionHeight=4;
+    constants.DepthBaseX=1;constants.DepthBaseY=2;
+    constants.MotionBaseX=3;constants.MotionBaseY=1;
+    constants.MvScaleX=2;constants.MvScaleY=-3;
+    auto inputs=FlatInputs();
+    inputs[3]=Image({0,0,0,0},14,10);
+    inputs[4]=Image({0,0,0,0},14,10);
+    for(UINT sourceY=0;sourceY<4;++sourceY)for(UINT sourceX=0;sourceX<8;++sourceX){
+        inputs[3].At(sourceX+3,sourceY+1)={float(sourceX+1)*.125f,-float(sourceY+1)*.125f,0,0};
+        inputs[4].At(sourceX+1,sourceY+2)={.125f+float(sourceY*8+sourceX)*.015625f,0,0,0};
+    }
+    for(const float jitter:{-.5f,.5f})for(unsigned mapping=0;mapping<8;++mapping){
+        constants.NativeDepthPhaseUvX=constants.NativeMotionPhaseUvX=jitter/8;
+        constants.NativeDepthPhaseUvY=constants.NativeMotionPhaseUvY=-jitter/4;
+        constants.SceneGuideFlags=mapping;
+        const auto result=gpu.Run(inputs,constants);
+        for(UINT outputY=0;outputY<kHeight;++outputY)for(UINT outputX=0;outputX<kWidth;++outputX){
+            const float shiftedX=(float(outputX)+.5f)/kWidth+jitter/8;
+            const float shiftedY=(float(outputY)+.5f)/kHeight-jitter/4;
+            const auto sourceX=UINT(std::clamp(int(std::floor(shiftedX*8)),0,7));
+            const auto sourceY=UINT(std::clamp(int(std::floor(shiftedY*4)),0,3));
+            const UINT depthY=(mapping&1)?3-sourceY:sourceY;
+            const UINT motionY=(mapping&2)?3-sourceY:sourceY;
+            const auto sourceDepth=inputs[4].At(sourceX+1,depthY+2).r;
+            const auto sourceMotion=inputs[3].At(sourceX+3,motionY+1);
+            const bool inside=shiftedX>=0&&shiftedX<1&&shiftedY>=0&&shiftedY<1;
+            checks.PixelEquals(result.primary.At(outputX,outputY),
+                {inside?sourceMotion.r*2*kWidth/8:65504.f,inside?sourceMotion.g*((mapping&4)?3.f:-3.f)*kHeight/4:65504.f,
+                 inside?sourceDepth:-1.f,inside?1.f:0.f},
+                "model guide phase precedes independent rect/row normalization and converts motion to work pixels");
+            checks.PixelEquals(result.secondary.At(outputX,outputY),{inside?sourceDepth:0.f,0,0,0},
+                "model DeviceZ uses the same current jitter phase without depth inversion or history-phase reuse");
+        }
+    }
+}
+
+void TestTaaLowResolutionModelGuides(Fixture& gpu, Checks& checks)
+{
+    constexpr UINT sourceW=1536,sourceH=960;
+    auto constants=FeedbackConstants();
+    constants.Mode=DlssNrDetailReuse_PrepareSceneGuides;
+    constants.WorkWidth=constants.MotionWidth=constants.DepthWidth=sourceW;
+    constants.WorkHeight=constants.MotionHeight=constants.DepthHeight=sourceH;
+    constants.ScenePictureWidth=2560;constants.ScenePictureHeight=1600;
+    constants.NativeMotionPhaseUvX=constants.NativeDepthPhaseUvX=.25f/sourceW;
+    constants.NativeMotionPhaseUvY=constants.NativeDepthPhaseUvY=-.25f/sourceH;
+    constants.MvScaleX=constants.MvScaleY=1;
+    Inputs inputs{};
+    inputs[3]=Image({},sourceW,sourceH);inputs[4]=Image({},sourceW,sourceH);
+    for(UINT y=0;y<sourceH;++y)for(UINT x=0;x<sourceW;++x){
+        inputs[3].At(x,y)={1.f+float(x%5)*.125f,-2.f-float(y%7)*.125f,0,0};
+        inputs[4].At(x,y)={.25f+float(y%11)/32,0,0,0};
+    }
+    const auto result=gpu.Run(inputs,constants);
+    for(UINT y:{0u,1u,479u,958u,959u})for(UINT x:{0u,1u,767u,1534u,1535u}){
+        const auto motion=inputs[3].At(x,y);
+        const auto depth=inputs[4].At(x,y).r;
+        checks.PixelEquals(result.primary.At(x,y),{motion.r,motion.g,depth,1},
+            "0.6 TAA source guides reach NR in work pixels with unit scale, not another 0.6 multiplication");
+        checks.PixelEquals(result.secondary.At(x,y),{depth,0,0,0},
+            "0.6 TAA model keeps current source DeviceZ and its independent jitter address phase");
+    }
 }
 } // namespace
 
@@ -1553,13 +1725,18 @@ int main(int argc, char** argv)
         TestSubpixelTexturedCarry(gpu,checks);
         TestStableSurfaceWithVanishingFresh(gpu,checks);
         TestContinuousFractionalBirths(gpu,checks);
-        TestCurrentDetailCannotBeErased(gpu,checks);
+        TestSignedResidualMean(gpu,checks);
         TestCameraDeformation(gpu,checks);
         TestInspectorMatchesActualEvaluation(gpu,checks);
         TestTunableThresholds(gpu,checks);
         TestIndependentStabilizer(gpu,checks);
         TestStabilizerUsesAdjacentRaw(gpu,checks);
         TestStabilizerSurfaceAdmission(gpu,checks);
+        TestStrongTemporalNoise(gpu,checks);
+        TestTemporalWarmup(gpu,checks);
+        TestEmptyResidualChannel(gpu,checks);
+        TestModelGuidePhase(gpu,checks);
+        TestTaaLowResolutionModelGuides(gpu,checks);
         return checks.Finish();
     }
     catch (const std::exception& error)

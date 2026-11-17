@@ -9,8 +9,8 @@ namespace PresentationHost
 {
 using namespace F6PresentationProbe;
 struct Picture { uint64_t hash; std::array<unsigned, 4> hud, center; };
-unsigned serial = 0, eval = 0, writes = 0, sentinelWrites = 0;
-bool sentinel = false;
+unsigned serial = 0, eval = 0, writes = 0, sentinelWrites = 0, sources = 0;
+bool sentinel = false, rawOnly = false;
 bool requireStable = false, haveSourceNr = false;
 const char* change = "unchanged";
 Picture raw {}, filtered {};
@@ -28,8 +28,10 @@ void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource,
 void WINAPI Observe(const Sample* sample)
 {
     Check(sample && sample->color && sample->queue, "probe borrows actual FG color and queue");
+    const bool sourceStage = sample->stage == Stage::SourceOutput;
     ComPtr<ID3D12Resource> actual;
-    Hr(sample->chain->GetBuffer(sample->fgIndex, IID_PPV_ARGS(&actual)), "query actual FG buffer");
+    if (sourceStage) actual = sample->color;
+    else Hr(sample->chain->GetBuffer(sample->fgIndex, IID_PPV_ARGS(&actual)), "query actual FG buffer");
     Check(actual.Get() == sample->color, "probe observes FG buffer, not wrapper DX11 GetBuffer");
     ComPtr<ID3D12Device> device;
     Hr(sample->queue->GetDevice(IID_PPV_ARGS(&device)), "probe queue device");
@@ -44,15 +46,16 @@ void WINAPI Observe(const Sample* sample)
     // A labeled test writer makes a lost publication unambiguous even if the
     // installed NR model cannot run in this synthetic scene. It is not NR proof.
     ComPtr<ID3D12DescriptorHeap> heap;
-    if (sentinel && sample->stage == Stage::AfterNr && serial % 4 == 0) {
+    const auto arrival = sourceStage ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_PRESENT;
+    if (sentinel && sourceStage) {
         D3D12_DESCRIPTOR_HEAP_DESC hd {}; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = 1;
         Hr(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap)), "sentinel RTV heap");
         const auto rtv = heap->GetCPUDescriptorHandleForHeapStart();
         device->CreateRenderTargetView(actual.Get(), nullptr, rtv);
-        Transition(list.Get(), actual.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        Transition(list.Get(), actual.Get(), arrival, D3D12_RESOURCE_STATE_RENDER_TARGET);
         const float mark[] {0.75f, 0.125f, 0.5f, 1};
         list->ClearRenderTargetView(rtv, mark, 0, nullptr);
-        Transition(list.Get(), actual.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+        Transition(list.Get(), actual.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, arrival);
         ++sentinelWrites;
     }
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp {}; UINT64 bytes = 0;
@@ -63,12 +66,12 @@ void WINAPI Observe(const Sample* sample)
     ComPtr<ID3D12Resource> readback;
     Hr(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST,
         nullptr, IID_PPV_ARGS(&readback)), "probe readback");
-    Transition(list.Get(), actual.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Transition(list.Get(), actual.Get(), arrival, D3D12_RESOURCE_STATE_COPY_SOURCE);
     D3D12_TEXTURE_COPY_LOCATION from {}, to {};
     from.pResource = actual.Get(); from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     to.pResource = readback.Get(); to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; to.PlacedFootprint = fp;
     list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
-    Transition(list.Get(), actual.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
+    Transition(list.Get(), actual.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, arrival);
     Hr(list->Close(), "close probe");
     if (sample->fence) Hr(sample->queue->Wait(sample->fence, sample->value), "order exact raw-copy producer");
     ID3D12CommandList* batch[] {list.Get()}; sample->queue->ExecuteCommandLists(1, batch);
@@ -91,21 +94,40 @@ void WINAPI Observe(const Sample* sample)
         picture.center[c] = pixels[size_t(desc.Height / 2) * fp.Footprint.RowPitch + (desc.Width / 2) * 4 + c];
     }
     const D3D12_RANGE none {0, 0}; readback->Unmap(0, &none);
-    if (sample->stage == Stage::RawCopy) raw = picture;
-    if (sample->stage == Stage::AfterNr) { filtered = picture; writes += sample->nrResult == 1; }
+    if (sourceStage) {
+        ++sources;
+        writes += sample->nrResult == 1;
+        haveSourceNr = sentinel || sample->nrResult == 1;
+        sourceNr = picture;
+    }
+    if (sample->stage == Stage::RawCopy) {
+        raw = picture;
+        if (serial % 4 == 0 && haveSourceNr && eval != 13)
+            Check(raw.hash == sourceNr.hash, "actual SR source NR pixels survive original DX11 copyback and game composition");
+    }
+    if (sample->stage == Stage::AfterNr) {
+        filtered = picture;
+        Check(sample->nrResult == 0 && filtered.hash == raw.hash, "Present has no independent NR writer");
+    }
     if (sample->stage == Stage::FgInput) {
         // Opti's own composition is between these observations. Preserve both
         // hashes; an overlay delta is not an NR publication failure.
         if (serial % 4 == 0) {
-            haveSourceNr = sentinel || sample->nrResult == 1;
-            sourceNr = picture;
+            if (haveSourceNr) sourceNr = picture;
         }
         if (requireStable && serial % 4 == 1 && haveSourceNr)
             Check(picture.center == sourceNr.center, "unchanged second Present must retain this source's completed NR pixels");
         if (eval == 13) Check(sample->nrResult != 1 && std::abs(int(picture.center[0]) - 64) <= 1 &&
             picture.center[1] == 0 && std::abs(int(picture.center[2]) - 128) <= 1,
             "invalid B keeps its current raw scene, never A's NR");
-        if (serial % 4 && sentinel) Check(picture.hash == raw.hash, "repeated Present currently publishes fresh raw color");
+        if (serial % 4 == 2 && eval <= 12) {
+            Check(picture.hud[0] == 0 && picture.hud[1] == 255 && picture.hud[2] == 0,
+                "new game HUD remains current over this source NR");
+            if (haveSourceNr) Check(picture.center == sourceNr.center, "HUD-only update retains scene NR pixels");
+        }
+        if (serial % 4 == 3 && eval <= 12)
+            Check(picture.center[0] == 0 && picture.center[1] == 0 && picture.center[2] == 255,
+                "whole-scene change remains current without replaying a previous NR picture");
     }
     std::printf("sample eval=%u present=%u change=%s stage=%u dx11=%u fg=%u color=%p queue=%p fence=%p:%llu nr=%u hash=%016llx hud=%u,%u,%u center=%u,%u,%u\n",
         eval, serial, change, unsigned(sample->stage), sample->dx11Index, sample->fgIndex, sample->color,
@@ -114,9 +136,10 @@ void WINAPI Observe(const Sample* sample)
         picture.center[0], picture.center[1], picture.center[2]);
 }
 
-void Run(HMODULE module, bool useSentinel, bool stable)
+void Run(HMODULE module, bool useSentinel, bool stable, bool rawControl = false)
 {
     sentinel = useSentinel;
+    rawOnly = rawControl;
     requireStable = stable;
     std::printf("probe require_stable=%u sentinel=%u\n", requireStable ? 1u : 0u, sentinel ? 1u : 0u);
     Entry<Install>(module, "F6_Test_SetPresentationProbe")(&Observe);
@@ -165,10 +188,12 @@ void Run(HMODULE module, bool useSentinel, bool stable)
     // Each source then has four Presents: identical, identical, HUD-only, scene.
     for (eval = 1; eval <= 12; ++eval) {
         frame.Fill(context.Get(), {128u + eval * 32u, 512u, 800u}); frame.Bind(p);
+        p->Set(NVSDK_NGX_Parameter_Reset, eval == 1 ? 1 : 0);
         F6EvalReceiptV1 receipt;
         Ngx(evaluate(context.Get(), handle, p, nullptr, eval, &receipt), "real current SR Evaluate");
         Check(f6_output_status(receipt, eval, handle, context.Get(), frame.output.Get()) == F6OutputStatus::current_output_ordered,
             "current source receipt before Present");
+        if (rawOnly) frame.CheckPixels(context.Get(), {128u + eval * 32u, 512u, 800u}, false);
         context->CopyResource(back.Get(), frame.output.Get());
         for (unsigned n = 0; n < 4; ++n) {
             serial = (eval - 1) * 4 + n;
@@ -202,8 +227,47 @@ void Run(HMODULE module, bool useSentinel, bool stable)
     for (unsigned n = 0; n < 2; ++n) {
         serial = 52 + n; Hr(chain->Present(0, 0), "C Present after recovery");
     }
-    Check(sentinel ? sentinelWrites != 0 : writes != 0, "test actually observed its declared NR or sentinel writer");
-    std::printf("PASS actual presentation observation checks=%u modelWrites=%u testWriter=%u generatedPixels=unknown\n", checks, writes, sentinelWrites);
-    std::puts("LIMIT: SR token cannot distinguish unchanged, HUD-only and whole-scene writes; this host observes the gap and does not authorize replay.");
+    const auto toggleNr = Entry<void (WINAPI*)(BOOL)>(module, "F6_Test_SetNrEnabled");
+    const auto evaluateSource = [&](Frame& input, unsigned source, const std::array<UINT,3>& rgb, bool original) {
+        eval = source; input.Fill(context.Get(), rgb); input.Bind(p); p->Set(NVSDK_NGX_Parameter_Reset, 0);
+        F6EvalReceiptV1 receipt;
+        Ngx(evaluate(context.Get(), handle, p, nullptr, eval, &receipt), "current source after toggle or resize");
+        Check(receipt.status == F6OutputStatus::current_output_ordered, "current output after toggle or resize");
+        if (original) input.CheckPixels(context.Get(), rgb, false);
+        context->CopyResource(back.Get(), input.output.Get()); change = "toggle-or-resize";
+        for (unsigned n = 0; n < 2; ++n) {
+            serial = (source - 1) * 4 + n;
+            Hr(chain->Present(0, 0), "repeated current Present after toggle or resize");
+        }
+    };
+    const auto beforeOff = writes;
+    toggleNr(FALSE);
+    evaluateSource(frame, 15, {128,704,256}, !sentinel);
+    Check(writes == beforeOff, "NR off never records the model or replays its prior result");
+    toggleNr(!rawOnly && !sentinel);
+    evaluateSource(frame, 16, {256,192,704}, rawOnly);
+    Check(rawOnly || sentinel || writes > beforeOff, "NR resumes current-source writes after re-enabling");
+
+    // Release every actual DX11 backbuffer reader before the real resize.
+    const auto beforeResize = writes;
+    rtv.Reset(); back.Reset(); context->Flush();
+    Hr(chain->ResizeBuffers(1, 768, 768, DXGI_FORMAT_R8G8B8A8_UNORM, 0), "actual interop ResizeBuffers");
+    Hr(chain->GetBuffer(0, IID_PPV_ARGS(&back)), "new actual game backbuffer");
+    Ngx(Entry<decltype(&NVSDK_NGX_D3D11_ReleaseFeature)>(module, "NVSDK_NGX_D3D11_ReleaseFeature")(handle), "retire original source feature");
+    Frame resized(device.Get(), 384, true);
+    p->Set(NVSDK_NGX_Parameter_Width, 384u); p->Set(NVSDK_NGX_Parameter_Height, 384u);
+    p->Set(NVSDK_NGX_Parameter_OutWidth, 768u); p->Set(NVSDK_NGX_Parameter_OutHeight, 768u);
+    Ngx(Entry<decltype(&NVSDK_NGX_D3D11_CreateFeature)>(module, "NVSDK_NGX_D3D11_CreateFeature")(
+        context.Get(), NVSDK_NGX_Feature_SuperSampling, p, &handle), "new source feature for actual resize");
+    for (unsigned n = 17; n <= 20; ++n)
+        evaluateSource(resized, n, {128 + n * 16,256,704}, rawOnly);
+    Check(rawOnly || sentinel || writes > beforeResize,
+        "NR resumes current-source writes after successful resize and feature recreation");
+    Check(rawOnly ? writes == 0 : sentinel ? sentinelWrites != 0 : writes != 0,
+        "test actually observed its declared model or raw control at SR output");
+    Check(sources == 19 && writes <= sources, "one current source recording per valid Evaluate; failed B cannot publish");
+    std::printf("PASS actual presentation observation checks=%u sources=%u modelWrites=%u resizedWrites=%u testWriter=%u rawControl=%u generatedPixels=unknown\n", checks, sources, writes, writes-beforeResize, sentinelWrites, rawOnly);
+    std::puts(rawOnly ? "Raw SR pixels passed actual copyback and repeated Present; generated/display pixels remain unknown." :
+        "Source NR pixels passed actual copyback and repeated Present; generated/display pixels remain unknown.");
 }
 }

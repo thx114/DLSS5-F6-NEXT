@@ -21,10 +21,16 @@
 namespace GenericDepthDx11
 {
 void Install(ID3D11Device* device);
+// Certify the current immediate implementation before publishing newly created
+// geometry contents. Unknown implementations revoke older device mirrors first.
+// This does not change the selected game context or Present owner.
+bool EnsureTaaWriteCoverage(ID3D11Device* device) noexcept;
 // Once per presented frame: closes the frame's counts, picks, and logs. The swap chain gives the picture's size, and its
 // device the context watched: a device the game makes again is followed once it presents (a D3D12 swap chain, as under
 // Dx11wDx12, says nothing, and the context Install found is kept).
 void OnPresent(IDXGISwapChain* swapChain);
+// Failed source presents close CPU observation authority, never GPU retirement.
+void RevokeSourceObservations() noexcept;
 // Native D3D11 outer Present owner only, before its global PRE/overlay. Does
 // only existing MOD installation/preparation/retirement; no depth-frame close,
 // new hook, draw, POST or original Present. The real native chain must expose

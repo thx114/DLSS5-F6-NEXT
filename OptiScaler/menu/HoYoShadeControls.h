@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "UiLocalization.h"
 #include <integration/HoYoShade.h>
+#include <dlssnr/DlssNrFeature_Dx12.h>
 #include <ui_mask/DrawUiMask.h>
 
 // Explicit controls publish live requests; real render owners apply them.
@@ -88,8 +89,10 @@ inline void RenderMaskStatus(bool english)
         "Receipts cover that consumer's resource use; image correctness still needs in-game observation."));
 }
 
+enum class BeforeSrPath { Unavailable, Dx11Native, Dx11wDx12 };
+
 template<class ConfigType>
-inline void Render(ConfigType* config, bool vulkan, bool dx11Bridge)
+inline void Render(ConfigType* config, bool vulkan, BeforeSrPath beforeSrPath)
 {
     const bool english = NextgenUi::English();
     const auto tr = [english](const char* cn, const char* en) { return english ? en : cn; };
@@ -107,7 +110,8 @@ inline void Render(ConfigType* config, bool vulkan, bool dx11Bridge)
     ImGui::BeginDisabled(vulkan);
     const bool enabledChanged = MenuText::Checkbox(tr("由 F6 安排滤镜位置###enabled", "Let F6 place effects###enabled"), &enabled);
     const char* stages[]={StageLabel(1,english),StageLabel(2,english),StageLabel(3,english)};
-    const bool stagesEnabled[]={dx11Bridge,true,true};
+    const bool sourceNr = DlssNr::UsesSourceOutput();
+    const bool stagesEnabled[]={beforeSrPath != BeforeSrPath::Unavailable,!sourceNr,true};
     int stageChoice=requestedStage>=1 && requestedStage<=3?int(requestedStage)-1:-1;
     stageChanged=MenuText::Segmented(tr("应用位置###placement","Placement###placement"),&stageChoice,stages,3,stagesEnabled);
     if(stageChanged)requestedStage=unsigned(stageChoice+1);
@@ -126,16 +130,22 @@ inline void Render(ConfigType* config, bool vulkan, bool dx11Bridge)
     }
     if (requestRejected)
         MenuText::TextWrapped("%s", tr("实时请求未接受；设置未写入。", "Live request was rejected; settings were not changed."));
+    if (sourceNr && requestedStage == 2)
+        MenuText::TextWrapped("%s", tr("场景超分输出 NR 不支持独立的 NR 前滤镜；请选择超分之前或最终输出。",
+            "Scene-output NR supports effects before super resolution or at final output."));
     if (!config->HoYoShadeEnabled.has_value())
-        MenuText::TextWrapped("%s", tr("开关：自动（选择超分之前时开启，连接已有兼容核心）。", "Enable: automatic (on before super resolution, using an existing compatible core)."));
+        MenuText::TextWrapped("%s", tr("开关：自动（选择超分之前时开启，连接兼容核心）。", "Enable: automatic (on before super resolution, using a compatible core)."));
     if (!config->HoYoShadeStage.has_value())
         MenuText::TextWrapped("%s", tr("位置：自动（默认 NR 之前）。", "Placement: automatic (before neural rendering by default)."));
     if (vulkan)
         MenuText::TextWrapped("%s", tr("Vulkan 暂不支持滤镜位置控制。", "Filter placement is unavailable on Vulkan."));
-    else if (!dx11Bridge)
+    else if (beforeSrPath == BeforeSrPath::Unavailable)
         MenuText::TextWrapped("%s", tr("此路径暂不支持超分之前。", "Before super resolution is unavailable on this path."));
-    MenuText::TextWrapped("%s", tr("修改实时请求；跨重启保留仍需点击“保存设置”。HoYoShade 核心需由现有启动器加载。",
-                                  "Changes request live application. Use Save settings to keep them across restarts. Load HoYoShade through the existing launcher."));
+    else if (beforeSrPath == BeforeSrPath::Dx11Native)
+        MenuText::TextWrapped("%s", tr("原生 DX11 的超分前滤镜需要由 F6 加载核心；已由外部加载的核心暂不支持此路径。",
+            "Native DX11 effects before super resolution require F6 to load the core; an externally loaded core does not yet support this path."));
+    MenuText::TextWrapped("%s", tr("修改实时请求；跨重启保留仍需点击“保存设置”。请保留兼容的 HoYoShade 核心与 ReShade.ini。",
+                                  "Changes request live application. Use Save settings to keep them across restarts. Keep a compatible HoYoShade core and ReShade.ini."));
 
     MenuText::SeparatorText(tr("本次运行", "This session"));
     const auto live = HoYoShade::ReadLiveSettings();
@@ -153,7 +163,7 @@ inline void Render(ConfigType* config, bool vulkan, bool dx11Bridge)
     else if (!live.appliedEnabled)
         MenuText::TextWrapped("%s", tr("F6 滤镜调度已关闭。", "F6 effect scheduling is off."));
     else if (live.connecting)
-        MenuText::TextWrapped("%s", tr("连接已有 HoYoShade 核心中；尚未执行滤镜。", "Connecting to the existing HoYoShade core; no effect execution established."));
+        MenuText::TextWrapped("%s", tr("连接 HoYoShade 核心中；尚未执行滤镜。", "Connecting to the HoYoShade core; no effect execution established."));
     else if (!live.accepted)
         MenuText::TextWrapped("%s: %s", tr("连接未就绪", "Connection not ready"), ReasonLabel(live.connectionReason, english));
     else if (!live.readable)

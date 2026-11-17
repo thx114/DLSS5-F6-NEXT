@@ -2,8 +2,8 @@
 
 // Which of NR's surfaces are stale when a format changes (DlssNr_Dx12.cpp, ReleaseSurfacesIfFormatChanged).
 //
-// The model surfaces follow the canonical game colour, or RGBA16F while Compress screen edges packs the picture.
-// Internal colour surfaces (colorCopy, colorSmall, outputNative) also use the canonical format. Shader views keep
+// Model/proxy surfaces use a signed RGBA16F workspace for R11 storage, or RGBA16F while compression packs the picture.
+// Other colour families keep their canonical format. Shader views keep
 // each resource's own channel order, so an RGBA8/BGRA8 swap does not require new model features or history.
 // Model and colour formats are checked separately: compression can keep the model at RGBA16F while the game's
 // colour changes to a genuinely different family, which still invalidates the internal set.
@@ -36,6 +36,14 @@ constexpr int CanonicalColourFormat(int format)
 
 // NR's internal colour equivalence only; never use this predicate to authorize a GPU copy.
 constexpr bool SameColourFamily(int a, int b) { return CanonicalColourFormat(a) == CanonicalColourFormat(b); }
+
+// Shader/model arithmetic may retain signed residuals and alpha. R11 is only a
+// compact game storage format; it must not quantize those intermediate results.
+constexpr int WorkingColourFormat(int sourceFormat)
+{
+    const int canonical = CanonicalColourFormat(sourceFormat);
+    return canonical == 26 ? 10 : canonical; // R11G11B10_FLOAT -> R16G16B16A16_FLOAT
+}
 
 // Compare actual internal allocations to the desired canonical formats exactly. 0 means no surface yet.
 constexpr bool SurfacesStale(int haveModel, int wantModel, int haveColour, int wantColour)

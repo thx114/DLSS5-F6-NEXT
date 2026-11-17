@@ -95,17 +95,18 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     // for its lifetime, including FG Off/resize. Qualification arrives from the
     // successful FG factory while its provider lifetime lock is held.
     const bool _sourceFrameLatencyOwner;
-    // Factory-bound latency/hidden-Present policy; never follows a mutable
-    // provider pointer from an SDK callback. Copy quarantine is independent.
-    const bool _starRailF5DsTransport;
+    // Resolve the committed provider for this source device at each CPU entry.
+    // Swapchains can be created before any upscaler; a construction-time false
+    // must not freeze the later DLSS route. No raw feature pointer is followed.
+    bool StarRailF5DsTransport() const;
     // A removed source device cannot be healed by successful child/FG Presents.
     // Keep pending GPU owners; a new source wrapper starts with a fresh result.
     std::atomic<HRESULT> _sourceDeviceFailure{S_OK};
     bool _InitInteropObjects();
     bool _RequestSharedBackBuffer(UINT index);
     // Interop slot admission begin
-    // One call-local proof that the previous reader of this exact shared slot
-    // retired. It never grants source/provider authority or survives a copy.
+    // Call-local proof of an allocator retired on CPU and a texture reader
+    // ordered before the DX11 write. Neither grants source/provider authority.
     class CopySlotAdmission final
     {
         const void* owner_ = nullptr;
@@ -114,29 +115,36 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
         ID3D12CommandAllocator* allocator_ = nullptr;
         UINT slot_ = 0;
         UINT64 pending_ = 0;
+        UINT textureSlot_ = 0;
+        UINT64 reader_ = 0;
 
       public:
         CopySlotAdmission() = default;
         CopySlotAdmission(const CopySlotAdmission&) = delete;
         CopySlotAdmission& operator=(const CopySlotAdmission&) = delete;
         void Clear() noexcept { owner_ = ring_ = nullptr; fence_ = nullptr; allocator_ = nullptr; }
+        UINT RecordingSlot() const noexcept { return slot_; }
         void Record(const void* owner, const void* ring, ID3D12Fence* fence,
-                    ID3D12CommandAllocator* allocator, UINT slot, UINT64 pending) noexcept
+                    ID3D12CommandAllocator* allocator, UINT slot, UINT64 pending,
+                    UINT textureSlot, UINT64 reader) noexcept
         {
             owner_ = owner; ring_ = ring; fence_ = fence; allocator_ = allocator;
-            slot_ = slot; pending_ = pending;
+            slot_ = slot; pending_ = pending; textureSlot_ = textureSlot; reader_ = reader;
         }
         bool Consume(const void* owner, const void* ring, ID3D12Fence* fence,
-                     ID3D12CommandAllocator* allocator, UINT slot, UINT64 pending) noexcept
+                     ID3D12CommandAllocator* allocator, UINT slot, UINT64 pending,
+                    UINT textureSlot, UINT64 reader) noexcept
         {
             const bool matches = owner && ring && fence && allocator && pending != UINT64_MAX &&
                 owner_ == owner && ring_ == ring && fence_ == fence && allocator_ == allocator &&
-                slot_ == slot && pending_ == pending;
+                slot_ == slot && pending_ == pending && textureSlot_ == textureSlot &&
+                reader_ == reader && reader != UINT64_MAX;
             Clear(); // A mismatch also revokes the proof; never fall back to a late wait.
             return matches;
         }
     };
     // Interop slot admission end
+    bool _PrepareSharedWriter(UINT textureSlot, CopySlotAdmission& admission);
     bool _CopyDx11BackBufferToShared(UINT index, CopySlotAdmission& admission);
     bool _WaitDx11ThenDx12();
     bool _CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index, CopySlotAdmission& admission,
@@ -199,6 +207,12 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     UINT64 _lastInteropCopyFenceValue = 0;
 
     std::vector<UINT64> _copyAllocatorFenceValues;
+    UINT _nextCopyAllocator = 0;
+    // Shared texture readers are separate from the reusable recording ring and
+    // from the final (possibly native NR overwrite) Present output receipt.
+    std::vector<UINT64> _sharedTextureReaderValues;
+    ID3D11Fence* _dx11CopyReaderFence = nullptr;
+    HANDLE _copyReaderFenceHandle = nullptr;
     // Submitted interop color work without a valid completion receipt
     // retains the real wrapper/rings; no later idle/resize/Release may clear it.
     std::atomic<bool> _sourceCopyUncertain { false };
