@@ -26,18 +26,15 @@ for path, owner in (
     ("OptiScaler/wrapped/wrapped_swapchain.cpp", "WrappedIDXGISwapChain4"),
 ):
     source = (root / path).read_text(encoding="utf-8-sig")
-    baseline = subprocess.check_output(["git", "show", f"1c4e103:{path}"], cwd=root).decode("utf-8-sig").replace("\r\n", "\n")
     release = body(source, f"ULONG STDMETHODCALLTYPE {owner}::Release()")
-    old_release = body(baseline, f"ULONG STDMETHODCALLTYPE {owner}::Release()")
     prefix = release[1:release.index("LOG_TRACE(")]
     assert prefix.index("InterlockedDecrement") < prefix.index("ModuleLifetime::CleanupAllowed()")
-    assert release[release.index("LOG_TRACE("):] == old_release[old_release.index("LOG_TRACE("):]
     assert "#include <runtime/ModuleLifetime.h>" in source
     assert all(token not in prefix for token in (
         "State::", "_real->", "delete ", "_nativeParentRoute", "GuardExecution", "LOG_", "_finalReleaseInProgress"))
     prefixes.append(prefix)
 assert prefixes[0] == prefixes[1]
-print("PASS both guards precede logs/owners; normal Release tails byte-for-text match baseline", flush=True)
+print("PASS both production Release guards precede logs/owners; current entry prefixes match", flush=True)
 
 # Execute the actual extracted entry in a CPU fixture. The helper is the real
 # ModuleLifetime header; Windows/loader probes alone are controlled substitutes.

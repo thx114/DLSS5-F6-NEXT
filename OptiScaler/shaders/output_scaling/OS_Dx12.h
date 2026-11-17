@@ -76,7 +76,6 @@ class OS_Dx12 : public Shader_Dx12
         return recordingSlot ? (*recordingSlot < RecordingSlotCount ? _recordingSlots[*recordingSlot].buffer : nullptr)
                              : _buffer;
     }
-    bool IsUpsampling() const { return _upsample; }
     bool CanRender(std::optional<UINT> recordingSlot = std::nullopt) const { return _init && Buffer(recordingSlot); }
 
     OS_Dx12(std::string InName, ID3D12Device* InDevice, bool InUpsample);

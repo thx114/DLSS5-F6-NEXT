@@ -42,7 +42,6 @@ bool IsSubpath(const std::filesystem::path& path, const std::filesystem::path& b
 bool GetRealWindowsVersion(OSVERSIONINFOW& osInfo);
 std::string GetWindowsName(const OSVERSIONINFOW& os);
 void GetExeInfo();
-std::wstring GetWindowTitle(HWND hwnd);
 std::optional<std::filesystem::path> FindFilePath(const std::filesystem::path& startDir,
                                                   const std::filesystem::path& fileName);
 std::string WhoIsTheCaller(void* returnAddress);
@@ -64,12 +63,3 @@ template <typename T> void DelayedDestroy(std::unique_ptr<T> ptr)
 }
 
 }; // namespace Util
-
-inline void ThrowIfFailed(HRESULT hr)
-{
-    if (FAILED(hr))
-    {
-        // Set a breakpoint on this line to catch DirectX API errors
-        throw std::exception();
-    }
-}

@@ -10,7 +10,7 @@ int IFGFeature::GetIndexWillBeDispatched()
     UINT64 df;
 
     auto diff = _frameCount - _lastDispatchedFrame;
-    if (diff > Config::Instance()->FGAllowedFrameAhead.value_or_default() || diff < 0 || _lastDispatchedFrame == 0)
+    if (diff > Config::Instance()->FGAllowedFrameAhead.value_or_default() || _lastDispatchedFrame == 0)
     {
         // If current index has resources, skip to it
         if (HasResource(FG_ResourceType::Depth))
@@ -68,13 +68,6 @@ bool IFGFeature::IsResourceReady(FG_ResourceType type, int index)
     return _resourceReady[index].contains(type);
 }
 
-bool IFGFeature::WaitingExecution(int index)
-{
-    if (index < 0)
-        index = GetIndex();
-
-    return _waitingExecute[index];
-}
 void IFGFeature::SetExecuted(int index)
 {
     if (index < 0)
@@ -92,7 +85,6 @@ bool IFGFeature::IsUsingUIAny()
 
     return false;
 }
-bool IFGFeature::IsUsingDistortionField() { return !_noDistortionField[GetIndex()]; }
 bool IFGFeature::IsUsingHudless(int index)
 {
     if (index < 0)
@@ -143,7 +135,7 @@ int IFGFeature::GetDispatchIndex(UINT64& willDispatchFrame)
     willDispatchFrame = _lastDispatchedFrame + 1; // By default render next one
 
     auto diff = _frameCount - _lastDispatchedFrame;
-    if (diff > Config::Instance()->FGAllowedFrameAhead.value_or_default() || diff < 0 || _lastDispatchedFrame == 0)
+    if (diff > Config::Instance()->FGAllowedFrameAhead.value_or_default() || _lastDispatchedFrame == 0)
     {
         auto index = GetIndex();
 
@@ -164,11 +156,7 @@ bool IFGFeature::IsActive() { return _isActive || _waitingNewFrameData; }
 
 bool IFGFeature::IsPaused() { return _targetFrame != 0 && _targetFrame >= _frameCount; }
 
-bool IFGFeature::IsDispatched() { return _lastDispatchedFrame == _frameCount; }
-
 bool IFGFeature::IsLowResMV() { return !_constants.flags[FG_Flags::DisplayResolutionMVs]; }
-
-bool IFGFeature::IsAsync() { return _constants.flags[FG_Flags::Async]; }
 
 bool IFGFeature::IsHdr() { return _constants.flags[FG_Flags::Hdr]; }
 
@@ -308,10 +296,6 @@ void IFGFeature::UpdateTarget()
 }
 
 UINT64 IFGFeature::FrameCount() { return _frameCount; }
-
-UINT64 IFGFeature::LastDispatchedFrame() { return _lastDispatchedFrame; }
-
-UINT64 IFGFeature::TargetFrame() { return _targetFrame; }
 
 void IFGFeature::SetResourceReady(FG_ResourceType type, int index)
 {

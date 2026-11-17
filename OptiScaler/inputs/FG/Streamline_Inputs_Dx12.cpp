@@ -227,12 +227,7 @@ bool Sl_Inputs_Dx12::setConstants(const sl::Constants& values, uint32_t frameId)
 
         // Streamline is not 100% clear on if we should multiply by resolution or not.
         // But UE games and Dead Rising expect that multiplication to be done, even if the scale is 1.0.
-        // bool multiplyByResolution = dataCopy.mvecScale.x != 1.f || dataCopy.mvecScale.y != 1.f;
-        bool multiplyByResolution = true;
-        if (multiplyByResolution)
-            fgOutput->SetMVScale(data.mvecScale.x * mvsWidth, data.mvecScale.y * mvsHeight);
-        else
-            fgOutput->SetMVScale(data.mvecScale.x, data.mvecScale.y);
+        fgOutput->SetMVScale(data.mvecScale.x * mvsWidth, data.mvecScale.y * mvsHeight);
 
         fgOutput->SetCameraData(reinterpret_cast<float*>(&data.cameraPos), reinterpret_cast<float*>(&data.cameraUp),
                                 reinterpret_cast<float*>(&data.cameraRight), reinterpret_cast<float*>(&data.cameraFwd));

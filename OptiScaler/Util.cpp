@@ -55,26 +55,6 @@ HMODULE Util::GetCallerModule(void* returnAddress)
     return hModule;
 }
 
-std::wstring Util::GetWindowTitle(HWND hwnd)
-{
-    const int maxLength = 512;
-    wchar_t buffer[maxLength] = { 0 };
-
-    // First, check if the window is valid and visible
-    if (!IsWindow(hwnd) || !IsWindowVisible(hwnd))
-        return L"";
-
-    // Try to get the text using SendMessageTimeout to avoid hanging
-    LRESULT result = 0;
-    if (SendMessageTimeoutW(hwnd, WM_GETTEXT, (WPARAM) maxLength, (LPARAM) buffer, SMTO_ABORTIFHUNG | SMTO_BLOCK, 2,
-                            (PDWORD_PTR) &result) != 0)
-    {
-        return std::wstring(buffer);
-    }
-
-    return L"";
-}
-
 bool Util::GetRealWindowsVersion(OSVERSIONINFOW& osInfo)
 {
     HMODULE hMod = ::GetModuleHandleW(L"ntdll.dll");

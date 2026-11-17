@@ -171,25 +171,6 @@ inline static bool CompareFileName(std::string* first, std::string* second)
     return true;
 }
 
-inline static bool CompareFileNameW(std::wstring* first, std::wstring* second)
-{
-    if (first->size() < second->size())
-        return false;
-
-    auto start = first->size() - second->size();
-
-    bool match = true;
-    for (size_t j = 0; j < second->size(); ++j)
-    {
-        if (std::towlower((*first)[start + j]) != std::towlower((*second)[j]))
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 inline static bool CheckDllName(std::string* dllName, std::vector<std::string>* namesList)
 {
     for (auto& name : *namesList)
@@ -199,31 +180,6 @@ inline static bool CheckDllName(std::string* dllName, std::vector<std::string>* 
     }
 
     return false;
-}
-
-inline static bool CheckDllNameW(std::wstring* dllName, std::vector<std::wstring>* namesList)
-{
-    for (auto& name : *namesList)
-    {
-        if (CompareFileNameW(dllName, &name))
-            return true;
-    }
-
-    return false;
-}
-
-inline static HMODULE GetDllNameModule(std::vector<std::string>* namesList)
-{
-    for (size_t i = 0; i < namesList->size(); i++)
-    {
-        auto name = namesList->at(i);
-        auto module = KernelBaseProxy::GetModuleHandleA_()(name.c_str());
-
-        if (module != nullptr && LibraryLoading::Initialized(module))
-            return module;
-    }
-
-    return nullptr;
 }
 
 inline static HMODULE GetDllNameWModule(std::vector<std::wstring>* namesList)

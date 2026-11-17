@@ -144,7 +144,6 @@ class Dx11WithDx12
                                          bool dontUseNTShared, UINT64 frameId);
 
     static D3D11_UPSCALER_RESOURCE_CACHE_C& GetUpscalerResourceCache();
-    static D3D11_TEXTURE2D_RESOURCE_C* GetUpscalerOutputResource(UINT frameIndex);
 
     static void SetUpscalerFrameIndex(UINT frameIndex);
     static UINT GetUpscalerFrameIndex();
@@ -177,7 +176,6 @@ class Dx11WithDx12
     static bool CheckMask(ResourceMask mask, ResourceMask resource);
 
     static UINT64 GetLastPreparedUpscalerFrameId();
-    static ResourceMask GetLastPreparedUpscalerMask();
 
     static void ClearLastPreparedUpscalerFrameState();
     static bool HasPreparedUpscalerResources(ResourceMask mask, UINT64 frameId = 0);
@@ -186,8 +184,6 @@ class Dx11WithDx12
                                                            UINT frameIndex, UINT64 frameId, bool dontUseNTShared,
                                                            bool reactiveRequired, bool syncAfterPrepare);
 
-    static ID3D11Device5* GetD3D11Device();
-    static ID3D11DeviceContext4* GetD3D11DeviceContext();
     static ID3D12Device* GetD3D12Device();
     static ID3D12CommandQueue* GetD3D12CommandQueue();
 

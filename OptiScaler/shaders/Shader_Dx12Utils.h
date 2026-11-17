@@ -112,7 +112,6 @@ class FrameDescriptorHeap
     }
 
     ID3D12DescriptorHeap* GetHeapCSU() { return heapCSU; }
-    ID3D12DescriptorHeap* GetHeapRtv() { return heapRtv; }
 
     void ReleaseHeaps()
     {

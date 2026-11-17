@@ -419,18 +419,6 @@ xess_result_t hk_xessSetContextParameterF()
     return XESS_RESULT_SUCCESS;
 }
 
-xess_result_t hk_xessAILGetDecision()
-{
-    LOG_DEBUG("");
-    return XESS_RESULT_SUCCESS;
-}
-
-xess_result_t hk_xessAILGetVersion()
-{
-    LOG_DEBUG("");
-    return XESS_RESULT_SUCCESS;
-}
-
 xess_result_t hk_xessGetPipelineBuildStatus(xess_context_handle_t hContext)
 {
     LOG_DEBUG("");

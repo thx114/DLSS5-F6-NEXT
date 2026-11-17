@@ -14,7 +14,6 @@
 #include <string_view>
 #include <thread>
 #include <mutex>
-#include <format>
 
 namespace
 {
@@ -235,13 +234,6 @@ void RunVersionCheck()
     }
 }
 } // namespace
-
-const std::string& VersionCheck::CurrentVersionString()
-{
-    static const std::string version =
-        std::format("{}.{}.{}", NR_RELEASE_MAJOR_VERSION, NR_RELEASE_MINOR_VERSION, NR_RELEASE_HOTFIX_VERSION);
-    return version;
-}
 
 void VersionCheck::Start()
 {

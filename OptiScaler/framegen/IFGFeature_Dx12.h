@@ -75,13 +75,6 @@ struct LockedDx12Resource
 
 class IFGFeature_Dx12 : public virtual IFGFeature
 {
-  private:
-    ID3D12GraphicsCommandList* _copyCommandList[BUFFER_COUNT] {};
-    ID3D12CommandAllocator* _copyCommandAllocator[BUFFER_COUNT] {};
-
-    bool InitCopyCmdList();
-    void DestroyCopyCmdList();
-
   protected:
     const uint64_t _runtimeInstance = framegen::NextRuntimeInstance();
     framegen::RuntimeSnapshot RuntimeIdentity(HRESULT result) const;
@@ -185,11 +178,10 @@ class IFGFeature_Dx12 : public virtual IFGFeature
     virtual ID3D12GraphicsCommandList* GetSCCommandList(int index = -1);
 
     LockedDx12Resource GetResource(FG_ResourceType type, int index = -1);
-    bool GetResourceCopy(FG_ResourceType type, D3D12_RESOURCE_STATES bufferState, ID3D12Resource* output);
     ID3D12CommandQueue* GetCommandQueue();
 
     bool HasResource(FG_ResourceType type, int index = -1) override final;
 
     IFGFeature_Dx12() { framegen::RuntimeState().Invalidate(reinterpret_cast<uintptr_t>(static_cast<IFGFeature*>(this)), 0); }
-    virtual ~IFGFeature_Dx12() { InvalidateRuntimeObservation(); DestroyCopyCmdList(); }
+    virtual ~IFGFeature_Dx12() { InvalidateRuntimeObservation(); }
 };

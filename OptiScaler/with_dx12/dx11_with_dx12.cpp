@@ -45,11 +45,6 @@ Dx11WithDx12::D3D11_UPSCALER_RESOURCE_CACHE_C& Dx11WithDx12::GetUpscalerResource
     return UpscalerResourceCache;
 }
 
-Dx11WithDx12::D3D11_TEXTURE2D_RESOURCE_C* Dx11WithDx12::GetUpscalerOutputResource(UINT frameIndex)
-{
-    return &UpscalerResourceCache.Output[frameIndex % DX11_WITH_DX12_CACHED_FRAMES];
-}
-
 void Dx11WithDx12::SetUpscalerFrameIndex(UINT frameIndex)
 {
     UpscalerFrameIndex = frameIndex % DX11_WITH_DX12_CACHED_FRAMES;
@@ -63,17 +58,11 @@ void Dx11WithDx12::ResetUpscalerFrameId() { UpscalerLocalFrameId = 0; }
 
 UINT64 Dx11WithDx12::GetLastPreparedUpscalerFrameId() { return LastPreparedUpscalerFrameId; }
 
-Dx11WithDx12::ResourceMask Dx11WithDx12::GetLastPreparedUpscalerMask() { return LastPreparedUpscalerMask; }
-
 void Dx11WithDx12::ClearLastPreparedUpscalerFrameState()
 {
     LastPreparedUpscalerFrameId = 0;
     LastPreparedUpscalerMask = ResourceMask::None;
 }
-
-ID3D11Device5* Dx11WithDx12::GetD3D11Device() { return Dx11Device; }
-
-ID3D11DeviceContext4* Dx11WithDx12::GetD3D11DeviceContext() { return Dx11DeviceContext; }
 
 ID3D12Device* Dx11WithDx12::GetD3D12Device() { return Dx12Device; }
 

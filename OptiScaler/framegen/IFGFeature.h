@@ -116,18 +116,14 @@ class IFGFeature
 
     bool IsUsingUI();
     bool IsUsingUIAny(); // Same as IsUsingUI but checks if at least once buffer has UI
-    bool IsUsingDistortionField();
     bool IsUsingHudless(int index = -1);
     bool IsUsingHudlessAny();
 
     void SetExecuted(int index = -1);
-    bool WaitingExecution(int index = -1);
 
     bool IsActive();
     bool IsPaused();
-    bool IsDispatched();
     bool IsLowResMV();
-    bool IsAsync();
     bool IsHdr();
     bool IsJitteredMVs();
     bool IsInvertedDepth();
@@ -155,8 +151,6 @@ class IFGFeature
     void UpdateTarget();
 
     UINT64 FrameCount();
-    UINT64 TargetFrame();
-    UINT64 LastDispatchedFrame();
 
     IFGFeature() {}
 };

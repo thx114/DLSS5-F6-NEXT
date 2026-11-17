@@ -1338,7 +1338,6 @@ class Config
     // Old configs for compat reasons
     CustomOptional<bool, NoDefault> _DONTUSE_Fsr4ForceEnableInt8;
 
-    bool LoadFromPath(const wchar_t* InPath);
     bool SaveIni();
     // Same owner/thread contract as SaveIni; no file IO. UI polls at most 4 Hz.
     bool HasUnsavedSettings(uint64_t now);

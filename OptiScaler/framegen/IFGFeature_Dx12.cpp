@@ -35,37 +35,6 @@ void IFGFeature_Dx12::ObservePresentReturned(IDXGISwapChain* chain, UINT flags, 
     framegen::RuntimeState().Publish(RuntimeObservation(flags, result));
 }
 
-bool IFGFeature_Dx12::GetResourceCopy(FG_ResourceType type, D3D12_RESOURCE_STATES bufferState, ID3D12Resource* output)
-{
-    if (!InitCopyCmdList())
-        return false;
-
-    auto resource = GetResource(type);
-
-    if (!resource || (resource->copy == nullptr && resource->validity == FG_ResourceValidity::ValidNow))
-    {
-        LOG_WARN("No resource copy of type {} to use", magic_enum::enum_name(type));
-        return false;
-    }
-
-    auto fIndex = GetIndex();
-
-    if (!_uiCommandListResetted[fIndex])
-    {
-        auto result = _copyCommandAllocator[fIndex]->Reset();
-        if (result != S_OK)
-            return false;
-
-        result = _copyCommandList[fIndex]->Reset(_copyCommandAllocator[fIndex], nullptr);
-        if (result != S_OK)
-            return false;
-    }
-
-    _copyCommandList[fIndex]->CopyResource(output, resource->GetResource());
-
-    return true;
-}
-
 ID3D12CommandQueue* IFGFeature_Dx12::GetCommandQueue() { return _gameCommandQueue; }
 
 bool IFGFeature_Dx12::HasResource(FG_ResourceType type, int index)
@@ -447,65 +416,6 @@ bool IFGFeature_Dx12::CreateBufferResourceWithSize(ID3D12Device* device, ID3D12R
     LOG_DEBUG("Created new one: {}x{}", inDesc.Width, inDesc.Height);
 
     return true;
-}
-
-bool IFGFeature_Dx12::InitCopyCmdList()
-{
-    if (_copyCommandList[0] != nullptr && _copyCommandAllocator[0] != nullptr)
-        return true;
-
-    if (_device == nullptr)
-        return false;
-
-    if (_copyCommandList[0] == nullptr || _copyCommandAllocator[0] == nullptr)
-        DestroyCopyCmdList();
-
-    ID3D12CommandAllocator* allocator = nullptr;
-    ID3D12GraphicsCommandList* cmdList = nullptr;
-
-    for (size_t i = 0; i < BUFFER_COUNT; i++)
-    {
-        auto result =
-            _device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&_copyCommandAllocator[i]));
-        if (result != S_OK)
-        {
-            LOG_ERROR("_copyCommandAllocator: {:X}", (unsigned long) result);
-            return false;
-        }
-
-        _copyCommandAllocator[i]->SetName(L"_copyCommandAllocator");
-        if (CheckForRealObject(__FUNCTION__, _copyCommandAllocator[i], (IUnknown**) &allocator))
-            _copyCommandAllocator[i] = allocator;
-
-        result = _device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _copyCommandAllocator[i], NULL,
-                                            IID_PPV_ARGS(&_copyCommandList[i]));
-        if (result != S_OK)
-        {
-            LOG_ERROR("_copyCommandAllocator: {:X}", (unsigned long) result);
-            return false;
-        }
-        _copyCommandList[i]->SetName(L"_copyCommandList");
-        if (CheckForRealObject(__FUNCTION__, _copyCommandList[i], (IUnknown**) &cmdList))
-            _copyCommandList[i] = cmdList;
-
-        result = _copyCommandList[i]->Close();
-        if (result != S_OK)
-        {
-            LOG_ERROR("_copyCommandList->Close: {:X}", (unsigned long) result);
-            return false;
-        }
-    }
-
-    return true;
-}
-
-void IFGFeature_Dx12::DestroyCopyCmdList()
-{
-    for (size_t i = 0; i < BUFFER_COUNT; i++)
-    {
-        SAFE_RELEASE(_copyCommandAllocator[i]);
-        SAFE_RELEASE(_copyCommandList[i]);
-    }
 }
 
 bool IFGFeature_Dx12::CreateBufferResource(ID3D12Device* device, ID3D12Resource* source,

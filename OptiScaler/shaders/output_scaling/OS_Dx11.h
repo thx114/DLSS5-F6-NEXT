@@ -19,7 +19,5 @@ class OS_Dx11 : public Shader_Dx11
     bool Dispatch(ID3D11Device* InDevice, ID3D11DeviceContext* InContext, ID3D11Texture2D* InResource,
                   ID3D11Texture2D* OutResource);
 
-    bool IsUpsampling() const { return _upsample; }
-
     OS_Dx11(std::string InName, ID3D11Device* InDevice, bool InUpsample);
 };

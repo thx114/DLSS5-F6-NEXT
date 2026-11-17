@@ -8,27 +8,6 @@
 
 #include <magic_enum.hpp>
 
-static DXGI_FORMAT GetCreateFormat(DXGI_FORMAT fmt)
-{
-    switch (fmt)
-    {
-    // Common UNORM 8-bit
-    case DXGI_FORMAT_R8G8B8A8_UNORM:
-    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
-        return DXGI_FORMAT_R8G8B8A8_TYPELESS;
-
-    case DXGI_FORMAT_B8G8R8A8_UNORM:
-    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
-        return DXGI_FORMAT_B8G8R8A8_TYPELESS;
-
-    // 10:10:10:2
-    case DXGI_FORMAT_R10G10B10A2_UNORM:
-        return DXGI_FORMAT_R10G10B10A2_TYPELESS;
-    }
-
-    return fmt;
-}
-
 bool FT_Dx12::CreateBufferResource(ID3D12Device* InDevice, ID3D12Resource* InSource, D3D12_RESOURCE_STATES InState)
 {
     DXGI_FORMAT createFormat;

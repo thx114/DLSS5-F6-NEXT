@@ -216,11 +216,7 @@ bool Sl1_Inputs_Dx12::applyConstants(const sl1::Constants& values, uint32_t fram
     fgOutput->SetCameraValues(data.cameraNear, data.cameraFar, data.cameraFOV, data.cameraAspectRatio, 0.0f);
     fgOutput->SetJitter(data.jitterOffset.x, data.jitterOffset.y);
 
-    const bool multiplyByResolution = true;
-    if (multiplyByResolution)
-        fgOutput->SetMVScale(data.mvecScale.x * mvsWidth, data.mvecScale.y * mvsHeight);
-    else
-        fgOutput->SetMVScale(data.mvecScale.x, data.mvecScale.y);
+    fgOutput->SetMVScale(data.mvecScale.x * mvsWidth, data.mvecScale.y * mvsHeight);
 
     fgOutput->SetCameraData(reinterpret_cast<float*>(&data.cameraPos), reinterpret_cast<float*>(&data.cameraUp),
                             reinterpret_cast<float*>(&data.cameraRight), reinterpret_cast<float*>(&data.cameraFwd));

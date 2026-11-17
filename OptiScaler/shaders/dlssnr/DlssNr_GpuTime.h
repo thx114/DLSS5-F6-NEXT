@@ -64,7 +64,7 @@ class DlssNrGpuTime
     std::optional<double> last;
     std::optional<Evidence> lastEvidence;
     Counters counters;
-    // Every completed sample since the last TakeFresh, oldest first: several can complete between two reads, and
+    // Every completed sample since the last TakeFreshEvidence: several can complete between two reads, and
     // `last` keeps only the newest (with frames of alternating cost it can lock onto one kind).
     std::vector<Evidence> fresh;
 
@@ -330,15 +330,4 @@ class DlssNrGpuTime
         return out;
     }
 
-    // The samples completed since the last call, oldest first. Call after ReadGpuTime.
-    std::vector<double> TakeFresh()
-    {
-        std::sort(fresh.begin(), fresh.end(), [](const Evidence& a, const Evidence& b) { return a.sequence < b.sequence; });
-        std::vector<double> out;
-        out.reserve(fresh.size());
-        for (const auto& sample : fresh)
-            out.push_back(sample.milliseconds);
-        fresh.clear();
-        return out;
-    }
 };

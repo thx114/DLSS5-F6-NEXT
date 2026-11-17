@@ -95,18 +95,6 @@ static inline int64_t GetTicks()
     return ticks.QuadPart;
 }
 
-static inline bool isInteger(const std::string& str, int& value)
-{
-    std::istringstream iss(str);
-    return (iss >> value) && iss.eof();
-}
-
-static inline bool isUInt(const std::string& str, uint32_t& value)
-{
-    std::istringstream iss(str);
-    return (iss >> value) && iss.eof();
-}
-
 static inline bool isFloat(const std::string& str, float& value)
 {
     std::istringstream iss(str);
@@ -1343,20 +1331,6 @@ bool Config::ApplyFsr2InputDisableQuirk() {
 
 
 
-
-bool Config::LoadFromPath(const wchar_t* InPath)
-{
-    std::filesystem::path iniPath(InPath);
-    auto newPath = iniPath / fileName;
-
-    if (Reload(newPath))
-    {
-        absoluteFileName = newPath;
-        return true;
-    }
-
-    return false;
-}
 
 std::string GetBoolValue(std::optional<bool> value)
 {
