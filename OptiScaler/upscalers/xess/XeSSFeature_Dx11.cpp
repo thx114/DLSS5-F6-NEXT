@@ -444,7 +444,7 @@ FeatureEvaluation XeSSFeature_Dx11::EvaluateInternal(ID3D11DeviceContext* Device
 XeSSFeature_Dx11::XeSSFeature_Dx11(unsigned int handleId, NVSDK_NGX_Parameter* InParameters)
     : IFeature(handleId, InParameters), IFeature_Dx11(handleId, InParameters)
 {
-    _initParameters = SetInitParameters(InParameters);
+    SetInitParameters(InParameters);
 
     if (XeSSProxy::ModuleDx11() == nullptr)
         XeSSProxy::InitXeSSDx11();

@@ -121,15 +121,6 @@ class DxgiProxy
     {
         return (PFN_CreateDxgiFactory2) KernelBaseProxy::GetProcAddress_()(_dll, "CreateDXGIFactory2");
     }
-    static PFN_DeclareAdepterRemovalSupport DeclareAdepterRemovalSupport_Hooked()
-    {
-        return (PFN_DeclareAdepterRemovalSupport) KernelBaseProxy::GetProcAddress_()(
-            _dll, "DXGIDeclareAdepterRemovalSupport");
-    }
-    static PFN_GetDebugInterface GetDebugInterface_Hooked()
-    {
-        return (PFN_GetDebugInterface) KernelBaseProxy::GetProcAddress_()(_dll, "DXGIGetDebugInterface1");
-    }
 
     static PFN_CreateDxgiFactory& Original_CreateDxgiFactory() { return HookOwnership::Own::Original<PFN_CreateDxgiFactory>(_own_CreateDxgiFactory); }
     static PFN_CreateDxgiFactory Hook_CreateDxgiFactory(PVOID method)
@@ -161,29 +152,9 @@ class DxgiProxy
         return Original_CreateDxgiFactory2();
     }
 
-    static PFN_DeclareAdepterRemovalSupport& Original_DeclareAdepterRemovalSupport() { return HookOwnership::Own::Original<PFN_DeclareAdepterRemovalSupport>(_own_DeclareAdepterRemovalSupport); }
-    static PFN_DeclareAdepterRemovalSupport Hook_DeclareAdepterRemovalSupport(PVOID method)
-    {
-        if (_own_DeclareAdepterRemovalSupport.live) return Original_DeclareAdepterRemovalSupport();
-        const auto result = HookOwnership::Own::Install(_own_DeclareAdepterRemovalSupport, nullptr,
-            (PVOID) DeclareAdepterRemovalSupport_ForHook(), method, HookModule(), "DXGIDeclareAdapterRemovalSupport", HookModule() != dllModule);
-        if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
-        return Original_DeclareAdepterRemovalSupport();
-    }
-
-    static PFN_GetDebugInterface& Original_GetDebugInterface() { return HookOwnership::Own::Original<PFN_GetDebugInterface>(_own_GetDebugInterface); }
-    static PFN_GetDebugInterface Hook_GetDebugInterface(PVOID method)
-    {
-        if (_own_GetDebugInterface.live) return Original_GetDebugInterface();
-        const auto result = HookOwnership::Own::Install(_own_GetDebugInterface, nullptr,
-            (PVOID) GetDebugInterface_ForHook(), method, HookModule(), "DXGIGetDebugInterface1", HookModule() != dllModule);
-        if (result != NO_ERROR) { LOG_ERROR("Failed to hook: {:X}", result); return nullptr; }
-        return Original_GetDebugInterface();
-    }
-
     static void Unhook(PVOID addr, PVOID method)
     {
-        for (auto* slot : {&_own_CreateDxgiFactory, &_own_CreateDxgiFactory1, &_own_CreateDxgiFactory2, &_own_DeclareAdepterRemovalSupport, &_own_GetDebugInterface})
+        for (auto* slot : {&_own_CreateDxgiFactory, &_own_CreateDxgiFactory1, &_own_CreateDxgiFactory2})
             if (slot->live && slot->hook == method && *slot->executed == addr)
             {
                 const auto result = HookOwnership::Own::Detach(*slot);
@@ -197,8 +168,6 @@ class DxgiProxy
     inline static HookOwnership::Own::Slot _own_CreateDxgiFactory;
     inline static HookOwnership::Own::Slot _own_CreateDxgiFactory1;
     inline static HookOwnership::Own::Slot _own_CreateDxgiFactory2;
-    inline static HookOwnership::Own::Slot _own_DeclareAdepterRemovalSupport;
-    inline static HookOwnership::Own::Slot _own_GetDebugInterface;
     inline static HMODULE _dll = nullptr;
     inline static thread_local int _factoryCreationDepth = 0;
 
@@ -227,14 +196,5 @@ class DxgiProxy
     static PFN_CreateDxgiFactory2 CreateDxgiFactory2_ForHook()
     {
         return (PFN_CreateDxgiFactory2) KernelBaseProxy::GetProcAddress_()(HookModule(), "CreateDXGIFactory2");
-    }
-    static PFN_DeclareAdepterRemovalSupport DeclareAdepterRemovalSupport_ForHook()
-    {
-        return (PFN_DeclareAdepterRemovalSupport) KernelBaseProxy::GetProcAddress_()(
-            HookModule(), "DXGIDeclareAdepterRemovalSupport");
-    }
-    static PFN_GetDebugInterface GetDebugInterface_ForHook()
-    {
-        return (PFN_GetDebugInterface) KernelBaseProxy::GetProcAddress_()(HookModule(), "DXGIGetDebugInterface1");
     }
 };

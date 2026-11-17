@@ -215,7 +215,6 @@ struct CaptureState {
     FramePtr capture,sealed;
     std::array<ID3D11Texture2D*,8> buffers{};
     IDXGISwapChain* chain=nullptr; // comparison only; no private swapchain lifetime
-    const char* status="disabled";
     bool rejectedTail=false;
 };
 CaptureState& State() noexcept {static thread_local CaptureState state;return state;}
@@ -231,7 +230,7 @@ FramePtr LayerLookFrame(ID3D12GraphicsCommandList* cmd,ID3D12Resource* color,UIN
     return p.begun && !p.lookReading && p.list==cmd && p.target==color ? f : FramePtr{};
 }
 void Invalidate(ID3D11DeviceContext*) noexcept {
-    auto& s=State();if(s.capture && s.capture->armed){s.capture->revoked=true;s.rejectedTail=true;s.status="non-ui-write-after-ui";}
+    auto& s=State();if(s.capture && s.capture->armed){s.capture->revoked=true;s.rejectedTail=true;}
 }
 void Before(ID3D11DeviceContext* context,const obs::Draw& draw,const obs::Owner& owner,obs::CapturedState& actual,uint64_t& token) noexcept {
     auto& s=State();auto* frame=s.capture.get();
@@ -268,7 +267,7 @@ void Before(ID3D11DeviceContext* context,const obs::Draw& draw,const obs::Owner&
 void After(ID3D11DeviceContext* context,const obs::Draw&,const obs::Owner& owner,uint64_t token,obs::Completion result) noexcept {
     if(!token)return;auto& s=State();auto f=s.capture;
     if(!f || token!=owner.epoch || f->owner.epoch!=owner.epoch)return;
-    if(result!=obs::Completion::OriginalReturned){Invalidate(context);s.status="selected-draw-not-original-returned";return;}
+    if(result!=obs::Completion::OriginalReturned){Invalidate(context);return;}
     ++f->returned;
 }
 void Seal(ID3D11DeviceContext* context,ID3D11Texture2D* picture) noexcept {
@@ -289,7 +288,7 @@ void Seal(ID3D11DeviceContext* context,ID3D11Texture2D* picture) noexcept {
     context->CSSetShader(shader.Get(),classes.data(),classCount);context->CSSetShaderResources(0,2,previous.data());
     context->CSSetUnorderedAccessViews(0,1,&previousUav,nullptr);
     for(auto* c:classes)if(c)c->Release();for(auto* v:previous)if(v)v->Release();if(previousUav)previousUav->Release();
-    f->sealed=true;f->armed=false;s.sealed=f;s.status="sealed-selected-ui-tail-visible-difference";
+    f->sealed=true;f->armed=false;s.sealed=f;
 }
 void Recorded(const FramePtr& f,Consumer consumer) noexcept {
     std::lock_guard lock(Observations().mutex);
@@ -314,7 +313,7 @@ bool Enabled() noexcept{return enabled.load(std::memory_order_acquire);}
 void Revoke() noexcept {
     layerLookFrame.reset();
     auto& s=State();if(s.capture)s.capture->revoked=true;s.capture.reset();s.sealed.reset();
-    s.config.reset();s.chain=nullptr;s.buffers.fill(nullptr);for(auto& slot:s.pool)slot.reset();s.status="revoked";
+    s.config.reset();s.chain=nullptr;s.buffers.fill(nullptr);for(auto& slot:s.pool)slot.reset();
 }
 void Present(IDXGISwapChain* chain,ID3D11DeviceContext* context) noexcept {
     if(!Enabled() || !chain || !context){Revoke();return;}
@@ -342,7 +341,7 @@ void Present(IDXGISwapChain* chain,ID3D11DeviceContext* context) noexcept {
         // retirement records. If all are busy, skip; never wait or overwrite.
         for(auto& slot:s.pool)if(!slot || slot.use_count()==1){
             if(!slot || slot->width!=desc.Width || slot->height!=desc.Height || slot->format!=Sdr(desc.Format) || slot->owner.device.Get()!=obs::owner->device.Get()){
-                auto fresh=std::make_shared<Frame>();if(!fresh->Create(obs::owner->device.Get(),desc)){s.status="unsupported-format-or-resource-creation";return;}slot=std::move(fresh);}
+                auto fresh=std::make_shared<Frame>();if(!fresh->Create(obs::owner->device.Get(),desc))return;slot=std::move(fresh);}
             // Immutable frame descriptors from an earlier submission are never
             // edited while any actual consumer holds that pool entry.
             slot->owner=*obs::owner;slot->settings=s.config->settings;slot->configEpoch=s.config->epoch;
@@ -352,7 +351,6 @@ void Present(IDXGISwapChain* chain,ID3D11DeviceContext* context) noexcept {
                 p.target=nullptr;p.list=nullptr;p.receipt={};}
             s.capture=slot;return;
         }
-        s.status="all-mask-owners-in-flight";
     }catch(...){Revoke();}
 }
 FramePtr Acquire(ID3D11DeviceContext* context,ID3D11Texture2D* target,ID3D12Device* device) noexcept {
@@ -446,5 +444,4 @@ LifecycleStatus ReadLifecycle() noexcept {
     result.consumers=Observations().consumers;
     return result;
 }
-const char* Status() noexcept{return State().status;}
 } // namespace DrawUiMask

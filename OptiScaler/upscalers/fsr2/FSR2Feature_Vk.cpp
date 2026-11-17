@@ -340,7 +340,6 @@ bool FSR2FeatureVk::EvaluateInternal(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Para
     _hasDepth = params.depth.resource != nullptr;
     _hasMV = params.motionVectors.resource != nullptr;
     _hasExposure = params.exposure.resource != nullptr;
-    _hasTM = params.transparencyAndComposition.resource != nullptr;
     _accessToReactiveMask = paramReactiveMask != nullptr || paramReactiveMask2 != nullptr;
     _hasOutput = params.output.resource != nullptr;
 

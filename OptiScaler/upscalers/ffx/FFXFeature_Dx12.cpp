@@ -408,7 +408,6 @@ FeatureEvaluation FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* In
     _hasDepth = params.depth.resource != nullptr;
     _hasMV = params.motionVectors.resource != nullptr;
     _hasExposure = params.exposure.resource != nullptr;
-    _hasTM = params.transparencyAndComposition.resource != nullptr;
     _accessToReactiveMask = paramReactiveMask != nullptr;
     _hasOutput = params.output.resource != nullptr;
 

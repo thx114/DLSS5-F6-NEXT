@@ -415,7 +415,7 @@ bool XeSSFeature_Vk::EvaluateInternal(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Par
 XeSSFeature_Vk::XeSSFeature_Vk(unsigned int handleId, NVSDK_NGX_Parameter* InParameters)
     : IFeature(handleId, InParameters), IFeature_Vk(handleId, InParameters)
 {
-    _initParameters = SetInitParameters(InParameters);
+    SetInitParameters(InParameters);
 
     if (XeSSProxy::Module() == nullptr)
         XeSSProxy::InitXeSS();

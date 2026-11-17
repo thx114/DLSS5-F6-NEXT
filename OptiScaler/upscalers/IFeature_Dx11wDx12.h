@@ -172,10 +172,6 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
     {
         return CallFeature([](auto f) { return f->PerfQualityValue(); }, NVSDK_NGX_PerfQuality_Value {});
     }
-    bool IsInitParameters() override
-    {
-        return CallFeature([](auto f) { return f->IsInitParameters(); }, bool {});
-    };
     bool IsInited() override
     {
         return CallFeature([](auto f) { return f->IsInited(); }, bool {});
@@ -195,10 +191,6 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
     bool HasMV() override
     {
         return CallFeature([](auto f) { return f->HasMV(); }, bool {});
-    }
-    bool HasTM() override
-    {
-        return CallFeature([](auto f) { return f->HasTM(); }, bool {});
     }
     bool AccessToReactiveMask() override
     {

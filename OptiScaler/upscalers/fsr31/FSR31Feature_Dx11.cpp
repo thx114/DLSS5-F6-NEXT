@@ -292,7 +292,6 @@ FeatureEvaluation FSR31FeatureDx11::EvaluateInternal(ID3D11DeviceContext* Device
     _hasDepth = params.depth.resource != nullptr;
     _hasMV = params.motionVectors.resource != nullptr;
     _hasExposure = params.exposure.resource != nullptr;
-    _hasTM = params.transparencyAndComposition.resource != nullptr;
     _accessToReactiveMask = paramReactiveMask != nullptr;
     _hasOutput = params.upscaleOutput.resource != nullptr;
 

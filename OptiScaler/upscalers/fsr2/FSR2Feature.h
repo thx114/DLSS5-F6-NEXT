@@ -77,7 +77,7 @@ class FSR2Feature : public virtual IFeature
 
     FSR2Feature(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters) : IFeature(InHandleId, InParameters)
     {
-        _initParameters = SetInitParameters(InParameters);
+        SetInitParameters(InParameters);
         _moduleLoaded = true;
         _lastFrameTime = Util::MillisecondsNow();
     }

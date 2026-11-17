@@ -47,20 +47,12 @@ class D3d12Proxy
         _D3D12CreateDevice = (PFN_D3D12CreateDevice) KernelBaseProxy::GetProcAddress_()(_dll, "D3D12CreateDevice");
         _D3D12SerializeRootSignature =
             (PFN_D3D12SerializeRootSignature) KernelBaseProxy::GetProcAddress_()(_dll, "D3D12SerializeRootSignature");
-        _D3D12CreateRootSignatureDeserializer =
-            (PFN_D3D12CreateRootSignatureDeserializer) KernelBaseProxy::GetProcAddress_()(
-                _dll, "D3D12CreateRootSignatureDeserializer");
         _D3D12SerializeVersionedRootSignature =
             (PFN_D3D12SerializeVersionedRootSignature) KernelBaseProxy::GetProcAddress_()(
                 _dll, "D3D12SerializeVersionedRootSignature");
         _D3D12CreateVersionedRootSignatureDeserializer =
             (PFN_D3D12CreateVersionedRootSignatureDeserializer) KernelBaseProxy::GetProcAddress_()(
                 _dll, "D3D12CreateVersionedRootSignatureDeserializer");
-        _D3D12GetDebugInterface =
-            (PFN_D3D12GetDebugInterface) KernelBaseProxy::GetProcAddress_()(_dll, "D3D12GetDebugInterface");
-        _D3D12EnableExperimentalFeatures = (PFN_D3D12EnableExperimentalFeatures) KernelBaseProxy::GetProcAddress_()(
-            _dll, "D3D12EnableExperimentalFeatures");
-        _D3D12GetInterface = (PFN_D3D12GetInterface) KernelBaseProxy::GetProcAddress_()(_dll, "D3D12GetInterface");
     }
 
     static HMODULE Module() { return _dll; }
@@ -68,10 +60,6 @@ class D3d12Proxy
     // Original methods
     static PFN_D3D12CreateDevice D3D12CreateDevice_() { return _D3D12CreateDevice; }
     static PFN_D3D12SerializeRootSignature D3D12SerializeRootSignature_() { return _D3D12SerializeRootSignature; }
-    static PFN_D3D12CreateRootSignatureDeserializer D3D12CreateRootSignatureDeserializer_()
-    {
-        return _D3D12CreateRootSignatureDeserializer;
-    }
     static PFN_D3D12SerializeVersionedRootSignature D3D12SerializeVersionedRootSignature_()
     {
         return _D3D12SerializeVersionedRootSignature;
@@ -80,12 +68,6 @@ class D3d12Proxy
     {
         return _D3D12CreateVersionedRootSignatureDeserializer;
     }
-    static PFN_D3D12GetDebugInterface D3D12GetDebugInterface_() { return _D3D12GetDebugInterface; }
-    static PFN_D3D12EnableExperimentalFeatures D3D12EnableExperimentalFeatures_()
-    {
-        return _D3D12EnableExperimentalFeatures;
-    }
-    static PFN_D3D12GetInterface D3D12GetInterface_() { return _D3D12GetInterface; }
 
     // Hooked methods
     static PFN_D3D12CreateDevice D3D12CreateDevice_Hooked()
@@ -163,24 +145,6 @@ class D3d12Proxy
         return addr;
     }
 
-    static PFN_D3D12CreateRootSignatureDeserializer Hook_D3D12CreateRootSignatureDeserializer(PVOID method)
-    {
-        auto addr = D3D12CreateRootSignatureDeserializer_ForHook();
-
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-        DetourAttach(&(PVOID&) addr, method);
-        auto detourResult = DetourTransactionCommit();
-        if (detourResult != NO_ERROR)
-        {
-            LOG_ERROR("Failed to hook: {:X}", detourResult);
-            return nullptr;
-        }
-
-        //_D3D12CreateRootSignatureDeserializer = addr;
-        return addr;
-    }
-
     static PFN_D3D12SerializeVersionedRootSignature Hook_D3D12SerializeVersionedRootSignature(PVOID method)
     {
         auto addr = D3D12SerializeVersionedRootSignature_ForHook();
@@ -218,72 +182,14 @@ class D3d12Proxy
         return addr;
     }
 
-    static PFN_D3D12GetDebugInterface Hook_D3D12GetDebugInterface(PVOID method)
-    {
-        auto addr = D3D12GetDebugInterface_ForHook();
-
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-        DetourAttach(&(PVOID&) addr, method);
-        auto detourResult = DetourTransactionCommit();
-        if (detourResult != NO_ERROR)
-        {
-            LOG_ERROR("Failed to hook: {:X}", detourResult);
-            return nullptr;
-        }
-
-        //_D3D12GetDebugInterface = addr;
-        return addr;
-    }
-
-    static PFN_D3D12EnableExperimentalFeatures Hook_D3D12EnableExperimentalFeatures(PVOID method)
-    {
-        auto addr = D3D12EnableExperimentalFeatures_ForHook();
-
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-        DetourAttach(&(PVOID&) addr, method);
-        auto detourResult = DetourTransactionCommit();
-        if (detourResult != NO_ERROR)
-        {
-            LOG_ERROR("Failed to hook: {:X}", detourResult);
-            return nullptr;
-        }
-
-        //_D3D12EnableExperimentalFeatures = addr;
-        return addr;
-    }
-
-    static PFN_D3D12GetInterface Hook_D3D12GetInterface(PVOID method)
-    {
-        auto addr = D3D12GetInterface_ForHook();
-
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-        DetourAttach(&(PVOID&) addr, method);
-        auto detourResult = DetourTransactionCommit();
-        if (detourResult != NO_ERROR)
-        {
-            LOG_ERROR("Failed to hook: {:X}", detourResult);
-            return nullptr;
-        }
-
-        //_D3D12GetInterface = addr;
-        return addr;
-    }
-
   private:
     inline static HMODULE _dll = nullptr;
 
     inline static PFN_D3D12CreateDevice _D3D12CreateDevice = nullptr;
     inline static PFN_D3D12SerializeRootSignature _D3D12SerializeRootSignature = nullptr;
-    inline static PFN_D3D12CreateRootSignatureDeserializer _D3D12CreateRootSignatureDeserializer = nullptr;
     inline static PFN_D3D12SerializeVersionedRootSignature _D3D12SerializeVersionedRootSignature = nullptr;
     inline static PFN_D3D12CreateVersionedRootSignatureDeserializer _D3D12CreateVersionedRootSignatureDeserializer =
         nullptr;
-    inline static PFN_D3D12GetDebugInterface _D3D12GetDebugInterface = nullptr;
-    inline static PFN_D3D12EnableExperimentalFeatures _D3D12EnableExperimentalFeatures = nullptr;
-    inline static PFN_D3D12GetInterface _D3D12GetInterface = nullptr;
 
     inline static HMODULE HookModule()
     {
@@ -302,11 +208,6 @@ class D3d12Proxy
         return (PFN_D3D12SerializeRootSignature) KernelBaseProxy::GetProcAddress_()(HookModule(),
                                                                                     "D3D12SerializeRootSignature");
     }
-    static PFN_D3D12CreateRootSignatureDeserializer D3D12CreateRootSignatureDeserializer_ForHook()
-    {
-        return (PFN_D3D12CreateRootSignatureDeserializer) KernelBaseProxy::GetProcAddress_()(
-            HookModule(), "D3D12CreateRootSignatureDeserializer");
-    }
     static PFN_D3D12SerializeVersionedRootSignature D3D12SerializeVersionedRootSignature_ForHook()
     {
         return (PFN_D3D12SerializeVersionedRootSignature) KernelBaseProxy::GetProcAddress_()(
@@ -316,18 +217,5 @@ class D3d12Proxy
     {
         return (PFN_D3D12CreateVersionedRootSignatureDeserializer) KernelBaseProxy::GetProcAddress_()(
             HookModule(), "D3D12CreateVersionedRootSignatureDeserializer");
-    }
-    static PFN_D3D12GetDebugInterface D3D12GetDebugInterface_ForHook()
-    {
-        return (PFN_D3D12GetDebugInterface) KernelBaseProxy::GetProcAddress_()(HookModule(), "D3D12GetDebugInterface");
-    }
-    static PFN_D3D12EnableExperimentalFeatures D3D12EnableExperimentalFeatures_ForHook()
-    {
-        return (PFN_D3D12EnableExperimentalFeatures) KernelBaseProxy::GetProcAddress_()(
-            HookModule(), "D3D12EnableExperimentalFeatures");
-    }
-    static PFN_D3D12GetInterface D3D12GetInterface_ForHook()
-    {
-        return (PFN_D3D12GetInterface) KernelBaseProxy::GetProcAddress_()(HookModule(), "D3D12GetInterface");
     }
 };

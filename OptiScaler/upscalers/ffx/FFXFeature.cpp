@@ -179,7 +179,7 @@ void FFXFeature::InitFlags()
 
 FFXFeature::FFXFeature(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters) : IFeature(InHandleId, InParameters)
 {
-    _initParameters = SetInitParameters(InParameters);
+    SetInitParameters(InParameters);
     _lastFrameTime = Util::MillisecondsNow();
 }
 

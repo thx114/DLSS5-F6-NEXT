@@ -70,7 +70,6 @@ struct GpuInformation
     // Nvidia
     bool dlssCapable = false;
     NV_GPU_ARCH_INFO nvidiaArchInfo {};
-    bool noDisplayConnected = false;
 };
 
 inline constexpr bool IsEqualLUID(LUID luid1, LUID luid2)

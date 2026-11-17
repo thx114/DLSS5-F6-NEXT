@@ -8,7 +8,7 @@ void IFeature::SetHandle(unsigned int InHandleId)
     LOG_INFO("Handle: {0}", _handle->Id);
 }
 
-bool IFeature::SetInitParameters(NVSDK_NGX_Parameter* InParameters)
+void IFeature::SetInitParameters(NVSDK_NGX_Parameter* InParameters)
 {
     _featureFlagsKnown = false;
     _nativeDlssCreateFlags.reset();
@@ -166,11 +166,10 @@ bool IFeature::SetInitParameters(NVSDK_NGX_Parameter* InParameters)
             _initFlags.LowResMV = true;
         }
 
-        return true;
+        return;
     }
 
     LOG_ERROR("Can't set parameters!");
-    return false;
 }
 
 void IFeature::GetRenderResolution(const NVSDK_NGX_Parameter* InParameters, unsigned int* OutWidth,

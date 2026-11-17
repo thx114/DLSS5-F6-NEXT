@@ -42,7 +42,6 @@ typedef struct ResourceInfo
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE;
     ResourceType type = SRV;
-    double lastUsedFrame = 0;
     bool extended = false;
     bool lifetimeTracked = false;
     UINT captureInfo = 0;

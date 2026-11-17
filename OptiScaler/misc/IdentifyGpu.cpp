@@ -11,35 +11,6 @@
 
 using Microsoft::WRL::ComPtr;
 
-// Prioritize Nvidia cards that can run DLSS and are connected to a display
-// void sortGpus(std::vector<GpuInformation>& gpus)
-//{
-//    std::sort(gpus.begin(), gpus.end(),
-//              [](const GpuInformation& a, const GpuInformation& b)
-//              {
-//                  auto isPreferredNvidia = [](const GpuInformation& gpu)
-//                  {
-//                      bool isNvidia = (gpu.vendorId == VendorId::Nvidia);
-//                      return isNvidia && gpu.dlssCapable && !gpu.noDisplayConnected;
-//                  };
-//
-//                  bool aIsPreferred = isPreferredNvidia(a);
-//                  bool bIsPreferred = isPreferredNvidia(b);
-//
-//                  // If one is a preferred and the other isn't then the preferred one should be sorted first
-//                  if (aIsPreferred != bIsPreferred)
-//                  {
-//                      return aIsPreferred;
-//                  }
-//
-//                  if (a.softwareAdapter)
-//                      return false;
-//
-//                  // Fallback on VRAM amount
-//                  return a.dedicatedVramInBytes > b.dedicatedVramInBytes;
-//              });
-//}
-
 std::vector<GpuInformation> IdentifyGpu::checkGpuInfo()
 {
     auto localCachedInfo = std::vector<GpuInformation> {};
@@ -179,11 +150,6 @@ std::vector<GpuInformation> IdentifyGpu::checkGpuInfo()
         adapterIndex++;
     }
 
-    // We might be getting the correct ordering by default.
-    // Trying to sort by vendor might cause issues if someone
-    // has some old Nvidia card in their system for example.
-    // sortGpus(localCachedInfo);
-
     for (auto& gpuInfo : localCachedInfo)
     {
         if (gpuInfo.vendorId == VendorId::Nvidia)
@@ -296,14 +262,6 @@ void IdentifyGpu::queryNvapi(GpuInformation& gpuInfo)
              (uint32_t) gpuInfo.luid.HighPart, (uint32_t) gpuInfo.luid.LowPart,
              (uint32_t) gpuInfo.nvidiaArchInfo.architecture_id,
              Config::Instance()->DLSSEnabled.value_or_default());
-
-    auto* getConnectedDisplayIds = GET_INTERFACE(NvAPI_GPU_GetConnectedDisplayIds, o_NvAPI_QueryInterface);
-    NvU32 displayCount = 0;
-    if (getConnectedDisplayIds && hPhysicalGpu &&
-        getConnectedDisplayIds(hPhysicalGpu, nullptr, &displayCount, 0) == NVAPI_OK && displayCount == 0)
-    {
-        gpuInfo.noDisplayConnected = true;
-    }
 
     // No NvAPI_Unload and no FreeLibrary: see NvAPI_Initialize above
 

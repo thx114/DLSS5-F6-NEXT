@@ -75,7 +75,6 @@ class IFeature
     inline static ID3D12Device* _localDx11on12Device = nullptr;
 
     void RememberNativeDlssCreateFlags(unsigned flags) { _nativeDlssCreateFlags = flags; }
-    bool _initParameters = false;
     NVSDK_NGX_Handle* _handle = nullptr;
 
     float _sharpness = 0; // Used by the feature itself, might get spoofed to 0 when RCAS is used
@@ -83,7 +82,6 @@ class IFeature
     bool _hasColor = false;
     bool _hasDepth = false;
     bool _hasMV = false;
-    bool _hasTM = false;
     bool _accessToReactiveMask = false;
     bool _hasExposure = false;
     bool _hasOutput = false;
@@ -105,7 +103,7 @@ class IFeature
     std::optional<double> lastOutputScalingTime {};
 
     void SetHandle(unsigned int InHandleId);
-    bool SetInitParameters(NVSDK_NGX_Parameter* InParameters);
+    void SetInitParameters(NVSDK_NGX_Parameter* InParameters);
     void GetRenderResolution(const NVSDK_NGX_Parameter* InParameters, unsigned int* OutWidth, unsigned int* OutHeight);
     void GetDynamicOutputResolution(NVSDK_NGX_Parameter* InParameters, unsigned int* width, unsigned int* height);
     float GetSharpness(const NVSDK_NGX_Parameter* InParameters);
@@ -146,7 +144,6 @@ class IFeature
     virtual unsigned int RenderWidth() { return _renderWidth; };
     virtual unsigned int RenderHeight() { return _renderHeight; };
     virtual NVSDK_NGX_PerfQuality_Value PerfQualityValue() { return _perfQualityValue; }
-    virtual bool IsInitParameters() { return _initParameters; };
     virtual bool IsInited() { return _isInited; }
     virtual float Sharpness()
     {
@@ -157,7 +154,6 @@ class IFeature
     virtual bool HasColor() { return _hasColor; }
     virtual bool HasDepth() { return _hasDepth; }
     virtual bool HasMV() { return _hasMV; }
-    virtual bool HasTM() { return _hasTM; }
     virtual bool AccessToReactiveMask() { return _accessToReactiveMask; }
     virtual bool HasExposure() { return _hasExposure; }
     virtual bool HasOutput() { return _hasOutput; }
@@ -171,8 +167,6 @@ class IFeature
     virtual bool JitteredMV() { return _initFlags.JitteredMV; }
     virtual bool LowResMV() { return _initFlags.LowResMV; }
     virtual bool SharpenEnabled() { return _initFlags.SharpenEnabled; }
-
-    virtual bool CallsUpscalerEndByItself() { return false; }
 
     IFeature(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters) { SetHandle(InHandleId); }
 

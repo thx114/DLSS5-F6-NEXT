@@ -67,5 +67,4 @@ struct LifecycleStatus {
 // zero owner/generation/submission. Neither case can report Completed.
 void Observe(const FramePtr&,Consumer,Lifecycle,uintptr_t owner,uint64_t generation,uint64_t submission) noexcept;
 LifecycleStatus ReadLifecycle() noexcept;
-const char* Status() noexcept;
 } // namespace DrawUiMask
