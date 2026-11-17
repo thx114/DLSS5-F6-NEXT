@@ -66,13 +66,12 @@ class LowLatencyTech
     CallSpot current_call_spot = CallSpot::SimulationStart;
     ForceReflex low_latency_override = ForceReflex::InGame;
     bool low_latency_enabled = false;
-    bool effective_fg_state = false;
     bool forced_mode = false;
 
   public:
     LowLatencyTech()
         : current_call_spot(CallSpot::SimulationStart), low_latency_override(ForceReflex::InGame),
-          low_latency_enabled(false), effective_fg_state(false), forced_mode(false)
+          low_latency_enabled(false), forced_mode(false)
     {
     }
     virtual ~LowLatencyTech() {}
@@ -84,7 +83,6 @@ class LowLatencyTech
     virtual void* get_tech_context() = 0;
     virtual void set_fg_type(bool interpolated, uint64_t frame_id) = 0;
     virtual void set_low_latency_override(ForceReflex low_latency_override) = 0;
-    virtual void set_effective_fg_state(bool effective_fg_state) = 0;
     virtual void set_forced_mode(bool forced_mode) { this->forced_mode = forced_mode; };
 
     virtual bool is_enabled() = 0;

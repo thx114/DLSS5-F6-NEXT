@@ -13,15 +13,12 @@ class LowLatency
   private:
     std::atomic<std::shared_ptr<LowLatencyTech>> currently_active_tech;
     FrameReport frame_reports[FRAME_REPORTS_BUFFER_SIZE] {};
-    std::optional<bool> forced_fg;
-    bool fg;
     uint32_t delay_deinit = 0;
     SleepMode last_sleep_mode {};
 
     // Once set, it will be used for all init attempts
     LowLatencyMode forced_low_latency_tech = LowLatencyMode::None;
 
-    void update_effective_fg_state();
     void update_enabled_override();
 
     // D3D
@@ -39,7 +36,6 @@ class LowLatency
     ~LowLatency() { deinit_current_tech(); };
 
     bool deinit_current_tech();
-    void set_forced_fg(std::optional<bool> forced_fg) { this->forced_fg = forced_fg; };
     void set_fg_type(bool interpolated, uint64_t frame_id)
     {
         if (auto current_tech = currently_active_tech.load())

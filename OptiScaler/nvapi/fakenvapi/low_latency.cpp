@@ -2,20 +2,6 @@
 #include "low_latency.h"
 
 // private
-void LowLatency::update_effective_fg_state()
-{
-    if (auto current_tech = currently_active_tech.load())
-    {
-        if (!current_tech)
-            return;
-
-        if (forced_fg.has_value())
-            current_tech->set_effective_fg_state(forced_fg.value());
-        else
-            current_tech->set_effective_fg_state(fg);
-    }
-}
-
 void LowLatency::update_enabled_override()
 {
     if (auto current_tech = currently_active_tech.load())

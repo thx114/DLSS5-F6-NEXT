@@ -197,8 +197,6 @@ public:
     }
 
     Scope Measure(Stage stage) noexcept { return Scope(this, stage); }
-    uint64_t Id() const noexcept { return id_; }
-    bool Sampled() const noexcept { return sampled_; }
 
     Frame(const Frame&) = delete;
     Frame& operator=(const Frame&) = delete;

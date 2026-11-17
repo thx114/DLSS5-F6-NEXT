@@ -36,7 +36,6 @@ class AntiLag2 : public LowLatencyTech
     {
         this->low_latency_override = low_latency_override;
     };
-    void set_effective_fg_state(bool effective_fg_state) override { this->effective_fg_state = effective_fg_state; };
 
     bool is_enabled() override
     {

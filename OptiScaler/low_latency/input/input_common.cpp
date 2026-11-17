@@ -335,7 +335,6 @@ InputResult InputCommon::set_marker(const InputContext& inputContext, IUnknown* 
     else if (marker_params.marker_type == MarkerType::PRESENT_START)
         last_present_start_frame_id = marker_params.frame_id;
 
-    // update_effective_fg_state();
 
     // update_enabled_override();
 

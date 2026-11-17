@@ -154,12 +154,6 @@ void fakenvapi::reportFGPresent(IDXGISwapChain* pSwapChain, bool fg_state, bool 
 
     auto lowLatencyCtx = LowLatencyCtx::get();
 
-    // Lets fakenvapi log and reset correctly
-    if (lowLatencyCtx)
-        lowLatencyCtx->set_forced_fg(fg_state);
-    else
-        LOG_ERROR("Couldn't get low latency context");
-
     if (fg_state)
     {
         // Starting with FSR 3.1.1 we can provide an AntiLag 2 context to FSR FG

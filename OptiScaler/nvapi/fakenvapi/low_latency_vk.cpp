@@ -207,8 +207,6 @@ NvAPI_Status LowLatency::SetLatencyMarker(HANDLE vkDevice, NV_VULKAN_LATENCY_MAR
     if (!update_low_latency_tech(vkDevice))
         return ERROR();
 
-    update_effective_fg_state();
-
     update_enabled_override();
 
     add_marker_to_report(pSetLatencyMarkerParams);

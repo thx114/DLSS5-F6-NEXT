@@ -19,8 +19,6 @@ class XeLL : public LowLatencyTech
     decltype(&xellGetSleepMode) o_xellGetSleepMode = nullptr;
     decltype(&xellSleep) o_xellSleep = nullptr;
     decltype(&xellAddMarkerData) o_xellAddMarkerData = nullptr;
-    decltype(&xellGetVersion) o_xellGetVersion = nullptr;
-    decltype(&xellSetLoggingCallback) o_xellSetLoggingCallback = nullptr;
     decltype(&xellGetFramesReports) o_xellGetFramesReports = nullptr;
     decltype(&xellD3D12CreateContext) o_xellD3D12CreateContext = nullptr;
 
@@ -44,8 +42,6 @@ class XeLL : public LowLatencyTech
             o_xellGetSleepMode = XeLLProxy::RealGetSleepMode();
             o_xellSleep = XeLLProxy::RealSleep();
             o_xellAddMarkerData = XeLLProxy::RealAddMarkerData();
-            o_xellGetVersion = XeLLProxy::RealGetVersion();
-            o_xellSetLoggingCallback = XeLLProxy::RealSetLoggingCallback();
             o_xellGetFramesReports = XeLLProxy::RealGetFramesReports();
             o_xellD3D12CreateContext = XeLLProxy::RealD3D12CreateContext();
 
@@ -60,8 +56,6 @@ class XeLL : public LowLatencyTech
             o_xellGetSleepMode = XeLLProxy::GetSleepMode();
             o_xellSleep = XeLLProxy::Sleep();
             o_xellAddMarkerData = XeLLProxy::AddMarkerData();
-            o_xellGetVersion = XeLLProxy::GetVersion();
-            o_xellSetLoggingCallback = XeLLProxy::SetLoggingCallback();
             o_xellGetFramesReports = XeLLProxy::GetFramesReports();
             o_xellD3D12CreateContext = XeLLProxy::D3D12CreateContext();
 #endif
@@ -79,7 +73,6 @@ class XeLL : public LowLatencyTech
     {
         this->low_latency_override = low_latency_override;
     };
-    void set_effective_fg_state(bool effective_fg_state) override { this->effective_fg_state = effective_fg_state; };
 
     bool is_enabled() override
     {

@@ -273,8 +273,6 @@ NvAPI_Status LowLatency::SetLatencyMarker(IUnknown* pDev, NV_LATENCY_MARKER_PARA
     if (!update_low_latency_tech(pDev))
         return ERROR();
 
-    update_effective_fg_state();
-
     update_enabled_override();
 
     add_marker_to_report(pSetLatencyMarkerParams);
@@ -302,34 +300,6 @@ NvAPI_Status LowLatency::SetAsyncFrameMarker(ID3D12CommandQueue* pCommandQueue,
 
     marker_params.frame_id = pSetAsyncFrameMarkerParams->frameID;
     marker_params.marker_type = (MarkerType) pSetAsyncFrameMarkerParams->markerType; // requires enums to match
-
-    if (marker_params.marker_type == MarkerType::OUT_OF_BAND_PRESENT_START)
-    {
-        constexpr size_t history_size = 12;
-        static size_t counter = 0;
-        static NvU64 previous_frame_ids[history_size] = {};
-
-        previous_frame_ids[counter % history_size] = pSetAsyncFrameMarkerParams->frameID;
-        counter++;
-
-        int repeat_count = 0;
-
-        for (size_t i = 1; i < history_size; i++)
-        {
-            // won't catch repeat frame ids across array wrap around
-            if (previous_frame_ids[i] == previous_frame_ids[i - 1])
-            {
-                repeat_count++;
-            }
-        }
-
-        if (fg && repeat_count == 0)
-            fg = false;
-        else if (!fg && repeat_count >= history_size / 2 - 1)
-            fg = true;
-
-        update_effective_fg_state();
-    }
 
     if (auto current_tech = currently_active_tech.load())
         current_tech->set_async_marker(pCommandQueue, marker_params);
