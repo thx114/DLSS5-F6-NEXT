@@ -439,12 +439,6 @@ bool Sl_Inputs_Dx12::reportResource(const sl::ResourceTag& tag, ID3D12GraphicsCo
     return handled;
 }
 
-bool Sl_Inputs_Dx12::dispatchFG()
-{
-    LOG_FUNC();
-    return true;
-}
-
 void Sl_Inputs_Dx12::markPresent(uint64_t frameId)
 {
     std::scoped_lock lock(_frameBoundaryMutex);

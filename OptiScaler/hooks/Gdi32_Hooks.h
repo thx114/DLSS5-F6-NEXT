@@ -115,23 +115,3 @@ static void hookGdi32()
         }
     }
 }
-
-static void unhookGdi32()
-{
-    if (o_D3DKMTQueryAdapterInfo != nullptr)
-    {
-        HookTransactions::Transaction systemTransaction;
-
-        systemTransaction.Detach(&(PVOID&) o_D3DKMTQueryAdapterInfo, hkD3DKMTQueryAdapterInfo);
-
-        auto detourResult = systemTransaction.Commit();
-        if (detourResult != NO_ERROR)
-        {
-            LOG_ERROR("DetourTransactionCommit error: {:X}", detourResult);
-        }
-        else
-        {
-            o_D3DKMTQueryAdapterInfo = nullptr;
-        }
-    }
-}

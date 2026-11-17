@@ -75,23 +75,3 @@ static void hookCrypt32()
         }
     }
 }
-
-static void unhookCrypt32()
-{
-    if (o_CryptQueryObject != nullptr)
-    {
-        HookTransactions::Transaction systemTransaction;
-
-        systemTransaction.Detach(&(PVOID&) o_CryptQueryObject, hkCryptQueryObject);
-
-        auto detourResult = systemTransaction.Commit();
-        if (detourResult != NO_ERROR)
-        {
-            LOG_ERROR("Failed to unhook CryptQueryObject: {:X}", detourResult);
-        }
-        else
-        {
-            o_CryptQueryObject = nullptr;
-        }
-    }
-}

@@ -71,23 +71,3 @@ static void hookWintrust()
         }
     }
 }
-
-static void unhookWintrust()
-{
-    if (o_WinVerifyTrust != nullptr)
-    {
-        HookTransactions::Transaction systemTransaction;
-
-        systemTransaction.Detach(&(PVOID&) o_WinVerifyTrust, hkWinVerifyTrust);
-
-        auto detourResult = systemTransaction.Commit();
-        if (detourResult != NO_ERROR)
-        {
-            LOG_ERROR("DetourTransactionCommit error: {:X}", detourResult);
-        }
-        else
-        {
-            o_WinVerifyTrust = nullptr;
-        }
-    }
-}

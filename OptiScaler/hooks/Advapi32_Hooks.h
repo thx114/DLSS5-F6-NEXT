@@ -742,37 +742,3 @@ static void hookAdvapi32()
         o_RegQueryValueExA = nullptr;
     }
 }
-
-static void unhookAdvapi32()
-{
-    HookTransactions::Transaction systemTransaction;
-
-    if (o_RegOpenKeyExW)
-        systemTransaction.Detach(&(PVOID&) o_RegOpenKeyExW, hkRegOpenKeyExW);
-
-    if (o_RegEnumValueW)
-        systemTransaction.Detach(&(PVOID&) o_RegEnumValueW, hkRegEnumValueW);
-
-    if (o_RegCloseKey)
-        systemTransaction.Detach(&(PVOID&) o_RegCloseKey, hkRegCloseKey);
-
-    if (o_RegQueryValueExW)
-        systemTransaction.Detach(&(PVOID&) o_RegQueryValueExW, hkRegQueryValueExW);
-
-    if (o_RegQueryValueExA)
-        systemTransaction.Detach(&(PVOID&) o_RegQueryValueExA, hkRegQueryValueExA);
-
-    auto detourResult = systemTransaction.Commit();
-    if (detourResult != NO_ERROR)
-    {
-        LOG_ERROR("DetourTransactionCommit error: {:X}", detourResult);
-    }
-    else
-    {
-        o_RegCloseKey = nullptr;
-        o_RegEnumValueW = nullptr;
-        o_RegOpenKeyExW = nullptr;
-        o_RegQueryValueExA = nullptr;
-        o_RegQueryValueExW = nullptr;
-    }
-}

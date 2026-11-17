@@ -138,35 +138,6 @@ bool FSR2FeatureVk212::InitInternal(VkCommandBuffer InCmdList, NVSDK_NGX_Paramet
     return InitFSR2(InParameters);
 }
 
-void transitionImageToShaderReadOnly(VkCommandBuffer commandBuffer, VkImage image, VkFormat format,
-                                     VkAccessFlagBits flag = VK_ACCESS_SHADER_READ_BIT)
-{
-    VkImageMemoryBarrier barrier = {};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // Previous layout is unknown or irrelevant
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-
-    barrier.srcAccessMask = 0; // No previous accesses need to be waited on
-    barrier.dstAccessMask = flag;
-
-    vkCmdPipelineBarrier(commandBuffer,
-                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,     // Earliest possible stage
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, // Transition to fragment shader stage
-                         0,                                     // No special flags
-                         0, nullptr,                            // No memory barriers
-                         0, nullptr,                            // No buffer barriers
-                         1, &barrier                            // One image barrier
-    );
-}
-
 bool FSR2FeatureVk212::EvaluateInternal(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter* InParameters)
 {
     LOG_FUNC();

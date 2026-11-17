@@ -28,7 +28,6 @@ class Sl_Inputs_Dx12
     bool evaluateState();
     bool reportResource(const sl::ResourceTag& tag, ID3D12GraphicsCommandList* cmdBuffer, uint32_t frameId);
     void reportEngineType(sl::EngineType type) { engineType = type; };
-    bool dispatchFG();
     void markPresent(uint64_t frameId);
 
     // TODO: some shutdown and cleanup methods
