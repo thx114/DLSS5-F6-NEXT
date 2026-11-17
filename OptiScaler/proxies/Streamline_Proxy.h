@@ -44,9 +44,6 @@ class StreamlineProxy
     typedef HRESULT (*PFN_CreateDxgiFactory1)(REFIID riid, IDXGIFactory1** ppFactory);
     typedef HRESULT (*PFN_CreateDxgiFactory2)(UINT Flags, REFIID riid, IDXGIFactory2** ppFactory);
 
-    // Plugin
-    typedef void* (*PFN_slGetPluginFunction)(const char* functionName);
-
     // DLSSG
     typedef decltype(&slDLSSGSetOptions) PFN_slDLSSGSetOptions;
     typedef decltype(&slDLSSGGetState) PFN_slDLSSGGetState;
@@ -165,114 +162,6 @@ class StreamlineProxy
         bool result = _slInit != nullptr;
         LOG_INFO("Result: {}", result);
         return result;
-    }
-
-    static HMODULE HookStreamlineDLSSG()
-    {
-        spdlog::info("");
-
-        std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
-        localSlPath = localSlPath / L"streamline" / L"sl.dlss_g.dll";
-        auto dlssg = NtdllProxy::LoadLibraryExW_Ldr(localSlPath.c_str(), NULL, NULL);
-
-        // if already hooked
-        if (_slDLSSGSetOptions != nullptr)
-            return dlssg;
-
-        {
-            ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
-
-            if (dlssg != nullptr)
-            {
-                // Common
-                _slDLSSGGetPluginFunction =
-                    (PFN_slGetPluginFunction) KernelBaseProxy::GetProcAddress_()(dlssg, "slGetPluginFunction");
-
-                if (_slDLSSGGetPluginFunction != nullptr)
-                {
-                    _slDLSSGSetOptions = (PFN_slDLSSGSetOptions) _slDLSSGGetPluginFunction("slDLSSGSetOptions");
-                    _slDLSSGGetState = (PFN_slDLSSGGetState) _slDLSSGGetPluginFunction("slDLSSGGetState");
-                }
-            }
-        }
-
-        bool result = _slDLSSGSetOptions != nullptr;
-        LOG_INFO("Result: {}", result);
-        return dlssg;
-    }
-
-    static HMODULE HookStreamlineReflex()
-    {
-        spdlog::info("");
-
-        std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
-        localSlPath = localSlPath / L"streamline" / L"sl.reflex.dll";
-        auto reflex = NtdllProxy::LoadLibraryExW_Ldr(localSlPath.c_str(), NULL, NULL);
-
-        // if already hooked
-        if (_slReflexGetState != nullptr)
-            return reflex;
-
-        {
-            ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
-
-            if (reflex != nullptr)
-            {
-                // Common
-                _slReflexGetPluginFunction =
-                    (PFN_slGetPluginFunction) KernelBaseProxy::GetProcAddress_()(reflex, "slGetPluginFunction");
-
-                if (_slReflexGetPluginFunction != nullptr)
-                {
-                    _slReflexGetState = (PFN_slReflexGetState) _slReflexGetPluginFunction("slReflexGetState");
-                    _slReflexSleep = (PFN_slReflexSleep) _slReflexGetPluginFunction("slReflexSleep");
-                    _slReflexSetOptions = (PFN_slReflexSetOptions) _slReflexGetPluginFunction("slReflexSetOptions");
-                    _slReflexSetCameraData =
-                        (PFN_slReflexSetCameraData) _slReflexGetPluginFunction("slReflexSetCameraData");
-                    _slReflexGetPredictedCameraData = (PFN_slReflexGetPredictedCameraData) _slReflexGetPluginFunction(
-                        "slReflexGetPredictedCameraData");
-                }
-            }
-        }
-
-        bool result = _slReflexGetState != nullptr;
-        LOG_INFO("Result: {}", result);
-        return reflex;
-    }
-
-    static HMODULE HookStreamlinePCL()
-    {
-        spdlog::info("");
-
-        std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
-        localSlPath = localSlPath / L"streamline" / L"sl.pcl.dll";
-        auto pcl = NtdllProxy::LoadLibraryExW_Ldr(localSlPath.c_str(), NULL, NULL);
-
-        // if already hooked
-        if (_slPCLSetMarker != nullptr)
-            return pcl;
-
-        {
-            ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
-
-            if (pcl != nullptr)
-            {
-                // Common
-                _slPCLGetPluginFunction =
-                    (PFN_slGetPluginFunction) KernelBaseProxy::GetProcAddress_()(pcl, "slGetPluginFunction");
-
-                if (_slPCLGetPluginFunction != nullptr)
-                {
-                    _slPCLGetState = (PFN_slPCLGetState) _slPCLGetPluginFunction("slPCLGetState");
-                    _slPCLSetMarker = (PFN_slPCLSetMarker) _slPCLGetPluginFunction("slPCLSetMarker");
-                    _slPCLSetOptions = (PFN_slPCLSetOptions) _slPCLGetPluginFunction("slPCLSetOptions");
-                }
-            }
-        }
-
-        bool result = _slReflexGetState != nullptr;
-        LOG_INFO("Result: {}", result);
-        return pcl;
     }
 
     static feature_version Version()
@@ -438,47 +327,6 @@ class StreamlineProxy
         return _isD3D12Inited;
     }
 
-    static bool InitWithD3D11(ID3D11Device* device)
-    {
-        if (_isD3D11Inited)
-            return true;
-
-        if (!StreamlineProxy::LoadStreamline())
-            return false;
-
-        sl::Preferences pref;
-
-        pref.applicationId = 0x1337AFF;
-
-#if _DEBUG
-        pref.showConsole = true;
-#endif
-        pref.logMessageCallback = &slLogCallback;
-        pref.logLevel = sl::LogLevel::eVerbose;
-
-        sl::Feature featuresToLoad[] = { sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL };
-
-        pref.featuresToLoad = featuresToLoad;
-        pref.numFeaturesToLoad = static_cast<uint32_t>(std::size(featuresToLoad));
-        pref.renderAPI = sl::RenderAPI::eD3D12;
-
-        pref.flags |= sl::PreferenceFlags::eUseManualHooking;
-        pref.flags |= sl::PreferenceFlags::eUseFrameBasedResourceTagging;
-
-        auto initResult = StreamlineProxy::Init()(pref, sl::kSDKVersion);
-
-        if (initResult == sl::Result::eOk)
-        {
-            StreamlineProxy::HookStreamlineDLSSG();
-            StreamlineProxy::SetD3DDevice()(device);
-            _isD3D11Inited = true;
-        }
-
-        return _isD3D11Inited;
-    }
-
-    static bool IsD3D11Inited() { return _isD3D11Inited; }
-
     static bool IsD3D12Inited() { return _isD3D12Inited; }
 
     static PFN_slInit Init() { return _slInit; }
@@ -524,7 +372,6 @@ class StreamlineProxy
     inline static HMODULE _dll = nullptr;
     inline static feature_version _slVersion {};
     inline static bool _isInited = false;
-    inline static bool _isD3D11Inited = false;
     inline static bool _isD3D12Inited = false;
     inline static bool _isD3D12Requested = false;
 
@@ -552,12 +399,10 @@ class StreamlineProxy
     inline static PFN_CreateDxgiFactory2 _slCreateDxgiFactory2 = nullptr;
 
     // DLSSG
-    inline static PFN_slGetPluginFunction _slDLSSGGetPluginFunction = nullptr;
     inline static PFN_slDLSSGSetOptions _slDLSSGSetOptions = nullptr;
     inline static PFN_slDLSSGGetState _slDLSSGGetState = nullptr;
 
     // Reflex
-    inline static PFN_slGetPluginFunction _slReflexGetPluginFunction = nullptr;
     inline static PFN_slReflexGetState _slReflexGetState = nullptr;
     inline static PFN_slReflexSleep _slReflexSleep = nullptr;
     inline static PFN_slReflexSetOptions _slReflexSetOptions = nullptr;
@@ -565,7 +410,6 @@ class StreamlineProxy
     inline static PFN_slReflexGetPredictedCameraData _slReflexGetPredictedCameraData = nullptr;
 
     // PCL
-    inline static PFN_slGetPluginFunction _slPCLGetPluginFunction = nullptr;
     inline static PFN_slPCLGetState _slPCLGetState = nullptr;
     inline static PFN_slPCLSetMarker _slPCLSetMarker = nullptr;
     inline static PFN_slPCLSetOptions _slPCLSetOptions = nullptr;

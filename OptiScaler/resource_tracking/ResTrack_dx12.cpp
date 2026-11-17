@@ -178,7 +178,6 @@ struct HeapCacheTLS
 
 static thread_local HeapCacheTLS cache;
 static thread_local HeapCacheTLS cacheRTV;
-static thread_local HeapCacheTLS cacheCBV;
 static thread_local HeapCacheTLS cacheSRV;
 static thread_local HeapCacheTLS cacheUAV;
 static std::atomic<unsigned> gHeapGeneration { 1 };
@@ -405,42 +404,6 @@ void ResTrack_Dx12::ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID
 
 #pragma region Heap helpers
 
-SIZE_T ResTrack_Dx12::GetGPUHandle(ID3D12Device* This, SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type)
-{
-    std::shared_lock lock(_heapRegistryMutex);
-    for (const auto& heap : fgHeaps)
-    {
-        if (heap != nullptr && heap->active.load(std::memory_order_acquire) && heap->cpuStart <= cpuHandle &&
-            heap->cpuEnd > cpuHandle && heap->gpuStart != 0)
-        {
-            auto incSize = This->GetDescriptorHandleIncrementSize(type);
-            auto addr = cpuHandle - heap->cpuStart;
-            auto index = addr / incSize;
-            return heap->gpuStart + (index * incSize);
-        }
-    }
-
-    return NULL;
-}
-
-SIZE_T ResTrack_Dx12::GetCPUHandle(ID3D12Device* This, SIZE_T gpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type)
-{
-    std::shared_lock lock(_heapRegistryMutex);
-    for (const auto& heap : fgHeaps)
-    {
-        if (heap != nullptr && heap->active.load(std::memory_order_acquire) && heap->gpuStart <= gpuHandle &&
-            heap->gpuEnd > gpuHandle && heap->cpuStart != 0)
-        {
-            auto incSize = This->GetDescriptorHandleIncrementSize(type);
-            auto addr = gpuHandle - heap->gpuStart;
-            auto index = addr / incSize;
-            return heap->cpuStart + (index * incSize);
-        }
-    }
-
-    return NULL;
-}
-
 static std::shared_ptr<HeapInfo> FindHeapByCpuHandle(SIZE_T cpuHandle, HeapCacheTLS& heapCache)
 {
     const auto currentGen = gHeapGeneration.load(std::memory_order_acquire);
@@ -506,11 +469,6 @@ static std::shared_ptr<HeapInfo> FindHeapByGpuHandle(SIZE_T gpuHandle, HeapCache
     heapCache.heapVersion = 0;
     heapCache.heap.reset();
     return nullptr;
-}
-
-std::shared_ptr<HeapInfo> ResTrack_Dx12::GetHeapByCpuHandleCBV(SIZE_T cpuHandle)
-{
-    return FindHeapByCpuHandle(cpuHandle, cacheCBV);
 }
 
 std::shared_ptr<HeapInfo> ResTrack_Dx12::GetHeapByCpuHandleRTV(SIZE_T cpuHandle)
@@ -587,12 +545,6 @@ bool ResTrack_Dx12::IsHudFixActive()
     if (!State::Instance().currentFG->IsActive())
     {
         LOG_TRACK("!State::Instance().currentFG->IsActive()");
-        return false;
-    }
-
-    if (!_presentDone)
-    {
-        LOG_TRACK("!_presentDone");
         return false;
     }
 

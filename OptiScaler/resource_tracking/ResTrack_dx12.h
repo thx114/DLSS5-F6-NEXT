@@ -188,7 +188,6 @@ struct HeapInfo : public std::enable_shared_from_this<HeapInfo>
     UINT increment = 0;
     UINT type = 0;
     std::shared_ptr<DescriptorResourceInfo[]> info;
-    UINT lastOffset = 0;
     std::atomic<bool> active { true };
     std::atomic<uint64_t> version { 0 };
 
@@ -403,35 +402,6 @@ struct HeapInfo : public std::enable_shared_from_this<HeapInfo>
         }
     }
 
-    void SetByGpuHandle(SIZE_T gpuHandle, const ResourceInfo& setInfo)
-    {
-        if (!active.load(std::memory_order_acquire))
-            return;
-
-        UINT index = 0;
-        if (!GetGpuIndex(gpuHandle, index))
-            return;
-
-        std::unique_lock lock(GetDescriptorLock(index));
-        if (!active.load(std::memory_order_acquire))
-            return;
-
-#ifdef DEBUG_TRACKING
-        TestResource(&setInfo);
-#endif
-
-        if (info[index].buffer != setInfo.buffer)
-        {
-            DetachFromOldResourceLocked(index);
-            info[index].Store(setInfo);
-            AttachToNewResourceLocked(index);
-        }
-        else
-        {
-            info[index].Store(setInfo);
-        }
-    }
-
     void ClearByCpuHandle(SIZE_T cpuHandle)
     {
         if (!active.load(std::memory_order_acquire))
@@ -439,22 +409,6 @@ struct HeapInfo : public std::enable_shared_from_this<HeapInfo>
 
         UINT index = 0;
         if (!GetCpuIndex(cpuHandle, index))
-            return;
-
-        std::unique_lock lock(GetDescriptorLock(index));
-        if (!active.load(std::memory_order_acquire))
-            return;
-
-        ClearSlotLocked(index, true);
-    }
-
-    void ClearByGpuHandle(SIZE_T gpuHandle)
-    {
-        if (!active.load(std::memory_order_acquire))
-            return;
-
-        UINT index = 0;
-        if (!GetGpuIndex(gpuHandle, index))
             return;
 
         std::unique_lock lock(GetDescriptorLock(index));
@@ -620,7 +574,6 @@ struct alignas(CACHE_LINE_SIZE) CommandListShard
 class ResTrack_Dx12
 {
   private:
-    inline static bool _presentDone = true;
     inline static bool _useShards = false;
     inline static std::atomic<bool> _bindingTrackingEnabled { false };
 
@@ -631,10 +584,6 @@ class ResTrack_Dx12
     inline static std::mutex _rootSignatureInfoMutex;
     inline static ankerl::unordered_dense::map<ID3D12RootSignature*, std::shared_ptr<RootSignatureInfo>>
         _rootSignatureInfos;
-
-    inline static ULONG64 _lastHudlessFrame = 0;
-    inline static std::mutex _hudlessMutex;
-    inline static void* _hudlessMutexQueue = nullptr;
 
     static bool IsHudFixActive();
 
@@ -712,10 +661,6 @@ class ResTrack_Dx12
     static void ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
                                 D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState);
 
-    static SIZE_T GetGPUHandle(ID3D12Device* This, SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type);
-    static SIZE_T GetCPUHandle(ID3D12Device* This, SIZE_T gpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type);
-
-    static std::shared_ptr<HeapInfo> GetHeapByCpuHandleCBV(SIZE_T cpuHandle);
     static std::shared_ptr<HeapInfo> GetHeapByCpuHandleRTV(SIZE_T cpuHandle);
     static std::shared_ptr<HeapInfo> GetHeapByCpuHandleSRV(SIZE_T cpuHandle);
     static std::shared_ptr<HeapInfo> GetHeapByCpuHandleUAV(SIZE_T cpuHandle);
