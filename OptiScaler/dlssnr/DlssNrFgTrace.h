@@ -5,7 +5,6 @@
 // Unobserved resolution routes and provider-internal resource consumption remain UNKNOWN.
 #include <windows.h>
 #include <d3d12.h>
-#include <nvsdk_ngx.h>
 #include <wrl/client.h>
 #include <framegen/dlssg/DlssgProviderIdentity.h>
 #include <array>
@@ -17,7 +16,6 @@
 namespace DlssNrFgTrace
 {
 inline constexpr const char* Build = "F5-STARRAIL-STABLE-GUIDE-CONTRACT-20261016-l";
-using Evaluate = decltype(&NVSDK_NGX_D3D12_EvaluateFeature);
 
 inline uintptr_t Identity(IUnknown* object)
 {
@@ -34,33 +32,10 @@ struct Copy
     unsigned index = UINT_MAX;
     uint64_t armSequence = 0;
 };
-struct Output
-{
-    Copy copy;
-    uint64_t epoch = 0, sequence = 0, done = 0;
-    uintptr_t color = 0, commandList = 0, queue = 0;
-    bool ran = false;
-    Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-};
 inline std::mutex snapshotMutex;
 inline Copy lastCopy;
-inline Output lastOutput;
 inline std::atomic_bool armed { false };
 inline uint64_t copies = 0, outputs = 0, armedCopies = 0;
-
-struct Snapshot
-{
-    Copy copy;
-    Output output;
-    bool nrMatchesCurrentCopy = false;
-};
-inline Snapshot ReadSnapshot()
-{
-    std::lock_guard lock(snapshotMutex);
-    return { lastCopy, lastOutput,
-             lastCopy.sequence != 0 && lastOutput.copy.sequence == lastCopy.sequence &&
-             lastOutput.copy.epoch == lastCopy.epoch && lastOutput.epoch == lastCopy.epoch && lastOutput.ran };
-}
 
 inline bool Sample(uint64_t count) { return count <= 8 || count % 300 == 0; }
 
@@ -85,27 +60,28 @@ inline void BridgeCopy(uint64_t epoch, IUnknown* source, IUnknown* color, IUnkno
 inline void NrSubmitted(uint64_t epoch, IUnknown* color, IUnknown* commandList, IUnknown* queue,
                         ID3D12Fence* fence, uint64_t done, bool ran)
 {
-    Output output;
-    output.epoch = epoch; output.color = Identity(color); output.commandList = Identity(commandList);
-    output.queue = Identity(queue); output.fence = fence; output.done = done; output.ran = ran;
+    Copy copy;
+    uint64_t sequence;
     {
         std::lock_guard lock(snapshotMutex);
-        output.copy = lastCopy;
-        output.sequence = ++outputs;
-        lastOutput = output;
+        copy = lastCopy;
+        sequence = ++outputs;
     }
-    if (Sample(output.sequence))
+    if (Sample(sequence))
+    {
+        const auto colorId = Identity(color);
         LOG_INFO("F5 NR trace submit: seq={} epoch={} color={:X} list={:X} queue={:X} fence={:X} done={} completed={} ran={} copySeq={} copyEpoch={} copyColor={:X} sameColor={}; submitted is not displayed",
-                 output.sequence, epoch, output.color, output.commandList, output.queue, Identity(fence), done,
-                 fence ? fence->GetCompletedValue() : 0, ran, output.copy.sequence, output.copy.epoch,
-                 output.copy.color, output.color != 0 && output.color == output.copy.color);
+                 sequence, epoch, colorId, Identity(commandList), Identity(queue), Identity(fence), done,
+                 fence ? fence->GetCompletedValue() : 0, ran, copy.sequence, copy.epoch,
+                 copy.color, colorId != 0 && colorId == copy.color);
+    }
 }
 
 inline void EndBridge()
 {
     armed.store(false);
     std::lock_guard lock(snapshotMutex);
-    lastCopy = {}; lastOutput = {}; // no buffers, queues, command lists or provider modules are retained
+    lastCopy = {}; // identities only; no GPU objects or provider modules are retained
     armedCopies = 0;
 }
 

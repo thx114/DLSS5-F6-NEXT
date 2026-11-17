@@ -194,23 +194,6 @@ bool Shader_Vk::CreateBufferResource(VkDevice device, VkPhysicalDevice physicalD
     return true;
 }
 
-void Shader_Vk::SetBufferState(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize size,
-                               VkAccessFlags srcAccess, VkAccessFlags dstAccess, VkPipelineStageFlags srcStage,
-                               VkPipelineStageFlags dstStage)
-{
-    VkBufferMemoryBarrier barrier {};
-    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    barrier.srcAccessMask = srcAccess;
-    barrier.dstAccessMask = dstAccess;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.buffer = buffer;
-    barrier.offset = 0;
-    barrier.size = size;
-
-    vkCmdPipelineBarrier(commandBuffer, srcStage, dstStage, 0, 0, nullptr, 1, &barrier, 0, nullptr);
-}
-
 VkDescriptorSetLayoutBinding Shader_Vk::CreateBinding(uint32_t binding, VkDescriptorType descriptorType,
                                                       uint32_t descriptorCount, VkShaderStageFlags stageFlags)
 {

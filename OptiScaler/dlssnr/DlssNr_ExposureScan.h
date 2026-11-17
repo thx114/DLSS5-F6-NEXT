@@ -96,9 +96,6 @@ enum class Verdict
 
 Verdict Where();
 
-// Fills a short line describing the state. Null-terminated, safe to draw every frame.
-const char* Headline();
-
 // For the menu.
 std::vector<Candidate> Report();
 const char* Status();
@@ -131,7 +128,6 @@ bool AnchorAdd(float scan, float white);
 void AnchorSetWhite(int index, float white);
 
 void AnchorRemove(int index);
-void AnchorClear();
 
 // The interpolated white point for the current best scan value, already trimmed and clamped. Returns
 // 0 when there is no usable anchor, so the caller falls through to its other sources. `inverted` only

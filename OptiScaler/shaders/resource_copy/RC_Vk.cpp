@@ -37,21 +37,6 @@ ResourceCopy_Vk::ResourceCopy_Vk(std::string InName, VkDevice InDevice, VkPhysic
     _init = true;
 }
 
-bool ResourceCopy_Vk::InitializeViews(VkImageView InResourceView, VkImageView OutResourceView)
-{
-    if (!_init || InResourceView == VK_NULL_HANDLE || OutResourceView == VK_NULL_HANDLE)
-        return false;
-
-    if (InResourceView != _currentInResourceView || OutResourceView != _currentOutResourceView)
-    {
-        _currentInResourceView = InResourceView;
-        _currentOutResourceView = OutResourceView;
-        return true;
-    }
-
-    return true;
-}
-
 bool ResourceCopy_Vk::Dispatch(VkDevice InDevice, VkCommandBuffer InCmdList, VkImageView InResourceView,
                                VkImageView OutResourceView, VkExtent2D OutExtent)
 {
@@ -60,9 +45,6 @@ bool ResourceCopy_Vk::Dispatch(VkDevice InDevice, VkCommandBuffer InCmdList, VkI
         return false;
 
     LOG_DEBUG("[{0}] Start!", _name);
-
-    if (!InitializeViews(InResourceView, OutResourceView))
-        return false;
 
     _currentSetIndex = (_currentSetIndex + 1) % _maxFramesInFlight;
 

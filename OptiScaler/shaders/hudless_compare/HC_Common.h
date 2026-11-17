@@ -2,13 +2,6 @@
 
 #include "SysUtils.h"
 
-struct CompareParams
-{
-    float DiffThreshold = 0.02f;
-    float PinkAmount = 0.6f;
-    float InvOutputSize[2] = { 0, 0 };
-};
-
 static std::string hcCode = R"(
 Texture2D gRefTex : register(t0); 
 Texture2D gBackCopyTex : register(t1);

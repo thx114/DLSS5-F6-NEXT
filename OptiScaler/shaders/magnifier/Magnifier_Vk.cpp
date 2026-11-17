@@ -43,31 +43,14 @@ Magnifier_Vk::Magnifier_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevi
     _init = true;
 }
 
-bool Magnifier_Vk::InitializeViews(VkImageView InResourceView, VkImageView OutResourceView)
-{
-    if (!_init || InResourceView == VK_NULL_HANDLE || OutResourceView == VK_NULL_HANDLE)
-        return false;
-
-    if (InResourceView != _currentInResourceView || OutResourceView != _currentOutResourceView)
-    {
-        _currentInResourceView = InResourceView;
-        _currentOutResourceView = OutResourceView;
-        return true;
-    }
-
-    return true;
-}
-
 bool Magnifier_Vk::Dispatch(VkCommandBuffer InCmdList, const VkImageInfo& InResourceInfo,
                             const VkImageInfo& OutResourceInfo)
 {
-    if (!_init || InCmdList == VK_NULL_HANDLE)
+    if (!_init || InCmdList == VK_NULL_HANDLE || InResourceInfo.ImageView == VK_NULL_HANDLE ||
+        OutResourceInfo.ImageView == VK_NULL_HANDLE)
         return false;
 
     LOG_DEBUG("[{0}] Start!", _name);
-
-    if (!InitializeViews(InResourceInfo.ImageView, OutResourceInfo.ImageView))
-        return false;
 
     _currentSetIndex = (_currentSetIndex + 1) % _maxFramesInFlight;
 

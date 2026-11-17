@@ -5,13 +5,8 @@
 
 class Magnifier_Vk : public Shader_Vk, public Magnifier_Common
 {
-    VkImageView _currentInResourceView = VK_NULL_HANDLE;
-    VkImageView _currentOutResourceView = VK_NULL_HANDLE;
-
     uint32_t InNumThreadsX = 16;
     uint32_t InNumThreadsY = 16;
-
-    bool InitializeViews(VkImageView InResourceView, VkImageView OutResourceView);
 
   public:
     Magnifier_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice);

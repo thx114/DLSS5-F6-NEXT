@@ -2,13 +2,6 @@
 
 #include "SysUtils.h"
 
-struct CompareParams
-{
-    float DiffThreshold = 0.02f;
-    float PinkAmount = 0.6f;
-    float InvOutputSize[2] = { 0, 0 };
-};
-
 static std::string ruiCode = R"(
 Texture2D<float4> UI : register(t0); 
 Texture2D<float4> BackBuffer : register(t1); 

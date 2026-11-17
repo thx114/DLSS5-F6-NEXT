@@ -107,21 +107,6 @@ DepthTransfer_Vk::DepthTransfer_Vk(std::string InName, VkDevice InDevice, VkPhys
     _init = true;
 }
 
-bool DepthTransfer_Vk::InitializeViews(VkImageView InResourceView, VkImageView OutResourceView)
-{
-    if (!_init || InResourceView == VK_NULL_HANDLE || OutResourceView == VK_NULL_HANDLE)
-        return false;
-
-    if (InResourceView != _currentInResourceView || OutResourceView != _currentOutResourceView)
-    {
-        _currentInResourceView = InResourceView;
-        _currentOutResourceView = OutResourceView;
-        return true;
-    }
-
-    return true;
-}
-
 bool DepthTransfer_Vk::Dispatch(VkDevice InDevice, VkCommandBuffer InCmdList, VkImageView InResourceView,
                                 VkImageView OutResourceView, VkExtent2D OutExtent)
 {
@@ -130,9 +115,6 @@ bool DepthTransfer_Vk::Dispatch(VkDevice InDevice, VkCommandBuffer InCmdList, Vk
         return false;
 
     LOG_DEBUG("[{0}] Start!", _name);
-
-    if (!InitializeViews(InResourceView, OutResourceView))
-        return false;
 
     // Advance frame index
     _currentSetIndex = (_currentSetIndex + 1) % _maxFramesInFlight;

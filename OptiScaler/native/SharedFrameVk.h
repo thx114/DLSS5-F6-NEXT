@@ -67,7 +67,6 @@ class SharedImageVk
     VkImage Image() const { return _image; }
     uint32_t Width() const { return _width; }
     uint32_t Height() const { return _height; }
-    VkFormat Format() const { return _vkFormat; }
     bool Matches(uint32_t width, uint32_t height, VkFormat format) const
     {
         return _image != VK_NULL_HANDLE && _width == width && _height == height && _vkFormat == format;
@@ -101,7 +100,6 @@ class SharedFenceVk
     VkSemaphore Semaphore() const { return _semaphore; }
 
     uint64_t Next() { return ++_value; }
-    uint64_t Value() const { return _value; }
 
     const std::string& Error() const { return _error; }
 

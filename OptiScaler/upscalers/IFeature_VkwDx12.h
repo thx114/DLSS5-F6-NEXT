@@ -59,7 +59,6 @@ class IFeature_VkwDx12 : public virtual IFeature_Vk
     std::map<uint32_t, QUERY_INDEX_BUFFERS> VulkanQueueCommandBuffers;
     uint32_t ActiveQueueFamilyIndex = UINT32_MAX;
 
-    PFN_vkGetInstanceProcAddr VulkanGIPA = nullptr;
     PFN_vkGetDeviceProcAddr VulkanGDPA = nullptr;
 
     // D3D12 context
@@ -95,7 +94,6 @@ class IFeature_VkwDx12 : public virtual IFeature_Vk
     std::unique_ptr<ResourceCopy_Vk> ReactiveCopy = nullptr;
     std::unique_ptr<ResourceCopy_Vk> ExpCopy = nullptr;
     std::unique_ptr<ResourceCopy_Vk> OutCopy = nullptr;
-    std::unique_ptr<ResourceCopy_Vk> OutCopy2 = nullptr;
 
     // Vulkan function pointers for external memory
     PFN_vkGetMemoryWin32HandlePropertiesKHR vkGetMemoryWin32HandlePropertiesKHR = nullptr;

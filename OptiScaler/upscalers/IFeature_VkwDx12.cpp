@@ -1818,7 +1818,6 @@ void IFeature_VkwDx12::ReleaseSharedResources()
     ReactiveCopy.reset();
     ExpCopy.reset();
     OutCopy.reset();
-    OutCopy2.reset();
 }
 
 void IFeature_VkwDx12::ReleaseSyncResources()
@@ -2038,7 +2037,6 @@ bool IFeature_VkwDx12::Init(VkInstance InInstance, VkPhysicalDevice InPD, VkDevi
     VulkanInstance = InInstance;
     VulkanPhysicalDevice = InPD;
     VulkanDevice = InDevice;
-    VulkanGIPA = InGIPA;
     VulkanGDPA = InGDPA;
 
     // Load external memory functions

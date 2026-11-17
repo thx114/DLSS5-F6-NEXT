@@ -58,9 +58,6 @@ class Shader_Vk
     static bool CreateBufferResource(VkDevice device, VkPhysicalDevice physicalDevice, VkBuffer* buffer,
                                      VkDeviceMemory* memory, VkDeviceSize size, VkBufferUsageFlags usage,
                                      VkMemoryPropertyFlags properties);
-    static void SetBufferState(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize size,
-                               VkAccessFlags srcAccess, VkAccessFlags dstAccess, VkPipelineStageFlags srcStage,
-                               VkPipelineStageFlags dstStage);
 
     // Setup Helpers
     VkDescriptorSetLayoutBinding CreateBinding(uint32_t binding, VkDescriptorType descriptorType,

@@ -339,17 +339,7 @@ public:
 // drains at most once/second. No INI reads here or on hook entries. Slots never
 // recycle; dead-thread rows remain cumulative and tid disambiguates them.
 // Only this Present thread reads published cells; all payload fields are atomic.
-// R600: the existing Present drain also publishes these sampled per-kind means.
-// Hook kinds and inclusive stages stay separate; this is not a CPU frame total.
-struct MonitorReading {uint64_t samples=0,ticks=0;};
-inline constexpr unsigned MonitorCount=HookCount+StageCount;
-struct MonitorSnapshot {
-    uint64_t beginMs=0,endMs=0,epoch=0;
-    std::array<MonitorReading,MonitorCount> rows{};
-};
-struct MonitorCell {std::atomic<uint64_t> samples{0},ticks{0};};
-inline std::array<MonitorCell,MonitorCount> monitorRows{};
-inline std::atomic<uint64_t> monitorVersion{0},monitorBegin{0},monitorEnd{0},monitorPublishedEpoch{0},monitorEpoch{0};
+inline std::atomic<uint64_t> monitorVersion{0},monitorEnd{0},monitorPublishedEpoch{0},monitorEpoch{0};
 // R654 uses the existing once/second Present drain, without another timer or logger.
 // A raced/in-progress drain is deferred; never spin on a Present thread.
 inline bool ConsumePresentDrain(uint64_t& previous,uint64_t epoch) noexcept {
@@ -525,52 +515,11 @@ template<class Emit> void DrainFinalRawPresent(Emit&& emit) {
         emitted[t]=before;
     }
 }
-inline void PublishMonitor(const MonitorSnapshot& view) noexcept {
+inline void PublishPresentDrain(uint64_t endMs,uint64_t epoch) noexcept {
     monitorVersion.fetch_add(1,std::memory_order_acq_rel);
-    monitorBegin.store(view.beginMs,std::memory_order_relaxed);monitorEnd.store(view.endMs,std::memory_order_relaxed);
-    monitorPublishedEpoch.store(view.epoch,std::memory_order_relaxed);
-    for(unsigned i=0;i<MonitorCount;++i){monitorRows[i].samples.store(view.rows[i].samples,std::memory_order_relaxed);
-        monitorRows[i].ticks.store(view.rows[i].ticks,std::memory_order_relaxed);}
+    monitorEnd.store(endMs,std::memory_order_relaxed);
+    monitorPublishedEpoch.store(epoch,std::memory_order_relaxed);
     monitorVersion.fetch_add(1,std::memory_order_release);
-}
-inline MonitorSnapshot ReadMonitor() noexcept {
-    MonitorSnapshot view{};if(!Enabled())return view;
-    const auto version=monitorVersion.load(std::memory_order_acquire);if(!version || (version&1))return view;
-    view.beginMs=monitorBegin.load(std::memory_order_relaxed);view.endMs=monitorEnd.load(std::memory_order_relaxed);
-    view.epoch=monitorPublishedEpoch.load(std::memory_order_relaxed);
-    for(unsigned i=0;i<MonitorCount;++i){view.rows[i].samples=monitorRows[i].samples.load(std::memory_order_relaxed);
-        view.rows[i].ticks=monitorRows[i].ticks.load(std::memory_order_relaxed);}
-    std::atomic_thread_fence(std::memory_order_acquire);
-    if(version!=monitorVersion.load(std::memory_order_acquire) || !Enabled() ||
-       view.epoch!=monitorEpoch.load(std::memory_order_acquire) || view.endMs<=view.beginMs ||
-       GetTickCount64()-view.endMs>2000)return {};
-    return view;
-}
-// Reuse the completed R858 query result; never start or wait on a query here.
-struct BridgeGpuReading {double milliseconds=-1.0;uint64_t publishedMs=0,samples=0,sampleMs=0;};
-inline std::atomic<uint64_t> bridgeGpuVersion{0},bridgeGpuTick{0},bridgeGpuSamples{0},bridgeGpuSampleMs{0};
-inline std::atomic<double> bridgeGpuMs{-1.0};
-inline std::atomic_flag bridgeGpuPublishing=ATOMIC_FLAG_INIT;
-inline void PublishBridgeGpu(double milliseconds,uint64_t sampleMs) noexcept {
-    if(bridgeGpuPublishing.test_and_set(std::memory_order_acquire))return;
-    // Later consumer retirement can expose an older query after a newer one.
-    if(!sampleMs || sampleMs<=bridgeGpuSampleMs.load(std::memory_order_relaxed)) {
-        bridgeGpuPublishing.clear(std::memory_order_release);return;
-    }
-    bridgeGpuVersion.fetch_add(1,std::memory_order_acq_rel);
-    bridgeGpuSampleMs.store(sampleMs,std::memory_order_relaxed);
-    bridgeGpuMs.store(milliseconds,std::memory_order_relaxed);
-    bridgeGpuTick.store(GetTickCount64(),std::memory_order_relaxed);bridgeGpuSamples.fetch_add(1,std::memory_order_relaxed);
-    bridgeGpuVersion.fetch_add(1,std::memory_order_release);bridgeGpuPublishing.clear(std::memory_order_release);
-}
-inline BridgeGpuReading ReadBridgeGpu() noexcept {
-    const auto version=bridgeGpuVersion.load(std::memory_order_acquire);if(!version || (version&1))return {};
-    BridgeGpuReading view{bridgeGpuMs.load(std::memory_order_relaxed),bridgeGpuTick.load(std::memory_order_relaxed),
-        bridgeGpuSamples.load(std::memory_order_relaxed),bridgeGpuSampleMs.load(std::memory_order_relaxed)};
-    std::atomic_thread_fence(std::memory_order_acquire);
-    if(version!=bridgeGpuVersion.load(std::memory_order_acquire) || !view.samples || !view.sampleMs ||
-       GetTickCount64()-view.sampleMs>2000)return {};
-    return view;
 }
 struct PresentClock {static ULONGLONG Now() noexcept {return GetTickCount64();}};
 template<class Clock=PresentClock,class Emit> void OnPresent(bool on,Emit&& emit) {
@@ -589,49 +538,36 @@ template<class Clock=PresentClock,class Emit> void OnPresent(bool on,Emit&& emit
     static std::atomic_flag draining=ATOMIC_FLAG_INIT;
     if(draining.test_and_set(std::memory_order_acquire))return;
     struct ReleaseDrain {std::atomic_flag& flag;~ReleaseDrain(){flag.clear(std::memory_order_release);}} release{draining};
-    static std::array<std::array<uint64_t,BucketCount>,ThreadLimit> emitted{};
     static std::array<std::array<uint64_t,BucketCount>,ThreadLimit> reported{};
-    static std::array<std::array<MonitorReading,BucketCount>,ThreadLimit> monitorPrevious{};
-    static uint64_t previousEpoch=UINT64_MAX,previousDrain=0;
-    MonitorSnapshot monitor{};monitor.epoch=monitorEpoch.load(std::memory_order_acquire);
-    const bool baseline=previousEpoch!=monitor.epoch;
-    // Keep live monitor/HUD publication at one second, independently of the
-    // expensive detailed cumulative text dump. Disable always drains its tail.
+    static uint64_t previousEpoch=UINT64_MAX;
+    const auto epoch=monitorEpoch.load(std::memory_order_acquire);
+    const bool baseline=previousEpoch!=epoch;
+    // StarRail consumers keep the once/second drain receipt independently of
+    // the detailed cumulative text dump. Disable always drains its tail.
     static uint64_t nextDetailed=0;
     const bool detailed=baseline || !on || now>=nextDetailed;
     if(detailed)nextDetailed=now+5000;
-    monitor.beginMs=baseline?now:previousDrain;monitor.endMs=now;
     local.PublishAll();
     unsigned deferred=0;
-    for(unsigned t=0;t<ThreadLimit;++t){
+    if(detailed)for(unsigned t=0;t<ThreadLimit;++t){
         const auto tid=slots[t].tid.load(std::memory_order_acquire);if(!tid)continue;
         for(unsigned id=0;id<BucketCount;++id){
             const auto& c=slots[t].cells[id];const auto before=c.version.load(std::memory_order_acquire);
             if(before&1){++deferred;continue;}
-            const bool newMonitor=emitted[t][id]!=before;
-            if(!before || (!newMonitor && (!detailed || reported[t][id]==before)))continue;Values v{};
+            if(!before || reported[t][id]==before)continue;Values v{};
             for(unsigned i=0;i<FieldCount;++i)v[i]=c.values[i].load(std::memory_order_relaxed);
             // Acquire fence pairs with the writer's odd-version acq_rel update;
             // every payload is atomic, and unstable rows are deferred (no spin).
             std::atomic_thread_fence(std::memory_order_acquire);
             if(before!=c.version.load(std::memory_order_acquire)){++deferred;continue;}
-            if(!v[Calls])continue;emitted[t][id]=before;
+            if(!v[Calls])continue;
             const bool hook=id<HookCount*PathCount;
-            auto& old=monitorPrevious[t][id];
-            const auto ticks=v[hook?Wrapper:Total];
-            if(newMonitor && !baseline && v[Samples]>=old.samples && ticks>=old.ticks){
-                auto& row=monitor.rows[hook?id/PathCount:HookCount+(id-HookCount*PathCount)];
-                row.samples+=v[Samples]-old.samples;row.ticks+=ticks-old.ticks;
-            }
-            old={v[Samples],ticks};
             static constexpr const char* paths[]={"external","external_non_target","internal"};
             const char* path=hook?paths[id%PathCount]:"stage";
-            if(detailed && reported[t][id]!=before){
-                reported[t][id]=before;
-                emit(tid,hook?HookName(id/PathCount):StageName((id-HookCount*PathCount)),path,v,frequency.load(std::memory_order_relaxed),deferred,refusedThreads.load(),on);
-            }
+            reported[t][id]=before;
+            emit(tid,hook?HookName(id/PathCount):StageName((id-HookCount*PathCount)),path,v,frequency.load(std::memory_order_relaxed),deferred,refusedThreads.load(),on);
         }
     }
-    previousEpoch=monitor.epoch;previousDrain=now;PublishMonitor(monitor);
+    previousEpoch=epoch;PublishPresentDrain(now,epoch);
 }
 }

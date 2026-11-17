@@ -605,86 +605,6 @@ Verdict Where()
     return mostReads >= kPatience ? Verdict::Barren : Verdict::Watching;
 }
 
-const char* Headline()
-{
-    static std::string line;
-
-    switch (Where())
-    {
-    case Verdict::Off:
-        line = "";
-        break;
-
-    case Verdict::Waiting:
-    {
-        // The examined count is the whole diagnosis. Zero means the hook is not running and no
-        // amount of playing will change that; a large number means the game genuinely has nothing
-        // shaped like an exposure, which is an answer rather than a failure.
-        const unsigned int seen = Examined();
-        line = seen == 0 ? "DLSS-NR exposure scan: NOT RUNNING -- no resources seen at all"
-                         : "DLSS-NR exposure scan: examined " + std::to_string(seen) +
-                               " resources, none shaped like an exposure";
-        break;
-    }
-
-    case Verdict::Watching:
-    {
-        std::lock_guard<std::mutex> lock(g_scanMutex);
-        unsigned int mostReads = 0;
-
-        for (const Tracked& t : g_scan.tracked)
-            mostReads = std::max(mostReads, t.reads);
-
-        line = "DLSS-NR exposure scan: watching " + std::to_string(g_scan.tracked.size()) +
-               ", none moving yet -- walk between light and shade  (" +
-               std::to_string(mostReads * 100 / kPatience) + "%)";
-        break;
-    }
-
-    case Verdict::Found:
-    {
-        std::lock_guard<std::mutex> lock(g_scanMutex);
-
-        // The widest travel wins where several move. An exposure swings by orders of magnitude
-        // between a dark interior and open daylight; anything that merely wobbles is something else.
-        size_t best = 0;
-        float bestRatio = 0.0f;
-
-        for (size_t i = 0; i < g_scan.tracked.size(); ++i)
-        {
-            const Tracked& t = g_scan.tracked[i];
-
-            if (!t.moves || t.lowest <= kFloor)
-                continue;
-
-            const float ratio = t.highest / t.lowest;
-
-            if (ratio > bestRatio)
-            {
-                bestRatio = ratio;
-                best = i;
-            }
-        }
-
-        char buf[192];
-        // The live value is in here so the line visibly ticks. Without it the indicator looks stuck
-        // the moment the range settles, which is exactly when it has succeeded.
-        snprintf(buf, sizeof(buf),
-                 "DLSS-NR exposure scan: FOUND -- candidate %zu = %.5f  (%.5f..%.5f, x%.0f)  done",
-                 best + 1, g_scan.tracked[best].latest, g_scan.tracked[best].lowest,
-                 g_scan.tracked[best].highest, bestRatio);
-        line = buf;
-        break;
-    }
-
-    case Verdict::Barren:
-        line = "DLSS-NR exposure scan: nothing moved. No exposure to find here.";
-        break;
-    }
-
-    return line.c_str();
-}
-
 float BestValue(int* outIndex, float* outLowest, float* outHighest)
 {
     std::lock_guard<std::mutex> lock(g_scanMutex);
@@ -840,12 +760,6 @@ void AnchorRemove(int index)
 
     if (index >= 0 && index < (int) g_anchors.size())
         g_anchors.erase(g_anchors.begin() + index);
-}
-
-void AnchorClear()
-{
-    std::lock_guard<std::mutex> lock(g_scanMutex);
-    g_anchors.clear();
 }
 
 float AnchoredWhitePoint(float scanNow, bool inverted, float trim)

@@ -41,18 +41,6 @@ class RCAS_Vk : public Shader_Vk, public RCAS_Common
                   const VkImageInfo& OutResourceInfo, VkImageInfo* InDepthInfo = nullptr);
 
     // Wrappers to maintain the original public API while using the generalized base methods
-    bool CreateBufferResource(VkDevice device, VkPhysicalDevice physicalDevice, VkBuffer* buffer,
-                              VkDeviceMemory* memory, VkDeviceSize size, VkBufferUsageFlags usage,
-                              VkMemoryPropertyFlags properties)
-    {
-        return Shader_Vk::CreateBufferResource(device, physicalDevice, buffer, memory, size, usage, properties);
-    }
-    void SetBufferState(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize size, VkAccessFlags srcAccess,
-                        VkAccessFlags dstAccess, VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage)
-    {
-        Shader_Vk::SetBufferState(commandBuffer, buffer, size, srcAccess, dstAccess, srcStage, dstStage);
-    }
-
     bool CreateImageResource(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t width, uint32_t height,
                              VkFormat format, VkImageUsageFlags usage)
     {
