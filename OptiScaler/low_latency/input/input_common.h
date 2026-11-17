@@ -17,7 +17,6 @@ struct InputContext
 {
     LowLatencyInput caller;
     bool localContext; // input created by Opti
-    bool noFrameId;
     InputMarkerMode markerMode;
 };
 
@@ -57,18 +56,15 @@ class InputCommon
     inline static flag_set<LowLatencyInput> avaliableInputs {};
     inline static LowLatencyInput activeInput = LowLatencyInput::None;
     inline static LowLatencyMode activeOutput = LowLatencyMode::None;
-    inline static bool enabled = false;
 
     static bool deinit_current_tech();
     static bool init_tech(IUnknown* pDevice, LowLatencyMode desiredMode);
-    static bool update_low_latency_tech(IUnknown* pDevice, std::optional<LowLatencyMode> mode = std::nullopt);
+    static bool update_low_latency_tech(IUnknown* pDevice);
     static void add_marker_to_report(const MarkerParams& marker_params);
     static void set_input_avaliable(LowLatencyInput input) { avaliableInputs.set(input); };
     static SleepMode& get_sleep_copy(LowLatencyInput input) { return sleep_mode_copies[static_cast<size_t>(input)]; }
 
   public:
-    static InputResult set_low_latency_tech(IUnknown* pDevice, LowLatencyMode mode);
-
     static InputResult sleep(const InputContext& inputContext, IUnknown* pDevice,
                              std::optional<uint32_t> frame_id = std::nullopt);
     static InputResult set_marker(const InputContext& inputContext, IUnknown* pDevice,

@@ -28,15 +28,6 @@ inline bool RecordCopy(ID3D12GraphicsCommandList* commands, ID3D12Resource* sour
     commands->ResourceBarrier(2, barriers);
     return true;
 }
-inline bool RecordInput(ID3D12GraphicsCommandList* commands, ID3D12Resource* raw, ID3D12Resource* work)
-{
-    return RecordCopy(commands, raw, D3D12_RESOURCE_STATE_PRESENT, work, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-}
-inline bool RecordPublish(ID3D12GraphicsCommandList* commands, ID3D12Resource* completed, ID3D12Resource* output)
-{
-    return RecordCopy(commands, completed, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, output, D3D12_RESOURCE_STATE_PRESENT);
-}
-
 // Distinct input/output is a private, whole-picture transaction. Read-only
 // stages sample the actual current input without first copying a full image.
 // LUT/hold stages require writable input and use the existing private target.

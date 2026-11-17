@@ -39,16 +39,6 @@ bool ShouldBlockXInputLocked()
     return _state.Initialized && _state.Focused && ShouldApplyBlockingPolicyLocked() && _state.BlockGamepad;
 }
 
-void FillNeutralXInputState(XINPUT_STATE* state)
-{
-    if (state == nullptr)
-        return;
-
-    const DWORD packetNumber = state->dwPacketNumber;
-    *state = {};
-    state->dwPacketNumber = packetNumber;
-}
-
 void ClearXInputHookPointersLocked()
 {
     o_XInputGetState = nullptr;

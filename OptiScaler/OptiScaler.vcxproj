@@ -317,7 +317,6 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="runtime\NativeObjectContracts.h" />
     <ClInclude Include="hooks\D3D11On12FactoryBoundary.h" />
     <ClInclude Include="hooks\D3D11On12FactoryRoutes.h" />
-    <ClInclude Include="runtime\NrPresentationSource.h" />
     <ClInclude Include="runtime\NrPresentationOutput.h" />
     <ClInclude Include="shaders\dlssnr\DlssNr_GenshinPresentation.inl" />
     <ClInclude Include="runtime\GuideDiagnostics.h" />
@@ -352,8 +351,6 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="runtime\Dx11ContextState.h" />
     <ClInclude Include="integration\HoYoShadeBeforeSrInput.h" />
     <ClInclude Include="with_dx12\Dx11InteropSwapchainPolicy.h" />
-    <ClInclude Include="with_dx12\InteropQueueDrainReceipt.h" />
-    <ClInclude Include="runtime\ManagedIni.h" />
     <ClInclude Include="runtime\CpuSnapshotBytes.h" />
     <ClInclude Include="runtime\CpuChangedByteRanges.h" />
     <ClInclude Include="runtime\CpuIndexBounds.h" />
@@ -361,11 +358,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="runtime\NativeProducerCpuTiming.h" />
     <ClInclude Include="runtime\NativePrepGpuTiming.h" />
     <ClInclude Include="runtime\Dx11RasterBindings.h" />
-    <ClInclude Include="runtime\InputObservation.h" />
-    <ClInclude Include="runtime\FsrHookHudMetrics.h" />
     <ClInclude Include="runtime\StarRailResidencyPolicy.h" />
 
-    <ClInclude Include="runtime\ProducerProgress.h" />
     <ClInclude Include="runtime\NrResident.h" />
     <ClInclude Include="runtime\ObservedSetting.h" />
 
@@ -426,7 +420,6 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="dlssnr\DlssNrSceneCut.h" />
     <ClInclude Include="dlssnr\DlssNrDetailReuseHost.h" />
     <ClInclude Include="dlssnr\DlssNr_DetailReuse_Vk.inl" />
-    <ClInclude Include="dlssnr\ResidualFg.h" />
     <ClInclude Include="hooks\DxgiFactory_WrappedCalls.h" />
     <ClInclude Include="hooks\Dxgi_Hooks.h" />
     <ClInclude Include="hooks\FG_Hooks.h" />
@@ -547,7 +540,6 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="shaders\Shader_Dx12.h" />
     <ClInclude Include="shaders\Shader_Dx12Utils.h" />
     <ClInclude Include="shaders\Shader_Vk.h" />
-    <ClInclude Include="shaders\Shader_VkUtils.h" />
     <ClInclude Include="low_latency\input\input_uell.h" />
     <ClInclude Include="upscalers\fsr2_212\FSR2Feature_VkOnDx12_212.h" />
     <ClInclude Include="upscalers\ffx\FFXFeature_VkOn12.h" />
@@ -660,7 +652,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="shaders\depth_scale\precompiled\DS_Shader.h" />
     <ClInclude Include="shaders\depth_transfer\DT_Common.h" />
     <ClInclude Include="shaders\depth_transfer\DT_Dx11.h" />
-    <ClInclude Include="shaders\depth_transfer\precompile\dt_Shader_Dx11.h" />
+    <ClInclude Include="shaders\depth_transfer\precompile\dt_dx11_Shader_Dx11.h" />
     <ClInclude Include="spoofing\Dxgi_Spoofing.h" />
     <ClInclude Include="spoofing\Vulkan_Spoofing.h" />
     <ClInclude Include="upscalers\dlssd\DLSSDFeature.h" />
@@ -713,8 +705,6 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="upscalers\IFeature_Vk.h" />
     <ClInclude Include="include\detours\detours.h" />
     <ClInclude Include="dllmain.h" />
-    <ClInclude Include="MaintenanceGate.h" />
-    <ClInclude Include="ExpiredForwarding.h" />
     <ClInclude Include="menu\menu_dx_base.h" />
     <ClInclude Include="menu\menu_common.h" />
     <ClInclude Include="menu\NextgenUi.h" />
@@ -1099,7 +1089,6 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="inputs\NVNGX_DLSS_Dx12.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="runtime\AsiPluginStartup.cpp" />
-    <ClCompile Include="MaintenanceGate.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="inputs\NVNGX_DLSS_Vk.cpp" />
     <ClCompile Include="upscalers\xess\XeSSFeature.cpp" />
     <ClInclude Include="upscalers\xess\XeSSFeature.h" />
@@ -1134,7 +1123,6 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
   <ItemGroup>
-    <ClInclude Include="dlssnr\DlssNr_NgxResourceParameter.h" />
 
     <ClCompile Include="runtime\HookCpuTiming.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
 

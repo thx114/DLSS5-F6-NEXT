@@ -13,12 +13,9 @@
 
 std::unordered_map<NvU32, void*> fakenvapi::idToFuncMapping;
 
-void fakenvapi::init(bool onlyContext)
+void fakenvapi::init()
 {
     LowLatencyCtx::init();
-
-    if (onlyContext)
-        return;
 }
 
 void fakenvapi::deinit()

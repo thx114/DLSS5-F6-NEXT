@@ -50,25 +50,6 @@ struct CanonicalDeviceObservation
     HRESULT hr = E_PENDING;
     uint64_t identity = 0;
 };
-// A single process-wide diagnostic window: at most eight extra source QIs.
-// Only the target BeforeNR stage arms its actual source stream/thread.
-inline std::atomic<uint64_t> canonicalSourceStream{0};
-inline std::atomic<DWORD> canonicalSourceThread{0};
-inline std::atomic<unsigned> canonicalSourceQueries{0};
-inline void ArmCanonicalSourceObservation(uint64_t stream, DWORD thread) noexcept
-{ canonicalSourceThread.store(thread, std::memory_order_relaxed);
-  canonicalSourceStream.store(stream, std::memory_order_release); }
-inline void DisarmCanonicalSourceObservation() noexcept
-{ canonicalSourceStream.store(0, std::memory_order_release); }
-inline bool TakeCanonicalSourceObservation(uint64_t stream, DWORD thread) noexcept
-{
-    if (!stream || !thread || canonicalSourceStream.load(std::memory_order_acquire) != stream ||
-        canonicalSourceThread.load(std::memory_order_relaxed) != thread) return false;
-    auto used = canonicalSourceQueries.load(std::memory_order_relaxed);
-    while (used < 8)
-        if (canonicalSourceQueries.compare_exchange_weak(used, used + 1, std::memory_order_acq_rel)) return true;
-    return false;
-}
 // The protocol is shared with the small CPU fixture. Only Source::Capture can
 // turn a successful protocol into a retained product proof; scalar Evidence
 // supplied by a caller cannot construct a Source.
@@ -152,7 +133,6 @@ class Source final
     // its owner. Cross-thread endpoints fail before any binding read.
     mutable Binding binding_;
     Evidence evidence_;
-    CanonicalDeviceObservation canonicalDevice_;
     Microsoft::WRL::ComPtr<ID3D11Device> owner11_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> buffer11_;
     mutable DeviceDomain::Witness domain_;
@@ -197,16 +177,6 @@ class Source final
         proof->chainDevice_ = access.chainDevice; proof->owner_ = access.owner;
         if constexpr (std::is_same_v<Device, ID3D11Device>) {
             proof->owner11_=access.owner;proof->buffer11_=buffer;
-            // The actual B.GetDevice owner remains strongly held. Query its
-            // canonical IUnknown in this Capture call, never on another thread.
-            if (proof->evidence_.predicate == Predicate::Captured &&
-                TakeCanonicalSourceObservation(stream, proof->evidence_.thread)) {
-                proof->canonicalDevice_.attempted = true;
-                Microsoft::WRL::ComPtr<IUnknown> canonical;
-                proof->canonicalDevice_.hr = access.owner->QueryInterface(IID_PPV_ARGS(&canonical));
-                if (SUCCEEDED(proof->canonicalDevice_.hr) && canonical)
-                    proof->canonicalDevice_.identity = reinterpret_cast<uintptr_t>(canonical.Get());
-            }
         }
         return proof;
     }
@@ -220,7 +190,6 @@ public:
         ID3D12Resource* buffer, UINT index, uint64_t stream, uint64_t generation, uint64_t frame)
     noexcept { try { return CaptureTyped(chain,device,buffer,index,0xc000,stream,generation,frame); } catch (...) { return {}; } }
     const Evidence& Observation() const noexcept { return evidence_; }
-    const CanonicalDeviceObservation& CanonicalDevice() const noexcept { return canonicalDevice_; }
     const Binding& BoundRuntime() const noexcept { return binding_; }
     Predicate Bound(uint64_t runtime, uint64_t lifetime, uint64_t epoch) const noexcept
     { return CheckBinding(binding_,runtime,lifetime,epoch); }

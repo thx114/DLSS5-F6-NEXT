@@ -2,7 +2,6 @@
 // Real DX12 pixel and delayed-queue tests of the production presentation copies.
 #define NOMINMAX
 #include <runtime/NrPresentationOutput.h>
-#include <runtime/NrPresentationSource.h>
 #include <shaders/dlssnr/DlssNr_RecordingLifetime.h>
 #include <dxgi1_4.h>
 #include <array>
@@ -123,31 +122,27 @@ void Pixels() {
     auto raw=f.Texture(1,D3D12_RESOURCE_STATE_PRESENT);
     auto work=f.Texture(9,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     auto model=f.Texture(2,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    Check(!NrPresentation::RecordInput(nullptr,raw.Get(),work.Get()),"missing recording rejected");
-    Check(!NrPresentation::RecordInput(f.list.Get(),raw.Get(),raw.Get()),"raw cannot be its own work target");
-    Check(!NrPresentation::RecordPublish(f.list.Get(),nullptr,raw.Get()),"missing result rejected");
-    Check(NrPresentation::RecordInput(f.list.Get(),raw.Get(),work.Get()),"copy current raw input");
+    Check(!NrPresentation::RecordCopy(nullptr,raw.Get(),D3D12_RESOURCE_STATE_PRESENT,work.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS),"missing recording rejected");
+    Check(!NrPresentation::RecordCopy(f.list.Get(),raw.Get(),D3D12_RESOURCE_STATE_PRESENT,raw.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS),"raw cannot be its own work target");
+    Check(!NrPresentation::RecordCopy(f.list.Get(),nullptr,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,raw.Get(),D3D12_RESOURCE_STATE_PRESENT),"missing result rejected");
+    Check(NrPresentation::RecordCopy(f.list.Get(),raw.Get(),D3D12_RESOURCE_STATE_PRESENT,work.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS),"copy current raw input");
     const auto input=f.Snapshot(work.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     // Stand in for a completed model/Look/detail stage with an asymmetric answer.
     Check(NrPresentation::RecordCopy(f.list.Get(),model.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
         work.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS),"private stages receive a fresh result");
     const auto untouched=f.Snapshot(raw.Get(),D3D12_RESOURCE_STATE_PRESENT);
-    NrPresentation::SourceClock sources; const NrPresentation::Source source {1,2,3,4,5};
-    const auto attempt=sources.Begin(); Check(sources.Complete(attempt,source,true),"real source admission");
-    Check(sources.Claim(attempt,source),"single source endpoint claimed");
-    Check(NrPresentation::RecordPublish(f.list.Get(),work.Get(),raw.Get()),"publish complete stages once");
+    Check(NrPresentation::RecordCopy(f.list.Get(),work.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,raw.Get(),D3D12_RESOURCE_STATE_PRESENT),"publish complete stages once");
     const auto final=f.Snapshot(raw.Get(),D3D12_RESOURCE_STATE_PRESENT);
-    Check(!sources.Claim(attempt,source),"generated callback cannot publish another result");
     f.Submit(); f.Drain(); input.Expect(1); untouched.Expect(1); final.Expect(2); f.Reset();
 
     // Model failure/warmup may change private work, but must leave this new raw
     // source visible, without borrowing the preceding model's completed colour.
     auto next=f.Texture(3,D3D12_RESOURCE_STATE_PRESENT);
-    Check(NrPresentation::RecordInput(f.list.Get(),next.Get(),work.Get()),"next source refreshes private input");
+    Check(NrPresentation::RecordCopy(f.list.Get(),next.Get(),D3D12_RESOURCE_STATE_PRESENT,work.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS),"next source refreshes private input");
     const auto fresh=f.Snapshot(work.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     const auto skipped=f.Snapshot(next.Get(),D3D12_RESOURCE_STATE_PRESENT);
     f.Submit(); f.Drain(); fresh.Expect(3); skipped.Expect(3); f.Reset();
-    Check(NrPresentation::RecordPublish(f.list.Get(),model.Get(),next.Get()),"record unexecuted answer");
+    Check(NrPresentation::RecordCopy(f.list.Get(),model.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,next.Get(),D3D12_RESOURCE_STATE_PRESENT),"record unexecuted answer");
     Hr(f.list->Close()); f.Reset(); // actual discard; no Execute
     const auto discarded=f.Snapshot(next.Get(),D3D12_RESOURCE_STATE_PRESENT);
     f.Submit(); f.Drain(); discarded.Expect(3);
@@ -170,7 +165,7 @@ void DirectInput() {
     Check(RecordCopy(f.list.Get(),model.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,work.Get(),
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS),"private result is produced independently of input");
     const auto untouched=f.Snapshot(raw.Get(),D3D12_RESOURCE_STATE_PRESENT);
-    Check(RecordPublish(f.list.Get(),work.Get(),raw.Get()),"only final success publishes to source");
+    Check(RecordCopy(f.list.Get(),work.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,raw.Get(),D3D12_RESOURCE_STATE_PRESENT),"only final success publishes to source");
     const auto final=f.Snapshot(raw.Get(),D3D12_RESOURCE_STATE_PRESENT);
     f.Submit();f.Drain();current.Expect(3);uncopied.Expect(9);untouched.Expect(3);final.Expect(4);f.Reset();
     auto next=f.Texture(5,D3D12_RESOURCE_STATE_PRESENT);
@@ -198,7 +193,7 @@ void DelayedQueue() {
     Check(DlssNrGpuLifetime::AvailableSlots(production)==2,"diagnostic saturation leaves production capacity untouched");
     for(unsigned n=0;n<2;++n)
         Check(DlssNrGpuLifetime::AcquireSlot(production,pn,use)>=0,"production passes still acquire their independent slots");
-    Check(NrPresentation::RecordInput(f.list.Get(),raw.Get(),work.Get()),"delayed source copy");
+    Check(NrPresentation::RecordCopy(f.list.Get(),raw.Get(),D3D12_RESOURCE_STATE_PRESENT,work.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS),"delayed source copy");
     ComPtr<ID3D12Fence> gate; Hr(f.device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&gate)));
     Hr(f.queue->Wait(gate.Get(),1)); f.Submit();
     ID3D12CommandList* batch [] {f.list.Get()}; registry.Submitted(f.queue.Get(),1,batch);

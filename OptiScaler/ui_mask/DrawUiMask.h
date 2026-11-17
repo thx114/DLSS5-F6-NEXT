@@ -12,8 +12,8 @@ namespace DrawUiMask {
 // Rules use the existing F5 FNV1a bytecode fingerprint, NOT 3DMigoto hashes.
 // Semicolon separated PS:PS-byte-length:VS:VS-byte-length:element-count.
 // All fields are mandatory, hashes hexadecimal, lengths/count decimal.
-struct Settings {bool enabled=false,fg=false,nr=false,filters=false;std::string rules;};
-enum class Consumer : unsigned { Nr, Filter, Fg };
+struct Settings {bool enabled=false,nr=false,filters=false;std::string rules;};
+enum class Consumer : unsigned { Nr, Filter };
 class Frame;
 using FramePtr=std::shared_ptr<Frame>;
 void Configure(const Settings&) noexcept;
@@ -44,10 +44,6 @@ public:
     LayerLookRead& operator=(const LayerLookRead&)=delete;
     ID3D12Resource* Resource() const noexcept;
 };
-// Final processed scene stays unchanged outside the mask. Inside it, use the
-// actual same-frame pre-UI scene. The game's PresentColor is never overwritten.
-ID3D12Resource* BuildHudless(const FramePtr&,ID3D12GraphicsCommandList*,ID3D12Resource*,D3D12_RESOURCE_STATES) noexcept;
-ID3D12Resource* Hudless(const FramePtr&) noexcept;
 // Observations only: never used to admit work, release resources or query a fence.
 // Pending means commands were recorded; Submitted requires the actual owner's
 // successful submission tail. Completed is emitted only by its existing retire path.
@@ -62,12 +58,11 @@ struct ConsumerStatus {Receipt latest,completed,quarantined;};
 struct LifecycleStatus {
     bool readable=false,enabled=false;
     uint64_t configuration=0;
-    std::array<ConsumerStatus,3> consumers{};
+    std::array<ConsumerStatus,2> consumers{};
 };
 // The same frame + consumer + submission owner tuple must accompany every event.
 // Unknown is explicit when recording/tagging lacks a reliable completion receipt.
-// Owner/generation/submission identify the real consumer batch (FG uses its
-// existing frame receipt, NR/Filter use the genuine signalled tail). Zero tail
+// Owner/generation/submission identify the real NR/Filter signalled tail. Zero tail
 // is allowed for quarantine; an abandoned recording may report Unknown with
 // zero owner/generation/submission. Neither case can report Completed.
 void Observe(const FramePtr&,Consumer,Lifecycle,uintptr_t owner,uint64_t generation,uint64_t submission) noexcept;

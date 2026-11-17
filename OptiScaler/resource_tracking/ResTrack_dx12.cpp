@@ -43,15 +43,7 @@ typedef void(STDMETHODCALLTYPE* PFN_CreateUnorderedAccessView)(ID3D12Device* Thi
                                                                ID3D12Resource* pCounterResource,
                                                                D3D12_UNORDERED_ACCESS_VIEW_DESC* pDesc,
                                                                D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
-typedef void(STDMETHODCALLTYPE* PFN_CreateDepthStencilView)(ID3D12Device* This, ID3D12Resource* pResource,
-                                                            const D3D12_DEPTH_STENCIL_VIEW_DESC* pDesc,
-                                                            D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
-typedef void(STDMETHODCALLTYPE* PFN_CreateConstantBufferView)(ID3D12Device* This,
-                                                              const D3D12_CONSTANT_BUFFER_VIEW_DESC* pDesc,
-                                                              D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
 
-typedef void(STDMETHODCALLTYPE* PFN_CreateSampler)(ID3D12Device* This, const D3D12_SAMPLER_DESC* pDesc,
-                                                   D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
 
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateDescriptorHeap)(ID3D12Device* This,
                                                              D3D12_DESCRIPTOR_HEAP_DESC* pDescriptorHeapDesc,
@@ -96,9 +88,6 @@ typedef void(STDMETHODCALLTYPE* PFN_ClearState)(ID3D12GraphicsCommandList* This,
 static PFN_CreateRenderTargetView o_CreateRenderTargetView = nullptr;
 static PFN_CreateShaderResourceView o_CreateShaderResourceView = nullptr;
 static PFN_CreateUnorderedAccessView o_CreateUnorderedAccessView = nullptr;
-static PFN_CreateDepthStencilView o_CreateDepthStencilView = nullptr;
-static PFN_CreateConstantBufferView o_CreateConstantBufferView = nullptr;
-static PFN_CreateSampler o_CreateSampler = nullptr;
 
 static PFN_CreateDescriptorHeap o_CreateDescriptorHeap = nullptr;
 static PFN_HeapRelease o_HeapRelease = nullptr;
@@ -338,67 +327,6 @@ bool ResTrack_Dx12::CheckForRealObject(const std::string functionName, IUnknown*
 }
 
 #pragma region Resource methods
-
-bool ResTrack_Dx12::CreateBufferResource(ID3D12Device* InDevice, ResourceInfo* InSource, D3D12_RESOURCE_STATES InState,
-                                         ID3D12Resource** OutResource)
-{
-    if (InDevice == nullptr || InSource == nullptr || InSource->buffer == nullptr)
-        return false;
-
-    if (*OutResource != nullptr)
-    {
-        auto bufDesc = (*OutResource)->GetDesc();
-
-        if (bufDesc.Width != (UINT64) (InSource->width) || bufDesc.Height != (UINT) (InSource->height) ||
-            bufDesc.Format != InSource->format)
-        {
-            (*OutResource)->Release();
-            (*OutResource) = nullptr;
-        }
-        else
-            return true;
-    }
-
-    D3D12_HEAP_PROPERTIES heapProperties;
-    D3D12_HEAP_FLAGS heapFlags;
-    HRESULT hr = InSource->buffer->GetHeapProperties(&heapProperties, &heapFlags);
-
-    if (hr != S_OK)
-    {
-        LOG_ERROR("GetHeapProperties result: {0:X}", (UINT64) hr);
-        return false;
-    }
-
-    D3D12_RESOURCE_DESC texDesc = InSource->buffer->GetDesc();
-    texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    hr = InDevice->CreateCommittedResource(&heapProperties, D3D12_HEAP_FLAG_NONE, &texDesc, InState, nullptr,
-                                           IID_PPV_ARGS(OutResource));
-
-    if (hr != S_OK)
-    {
-        LOG_ERROR("CreateCommittedResource result: {0:X}", (UINT64) hr);
-        return false;
-    }
-
-    (*OutResource)->SetName(L"fgHudlessSCBufferCopy");
-    return true;
-}
-
-void ResTrack_Dx12::ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
-                                    D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState)
-{
-    if (InBeforeState == InAfterState)
-        return;
-
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = InResource;
-    barrier.Transition.StateBefore = InBeforeState;
-    barrier.Transition.StateAfter = InAfterState;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    InCommandList->ResourceBarrier(1, &barrier);
-}
 
 #pragma endregion
 
@@ -2735,12 +2663,9 @@ void ResTrack_Dx12::HookDevice(ID3D12Device* device)
     o_CreateShaderResourceView = (PFN_CreateShaderResourceView) pVTable[18];
     o_CreateUnorderedAccessView = (PFN_CreateUnorderedAccessView) pVTable[19];
     o_CreateRenderTargetView = (PFN_CreateRenderTargetView) pVTable[20];
-    o_CreateSampler = (PFN_CreateSampler) pVTable[22];
     o_CopyDescriptors = (PFN_CopyDescriptors) pVTable[23];
     o_CopyDescriptorsSimple = (PFN_CopyDescriptorsSimple) pVTable[24];
 
-    // o_CreateDepthStencilView = (PFN_CreateDepthStencilView) pVTable[21];
-    // o_CreateConstantBufferView = (PFN_CreateConstantBufferView) pVTable[17];
 
     // Apply the detour
 

@@ -18,7 +18,6 @@
 //   Resolve  proxy + model answer + untouched copy -> the frame, edited
 
 #include "DlssNr_Common.h"
-#include "DlssNr_GuidePreview.h"
 #include "DlssNr_DetailReuseConstants.h"
 #include "DlssNr_DetailStabilitySample.h"
 #include "DlssNr_LutConstants.h"
@@ -93,8 +92,6 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     ID3D12PipelineState* _finishedColorPipelineState = nullptr;
 
     // Display-only input preview, independent bytecode; uses the completion-aware shared ring.
-    ID3D12PipelineState* _guidePreviewPipelineState = nullptr;
-    bool _guidePreviewPipelineFailed = false;
 
     // "Tune for this scene"'s stats pass (dlssnr_detail_stats.hlsl), built on first use the same way. Only
     // dispatched while a calibration runs.
@@ -234,10 +231,6 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     //   103  as 102, and In2 the picture the uncompressed path would show the model (ordinary grid): the answer gets
     //        In2 minus the unpacked input added (the Replace curves, which never read the proxy)
     // The sampler is the shared linear clamp. Resources are left in the state they arrived in.
-    bool GuidePreviewReady();
-    bool DispatchGuidePreview(ID3D12GraphicsCommandList* list, const DlssNrGuidePreviewConstants& constants,
-                              ID3D12Resource* source, ID3D12Resource* target);
-
     bool SpatialReady();
     bool DispatchSpatial(ID3D12GraphicsCommandList* InCmdList, const DlssNr::Spatial::Constants& InConstants,
                          ID3D12Resource* In0, ID3D12Resource* In1, ID3D12Resource* In2, ID3D12Resource* Out0,

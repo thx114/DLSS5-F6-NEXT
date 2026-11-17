@@ -15,10 +15,8 @@ class fakenvapi
     } antilag2_data;
 
     inline static bool _usingFakenvapiAsMainNvapi = false;
-    inline static bool _usingOnNvidia = false;
     inline static void* _lowLatencyTechContext = nullptr;
     inline static LowLatencyMode _lowLatencyMode = LowLatencyMode::LatencyFlex;
-    inline static HMODULE _dllForNvidia = nullptr;
     inline static std::atomic<uint32_t> _forcedModeGeneration = 0;
 
     static std::unordered_map<NvU32, void*> idToFuncMapping;
@@ -37,7 +35,7 @@ class fakenvapi
         0x5083ae5b, 0x8070, 0x4fca, { 0x8e, 0xe5, 0x35, 0x82, 0xdd, 0x36, 0x7d, 0x13 }
     };
 
-    static void init(bool onlyContext);
+    static void init();
     static void deinit();
     static void* queryInterface(NvU32 id);
     static void reportFGPresent(IDXGISwapChain* pSwapChain, bool fg_state, bool frame_interpolated);

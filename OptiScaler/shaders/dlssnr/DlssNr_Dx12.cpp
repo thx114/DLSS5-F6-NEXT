@@ -18,7 +18,6 @@
 #include <dlssnr/DlssNr.h>
 #include <dlssnr/DlssNrFgTrace.h>
 #include <dlssnr/DlssNrNative.h>
-#include <dlssnr/ResidualFg.h>
 #include <dlssnr/DlssNrDetailReuse.h>
 #include <dlssnr/DlssNrDetailReuseHost.h>
 #include <dlssnr/DlssNrCadenceLedger.h>
@@ -92,7 +91,6 @@
 #include "precompile/dlssnr_detail_stats_Shader.h"
 #include "precompile/dlssnr_detail_reuse_Shader.h"
 #include "precompile/dlssnr_spatial_Shader.h"
-#include "precompile/dlssnr_guide_preview_Shader.h"
 #include "precompile/dlssnr_spatial_guides_Shader.h"
 #include "precompile/dlssnr_exposure_adapt_Shader.h"
 #include "precompile/dlssnr_lut_Shader.h"
@@ -259,15 +257,6 @@ using DlssNr::Profiles::PassPreset;
 using DlssNr::Profiles::PassStyle;
 using DlssNr::Profiles::PassTuning;
 
-// Small publication lock: the menu does not take the recording/model lock.
-std::mutex g_guidePreviewStatusMutex;
-std::string g_guidePreviewStatus;
-void PublishGuidePreview(const std::string& text)
-{
-    std::lock_guard lock(g_guidePreviewStatusMutex);
-    g_guidePreviewStatus = text;
-}
-
 struct NrState
 {
     unsigned long long successfulDispatches = 0;
@@ -353,11 +342,6 @@ struct NrState
     // reconstructing it by inverting the tone curve, which is what turned every light in the frame into
     // a string of coloured cells.
     ID3D12Resource* hdrCopy = nullptr;
-
-    // UAV at rest. Snapshot before model work, copied to display only after history/capture.
-    // Shape changes/off retire through the same submission-fence resource queue as all NR scratch.
-    ID3D12Resource* guidePreview = nullptr;
-    bool guidePreviewAllocationFailed = false;
 
     // Compact origin-zero pre-SR image, only needed when Color has allocation padding. All codec,
     // hold and capture paths then see the real raster. UAV at rest, retired with the scratch set.
@@ -467,25 +451,6 @@ struct NrState
     // Which white point source last fed the readback ring. A source change invalidates the ring, so
     // one source's numbers are never read as another's.
     uint32_t exposureReadbackSource = 0;
-
-    // The calibration grid: what scale the game's buffer is on, measured from the untouched copy.
-    // Its own surface and ring rather than sharing the meter's, because the two run at different
-    // sizes -- the meter fetches one texel and this reads the whole frame.
-    ID3D12Resource* calib = nullptr;
-    ID3D12Resource* calibReadback[4] = {};
-    unsigned long long calibFrames = 0;
-
-    // The last few answers, so the menu can say how settled the number is. A suggestion taken during
-    // a fade or a loading screen is worth less than one taken while standing still, and the spread
-    // across recent frames is what tells them apart.
-    static constexpr unsigned int kCalibHistory = 32;
-    float calibHistory[kCalibHistory] = {};
-    unsigned int calibCount = 0;
-    float calibSuggestion = 0.0f;
-    float calibSteadiness = 0.0f;
-    bool calibUsable = false;
-    const char* calibWhy = "measuring...";
-    bool calibPassthrough = false;
 
     // Whether the frame that filled each readback slot actually had an exposure texture bound.
     //
@@ -669,12 +634,6 @@ void PublishNrGpuTiming(std::optional<double> ms, UINT64 dispatch = 0)
 // Writes matched before/after frames on request, so comparisons stop depending on video.
 capture::FrameCapture g_capture;
 
-// One capture happens on its own each session, so there is always a fresh sample without anyone having
-// to remember to ask. Started after the scene has had a moment to settle: the first frames after a
-// feature is built carry its reset, and are not representative of anything.
-constexpr unsigned long long kAutoCaptureAfterFrames = 180;
-bool g_autoCaptureDone = false;
-
 // Cleared once per run, so a session's captures are its own and nothing accumulates across launches.
 void ClearCaptureDirectory()
 {
@@ -724,25 +683,6 @@ void CheckCaptureTrigger()
         DlssNr::RequestCapture(capture::kMaxFrames);
         LOG_INFO("DLSS-NR capture requested by trigger file");
     }
-}
-
-// The encoded mean is aimed here. Mid-grey rather than anything brighter: the model has to see both the
-// shadow detail it might lift and the highlights it must not blow out.
-constexpr float kTargetEncodedMean = 0.45f;
-
-// How fast the derived value follows the scene. Readings arrive a few times a second, and an exposure
-// that lunges at every cut is worse than one that arrives a moment late.
-constexpr float kWhitePointBlend = 0.25f;
-
-// Recomputes the white point from a measured mean. Inverting the encode for the white point that puts
-// that mean at the target gives wp = mean * (1 - t^g) / t^g.
-float WhitePointForMean(float meanLuma)
-{
-    const float encoded = powf(kTargetEncodedMean, 2.2f);
-    const float ratio = encoded / (1.0f - encoded);
-    const float wp = meanLuma / ratio;
-    // A black frame between scenes would otherwise drive this to zero and divide the next frame by it.
-    return wp < 0.01f ? 0.01f : (wp > 10000.0f ? 10000.0f : wp);
 }
 
 std::filesystem::path g_dllDir;
@@ -1040,15 +980,6 @@ void TickNrRetired()
 // The inject point decides which buffer is being measured -- the upscaler's linear output or the
 // finished frame in swapchain format -- so a reading taken before a change describes a different
 // picture to one taken after. Everything else that depends on the format is invalidated here.
-void ForgetCalibration()
-{
-    g_nr.calibCount = 0;
-    g_nr.calibSuggestion = 0.0f;
-    g_nr.calibSteadiness = 0.0f;
-    g_nr.calibUsable = false;
-    g_nr.calibWhy = "measuring...";
-}
-
 // Model and proxy formats describe actual internal allocations (R11 sources use RGBA16F).
 // colorCopy, colorSmall and outputNative share the proxy format. Both are checked because a real
 // colour-family change must invalidate the set even when the packed model remains RGBA16F.
@@ -1070,7 +1001,6 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT modelFormat, DXGI_FORMAT colourF
              DlssNrWatchedLists::g_overflowCount.load(std::memory_order_acquire),
              DlssNrWatchedLists::g_overflowPeak.load(std::memory_order_relaxed));
 
-    ForgetCalibration();
 
     ParkNrFeature(g_nr.feature);
     g_nr.featurePendingSubmission = false;
@@ -1113,35 +1043,6 @@ constexpr unsigned int kMeterBytes = kMeterRowBytes * kDlssNrMeterGrid;
 
 // Records the copy of this frame's grid into whichever readback buffer is furthest from being read.
 // Same shape as the meter's copy, against the calibration surface and its own ring.
-void CopyCalibrationToReadback(ID3D12GraphicsCommandList* cmdList)
-{
-    const unsigned int slot = (unsigned int) (g_nr.calibFrames % 4);
-
-    if (g_nr.calibReadback[slot] == nullptr || g_nr.calib == nullptr)
-        return;
-
-    D3D12_TEXTURE_COPY_LOCATION srcLoc {};
-    srcLoc.pResource = g_nr.calib;
-    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    srcLoc.SubresourceIndex = 0;
-
-    D3D12_TEXTURE_COPY_LOCATION dst {};
-    dst.pResource = g_nr.calibReadback[slot];
-    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    dst.PlacedFootprint.Offset = 0;
-    dst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_FLOAT;
-    dst.PlacedFootprint.Footprint.Width = kDlssNrMeterGrid;
-    dst.PlacedFootprint.Footprint.Height = kDlssNrMeterGrid;
-    dst.PlacedFootprint.Footprint.Depth = 1;
-    dst.PlacedFootprint.Footprint.RowPitch = kMeterRowBytes;
-
-    Barrier(cmdList, g_nr.calib, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    cmdList->CopyTextureRegion(&dst, 0, 0, 0, &srcLoc, nullptr);
-    Barrier(cmdList, g_nr.calib, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-    g_nr.calibFrames++;
-}
-
 void CopyMeterToReadback(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device,
                          bool exposureBound)
 {
@@ -1504,103 +1405,6 @@ void ReportFrameStats(float whitePoint, uint32_t source)
 // A high percentile of tile peaks, not the maximum: the maximum is a sun or a specular hit and would
 // normalise the whole picture into the dark. The 90th percentile is high enough to sit at the top of
 // the real range and common enough that no single highlight decides it.
-void ConsumeCalibrationReadback()
-{
-    if (g_nr.calibFrames < 4)
-        return;
-
-    const unsigned int slot = (unsigned int) (g_nr.calibFrames % 4);
-    ID3D12Resource* buffer = g_nr.calibReadback[slot];
-
-    if (buffer == nullptr)
-        return;
-
-    void* mapped = nullptr;
-    D3D12_RANGE range { 0, kMeterBytes };
-
-    if (FAILED(buffer->Map(0, &range, &mapped)) || mapped == nullptr)
-        return;
-
-    const float* src = (const float*) mapped;
-
-    std::vector<float> tiles;
-    tiles.reserve(kDlssNrMeterGrid * kDlssNrMeterGrid);
-
-    for (unsigned int i = 0; i < kDlssNrMeterGrid * kDlssNrMeterGrid; ++i)
-    {
-        if (std::isfinite(src[i]) && src[i] > 1e-6f)
-            tiles.push_back(src[i]);
-    }
-
-    D3D12_RANGE nothingWritten { 0, 0 };
-    buffer->Unmap(0, &nothingWritten);
-
-    if (tiles.size() < 16)
-        return;
-
-    const size_t nth = (size_t) ((float) (tiles.size() - 1) * 0.90f);
-    std::nth_element(tiles.begin(), tiles.begin() + nth, tiles.end());
-
-    // How much of the frame carries light, measured against its own brightest tile rather than an
-    // absolute threshold -- the units here are the game's and there is no absolute scale.
-    //
-    // This is what separates "the buffer is scaled by 240" from "I am standing in a dark cave". A
-    // percentile of tile peaks is a statement about scene content; it only describes the buffer when
-    // enough of the picture is lit for the top of the range to actually appear in it.
-    float brightest = 0.0f;
-
-    for (float v : tiles)
-        brightest = std::max(brightest, v);
-
-    unsigned int lit = 0;
-
-    for (float v : tiles)
-    {
-        if (v > brightest * 0.10f)
-            ++lit;
-    }
-
-    const float litFraction = tiles.empty() ? 0.0f : (float) lit / (float) tiles.size();
-
-    // A torn readback survives isfinite and would clamp to exactly the ceiling, which since the
-    // ceiling became 2000 is a value the slider can hold -- so a garbage frame could be offered as a
-    // real answer. Reject rather than clamp.
-    if (!(tiles[nth] > 0.0f) || tiles[nth] >= 1999.0f)
-        return;
-
-    const float suggestion = std::clamp(tiles[nth], 0.25f, 1990.0f);
-
-    g_nr.calibUsable = !g_nr.calibPassthrough && litFraction > 0.20f;
-    g_nr.calibWhy = g_nr.calibPassthrough  ? "this game hands over a frame it already tone mapped, so there is nothing to normalise"
-                    : litFraction <= 0.20f ? "too little of this scene is lit to say where the top of the range is"
-                                           : "";
-
-    g_nr.calibHistory[g_nr.calibCount % NrState::kCalibHistory] = suggestion;
-    g_nr.calibCount++;
-    g_nr.calibSuggestion = suggestion;
-
-    // Confidence is the spread of recent answers, not their absolute size. A number that has held
-    // still for a second is one worth taking; one that is swinging means the scene is changing under
-    // the measurement, and no single value would serve anyway.
-    const unsigned int have = std::min<unsigned int>(g_nr.calibCount, NrState::kCalibHistory);
-
-    if (have >= 8)
-    {
-        float lo = g_nr.calibHistory[0];
-        float hi = g_nr.calibHistory[0];
-
-        for (unsigned int i = 0; i < have; ++i)
-        {
-            lo = std::min(lo, g_nr.calibHistory[i]);
-            hi = std::max(hi, g_nr.calibHistory[i]);
-        }
-
-        // A spread of 1.0x is perfect agreement and 2x or worse is none.
-        const float spread = hi / lo;
-        g_nr.calibSteadiness = std::clamp(1.0f - (spread - 1.0f), 0.0f, 1.0f);
-    }
-}
-
 void ConsumeMeterReadback()
 {
     if (g_nr.meterFrames < 4)
@@ -2514,8 +2318,6 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
 
 DlssNr_Dx12::~DlssNr_Dx12()
 {
-    if (_guidePreviewPipelineState)
-        _guidePreviewPipelineState->Release();
     if (_finishedColorPipelineState)
         _finishedColorPipelineState->Release();
     if (_detailStatsPipelineState)
@@ -3035,52 +2837,6 @@ bool DlssNr_Dx12::DispatchDetailReuse(ID3D12GraphicsCommandList* InCmdList,
     InCmdList->SetComputeRootDescriptorTable(0, currentHeap.GetTableGPUStart());
     InCmdList->Dispatch((Width + _numThreadsX - 1) / _numThreadsX, (Height + _numThreadsY - 1) / _numThreadsY, 1);
 
-    return true;
-}
-
-bool DlssNr_Dx12::GuidePreviewReady()
-{
-    // Independent GPU preview pipelines are prepared only by GuideCapture's worker.
-    return false;
-}
-
-bool DlssNr_Dx12::DispatchGuidePreview(ID3D12GraphicsCommandList* list,
-                                      const DlssNrGuidePreviewConstants& constants,
-                                      ID3D12Resource* source, ID3D12Resource* target)
-{
-    static_assert(sizeof(DlssNrGuidePreviewConstants) <= sizeof(DlssNrConstants));
-    if (!GuidePreviewReady() || !list || !target || source == target || !constants.width || !constants.height)
-        return false;
-    const int acquired = DlssNrGpuLifetime::AcquireSlot(_heapUses, _heapIndex, NrRecording(_device, list));
-    if (acquired < 0) return false;
-    const auto slot = static_cast<uint32_t>(acquired);
-    auto& heap = _frameHeaps[slot];
-    for (uint32_t i = 0; i < kSrvCount; ++i)
-    {
-        if (source) CreateShaderResourceView(_device, source, heap.GetSrvCPU(i));
-        else
-        {
-            // Real null SRV, never an old guide or the writable target as a stand-in.
-            D3D12_SHADER_RESOURCE_VIEW_DESC nullSrv {};
-            nullSrv.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-            nullSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            nullSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            nullSrv.Texture2D.MipLevels = 1;
-            _device->CreateShaderResourceView(nullptr, &nullSrv, heap.GetSrvCPU(i));
-        }
-    }
-    for (uint32_t i = 0; i < kUavCount; ++i)
-        CreateUnorderedAccessView(_device, target, heap.GetUavCPU(i), 0);
-    if (!UploadNrConstants(_device, _constantBuffers[slot], constants)) return false;
-    if (!DlssNrGpuLifetime::Retain(_heapUses[slot], { heap.GetHeapCSU(), _constantBuffers[slot],
-            _rootSignature, _guidePreviewPipelineState, source, target })) return false;
-
-    ID3D12DescriptorHeap* heaps[] = { heap.GetHeapCSU() };
-    list->SetDescriptorHeaps(1, heaps);
-    list->SetComputeRootSignature(_rootSignature);
-    list->SetPipelineState(_guidePreviewPipelineState);
-    list->SetComputeRootDescriptorTable(0, heap.GetTableGPUStart());
-    list->Dispatch((constants.width + 7) / 8, (constants.height + 7) / 8, 1);
     return true;
 }
 
@@ -3640,7 +3396,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if(g_nr.sourceColourFormat!=colourFormat) {
         if(g_nr.sourceColourFormat!=DXGI_FORMAT_UNKNOWN) {
             // R11 and FP16 now share allocations, but never their colour history.
-            g_nr.reset=true;ForgetCalibration();InvalidateExposureMeter();
+            g_nr.reset=true;InvalidateExposureMeter();
         }
         g_nr.sourceColourFormat=colourFormat;
     }
@@ -3685,9 +3441,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // resources away for it would mean a reallocation every time a slider moves.
         if (resolutionChanged || placementChanged)
         {
-            if (placementChanged)
-                ForgetCalibration();
-
             ParkNrResource(g_nr.output);
             ParkNrResource(g_nr.passScratch);
             ParkNrResource(g_nr.layerLookScratch);
@@ -4864,10 +4617,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     ID3D12Resource* const sceneCutDistrust =
         SceneCut::Run(cmdList, device, sceneCutMode, frame, g_nr.colorCopy,
                       TranslateTypelessFormats(g_nr.colorCopy->GetDesc().Format));
-    // Measure the buffer's scale from the copy the encode just kept -- untouched, so there is no path
-    // (Calibration pass removed: it produced only a menu suggestion nothing consumed, at the cost
-    // of a 4096-thread dispatch, a readback and an nth_element every frame.)
-
     Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     CalibrationCopyInput(cmdList, device, g_nr.hdrCopy);
@@ -7060,10 +6809,6 @@ bool UsesSourceOutput()
         Config::Instance()->DlssNrGenshinPresentPipeline.value_or_default());
 }
 
-std::string GuidePreviewStatus()
-{
-    return GuideCapture::PreviewStatus();
-}
 namespace Late { bool CaptureResidual(ID3D12GraphicsCommandList*, ID3D12Resource*, ID3D12Resource*, float, bool); }
 #include "DlssNr_DeferredSr.inl"
 std::string DeferredDlssStatus() { return SynchronousDeferredDlssStatus(); }
@@ -7817,17 +7562,6 @@ void ProbeD3D11(void* d3d11Device)
                  result, NgxResultName((unsigned int) result));
 }
 
-CalibrationReading Calibration()
-{
-    CalibrationReading r {};
-    r.suggestion = g_nr.calibSuggestion;
-    r.steadiness = g_nr.calibSteadiness;
-    r.samples = g_nr.calibCount;
-    r.usable = g_nr.calibUsable;
-    r.why = g_nr.calibWhy;
-    return r;
-}
-
 bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
 
 const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
@@ -8066,13 +7800,6 @@ void Shutdown()
         g_nr.activeColor = nullptr;
     }
 
-    if (g_nr.guidePreview != nullptr)
-    {
-        g_nr.guidePreview->Release();
-        g_nr.guidePreview = nullptr;
-    }
-    g_nr.guidePreviewAllocationFailed = false;
-
     if (g_nr.lutScratch != nullptr)
     {
         g_nr.lutScratch->Release();
@@ -8153,28 +7880,6 @@ void Shutdown()
     // reset below, which is all a recreate needs; resetting the source too would make the next frame
     // look like a change of source, and that clears the held game exposure -- the value the note
     // further down says must survive a recreate.
-
-    if (g_nr.calib != nullptr)
-    {
-        g_nr.calib->Release();
-        g_nr.calib = nullptr;
-    }
-
-    for (auto& r : g_nr.calibReadback)
-    {
-        if (r != nullptr)
-        {
-            r->Release();
-            r = nullptr;
-        }
-    }
-
-    g_nr.calibFrames = 0;
-    g_nr.calibCount = 0;
-    g_nr.calibSuggestion = 0.0f;
-    g_nr.calibSteadiness = 0.0f;
-    g_nr.calibUsable = false;
-    g_nr.calibWhy = "measuring...";
 
     for (auto& rb : g_nr.meterReadback)
     {

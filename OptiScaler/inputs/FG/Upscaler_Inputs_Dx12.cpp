@@ -257,8 +257,7 @@ void UpscalerInputsDx12::UpscaleEnd(ID3D12GraphicsCommandList* InCmdList, NVSDK_
         if (Config::Instance()->FGHUDFix.value_or_default())
         {
             // For signal after mv & depth copies
-            Hudfix_Dx12::UpscaleEnd(colourSource ? colourSource->Frame() : feature->FrameCount(),
-                State::Instance().lastFGFrameTime);
+            Hudfix_Dx12::UpscaleEnd();
 
             if (auto* own=dynamic_cast<DLSSG_Dx12*>(fg); own && own->OwnsUpscalerDepthContract())
             {

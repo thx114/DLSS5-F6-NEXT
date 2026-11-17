@@ -850,7 +850,7 @@ void Install(ID3D11Device* device)
 {
     const bool mods=gimi::runtime::Enabled();
     if(!device || (!mods && !taa::NeedsHooks() && !DrawObservationDx11::NeedsDraw() &&
-        !Config::Instance()->DrawUiMaskEnabled.value_or_default() &&
+        !DrawUiMask::Enabled() &&
         !Config::Instance()->DlssNrNativeDepthFinder.value_or_default()))return;
     if(g_installing.test_and_set(std::memory_order_acquire))return;
     struct Release {~Release(){g_installing.clear(std::memory_order_release);}} release;
@@ -940,7 +940,7 @@ void OnPresent(IDXGISwapChain* swapChain)
         ~SourceEpoch(){if(!published)RevokeSourceObservations();}
     } sourceEpoch;
     if (!g_installed.load() && swapChain && (taa::NeedsHooks() || DrawObservationDx11::NeedsDraw() ||
-        Config::Instance()->DrawUiMaskEnabled.value_or_default() || gimi::runtime::Enabled()))
+        DrawUiMask::Enabled() || gimi::runtime::Enabled()))
     {
         Microsoft::WRL::ComPtr<ID3D11Device> device;
         if (SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&device)))) Install(device.Get());

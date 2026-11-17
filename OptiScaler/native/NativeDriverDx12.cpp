@@ -109,8 +109,9 @@ HoYoShade::ConsumerAccess RunFrame(IDXGISwapChain* swapChain, ID3D12CommandQueue
         HoYoShade::Selected(HoYoShade::Stage::BeforeNr);
     if (!HoYoShade::AdmitNativeFrame(requested, [] { return g_driver.Enabled(); }))
         return HoYoShade::ColorConsumers(swapChain);
-    if (HoYoShade::ColorConsumers(swapChain) != HoYoShade::ConsumerAccess::Safe)
-        return HoYoShade::ColorConsumers(swapChain);
+    const auto consumers = HoYoShade::ColorConsumers(swapChain);
+    if (consumers != HoYoShade::ConsumerAccess::Safe)
+        return consumers;
     if (swapChain == nullptr || queue == nullptr || device == nullptr || g_driver.Failed())
         return HoYoShade::ColorConsumers(swapChain);
 

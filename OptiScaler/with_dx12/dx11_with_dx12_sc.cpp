@@ -165,19 +165,6 @@ UINT ResolveBufferCount(IDXGISwapChain* swapchain, IDXGISwapChain1* swapchain1)
     return 2;
 }
 
-DXGI_FORMAT ResolveBufferFormat(IDXGISwapChain* swapchain, IDXGISwapChain1* swapchain1)
-{
-    DXGI_SWAP_CHAIN_DESC desc = {};
-    if (swapchain != nullptr && SUCCEEDED(swapchain->GetDesc(&desc)) && desc.BufferDesc.Format != DXGI_FORMAT_UNKNOWN)
-        return desc.BufferDesc.Format;
-
-    DXGI_SWAP_CHAIN_DESC1 desc1 = {};
-    if (swapchain1 != nullptr && SUCCEEDED(swapchain1->GetDesc1(&desc1)))
-        return desc1.Format;
-
-    return DXGI_FORMAT_UNKNOWN;
-}
-
 // Match PrepareDx12InteropDesc/Desc1 for every DX12 presenter, including DLSSG.
 // Only XeFG's flag preservation remains a game quirk. The native resize below
 // always receives the game's untouched arguments.
@@ -2202,7 +2189,6 @@ bool Dx11wDx12SC::_ReleaseInteropObjects()
 
     SafeRelease(_dx12SharedFence);
     SafeRelease(_dx11Fence);
-    SafeCloseHandle(_dx11FenceEvent);
     SafeCloseHandle(_sharedFenceHandle);
 
     for (auto& cmdList : _copyCommandLists)
@@ -2244,7 +2230,6 @@ bool Dx11wDx12SC::_ReleaseInteropObjects()
 void Dx11wDx12SC::_RefreshCachedSwapchainDesc()
 {
     _bufferCount = ResolveBufferCount(_real, _real1);
-    _bufferFormat = ResolveBufferFormat(_real, _real1);
     _currentFakeIndex = _bufferCount > 0 ? _currentFakeIndex : 0;
 }
 

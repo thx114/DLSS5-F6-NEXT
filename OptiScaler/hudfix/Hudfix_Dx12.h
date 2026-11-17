@@ -69,12 +69,6 @@ class Hudfix_Dx12
     // Last presented frame
     inline static std::atomic<UINT64> _fgCounter { 0 };
 
-    // Limit until calling FG without hudless
-    inline static double _lastDiffTime = 0.0;
-    inline static double _upscaleEndTime = 0.0;
-    inline static double _targetTime = 0.0;
-    inline static double _frameTime = 0.0;
-
     inline static std::atomic<bool> _skipTracking { false };
 
     // Buffer for Format Transfer
@@ -128,7 +122,7 @@ class Hudfix_Dx12
     static void UpscaleStart();
 
     // Trig for upscaling end
-    static void UpscaleEnd(UINT64 frameId, double lastFGFrameTime);
+    static void UpscaleEnd();
 
     // Trig for present start
     static void PresentStart();
@@ -136,7 +130,6 @@ class Hudfix_Dx12
     // Trig for present end
     static void PresentEnd();
 
-    static UINT64 ActiveUpscaleFrame();
     static UINT64 ActivePresentFrame();
 
     // Is Hudfix active
@@ -156,6 +149,5 @@ class Hudfix_Dx12
     // Reset frame counters
     static void ResetCounters();
 
-    static bool GetSkipStatus() { return _skipTracking.load(std::memory_order_acquire); }
     static void SetSkipStatus(bool status) { _skipTracking.store(status, std::memory_order_release); }
 };

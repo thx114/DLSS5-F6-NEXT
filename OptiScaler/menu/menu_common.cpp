@@ -1376,42 +1376,6 @@ static float srgbToLinear(float x)
     return std::pow((x + 0.055f) / 1.055f, 2.4f);
 }
 
-static float linearToPQ(float nits)
-{
-    // SMPTE ST.2084
-    constexpr float m1 = 2610.0f / 16384.0f;
-    constexpr float m2 = 2523.0f / 32.0f;
-    constexpr float c1 = 3424.0f / 4096.0f;
-    constexpr float c2 = 2413.0f / 128.0f;
-    constexpr float c3 = 2392.0f / 128.0f;
-
-    const float y = std::clamp(nits / 10000.0f, 0.0f, 1.0f);
-    const float ym1 = std::pow(y, m1);
-
-    return std::pow((c1 + c2 * ym1) / (1.0f + c3 * ym1), m2);
-}
-
-static float linearToHLG(float x)
-{
-    // BT.2100 HLG OETF
-    constexpr float a = 0.17883277f;
-    constexpr float b = 0.28466892f;
-    constexpr float c = 0.55991073f;
-
-    x = std::max(x, 0.0f);
-
-    if (x <= (1.0f / 12.0f))
-        return std::sqrt(3.0f * x);
-
-    return a * std::log(12.0f * x - b) + c;
-}
-
-static ImVec4 linear709To2020(float r, float g, float b)
-{
-    return ImVec4(0.6274040f * r + 0.3292820f * g + 0.0433136f * b, 0.0690970f * r + 0.9195400f * g + 0.0113612f * b,
-                  0.0163916f * r + 0.0880132f * g + 0.8955950f * b, 0.0f);
-}
-
 static ImVec4 legacyHdrToneMap(const ImVec4& color)
 {
     constexpr float exposure = 1.0f;
@@ -5764,16 +5728,6 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
                 ImGui::Spacing();
                 if (MenuText::TreeNode("资源设置"))
                 {
-                    bool makeMVCopies = config->FGMakeMVCopy.value_or_default();
-                    if (MenuText::Checkbox("复制插帧运动矢量", &makeMVCopies))
-                        config->FGMakeMVCopy = makeMVCopies;
-                    ShowHelpMarker("为 OptiFG 复制运动矢量，避免可能的数据损坏。");
-
-                    bool makeDepthCopies = config->FGMakeDepthCopy.value_or_default();
-                    if (MenuText::Checkbox("复制插帧深度", &makeDepthCopies))
-                        config->FGMakeDepthCopy = makeDepthCopies;
-                    ShowHelpMarker("为 OptiFG 复制深度，避免可能的数据损坏。");
-
                     ImGui::PushItemWidth(115.0f * menuResScale);
                     float depthScaleMax = config->FGDepthScaleMax.value_or_default();
                     if (MenuText::InputFloat("插帧深度最大缩放值", &depthScaleMax, 10.0f, 100.0f, "%.1f"))

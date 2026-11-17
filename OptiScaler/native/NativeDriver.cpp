@@ -288,7 +288,6 @@ NativeDriver::RunResult NativeDriver::RunFrame(IFrameSource& source, bool flowPr
     const auto filter = [&source, queue, &naturalSource](HoYoShade::Stage stage, const FrameInput& color, SyncPoint ready) {
         HoYoShade::ColorEndpoint endpoint;
         endpoint.stage = stage; endpoint.color = color.picture; endpoint.queue = queue;
-        endpoint.uiMask = color.uiMask;
         endpoint.ready = {queue, ready.fence, ready.value, ready.submission,
             ready.submission ? ready.submission->Generation() : 0, ready.submission ? ready.submission->Batch() : 0};
         endpoint.stream = reinterpret_cast<uint64_t>(&source); endpoint.generation = 1;

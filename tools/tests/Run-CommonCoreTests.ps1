@@ -40,7 +40,6 @@ $suites = @(
     @{ Name = 'NrColourTransaction'; Source = 'OptiScaler/shaders/dlssnr/tests/colour-transaction/fixture.cpp'; StubInclude = 'build/common-core-tests' },
     @{ Name = 'NrColourEncoding'; Source = 'OptiScaler/shaders/dlssnr/tests/NrColourEncodingTests.cpp' },
     @{ Name = 'NrDeferredContract'; Source = 'OptiScaler/shaders/dlssnr/tests/deferred-contract/fixture.cpp'; StubInclude = 'build/common-core-tests' },
-    @{ Name = 'NrPresentationSource'; Source = 'OptiScaler/runtime/tests/NrPresentationSourceTests.cpp' },
     @{ Name = 'NrPresentationOutputWarp'; Source = 'OptiScaler/runtime/tests/NrPresentationOutputWarpTests.cpp'; Libraries = 'd3d12.lib dxgi.lib' },
     @{ Name = 'SwapchainHookBoundary'; Source = 'OptiScaler/wrapped/tests/SwapchainHookBoundaryTests.cpp' },
     @{ Name = 'ProviderOutputLifecycle'; Source = 'OptiScaler/wrapped/tests/ProviderOutputLifecycleTests.cpp'; StubInclude = 'build/common-core-tests'; Libraries = 'd3d12.lib dxgi.lib user32.lib' },
@@ -49,6 +48,7 @@ $suites = @(
     @{ Name = 'NrHistoryDebug'; Source = 'OptiScaler/runtime/tests/NrHistoryDebugTests.cpp' },
     @{ Name = 'NrDetailHistoryWarp'; Source = 'OptiScaler/runtime/tests/NrDetailHistoryWarpTests.cpp'; Libraries = 'd3d11.lib d3dcompiler.lib' },
     @{ Name = 'NrDetailHistoryRuntime'; Source = 'OptiScaler/shaders/dlssnr/tests/detail-history-runtime/fixture.cpp'; AdditionalSource = 'OptiScaler/shaders/dlssnr/NrGpuExecutionLifetime.cpp'; CompilerFlags = '/DDLSSNR_LIFETIME_TEST_SEAM'; StubInclude = 'OptiScaler/shaders/dlssnr/tests/detail-history-runtime/stubs'; Libraries = 'd3d12.lib dxgi.lib' },
+    @{ Name = 'NrDeferredLifetime'; Source = 'OptiScaler/shaders/dlssnr/tests/deferred-lifetime/fixture.cpp'; StubInclude = 'build/common-core-tests'; Libraries = 'd3d12.lib dxgi.lib' },
     @{ Name = 'NrGpuExecutionLifetime'; Source = 'OptiScaler/runtime/tests/NrGpuExecutionLifetimeTests.cpp'; AdditionalSource = 'OptiScaler/shaders/dlssnr/NrGpuExecutionLifetime.cpp' },
     @{ Name = 'NrLayerLookWarp'; Source = 'OptiScaler/shaders/dlssnr/tests/LookWarpTests.cpp'; StubInclude = 'build/common-core-tests'; Libraries = 'd3d11.lib d3dcompiler.lib' },
     @{ Name = 'NrGpuTimeWarp'; Source = 'OptiScaler/shaders/dlssnr/tests/gpu-time/fixture.cpp'; StubInclude = 'OptiScaler/shaders/dlssnr/tests/gpu-time'; Libraries = 'd3d12.lib dxgi.lib' },
@@ -81,7 +81,6 @@ $suites = @(
     @{ Name = 'Dx11OutputCopy'; Source = 'OptiScaler/with_dx12/tests/output-copy/fixture.cpp'; StubInclude = 'build/common-core-tests' },
     @{ Name = 'InteropSwapchainPolicy'; Source = 'OptiScaler/with_dx12/tests/InteropSwapchainPolicyTests.cpp' },
     @{ Name = 'InteropSwapchainWarp'; Source = 'OptiScaler/with_dx12/tests/InteropSwapchainWarpTests.cpp'; Libraries = 'd3d11.lib d3d12.lib dxgi.lib user32.lib' },
-    @{ Name = 'ProducerProgress'; Source = 'OptiScaler/runtime/tests/ProducerProgressTests.cpp' },
     @{ Name = 'NativeProducerCpuTiming'; Source = 'OptiScaler/runtime/tests/NativeProducerCpuTimingTests.cpp' },
     @{ Name = 'NativePrepGpuTiming'; Source = 'OptiScaler/runtime/tests/NativePrepGpuTimingTests.cpp'; Libraries = 'd3d12.lib dxgi.lib' },
     @{ Name = 'StarRailResidencyPolicy'; Source = 'OptiScaler/upscalers/tests/StarRailResidencyPolicyTests.cpp' },
@@ -145,6 +144,10 @@ if ('NrDeferredContract' -in $suites.Name) {
 if ('NrColourTransaction' -in $suites.Name -or 'NrLayerLookWarp' -in $suites.Name) {
     & $Python -B (Join-Path $root 'OptiScaler/shaders/dlssnr/tests/colour-transaction/prepare.py')
     if ($LASTEXITCODE -ne 0) { throw 'Cannot extract current colour transaction implementation' }
+}
+if ('NrDeferredLifetime' -in $suites.Name) {
+    & $Python -B (Join-Path $root 'OptiScaler/shaders/dlssnr/tests/deferred-lifetime/prepare.py') $output
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot extract deferred ownership / scratch / mask demand' }
 }
 if ('GuideCaptureWarp' -in $suites.Name -or 'GuidePreviewWarp' -in $suites.Name -or 'MenuPreviewOutput' -in $suites.Name) {
     & $Python -B (Join-Path $root 'OptiScaler/runtime/tests/prepare_guide_capture_hooks.py') (Join-Path $output 'GuideCaptureHooksProduction.inl')

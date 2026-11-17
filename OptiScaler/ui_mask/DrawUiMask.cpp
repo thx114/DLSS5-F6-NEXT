@@ -31,7 +31,7 @@ std::atomic_bool enabled{false};
 std::atomic_uint64_t nextCapture{0};
 struct LifecycleStore {
     std::mutex mutex;
-    std::array<ConsumerStatus,3> consumers{};
+    std::array<ConsumerStatus,2> consumers{};
 };
 LifecycleStore& Observations() noexcept {static LifecycleStore value;return value;}
 void Publish(const Receipt& receipt,Consumer consumer) noexcept {
@@ -117,7 +117,7 @@ public:
     ComPtr<ID3D12Device> device12;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;
-    std::array<Protection,3> protection;
+    std::array<Protection,2> protection;
     bool armed=false,sealed=false,revoked=false;
     UINT returned=0;
     ~Frame(){scene.Reset();mask.Reset();}
@@ -171,7 +171,7 @@ public:
         const auto d=color->GetDesc();
         D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;
         auto texture=d;texture.Format=format;texture.Flags=D3D12_RESOURCE_FLAG_NONE;
-        if(which!=Consumer::Fg && !p.before && FAILED(device12->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&texture,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&p.before))))return false;
+        if(!p.before && FAILED(device12->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&texture,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&p.before))))return false;
         texture.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         if(!p.result && FAILED(device12->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&texture,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&p.result))))return false;
         D3D12_DESCRIPTOR_HEAP_DESC hd{};hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;hd.NumDescriptors=3;hd.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
@@ -305,7 +305,7 @@ void Configure(const Settings& settings) noexcept {
     try {
         auto c=std::make_shared<Configuration>();c->settings=settings;c->epoch=++nextConfiguration;
         const bool game=GameRouting::IsGenshinExecutable(Util::ExePath().wstring());
-        const bool active=settings.enabled && (settings.fg || settings.nr || settings.filters) && game && Parse(*c);
+        const bool active=settings.enabled && (settings.nr || settings.filters) && game && Parse(*c);
         configured.store(std::move(c),std::memory_order_release);enabled.store(active,std::memory_order_release);
         obs::Subscribe(obs::Slot::UiMask,&callbacks,active);
     }catch(...){enabled.store(false,std::memory_order_release);obs::Subscribe(obs::Slot::UiMask,nullptr,false);}
@@ -363,7 +363,7 @@ FramePtr Acquire(ID3D11DeviceContext* context,ID3D11Texture2D* target,ID3D12Devi
 }
 bool Selected(const FramePtr& f,Consumer c) noexcept {
     return f && f->sealed && !f->revoked &&
-        (c==Consumer::Nr?f->settings.nr:c==Consumer::Filter?f->settings.filters:f->settings.fg);
+        ((c==Consumer::Nr && f->settings.nr) || (c==Consumer::Filter && f->settings.filters));
 }
 bool Begin(const FramePtr& f,Consumer c,ID3D12GraphicsCommandList* cmd,ID3D12Resource* color,D3D12_RESOURCE_STATES state) noexcept {
     // A failed/new bracket must not lend a previous callback's frame.
@@ -414,17 +414,6 @@ LayerLookRead::~LayerLookRead() {
     _frame->protection[static_cast<unsigned>(Consumer::Nr)].lookReading=false;
 }
 ID3D12Resource* LayerLookRead::Resource() const noexcept {return _frame?_frame->mask.Res12():nullptr;}
-ID3D12Resource* BuildHudless(const FramePtr& f,ID3D12GraphicsCommandList* cmd,ID3D12Resource* color,D3D12_RESOURCE_STATES state) noexcept {
-    if(!Selected(f,Consumer::Fg) || !cmd || cmd->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT || !f->Prepare(Consumer::Fg,color))return nullptr;
-    auto& p=f->protection[static_cast<unsigned>(Consumer::Fg)];if(p.used)return nullptr;p.used=true;
-    Recorded(f,Consumer::Fg);
-    f->Compose(Consumer::Fg,cmd,f->scene.Res12(),color,state);p.composed=true;
-    return f->protection[static_cast<unsigned>(Consumer::Fg)].result.Get();
-}
-ID3D12Resource* Hudless(const FramePtr& f) noexcept {
-    return Selected(f,Consumer::Fg) && f->protection[static_cast<unsigned>(Consumer::Fg)].used?
-        f->protection[static_cast<unsigned>(Consumer::Fg)].result.Get():nullptr;
-}
 void Observe(const FramePtr& f,Consumer consumer,Lifecycle state,uintptr_t owner,uint64_t generation,uint64_t submission) noexcept {
     const auto index=static_cast<unsigned>(consumer);
     if(!f || index>=f->protection.size() || submission==UINT64_MAX)return;
@@ -440,7 +429,7 @@ void Observe(const FramePtr& f,Consumer consumer,Lifecycle state,uintptr_t owner
     // A completed upload, recording, tag or CPU callback cannot establish use.
     if(state==Lifecycle::Completed && receipt.state!=Lifecycle::Submitted)return;
     if(state==Lifecycle::Pending || (state==Lifecycle::Unknown && receipt.state==Lifecycle::Submitted))return;
-    // Begin's pre-effect copy alone is not a mask consumer. End/BuildHudless
+    // Begin's pre-effect copy alone is not a mask consumer. End
     // must have actually recorded the compose before any submission claim.
     if(state==Lifecycle::Submitted && !f->protection[index].composed)state=Lifecycle::Unknown;
     if(!abandoned){receipt.owner=owner;receipt.generation=generation;}

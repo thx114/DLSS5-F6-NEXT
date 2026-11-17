@@ -5,7 +5,6 @@
 #include "DxgiFactory_Hooks.h"
 #include "SwapchainCreateRule.h"
 #include "ProviderOutputCreation.h"
-#include <framegen/dlssg/DLSSG_Dx12.h>
 #include "DxgiSwapchainSizing.h"
 
 #include "D3D11_Hooks.h"
@@ -630,12 +629,6 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
                             fgSwapChain->QueryInterface(IID_PPV_ARGS(&fgSwapChain4));
                     }
 
-                    // The game-facing success is based on the actual native chain.
-                    // Child admission additionally needs current provider/route + real QI.
-                    const bool childReady = fgScResult==S_OK && fgSwapChain4 && fgSwapChainIsRealFG &&
-                        State::Instance().activeFgInput==FGInput::Upscaler && State::Instance().activeFgOutput==FGOutput::DLSSG &&
-                        dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG) &&
-                        ComIdentity::Get(State::Instance().currentFGSwapchain)==ComIdentity::Get(fgSwapChain4);
                     if ((SUCCEEDED(realScResult) && realDx11SwapChain && fgSwapChain4))
                     {
                         State::Instance().currentSwapchainDesc = fgDesc;
@@ -1038,12 +1031,6 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
                             fgSwapChain1->QueryInterface(IID_PPV_ARGS(&fgSwapChain4));
                     }
 
-                    // The game-facing success is based on the actual native chain.
-                    // Child admission additionally needs current provider/route + real QI.
-                    const bool childReady = fgScResult==S_OK && fgSwapChain4 && fgSwapChainIsRealFG &&
-                        State::Instance().activeFgInput==FGInput::Upscaler && State::Instance().activeFgOutput==FGOutput::DLSSG &&
-                        dynamic_cast<DLSSG_Dx12*>(State::Instance().currentFG) &&
-                        ComIdentity::Get(State::Instance().currentFGSwapchain)==ComIdentity::Get(fgSwapChain4);
                     if ((realScResult == S_OK && realDx11SwapChain1 && fgSwapChain4))
                     {
                         ((IDXGISwapChain*) fgSwapChain4)->GetDesc(&State::Instance().currentSwapchainDesc);

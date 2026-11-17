@@ -84,7 +84,7 @@ bool InputCommon::init_tech(IUnknown* pDevice, LowLatencyMode desiredMode)
     return false;
 }
 
-bool InputCommon::update_low_latency_tech(IUnknown* pDevice, std::optional<LowLatencyMode> mode)
+bool InputCommon::update_low_latency_tech(IUnknown* pDevice)
 {
     if (avaliableInputs.count() == 0)
     {
@@ -102,19 +102,7 @@ bool InputCommon::update_low_latency_tech(IUnknown* pDevice, std::optional<LowLa
     if (!pDevice)
     {
         // Some outputs might call sleep with nullptr
-        if (activeOutput != LowLatencyMode::None && !mode.has_value())
-            return true; // Allow it if we already have an output and not trying to set manually
-        else
-            return false;
-    }
-
-    if (mode.has_value())
-        desiredMode = mode.value();
-
-    if (desiredMode != LowLatencyMode::None && desiredMode == activeOutput)
-    {
-        // No need to do anything
-        return true;
+        return activeOutput != LowLatencyMode::None;
     }
 
     // TODO: add option for totally disabling specific inputs on boot
@@ -174,8 +162,7 @@ bool InputCommon::update_low_latency_tech(IUnknown* pDevice, std::optional<LowLa
         }
     }
 
-    if (desiredMode == LowLatencyMode::None)
-        desiredMode = Config::Instance()->LowLatencyOutput.value_or_default();
+    desiredMode = Config::Instance()->LowLatencyOutput.value_or_default();
 
     // TODO: add avaliableOutput, somehow ?
     if (desiredMode == LowLatencyMode::Auto)
@@ -273,26 +260,26 @@ void InputCommon::add_marker_to_report(const MarkerParams& marker_params)
     {
     case MarkerType::SIMULATION_START:
         _2nd_last_sim_start = last_sim_start;
-        last_sim_start = get_timestamp() / 1000;
+        last_sim_start = current_timestamp;
         current_report->simStartTime = last_sim_start;
         break;
     case MarkerType::SIMULATION_END:
-        current_report->simEndTime = get_timestamp() / 1000;
+        current_report->simEndTime = current_timestamp;
         break;
     case MarkerType::RENDERSUBMIT_START:
-        current_report->renderSubmitStartTime = get_timestamp() / 1000;
+        current_report->renderSubmitStartTime = current_timestamp;
         break;
     case MarkerType::RENDERSUBMIT_END:
-        current_report->renderSubmitEndTime = get_timestamp() / 1000;
+        current_report->renderSubmitEndTime = current_timestamp;
         break;
     case MarkerType::PRESENT_START:
-        current_report->presentStartTime = get_timestamp() / 1000;
+        current_report->presentStartTime = current_timestamp;
         break;
     case MarkerType::PRESENT_END:
-        current_report->presentEndTime = get_timestamp() / 1000;
+        current_report->presentEndTime = current_timestamp;
         break;
     case MarkerType::INPUT_SAMPLE:
-        current_report->inputSampleTime = get_timestamp() / 1000;
+        current_report->inputSampleTime = current_timestamp;
         break;
     default:
         break;
@@ -300,14 +287,6 @@ void InputCommon::add_marker_to_report(const MarkerParams& marker_params)
 }
 
 // public
-InputResult InputCommon::set_low_latency_tech(IUnknown* pDevice, LowLatencyMode mode)
-{
-    if (!update_low_latency_tech(pDevice, mode))
-        return InputResult::LowLatencyUpdateFail;
-
-    return InputResult::Ok;
-}
-
 InputResult InputCommon::sleep(const InputContext& inputContext, IUnknown* pDevice, std::optional<uint32_t> frame_id)
 {
     // Ignore context that Opti creates

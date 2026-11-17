@@ -25,8 +25,6 @@ void RenderHeader(MenuPages::Page currentPage);
 bool RenderFooterLanguage();
 // Keep semantic status colours readable on the active light menu surfaces.
 ImVec4 ReadableTextColor(const ImVec4& colour);
-// Width of the brand, language and theme buttons in the active font/style.
-float FooterLanguageWidth();
 // Continue the footer row only when the next control fits inside its content area.
 void FooterSameLineIfFits(float nextWidth, float spacing = -1.0f);
 bool English();

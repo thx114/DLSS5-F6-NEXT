@@ -228,7 +228,6 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     UINT64 _presentRetirementValue = 0;
 
     ID3D11Fence* _dx11Fence = nullptr;
-    HANDLE _dx11FenceEvent = nullptr;
     ID3D12Fence* _dx12SharedFence = nullptr;
     HANDLE _sharedFenceHandle = nullptr;
     UINT64 _sharedFenceValue = 1;
@@ -240,7 +239,6 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
 
     UINT _bufferCount = 0;
     UINT _currentFakeIndex = 0;
-    DXGI_FORMAT _bufferFormat = DXGI_FORMAT_UNKNOWN;
     bool _interopInitialized = false;
 
     // Set once OpenSharedHandle first reports the D3D12 device gone; logs the real removed-reason a single time

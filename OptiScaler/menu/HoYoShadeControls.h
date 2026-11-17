@@ -64,7 +64,7 @@ inline void RenderMaskStatus(bool english)
     if(!status.enabled) {
         MenuText::TextWrapped("%s",tr("遮罩未启用或当前来源不受支持。","Mask disabled or current source unsupported."));return;
     }
-    const char* labels[]={"NR",english?"Filters":"滤镜","FG"};
+    const char* labels[]={"NR",english?"Filters":"滤镜"};
     for(unsigned i=0;i<status.consumers.size();++i) {
         const auto& h=status.consumers[i];const auto& r=h.latest;
         if(!r.capture || r.configuration!=status.configuration) {

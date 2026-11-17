@@ -319,7 +319,6 @@ void IFGFeature::SetResourceReady(FG_ResourceType type, int index)
         index = GetIndex();
 
     _resourceReady[index][type] = true;
-    _resourceFrame[type] = _frameCount;
 }
 
 UINT IFGFeature::GetInterpolatedFrameCount() const { return _framesToInterpolate < 0 ? 1 : _framesToInterpolate; }

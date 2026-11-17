@@ -7,7 +7,6 @@ class InputReflex
 {
     static inline ID3D12Device* device = nullptr;
     const static inline InputContext inputContext { .caller = LowLatencyInput::Reflex,
-                                                    .noFrameId = false,
                                                     .markerMode = InputMarkerMode::FullMarkers };
 
   public:

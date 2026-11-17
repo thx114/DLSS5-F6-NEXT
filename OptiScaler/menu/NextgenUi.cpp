@@ -274,13 +274,6 @@ void FooterSameLineIfFits(float nextWidth, float spacing)
         ImGui::SameLine(0.0f, gap);
 }
 
-float FooterLanguageWidth()
-{
-    return ImGui::CalcTextSize("F6").x + ImGui::CalcTextSize("CN").x + ImGui::CalcTextSize("EN").x +
-           ImGui::CalcTextSize(Label("深色", "Dark")).x + ImGui::CalcTextSize(Label("浅色", "Light")).x +
-           8.0f * ImGui::GetStyle().FramePadding.x + 4.0f * ImGui::GetStyle().ItemSpacing.x;
-}
-
 bool RenderFooterLanguage()
 {
     // Compact language names keep both theme choices inside the second footer

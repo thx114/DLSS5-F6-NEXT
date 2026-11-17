@@ -81,7 +81,6 @@ class IFGFeature
     FG_Constants _constants {};
 
     std::unordered_map<FG_ResourceType, bool> _resourceReady[BUFFER_COUNT] {};
-    std::unordered_map<FG_ResourceType, UINT64> _resourceFrame {};
 
     bool _noHudless[BUFFER_COUNT] = { true, true, true, true };
     bool _noUi[BUFFER_COUNT] = { true, true, true, true };

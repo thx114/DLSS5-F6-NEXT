@@ -139,12 +139,11 @@ bool ReserveFrame(ID3D12Device* device, const Config& cfg, const Sp::Layout& l, 
     for (auto* current : { color, depth, motion, proxy, answer, proxyNative, answerNative,
              g_nr.output, g_nr.passScratch, g_nr.passClampScratch, g_nr.passClampScratch2, g_nr.colorCopy,
              g_nr.hdrCopy, g_nr.colorSmall, g_nr.outputNative, g_nr.activeColor, g_nr.lutScratch,
-             g_nr.guidePreview, g_nr.heldColor, g_nr.depthClone, g_nr.motionClone, g_nr.coordinateDepth,
+             g_nr.heldColor, g_nr.depthClone, g_nr.motionClone, g_nr.coordinateDepth,
              g_nr.coordinateMotion, g_nr.depthConstant, g_nr.meter, g_nr.autoExposure, g_nr.autoExposureRaw,
-             g_nr.calib, g_nr.diagGridReadback, g_nr.diagExposureReadback, g_nr.diagProxyReadback })
+             g_nr.diagGridReadback, g_nr.diagExposureReadback, g_nr.diagProxyReadback })
         plan.Keep(current);
     for (auto* current : g_nr.meterReadback) plan.Keep(current);
-    for (auto* current : g_nr.calibReadback) plan.Keep(current);
     // Reuse is gated off for a packed frame, but its old history may still be resident
     // before BeforeModel parks it. Parking it later must not hide its cost.
     for (auto* current : { DetailReuse::detail[0], DetailReuse::detail[1], DetailReuse::colourDepth[0],
@@ -193,8 +192,6 @@ bool ReserveFrame(ID3D12Device* device, const Config& cfg, const Sp::Layout& l, 
         plan.Require(g_nr.outputNative, colourFormat, l.nativeW, l.nativeH, replaceModel);
     if (!cfg.DlssNrLutFile.value_or_default().empty())
         plan.Require(g_nr.lutScratch, gameColourFormat, l.nativeW, l.nativeH, replaceModel);
-    if (cfg.DlssNrGuidePreview.value_or_default())
-        plan.Require(g_nr.guidePreview, gameColourFormat, l.nativeW, l.nativeH);
     if (cfg.DlssNrHoldFrame.value_or_default())
         plan.Require(g_nr.heldColor, gameColourFormat, l.nativeW, l.nativeH, !g_nr.heldActive);
 

@@ -12,7 +12,6 @@ class InputXeLL
         uint64_t id {};
         InputContext inputContext { .caller = LowLatencyInput::XeLL,
                                     .localContext = false,
-                                    .noFrameId = false,
                                     .markerMode = InputMarkerMode::FullMarkers };
         ID3D12Device* device {};
 

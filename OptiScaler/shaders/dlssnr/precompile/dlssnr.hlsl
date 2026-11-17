@@ -1451,16 +1451,9 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
         gTarget[id.xy] = float4(0.5 + 0.5 * d / (1.0 + abs(d)), 1.0);
         return;
     }
-    if (gMode == 6 || gMode == 10)
+    if (gMode == 6)
     {
         float4 base = gSource.Load(int3(id.xy, 0));
-#ifndef VK_MODE
-        if (gMode == 10 && gExposure.Load(int3(0, 0, 0)).r > 0.0)
-        {
-            gTarget[id.xy] = base;
-            return;
-        }
-#endif
         float3 encoded = SanitizeFinite3(gModel.Load(int3(id.xy, 0)).rgb, 0.5);
         // Limit the inverse near its poles: DLSS can ring outside the carrier's [0,1] range.
         float3 signedEdit = clamp(2.0 * encoded - 1.0, -0.999, 0.999);
@@ -1471,11 +1464,6 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
     if (gMode == 7)
     {
         gTarget[id.xy] = 1.0;
-        return;
-    }
-    if (gMode == 11)
-    {
-        gTarget[id.xy] = 0;
         return;
     }
     if (gMode == 14)
@@ -1547,89 +1535,6 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
         gTarget[id.xy] = float4(saturate(damped), raw.a);
         return;
     }
-    if (gMode == 8)
-    {
-        // The caller supplies raw-vector -> normalized active-image scale.
-        // Alpha is explicit validity for composition; 65504 is the FG invalid sentinel.
-        float2 motion = gSource.Load(int3(id.xy, 0)).xy * float2(gMvScaleX, gMvScaleY);
-        bool valid = all(isfinite(motion)) && all(abs(motion) < 2.0);
-        gTarget[id.xy] = valid ? float4(motion, 0, 1) : float4(65504, 65504, 0, 0);
-        return;
-    }
-    if (gMode == 9)
-    {
-        float4 current = gSource.Load(int3(id.xy, 0));
-        float2 previousUV = uv + current.xy;
-        bool valid = current.a > 0.999 && all(isfinite(current.xy)) &&
-                     all(previousUV >= 0.0) && all(previousUV <= 1.0);
-        float4 previous = valid ? gModel.SampleLevel(gLinear, previousUV, 0) : 0;
-        float2 combined = current.xy + previous.xy;
-        valid = valid && previous.a > 0.999 && all(isfinite(combined)) && all(abs(combined) < 2.0);
-        gTarget[id.xy] = valid ? float4(combined, 0, 1) : float4(65504, 65504, 0, 0);
-        return;
-    }
-
-    // The meter. One thread per tile of a 64x64 grid over the frame, writing that tile's mean
-    // luminance. The frame is raw linear here -- this runs before the encode, on purpose, because the
-    // number being looked for is what the encode's divisor should be.
-    //
-    // A mean per tile, then a percentile across tiles on the CPU. Not the frame's mean, which is what
-    // the meter this replaces measured: that reads scene brightness, and a dark scene then asks for a
-    // small divisor and hands the model a blown picture anyway. Not the frame's maximum either, which
-    // one specular hit decides.
-    // What scale is this game's buffer on?
-    //
-    // Not a taste question. The composition divides the frame by paper white to work in a normalised
-    // space, and the right divisor is the one that lands the picture in [0,1]. Nioh 3 needs about 240
-    // because its linear buffer holds values around two hundred; GTA V's exposure yields 2.7. Below
-    // the correct value the frame is never normalised, the headroom branch computes ratios in the
-    // hundreds, and ToOkLab is handed values far outside the range its cube root was built for -- the
-    // green tint.
-    //
-    // Measured from the UNTOUCHED copy the encode kept, never from the frame this pass writes. That
-    // distinction is the whole reason this is safe where the old white point meter was not: that one
-    // read its own output and chased it, walking one Enshrouded session from 0.010 to 97.910. There
-    // is no path from what this pass writes back into what this reads.
-    //
-    // Per tile, the peak luminance rather than the mean. The mean is scene brightness and says
-    // nothing about scale; the peak says where the top of the range is, which is exactly what the
-    // divisor has to match. One specular hit cannot decide the answer because the host takes a
-    // percentile across tiles afterwards.
-    if (gMode == 4)
-    {
-        uint fullW, fullH;
-        gSource.GetDimensions(fullW, fullH);
-
-        const uint tx0 = (uint) (((float) id.x * (float) fullW) / (float) gWidth);
-        const uint tx1 = (uint) (((float) (id.x + 1) * (float) fullW) / (float) gWidth);
-        const uint ty0 = (uint) (((float) id.y * (float) fullH) / (float) gHeight);
-        const uint ty1 = (uint) (((float) (id.y + 1) * (float) fullH) / (float) gHeight);
-
-        // Sixteen samples a side rather than eight, and offset half a step in so the lattice does not
-        // sit on the tile's own corner.
-        //
-        // A fixed sample count over a growing tile means a shrinking fraction of it is read: eight per
-        // side covers about 17% of a tile at 1080p but only 4% at 4K, so the same scene reported a
-        // lower peak -- and therefore a smaller suggested divisor -- the higher the resolution. That is
-        // a measurement that changes with the setting rather than with the game.
-        const uint stepX = max((tx1 - tx0) / 16u, 1u);
-        const uint stepY = max((ty1 - ty0) / 16u, 1u);
-
-        float peak = 0.0;
-
-        for (uint ty = ty0; ty < max(ty1, ty0 + 1u); ty += stepY)
-        {
-            for (uint tx = tx0; tx < max(tx1, tx0 + 1u); tx += stepX)
-            {
-                const float3 c = max(gSource.Load(int3(min(tx, fullW - 1u), min(ty, fullH - 1u), 0)).rgb, 0.0);
-                peak = max(peak, dot(c, kLuma));
-            }
-        }
-
-        gTarget[id.xy] = float4(peak, 0.0, 0.0, 1.0);
-        return;
-    }
-
     if (gMode == 2)
     {
         uint srcW, srcH;

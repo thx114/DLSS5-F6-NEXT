@@ -203,33 +203,6 @@ void FinishedPictureColorSpace(IDXGISwapChain* swapchain, DXGI_COLOR_SPACE_TYPE 
 // entry points and initialises on the game's own device, which is where a refusal would appear.
 void ProbeD3D11(void* d3d11Device);
 
-// What scale this game's buffer is on, measured from the untouched copy of each frame.
-//
-// A suggestion only. Nothing applies it: the menu shows it and the user takes it or does not, which
-// keeps the number visible and adjustable rather than a value that moved on its own. Confidence is
-// how settled recent readings are -- 1 means they agree, 0 means the scene is changing under the
-// measurement and no single value would serve.
-struct CalibrationReading
-{
-    float suggestion = 0.0f;
-
-    // How much recent readings agree. This is steadiness, not correctness: a frozen frame agrees with
-    // itself perfectly, so a loading screen scores full marks for a number that means nothing. Read it
-    // together with usable.
-    float steadiness = 0.0f;
-
-    unsigned long long samples = 0;
-
-    // Whether the scene is worth measuring at all. False when the frame is already tone mapped -- the
-    // divisor does nothing there and the reading would be a meaningless 0.9 -- or when too little of
-    // the picture is lit to say where the top of the range is. A dark cave gives a small number very
-    // steadily, which is the trap this exists to close.
-    bool usable = false;
-    const char* why = "";
-};
-
-CalibrationReading Calibration();
-
 // Whether the model is loaded and running, for the overlay.
 bool IsRunning();
 // Private residual-upscaler status; separate from the NR model's own running status/time.

@@ -690,12 +690,6 @@ bool OwnedStageRequested() noexcept
 #endif
     } catch (...) { return false; }
 }
-uint64_t OwnedStageSettings() noexcept
-{
-    const auto desired = Get().desiredSettings.load(std::memory_order_acquire);
-    return desired && desired == Get().appliedSettings.load(std::memory_order_acquire) &&
-        OwnedStageRequested() ? desired : 0;
-}
 // A same-call TLS watch catches real donor callbacks even when the existing
 // ownedOperation/CallbackGuard intentionally excludes natural bookkeeping.
 // It never selects a donor and has no cross-frame admission authority.
@@ -1180,13 +1174,6 @@ bool ToResourceUsage(D3D12_RESOURCE_STATES state, reshade::api::resource_usage &
     default:
         return false;
     }
-}
-
-void DestroyUnsubmittedView(reshade::api::device* device, reshade::api::resource_view& view) noexcept
-{
-    if (!device || !view.handle) return;
-    try { device->destroy_resource_view(view); } catch (...) {}
-    view = { 0 };
 }
 
 // Only the authenticated source callsite supplies queue authority. A swapchain callback publishes
@@ -2329,14 +2316,6 @@ void ReportEnabledSelectionKeys(const State::Natural& natural, const SelectionOb
 // R196: only on an existing selection report or an actual owner Capture. No
 // heartbeat, SDK getter, INI read, extra lock or admission decision is added.
 
-void ReportOwnedSelectionCapture(reshade::api::effect_runtime* runtime, uint64_t lifetime,
-    uint64_t settings, const Selection::Source& source) noexcept
-{
-    DWORD initThread = 0;
-    for (const auto& natural : Get().natural)
-        if (natural.runtime == runtime && natural.lifetime == lifetime) { initThread = natural.thread; break; }
-
-}
 void ReportSelection(State::Natural& natural, uint64_t generation) noexcept
 {
     try {

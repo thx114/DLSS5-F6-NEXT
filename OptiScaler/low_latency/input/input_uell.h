@@ -12,7 +12,6 @@ class InputUeLowLatency
 
     inline static InputContext inputContext { .caller = LowLatencyInput::UeLowLatency,
                                               .localContext = false,
-                                              .noFrameId = false,
                                               .markerMode = InputMarkerMode::SimOnly };
 
   public:

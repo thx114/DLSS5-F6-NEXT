@@ -295,8 +295,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             FGUseShards.set_from_config(readBool("OptiFG", "UseShards"));
             FGAlwaysTrackHeaps.set_from_config(readBool("OptiFG", "AlwaysTrackHeaps"));
             FGResourceBlocking.set_from_config(readBool("OptiFG", "ResourceBlocking"));
-            FGMakeDepthCopy.set_from_config(readBool("OptiFG", "MakeDepthCopy"));
-            FGMakeMVCopy.set_from_config(readBool("OptiFG", "MakeMVCopy"));
             FGHudfixDisableRTV.set_from_config(readBool("OptiFG", "HudfixDisableRTV"));
             FGHudfixDisableSRV.set_from_config(readBool("OptiFG", "HudfixDisableSRV"));
             FGHudfixDisableUAV.set_from_config(readBool("OptiFG", "HudfixDisableUAV"));
@@ -436,8 +434,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrFinishedPicture.set_from_config(readBool("DlssNr", "FinishedPicture"));
             DlssNrGenshinPresentPipeline.set_from_config(readBool("DlssNr", "GenshinPresentPipeline"));
             DlssNrDeferredDlss.set_from_config(readBool("DlssNr", "DeferredDLSS"));
-            // ResidualFG and ResidualFGApproxCamera are no longer read: NR every second frame through NVIDIA Frame
-            // Generation is off for good, whatever an old ini says.
             DlssNrPrecision.set_from_config(readUInt("DlssNr", "Precision"));
             if (DlssNrPrecision.value_or_default() != 4) DlssNrPrecision = 0u;
             DlssNrVitEvery.set_from_config(readUInt("DlssNr", "VitEvery"));
@@ -498,9 +494,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             {
                 DlssNrDetailReuseInterval = std::clamp(DlssNrDetailReuseInterval.value(), 1u, 8u);
             }
-            DlssNrDetailReuseFgInterval.set_from_config(readUInt("DlssNr", "DetailReuseFgInterval"));
-            if (DlssNrDetailReuseFgInterval.has_value())
-                DlssNrDetailReuseFgInterval = std::clamp(DlssNrDetailReuseFgInterval.value(), 1u, 2u);
             DlssNrDetailReuseSpread.set_from_config(readUInt("DlssNr", "DetailReuseSpread"));
             if (DlssNrDetailReuseSpread.has_value()) DlssNrDetailReuseSpread = std::min(DlssNrDetailReuseSpread.value(), 3u);
             DlssNrDetailReuseFill.set_from_config(readFloat("DlssNr", "DetailReuseFill"));
@@ -735,7 +728,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrScanAnchors.set_from_config(readString("DlssNr", "ScanAnchors"));
             DlssNrScanInverted.set_from_config(readBool("DlssNr", "ScanInverted"));
             DlssNrWhitePointTrim.set_from_config(readFloat("DlssNr", "WhitePointTrim"));
-            DlssNrAutoCapture.set_from_config(readBool("DlssNr", "AutoCapture"));
             DlssNrWhitePointScale.set_from_config(readFloat("DlssNr", "WhitePointScale"));
             DlssNrPreset.set_from_config(readUInt("DlssNr", "Preset"));
             DlssNrIntensity.set_from_config(readFloat("DlssNr", "Intensity"));
@@ -1178,7 +1170,6 @@ bool Config::Reload(std::filesystem::path iniPath)
         {
             DxgiSpoofing.set_from_config(readBool("Spoofing", "Dxgi"));
             DxgiFactoryWrapping.set_from_config(readBool("Spoofing", "DxgiFactoryWrapping"));
-            DxgiBlacklist.set_from_config(readString("Spoofing", "DxgiBlacklist"));
             DxgiVRAM.set_from_config(readInt("Spoofing", "DxgiVRAM"));
             VulkanSpoofing.set_from_config(readBool("Spoofing", "Vulkan"));
             VulkanExtensionSpoofing.set_from_config(readBool("Spoofing", "VulkanExtensionSpoofing"));
@@ -1255,11 +1246,10 @@ bool Config::Reload(std::filesystem::path iniPath)
             const auto hoYoEnabled = readBool("HoYoShade", "Enabled");
             const auto hoYoStage = readInt("HoYoShade", "Stage");
             DrawUiMaskEnabled.set_from_config(readBool("DrawUiMask", "Enabled"));
-            DrawUiMaskFg.set_from_config(readBool("DrawUiMask", "FG"));
             DrawUiMaskNr.set_from_config(readBool("DrawUiMask", "NR"));
             DrawUiMaskFilters.set_from_config(readBool("DrawUiMask", "Filters"));
             DrawUiMaskRules.set_from_config(readString("DrawUiMask", "Rules"));
-            DrawUiMask::Configure({DrawUiMaskEnabled.value_or_default(),DrawUiMaskFg.value_or_default(),
+            DrawUiMask::Configure({DrawUiMaskEnabled.value_or_default(),
                 DrawUiMaskNr.value_or_default(),DrawUiMaskFilters.value_or_default(),DrawUiMaskRules.value_or_default()});
             GimiEnabled.set_from_config(readBool("GIMI", "Enabled"));
             GimiIni.set_from_config(readString("GIMI", "Ini"));
@@ -1310,7 +1300,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             NvngxPath.set_from_config(readWString("Libraries", "NvngxPath"));
             NVNGX_DLSS_Library.set_from_config(readWString("Libraries", "NvngxDlssPath"));
             DLSSFeaturePath.set_from_config(readWString("Libraries", "NvngxFeaturePath"));
-            NvapiDllPath.set_from_config(readWString("Libraries", "NvapiPath"));
 
             FfxDx12Path.set_from_config(readWString("Libraries", "FfxDx12Path"));
             FfxDx12SRPath.set_from_config(readWString("Libraries", "FfxDx12SRPath"));
@@ -1681,8 +1670,6 @@ void Config::WriteSettings(Sink& target)
                      GetBoolValue(this->FGAlwaysTrackHeaps.value_for_config()).c_str());
         target.SetValue("OptiFG", "ResourceBlocking",
                      GetBoolValue(this->FGResourceBlocking.value_for_config()).c_str());
-        target.SetValue("OptiFG", "MakeDepthCopy", GetBoolValue(this->FGMakeDepthCopy.value_for_config()).c_str());
-        target.SetValue("OptiFG", "MakeMVCopy", GetBoolValue(this->FGMakeMVCopy.value_for_config()).c_str());
 
         target.SetValue("OptiFG", "HudfixDisableRTV",
                      GetBoolValue(this->FGHudfixDisableRTV.value_for_config()).c_str());
@@ -1825,7 +1812,6 @@ void Config::WriteSettings(Sink& target)
     target.SetValue("DlssNr", "MotionTextureFlipY", GetBoolValue(this->DlssNrMotionTextureFlipY.value_for_config()).c_str());
     target.SetValue("DlssNr", "GameMotionReuse", GetBoolValue(this->DlssNrGameMotionReuse.value_for_config()).c_str());
     target.SetValue("DlssNr", "DetailReuseInterval", GetIntValue(this->DlssNrDetailReuseInterval.value_for_config()).c_str());
-    target.SetValue("DlssNr", "DetailReuseFgInterval", GetIntValue(this->DlssNrDetailReuseFgInterval.value_for_config()).c_str());
 
     if (this->IsStarRailInputProfile())
     {
@@ -1921,7 +1907,6 @@ void Config::WriteSettings(Sink& target)
     target.SetValue("DlssNr", "SpatialShiftX", GetFloatValue(this->DlssNrSpatialShiftX.value_for_config()).c_str());
     target.SetValue("DlssNr", "SpatialShiftY", GetFloatValue(this->DlssNrSpatialShiftY.value_for_config()).c_str());
     target.SetValue("DlssNr", "ScalingDownscaler", GetIntValue(this->DlssNrScalingDownscaler.value_for_config()).c_str());
-    target.SetValue("DlssNr", "AutoCapture", GetBoolValue(this->DlssNrAutoCapture.value_for_config()).c_str());
 
     // These were read every launch but never written, so nothing set through the menu survived a
     // restart -- the white-point source, both trims, the anchor, the pass count and the rest all
@@ -2378,7 +2363,6 @@ void Config::WriteSettings(Sink& target)
         target.SetValue("Spoofing", "Dxgi", GetBoolValue(this->DxgiSpoofing.value_for_config()).c_str());
         target.SetValue("Spoofing", "DxgiFactoryWrapping",
                      GetBoolValue(this->DxgiFactoryWrapping.value_for_config()).c_str());
-        target.SetValue("Spoofing", "DxgiBlacklist", this->DxgiBlacklist.value_for_config_or("auto").c_str());
         target.SetValue("Spoofing", "Vulkan", GetBoolValue(this->VulkanSpoofing.value_for_config()).c_str());
         target.SetValue("Spoofing", "VulkanExtensionSpoofing",
                      GetBoolValue(this->VulkanExtensionSpoofing.value_for_config()).c_str());
@@ -2414,7 +2398,6 @@ void Config::WriteSettings(Sink& target)
         target.SetValue("Plugins", "LoadSpecialK", GetBoolValue(this->LoadSpecialK.value_for_config()).c_str());
         target.SetValue("Plugins", "LoadReShade", GetBoolValue(this->LoadReShade.value_for_config()).c_str());
         target.SetValue("DrawUiMask", "Enabled", GetBoolValue(this->DrawUiMaskEnabled.value_for_config()).c_str());
-        target.SetValue("DrawUiMask", "FG", GetBoolValue(this->DrawUiMaskFg.value_for_config()).c_str());
         target.SetValue("DrawUiMask", "NR", GetBoolValue(this->DrawUiMaskNr.value_for_config()).c_str());
         target.SetValue("DrawUiMask", "Filters", GetBoolValue(this->DrawUiMaskFilters.value_for_config()).c_str());
         target.SetValue("DrawUiMask", "Rules", this->DrawUiMaskRules.value_for_config_or("").c_str());
@@ -2492,8 +2475,6 @@ void Config::WriteSettings(Sink& target)
                      wstring_to_string(this->DLSSFeaturePath.value_for_config_or(L"auto")).c_str());
         target.SetValue("Libraries", "NvngxDlssPath",
                      wstring_to_string(this->NVNGX_DLSS_Library.value_for_config_or(L"auto")).c_str());
-        target.SetValue("Libraries", "NvapiPath",
-                     wstring_to_string(this->NvapiDllPath.value_for_config_or(L"auto")).c_str());
 
         target.SetValue("Libraries", "FfxDx12Path",
                      wstring_to_string(this->FfxDx12Path.value_for_config_or(L"auto")).c_str());

@@ -279,7 +279,6 @@ class Config
     // Generate NR before SR, upscale its signed contribution with a private DLSS feature,
     // and apply it after the game's upscaler. Takes precedence over RunBeforeSR; opt-in.
     FramePipeline::ObservedSetting<CustomOptional<bool>,bool> DlssNrDeferredDlss { false };
-    CustomOptional<bool> DlssNrResidualFg { false }; // forced off: not read from the ini, not in the menu
     CustomOptional<uint32_t> DlssNrPrecision { 0 }; // 0 NVIDIA FP8 (default), 4 Experimental NVFP4 hybrid
     CustomOptional<uint32_t> DlssNrVitEvery { 2 };  // NVIDIA model: compute the ViT bottleneck every N-th frame (1 = always; 2 = every other frame, default), reuse it in between
     CustomOptional<uint32_t> DlssNrVitEveryPlain { 2 }; // the same for the plain fp16 kernel set (used by some modified DLSS-NR DLLs); VitEvery is the fp8 set
@@ -315,9 +314,6 @@ class Config
     // Number of rendered frames between full NR model evaluations. 1 means every frame
     // (detail reuse is effectively disabled); 2..8 reuse the saved detail in between.
     CustomOptional<uint32_t> DlssNrDetailReuseInterval { 3 };
-    // Persisted for a future generated-frame NR caller. It is not consumed until a
-    // generated-frame input/output contract exists.
-    CustomOptional<uint32_t> DlssNrDetailReuseFgInterval { 1 };
 
     // Star Rail's input convention is isolated from the generic DlssNr values.
     CustomOptional<bool> StarRailInputMotionYInverted { true };
@@ -364,7 +360,6 @@ class Config
     // moved detail on the cut frame, and the model resets when the answer arrives, a few frames later). 1 by default
     // until in-game counts show how often games leave cuts unflagged and that nothing else reads as one.
     CustomOptional<uint32_t> DlssNrSceneCut { 2 };
-    CustomOptional<bool> DlssNrResidualFgApproxCamera { false }; // forced off, as DlssNrResidualFg
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
@@ -882,9 +877,6 @@ class Config
     //   1  force normal
     //   2  force inverted
     //
-    // Writes one set of matched before/after frames per session, without anyone having to ask. The
-    // folder is cleared at the start of each run, so it holds one session's worth and never grows.
-    CustomOptional<bool> DlssNrAutoCapture { true };
 
 
 
@@ -939,7 +931,6 @@ class Config
     CustomOptional<std::wstring, NoDefault> NvngxPath;
     CustomOptional<std::wstring, NoDefault> NVNGX_DLSS_Library;
     CustomOptional<std::wstring, NoDefault> DLSSFeaturePath;
-    CustomOptional<std::wstring, NoDefault> NvapiDllPath;
 
     // Sharpness
     CustomOptional<SharpenShader> SharpnessShader { SharpenShader::RCAS };
@@ -1064,7 +1055,6 @@ class Config
     CustomOptional<bool> MipmapBiasOverrideAll { false };
 
     CustomOptional<int, NoDefault> AnisotropyOverride; // disabled by default
-    CustomOptional<bool> OverrideShaderSampler { true };
     CustomOptional<bool> AnisotropyModifyComp { true };
     CustomOptional<bool> AnisotropyModifyMinMax { true };
     CustomOptional<bool> AnisotropySkipPointFilter { true };
@@ -1151,7 +1141,6 @@ class Config
     CustomOptional<bool, SoftDefault> DxgiSpoofing { true };
     CustomOptional<bool> DxgiFactoryWrapping { false };
     CustomOptional<bool> StreamlineSpoofing { true };
-    CustomOptional<std::string, NoDefault> DxgiBlacklist; // disabled by default
     CustomOptional<int, NoDefault> DxgiVRAM;              // disabled by default
     CustomOptional<bool> VulkanSpoofing { false };
     CustomOptional<bool> VulkanExtensionSpoofing { false };
@@ -1174,7 +1163,6 @@ class Config
     CustomOptional<bool> LoadReShade { false };
     // Explicitly selected terminal UI draw mask; no built-in game signatures.
     CustomOptional<bool> DrawUiMaskEnabled { false };
-    CustomOptional<bool> DrawUiMaskFg { false };
     CustomOptional<bool> DrawUiMaskNr { false };
     CustomOptional<bool> DrawUiMaskFilters { false };
     CustomOptional<std::string> DrawUiMaskRules { std::string{} };
@@ -1223,8 +1211,6 @@ class Config
     FramePipeline::ObservedSetting<CustomOptional<bool>,bool> FGEnabled { false };
     FramePipeline::ObservedSetting<CustomOptional<bool>,bool> StarRailForceFGResident { false };
     CustomOptional<bool> FGUseMutexForSwapchain { true };
-    CustomOptional<bool> FGMakeMVCopy { true };
-    CustomOptional<bool> FGMakeDepthCopy { true };
     CustomOptional<bool> FGResourceFlip { false };
     CustomOptional<bool> FGResourceFlipOffset { false };
     // Auto/missing inherits ResourceFlip; explicit false is a real override.

@@ -166,7 +166,7 @@ complete = ngx.index("fg->CompleteNativeGuideSource(InCmdList,fgSource,actualOut
 end = ngx.index("UpscalerInputsDx12::UpscaleEnd(InCmdList, InParameters, feature,evalSuccess,colourSource,actualOutput)")
 assert ngx.index("const auto colourSource=") < evaluate < complete < end
 assert "if (!succeeded) return" in dx12
-assert "colourSource ? colourSource->Frame()" in dx12
+assert "Hudfix_Dx12::UpscaleEnd();" in dx12
 assert "own->CaptureUpscalerHudless(colourSource,InCmdList,evaluatedOutput" in dx12
 assert "uintptr_t evaluatedOutput=0" in dx11
 assert "const dlssg::colour::Source key" in header

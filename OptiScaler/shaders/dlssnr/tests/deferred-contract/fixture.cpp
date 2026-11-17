@@ -109,7 +109,7 @@ std::string status;void Say(const std::string& s){status=s;}
 #include "deferred-pending.inl"
 struct ColourSource {std::optional<unsigned> effectiveColorCreateFlags;std::optional<bool> syntheticColorFlagKnown;};
 void BeforeTail(ID3D12GraphicsCommandList* cmd,NVSDK_NGX_Parameter* source,ID3D12Resource* output,ID3D12Resource* color,ColourSource colourSource){
-auto& g=*current;const auto& cfg=*Config::Instance();const bool privateJob=false,half=false;const unsigned long long epoch=77,submittedEpoch=76;
+auto& g=*current;const auto& cfg=*Config::Instance();const unsigned long long epoch=77,submittedEpoch=76;
 const unsigned flags=0;ID3D12Resource *depth=nullptr,*nrMotion=nullptr;ID3D12CommandQueue* queue=nullptr;
 struct {unsigned Format=10;}outDesc;const int arrival=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 #include "deferred-before.inl"

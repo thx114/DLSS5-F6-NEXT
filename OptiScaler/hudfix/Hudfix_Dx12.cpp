@@ -552,14 +552,13 @@ void Hudfix_Dx12::UpscaleStart()
     }
 }
 
-void Hudfix_Dx12::UpscaleEnd(UINT64 frameId, double lastFGFrameTime)
+void Hudfix_Dx12::UpscaleEnd()
 {
     std::lock_guard<std::mutex> checkLock(_checkMutex);
     std::lock_guard<std::mutex> counterLock(_counterMutex);
 
     // Update counter after upscaling so _upscaleCounter == _fgCounter check at IsResourceCheckActive will work
-    const auto nextUpscaleCounter = _upscaleCounter.load(std::memory_order_relaxed) + 1; // = frameId;
-    _frameTime = lastFGFrameTime;
+    const auto nextUpscaleCounter = _upscaleCounter.load(std::memory_order_relaxed) + 1;
 
     // Reset the target slot before publishing the new frame number to tracking threads.
     const auto index = static_cast<int>(nextUpscaleCounter % BUFFER_COUNT);
@@ -577,10 +576,7 @@ void Hudfix_Dx12::PresentStart()
 void Hudfix_Dx12::PresentEnd()
 {
     ProcessPendingCaptureRemovals();
-    LOG_DEBUG("");
 }
-
-UINT64 Hudfix_Dx12::ActiveUpscaleFrame() { return _upscaleCounter.load(std::memory_order_acquire); }
 
 UINT64 Hudfix_Dx12::ActivePresentFrame() { return _fgCounter.load(std::memory_order_acquire); }
 
@@ -705,10 +701,10 @@ bool Hudfix_Dx12::CheckForHudless(ID3D12GraphicsCommandList* cmdList, ResourceIn
 
         if (!ignoreBlocked && Config::Instance()->FGResourceBlocking.value_or_default())
         {
-            if (_hudlessList.contains(resource->buffer))
+            if (auto found = _hudlessList.find(resource->buffer); found != _hudlessList.end())
             {
                 resource->lifetimeTracked = true;
-                auto info = &_hudlessList[resource->buffer];
+                auto info = &found->second;
 
                 // if game starts reusing the ignored resource & it's not banned
                 if (info->ignore && !info->dontReuse)
@@ -1037,10 +1033,6 @@ void Hudfix_Dx12::ResetCounters()
     _fgCounter.store(0, std::memory_order_release);
     _upscaleCounter.store(0, std::memory_order_release);
 
-    _lastDiffTime = 0.0;
-    _upscaleEndTime = 0.0;
-    _targetTime = 0.0;
-    _frameTime = 0.0;
 
     _hudlessList.clear();
 

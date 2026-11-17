@@ -15,7 +15,6 @@
 #include <native/FrameContract.h>
 
 
-namespace DrawUiMask {class Frame;}
 namespace interop {struct BeforeSrInput;}
 #ifdef HOYOSHADE_STAGE_TEST
 namespace reshade::api {struct effect_runtime;}
@@ -191,7 +190,6 @@ enum class NaturalSourceContract : unsigned {
 struct ColorEndpoint
 {
     std::shared_ptr<void> inputOwner; // both API objects for a shared SR input batch
-    std::shared_ptr<DrawUiMask::Frame> uiMask;
     Stage stage = Stage::BeforeNr;
     ID3D12Resource* color = nullptr;
     ID3D12CommandQueue* queue = nullptr;

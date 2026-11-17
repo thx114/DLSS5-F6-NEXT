@@ -485,12 +485,6 @@ struct HeapInfo : public std::enable_shared_from_this<HeapInfo>
     }
 };
 
-struct ResourceHeapInfo
-{
-    SIZE_T cpuStart = NULL;
-    SIZE_T gpuStart = NULL;
-};
-
 // Command list info
 struct RootSignatureInfo;
 
@@ -654,12 +648,6 @@ class ResTrack_Dx12
     static bool CheckResource(ID3D12Resource* resource, ResourceInfo* outInfo = nullptr);
 
     static bool CheckForRealObject(const std::string functionName, IUnknown* pObject, IUnknown** ppRealObject);
-
-    static bool CreateBufferResource(ID3D12Device* InDevice, ResourceInfo* InSource, D3D12_RESOURCE_STATES InState,
-                                     ID3D12Resource** OutResource);
-
-    static void ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
-                                D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState);
 
     static std::shared_ptr<HeapInfo> GetHeapByCpuHandleRTV(SIZE_T cpuHandle);
     static std::shared_ptr<HeapInfo> GetHeapByCpuHandleSRV(SIZE_T cpuHandle);

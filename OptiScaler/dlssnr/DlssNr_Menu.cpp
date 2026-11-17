@@ -21,7 +21,6 @@
 #include <menu/MenuPages.h>
 #include <menu/UiLocalization.h>
 #include <menu/HoYoShadeControls.h>
-#include "DlssNrFgDetailReuse.h"
 #include <resource_tracking/GenericDepth_Dx12.h>
 #include <resource_tracking/GenericDepth_Dx11.h>
 #include <native/NativeDriverDx12.h>
@@ -39,7 +38,6 @@
 #include <imgui/imgui.h>
 #include <imgui/ImGuiNotify.hpp>
 #include <shaders/dlssnr/DlssNr_GameScale.h>
-#include <shaders/dlssnr/DlssNr_GuidePreview.h>
 #include <shaders/dlssnr/DlssNr_Spatial.h>
 #include <shaders/dlssnr/DlssNr_TrimAnchors.h>
 #include <shaders/dlssnr/DlssNr_AutoTrimDefault.h>
@@ -707,211 +705,6 @@ static void InheritedPresetCombo(Config* config, unsigned pass,
         }
 }
 
-// Per-pass profile values the pass presets write. One table shared by ApplyPassPreset and
-// PassPresetActive (the button highlight), so what a preset sets and what counts as "that preset is
-// in effect" can't drift apart.
-struct PassProfile
-{
-    uint32_t style; // DLSSNR.Style: 0 Model A, 1 Model B, 2 Model C
-    float intensity;
-    float structure;
-    float tone;
-    float skin;
-};
-
-static constexpr PassProfile PresetPass1 { 1u, 1.8f, 1.8f, 1.8f, -1.0f };    // Model B
-static constexpr PassProfile PresetPass2 { 1u, 1.0f, 1.0f, 1.0f, -1.0f };    // Model B
-static constexpr PassProfile PresetPass3 { 1u, 0.75f, 1.5f, 0.46f, 1.0f };   // Model B
-
-// This fork's recommended starting points for the "Model passes" slider, one per pass count.
-// Each button touches only the settings named below (including Pass 2/3 overrides once the
-// preset's pass count reaches them); anything else in the panel (skin/environment sliders,
-// Compare, Debug view, Hold frame, Downscaler, exposure-scan settings, etc.) is left exactly as
-// the user had it.
-static void ApplyPassPreset(Config* config, unsigned int passes)
-{
-    config->DlssNrEnabled = true;
-    config->DlssNrPrecision = 0u; // NVIDIA (FP8)
-    config->DlssNrApplyModel = true;
-    config->DlssNrPasses = ClampPassCount(passes);
-
-    // Upscale Method, Upscale Mode and Final Image Composition are deliberately not set here: the Pre-SR/Post-SR
-    // tiers set them, and writing them from a pass preset would clear that tier's highlight.
-    // Reuse bottleneck is not set here either: it is a speed/quality choice per kernel set, not part of a look, so a
-    // preset leaves both checkboxes as the user had them.
-    config->DlssNrTransferStrength = 1.0f;      // Detail strength
-    config->DlssNrColourStrength = 1.0f;
-    config->DlssNrStyle = PresetPass1.style;
-    config->DlssNrIntensity = PresetPass1.intensity;
-    config->DlssNrLocalStructure = PresetPass1.structure;
-    config->DlssNrLocalTone = PresetPass1.tone;
-    config->DlssNrSkinStructure = PresetPass1.skin;
-    config->DlssNrAutoMask = true;
-    // Automatic exposure at its default brightness (DlssNr_AutoTrimDefault.h). Game exposure at 1x, which
-    // this used to set, gave NBA 2K27 a model input with a median of 0.07-0.32 (measured 2026-09-25).
-    config->DlssNrWhitePointSource = 3u;        // Automatic exposure
-    config->DlssNrAutoExposureTrim = std::nullopt;
-    config->DlssNrMaxRatio = 2.0f;               // Highlight guard
-
-    if (passes >= 2u)
-    {
-        config->DlssNrPass2Style = PresetPass2.style;
-        config->DlssNrPass2Intensity = PresetPass2.intensity;
-        config->DlssNrPass2LocalStructure = PresetPass2.structure;
-        config->DlssNrPass2LocalTone = PresetPass2.tone;
-        config->DlssNrPass2SkinStructure = PresetPass2.skin;
-        config->DlssNrPass2AutoMask = true;
-    }
-
-    if (passes >= 3u)
-    {
-        config->DlssNrPass3Style = PresetPass3.style;
-        config->DlssNrPass3Intensity = PresetPass3.intensity;
-        config->DlssNrPass3LocalStructure = PresetPass3.structure;
-        config->DlssNrPass3LocalTone = PresetPass3.tone;
-        config->DlssNrPass3SkinStructure = PresetPass3.skin;
-        config->DlssNrPass3AutoMask = true;
-    }
-}
-
-static bool NearlyEqual(float a, float b)
-{
-    return std::fabs(a - b) < 0.005f;
-}
-
-// Pass 2/3 settings are optional (absent = inherit pass 1), so an absent one never matches a preset.
-template <typename FloatOpt>
-static bool OptionalIs(FloatOpt& opt, float value)
-{
-    return opt.has_value() && NearlyEqual(opt.value(), value);
-}
-
-static bool Pass1Is(Config* config, const PassProfile& p)
-{
-    return config->DlssNrStyle.value_or_default() == p.style &&
-           NearlyEqual(config->DlssNrIntensity.value_or_default(), p.intensity) &&
-           NearlyEqual(config->DlssNrLocalStructure.value_or_default(), p.structure) &&
-           NearlyEqual(config->DlssNrLocalTone.value_or_default(), p.tone) &&
-           NearlyEqual(config->DlssNrSkinStructure.value_or_default(), p.skin);
-}
-
-static bool Pass2Is(Config* config, const PassProfile& p)
-{
-    return config->DlssNrPass2Style.has_value() && config->DlssNrPass2Style.value() == p.style &&
-           OptionalIs(config->DlssNrPass2Intensity, p.intensity) &&
-           OptionalIs(config->DlssNrPass2LocalStructure, p.structure) &&
-           OptionalIs(config->DlssNrPass2LocalTone, p.tone) &&
-           OptionalIs(config->DlssNrPass2SkinStructure, p.skin);
-}
-
-static bool Pass3Is(Config* config, const PassProfile& p)
-{
-    return config->DlssNrPass3Style.has_value() && config->DlssNrPass3Style.value() == p.style &&
-           OptionalIs(config->DlssNrPass3Intensity, p.intensity) &&
-           OptionalIs(config->DlssNrPass3LocalStructure, p.structure) &&
-           OptionalIs(config->DlssNrPass3LocalTone, p.tone) &&
-           OptionalIs(config->DlssNrPass3SkinStructure, p.skin);
-}
-
-// Whether a pass preset is what is currently in effect, for highlighting its button. Derived from
-// the config (not remembered), like ResolutionTierActive: the pass count plus each pass's own
-// profile must match. Detail/Colour strength, white point and the like are left out on purpose so
-// tuning them doesn't drop the highlight.
-static bool PassPresetActive(Config* config, unsigned int passes)
-{
-    return config->DlssNrPasses.value_or_default() == passes && Pass1Is(config, PresetPass1) &&
-           (passes < 2u || Pass2Is(config, PresetPass2)) &&
-           (passes < 3u || Pass3Is(config, PresetPass3));
-}
-
-// Success highlights follow light/dark surfaces while preserving the preset action and ID.
-static bool PresetButton(const char* label, bool active)
-{
-    if (active)
-    {
-        const bool light = Config::Instance()->LightTheme.value_or_default();
-        ImGui::PushStyleColor(ImGuiCol_Button, light ? ImVec4(0.78f, 0.90f, 0.80f, 1.0f) : ImVec4(0.20f, 0.55f, 0.25f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, light ? ImVec4(0.67f, 0.84f, 0.70f, 1.0f) : ImVec4(0.26f, 0.65f, 0.31f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, light ? ImVec4(0.56f, 0.76f, 0.60f, 1.0f) : ImVec4(0.16f, 0.45f, 0.20f, 1.0f));
-    }
-
-    const bool pressed = MenuText::Button(label);
-
-    if (active)
-        ImGui::PopStyleColor(3);
-
-    return pressed;
-}
-
-// Quality tiers (High/Medium/Low/Potato) for running NR at a reduced model resolution, offered as
-// two preset rows that differ only in where NR runs: Pre-SR (Before Super Resolution) and Post-SR
-// (After Super Resolution). Each touches only Upscale Mode, Upscale Method, Model resolution,
-// Final Image Composition and (where the tier lists one) Restore Sharpness, plus Auto model
-// resolution -- turned off because Auto overrides the Model resolution slider when NR runs
-// post-SR, which would make the tier's resolution a silent no-op. Each also sets "NR 处理位置：",
-// which includes turning off Generate-before-SR/apply-after-SR (DLSS): that mode generates pre-SR
-// and disables the placement choice, so leaving it on would contradict the row's name.
-struct ResolutionTier
-{
-    const char* name;
-    uint32_t upscaleMethod;      // 0 Bilinear, 1 SGSR1
-    float workingScale;          // model resolution as a fraction (1.0 = 100%)
-    uint32_t composition;        // 1 Reversible curve + composed, 2 Reversible curve + replace
-    float restoreSharpness;      // < 0: leave the current value (composed mode hides the slider)
-    float detailStrength;        // < 0: leave the current value
-    float colourStrength;        // < 0: leave the current value
-};
-
-static constexpr ResolutionTier ResolutionTiers[] = {
-    { "高质量",   1u, 1.00f, 1u, -1.0f, 1.0f, 1.0f },
-    { "均衡", 1u, 0.80f, 2u,  1.50f, -1.0f, -1.0f },
-    { "低开销",    0u, 0.65f, 2u,  1.50f, -1.0f, -1.0f },
-    { "极低开销", 0u, 0.50f, 2u,  1.70f, -1.0f, -1.0f },
-};
-
-static void ApplyResolutionTier(Config* config, int& pendingScale, const ResolutionTier& tier,
-                                bool beforeSuperResolution)
-{
-    // Same rule as the "NR 处理位置：" combo: leaving Finished Picture clears a session failure.
-    if (config->DlssNrFinishedPicture.value_or_default())
-        RetryNr();
-    config->DlssNrFinishedPicture = false;
-    config->DlssNrRunBeforeSr = beforeSuperResolution;
-    config->DlssNrDeferredDlss = false;
-
-    config->DlssNrTransfer = 2u; // Upscale Mode: NVIDIA residual
-    config->DlssNrReducedUpscaleMethod = tier.upscaleMethod;
-    config->DlssNrModelResolutionAuto = false;
-    config->DlssNrWorkingScale = tier.workingScale;
-    pendingScale = -1; // clear any in-flight drag
-    config->DlssNrReversibleMode = tier.composition;
-
-    if (tier.restoreSharpness >= 0.0f)
-        config->DlssNrReplaceDetailStrength = tier.restoreSharpness;
-
-    if (tier.detailStrength >= 0.0f)
-        config->DlssNrTransferStrength = tier.detailStrength;
-
-    if (tier.colourStrength >= 0.0f)
-        config->DlssNrColourStrength = tier.colourStrength;
-}
-
-// Whether a tier's settings are what is currently in effect, for highlighting its button. Derived
-// from the config rather than remembered, so it can never claim a preset the settings have since
-// drifted from, and it survives a restart. Restore Sharpness is left out of the comparison on
-// purpose: fine-tuning it after picking a tier shouldn't drop the highlight. At most one button
-// can match -- tiers have distinct resolutions and the two rows differ in placement.
-static bool ResolutionTierActive(Config* config, const ResolutionTier& tier, bool beforeSuperResolution)
-{
-    return !config->DlssNrFinishedPicture.value_or_default() &&
-           config->DlssNrRunBeforeSr.value_or_default() == beforeSuperResolution &&
-           config->DlssNrTransfer.value_or_default() == 2u &&
-           config->DlssNrReducedUpscaleMethod.value_or_default() == tier.upscaleMethod &&
-           !config->DlssNrModelResolutionAuto.value_or_default() &&
-           std::fabs(config->DlssNrWorkingScale.value_or_default() - tier.workingScale) < 0.005f &&
-           config->DlssNrReversibleMode.value_or_default() == tier.composition;
-}
-
 // Which API's Optical F5Low drivers and depth finder this game uses: a game presents with one of them. A dxvk game
 // presents its D3D frames through Vulkan; by default its D3D drivers are still the ones that run (NativeDriverDx11.h),
 // unless the experimental DlssNrNativeDxvkVulkan key asks for dxvk's own Vulkan calls instead.
@@ -1307,8 +1100,6 @@ static std::string NrOptionsStatusChinese(std::string value)
         { "private DLSS evaluation failed: ", "内部 DLSS 运算失败：" },
         { "private DLSS created; waiting for a later submission epoch", "内部 DLSS 已创建，等待下一次提交" },
         { "private exposure initialization failed", "内部曝光初始化失败" },
-        { "asynchronous residual DLSS evaluation failed", "异步残差 DLSS 运算失败" },
-        { "sample-and-hold guide initialization failed", "采样保持引导初始化失败" },
         { "waiting for a same-device direct queue identity", "等待同设备的直接队列标识" },
         { "GPU completion tracking is unavailable or full", "GPU 完成追踪不可用或已满" },
         { "GPU descriptor slots are still in flight; bypassing this frame", "GPU 描述符槽位仍在使用，已旁路此帧" },
@@ -1537,57 +1328,6 @@ static void RenderRunningStatus(Config* config, const NrCommon& nr)
 
         if (!vulkan && DlssNr::BackendName()[0] != 0)
             MenuText::TextDisabled("模型后端：%s", DlssNr::BackendName());
-    }
-}
-
-// The same current status and completed timing, for the other pages.
-static void RenderStatusLine(const NrCommon& nr)
-{
-    const auto ms = MenuNrGpuTime(nr.vulkan);
-    ScopedMonoFont monoFont {};
-
-    if (!nr.enabled)
-        MenuText::TextDisabled("NR 已关闭。");
-    else if (!DlssNr::IsRunning() && !nr.vulkan)
-    {
-        MenuText::TextDisabled("NR 未运行，请见“状态与预设”页。");
-        RenderFinishedPictureStatus(nr);
-    }
-    else if (!nr.vulkan && !ms.has_value())
-    {
-        MenuText::TextDisabled("模型已就绪；最近 5 秒没有可用的 NR GPU 完成样本。");
-        RenderFinishedPictureStatus(nr);
-    }
-    else if (CurrentPresentedStatus(nr))
-    {
-        RenderFinishedPictureStatus(nr);
-        if (ms && std::isfinite(*ms) && *ms >= 0.0)
-            MenuText::TextDisabled("最近 NR 总 GPU 区间：%.2f ms。[呈现模式]", *ms);
-        else
-            MenuText::TextDisabled("最近 NR 总 GPU 区间：暂无测量。[呈现模式]");
-    }
-    else if (ms.has_value())
-        MenuText::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "运行中%s - 耗时 %.2f ms",
-                           nr.vulkan ? "（Vulkan 原生）" : "", ms.value());
-    else
-        MenuText::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "运行中。");
-}
-
-// The mode in effect, as the Optical F5Low page and the summary line name it.
-static const char* NativeModeName(DlssNrNativeMode::Shown shown)
-{
-    switch (shown)
-    {
-    case DlssNrNativeMode::Shown::NrOnly:
-        return "仅 NR";
-    case DlssNrNativeMode::Shown::NrAndFrameGeneration:
-        return "NR＋超分与插帧";
-    case DlssNrNativeMode::Shown::MotionOnly:
-        return "仅运动估计";
-    case DlssNrNativeMode::Shown::FrameGenerationOnly:
-        return "仅插帧（游戏超分）";
-    default:
-        return "关闭";
     }
 }
 
@@ -2960,19 +2700,6 @@ static void RenderReusePage(Config* config, float menuResScale)
         if (MenuText::SliderInt("NR 间隔", &interval, 1, 8, "%d"))
             config->DlssNrDetailReuseInterval = static_cast<unsigned>(std::clamp(interval, 1, 8));
         HelpMarker("每隔多少个真实渲染帧运行一次完整 NR。持续保留开启时每帧完整计算，此间隔只在持续保留关闭时生效。关闭持续保留后，1 表示每帧完整计算；2 到 8 表示在完整计算之间复用运动搬运的细节。快速运动或门禁触发时仍会强制完整计算。Vulkan 暂不支持跨帧细节复用。");
-        int fgInterval = static_cast<int>(std::clamp(config->DlssNrDetailReuseFgInterval.value_or_default(), 1u, 2u));
-        const char* fgIntervalFormat = fgInterval == 1 ? "每个 FG 帧" : "每 2 个 FG 帧";
-        const auto fgReuse = DlssNr::FgDetailReuseStatus();
-        ImGui::BeginDisabled(!fgReuse.supported);
-        if (MenuText::SliderInt("FG 细节复用频率", &fgInterval, 1, 2, fgIntervalFormat))
-            config->DlssNrDetailReuseFgInterval = static_cast<unsigned>(std::clamp(fgInterval, 1, 2));
-        ImGui::EndDisabled();
-        HelpMarker("此频率仅控制生成帧细节复用。当前没有已验证的生成输出消费者，因此控件禁用，保存值保持不变。累计元数据观测不证明当前插帧正在工作，也不证明已复用生成帧。真实输入帧的 NR 间隔独立生效。");
-        MenuText::TextWrapped("%s", fgReuse.why);
-        MenuText::TextDisabled("已观察 NGX 调用：%llu | 累计生成输出元数据：%llu | 实际生成帧复用提交：%llu",
-            static_cast<unsigned long long>(fgReuse.observedNgxEvaluations),
-            static_cast<unsigned long long>(fgReuse.evaluationsWithGeneratedOutput),
-            static_cast<unsigned long long>(fgReuse.consumedOutputs));
         int spread = std::min(config->DlssNrDetailReuseSpread.value_or_default(), 3u);
         const char* smoothing[] = { "自动", "关闭", "分 2 帧平滑", "分 3 帧平滑" };
         if (MenuText::Segmented("平滑模型帧变化", &spread, smoothing, IM_ARRAYSIZE(smoothing)))

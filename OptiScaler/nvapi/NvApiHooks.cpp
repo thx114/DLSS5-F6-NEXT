@@ -322,11 +322,8 @@ void NvApiHooks::Hook(HMODULE nvapiModule)
     {
         LOG_INFO("NvAPI_QueryInterface found, hooking!");
 
-        constexpr bool leanMode = true;
-        if (fakenvapi::isUsingAsMainNvapi())
-            fakenvapi::init(!leanMode);
-        else if (State::Instance().activeFgOutput == FGOutput::XeFG)
-            fakenvapi::init(leanMode);
+        if (fakenvapi::isUsingAsMainNvapi() || State::Instance().activeFgOutput == FGOutput::XeFG)
+            fakenvapi::init();
 
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
