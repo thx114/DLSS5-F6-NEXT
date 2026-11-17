@@ -186,7 +186,6 @@ xess_result_t hk_xessGetInputResolution(xess_context_handle_t hContext, const xe
 
     unsigned int OutWidth;
     unsigned int OutHeight;
-    float scalingRatio = 0.0f;
 
     const std::optional<float> QualityRatio = GetQualityOverrideRatio(qualitySettings);
 
@@ -194,7 +193,6 @@ xess_result_t hk_xessGetInputResolution(xess_context_handle_t hContext, const xe
     {
         OutHeight = (unsigned int) ((float) pOutputResolution->y / QualityRatio.value());
         OutWidth = (unsigned int) ((float) pOutputResolution->x / QualityRatio.value());
-        scalingRatio = 1.0f / QualityRatio.value();
     }
     else
     {
@@ -203,44 +201,37 @@ xess_result_t hk_xessGetInputResolution(xess_context_handle_t hContext, const xe
         case XESS_QUALITY_SETTING_ULTRA_PERFORMANCE:
             OutHeight = (unsigned int) ((float) pOutputResolution->y / 3.0);
             OutWidth = (unsigned int) ((float) pOutputResolution->x / 3.0);
-            scalingRatio = 1.0f / 3.0f;
             break;
 
         case XESS_QUALITY_SETTING_PERFORMANCE:
             OutHeight = (unsigned int) ((float) pOutputResolution->y / 2.0);
             OutWidth = (unsigned int) ((float) pOutputResolution->x / 2.0);
-            scalingRatio = 0.5f;
             break;
 
         case XESS_QUALITY_SETTING_BALANCED:
             OutHeight = (unsigned int) ((float) pOutputResolution->y / 1.7);
             OutWidth = (unsigned int) ((float) pOutputResolution->x / 1.7);
-            scalingRatio = 1.0f / 1.7f;
             break;
 
         case XESS_QUALITY_SETTING_QUALITY:
             OutHeight = (unsigned int) ((float) pOutputResolution->y / 1.5);
             OutWidth = (unsigned int) ((float) pOutputResolution->x / 1.5);
-            scalingRatio = 1.0f / 1.5f;
             break;
 
         case XESS_QUALITY_SETTING_ULTRA_QUALITY:
         case XESS_QUALITY_SETTING_ULTRA_QUALITY_PLUS:
             OutHeight = (unsigned int) ((float) pOutputResolution->y / 1.3);
             OutWidth = (unsigned int) ((float) pOutputResolution->x / 1.3);
-            scalingRatio = 1.0f / 1.3f;
             break;
 
         case XESS_QUALITY_SETTING_AA:
             OutHeight = pOutputResolution->y;
             OutWidth = pOutputResolution->x;
-            scalingRatio = 1.0f;
             break;
 
         default:
             OutHeight = (unsigned int) ((float) pOutputResolution->y / 1.7);
             OutWidth = (unsigned int) ((float) pOutputResolution->x / 1.7);
-            scalingRatio = 1.0f / 1.7f;
             break;
         }
     }
@@ -249,7 +240,6 @@ xess_result_t hk_xessGetInputResolution(xess_context_handle_t hContext, const xe
     {
         OutHeight -= OutHeight % Config::Instance()->RoundInternalResolution.value();
         OutWidth -= OutWidth % Config::Instance()->RoundInternalResolution.value();
-        scalingRatio = (float) OutWidth / (float) pOutputResolution->x;
     }
 
     pInputResolution->x = OutWidth;
@@ -297,7 +287,6 @@ xess_result_t hk_xessGetOptimalInputResolution(xess_context_handle_t hContext, c
 
     unsigned int OutWidth;
     unsigned int OutHeight;
-    float scalingRatio = 0.0f;
 
     const std::optional<float> QualityRatio = GetQualityOverrideRatio(qualitySettings);
 
@@ -305,7 +294,6 @@ xess_result_t hk_xessGetOptimalInputResolution(xess_context_handle_t hContext, c
     {
         OutHeight = (unsigned int) ((float) pOutputResolution->y / QualityRatio.value());
         OutWidth = (unsigned int) ((float) pOutputResolution->x / QualityRatio.value());
-        scalingRatio = 1.0f / QualityRatio.value();
     }
     else
     {
@@ -314,44 +302,37 @@ xess_result_t hk_xessGetOptimalInputResolution(xess_context_handle_t hContext, c
         case XESS_QUALITY_SETTING_ULTRA_PERFORMANCE:
             OutHeight = (unsigned int) ((float) pOutputResolution->y / 3.0);
             OutWidth = (unsigned int) ((float) pOutputResolution->x / 3.0);
-            scalingRatio = 0.33333333f;
             break;
 
         case XESS_QUALITY_SETTING_PERFORMANCE:
             OutHeight = (unsigned int) ((float) pOutputResolution->y / 2.0);
             OutWidth = (unsigned int) ((float) pOutputResolution->x / 2.0);
-            scalingRatio = 0.5f;
             break;
 
         case XESS_QUALITY_SETTING_BALANCED:
             OutHeight = (unsigned int) ((float) pOutputResolution->y / 1.7);
             OutWidth = (unsigned int) ((float) pOutputResolution->x / 1.7);
-            scalingRatio = 1.0f / 1.7f;
             break;
 
         case XESS_QUALITY_SETTING_QUALITY:
             OutHeight = (unsigned int) ((float) pOutputResolution->y / 1.5);
             OutWidth = (unsigned int) ((float) pOutputResolution->x / 1.5);
-            scalingRatio = 1.0f / 1.5f;
             break;
 
         case XESS_QUALITY_SETTING_ULTRA_QUALITY:
         case XESS_QUALITY_SETTING_ULTRA_QUALITY_PLUS:
             OutHeight = (unsigned int) ((float) pOutputResolution->y / 1.3);
             OutWidth = (unsigned int) ((float) pOutputResolution->x / 1.3);
-            scalingRatio = 1.0f / 1.3f;
             break;
 
         case XESS_QUALITY_SETTING_AA:
             OutHeight = pOutputResolution->y;
             OutWidth = pOutputResolution->x;
-            scalingRatio = 1.0f;
             break;
 
         default:
             OutHeight = (unsigned int) ((float) pOutputResolution->y / 1.7);
             OutWidth = (unsigned int) ((float) pOutputResolution->x / 1.7);
-            scalingRatio = 1.0f / 1.7f;
             break;
         }
     }
@@ -360,7 +341,6 @@ xess_result_t hk_xessGetOptimalInputResolution(xess_context_handle_t hContext, c
     {
         OutHeight -= OutHeight % Config::Instance()->RoundInternalResolution.value();
         OutWidth -= OutWidth % Config::Instance()->RoundInternalResolution.value();
-        scalingRatio = (float) OutWidth / (float) pOutputResolution->x;
     }
 
     pInputResolutionOptimal->x = OutWidth;

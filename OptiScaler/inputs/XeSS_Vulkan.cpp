@@ -10,7 +10,6 @@
 
 static UINT64 _handleCounter = 23370000;
 static UINT64 _frameCounter = 0;
-static xess_context_handle_t _currentContext = nullptr;
 static VkDevice _device = nullptr;
 static VkInstance _instance = nullptr;
 static VkPhysicalDevice _physicalDevice = nullptr;

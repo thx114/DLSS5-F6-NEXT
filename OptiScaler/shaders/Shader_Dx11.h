@@ -9,7 +9,6 @@ class Shader_Dx11
   protected:
     std::string _name = "";
     bool _init = false;
-    int _counter = 0;
 
     std::unique_ptr<GpuTime_Dx11> GpuTime = nullptr;
 

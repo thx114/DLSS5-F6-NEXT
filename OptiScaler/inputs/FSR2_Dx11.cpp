@@ -45,10 +45,6 @@ static std::unordered_map<FfxFsr2Context*, FfxFsr2ContextDescription> _initParam
 static std::unordered_map<FfxFsr2Context*, NVSDK_NGX_Parameter*> _nvParams;
 static std::unordered_map<FfxFsr2Context*, NVSDK_NGX_Handle*> _contexts;
 static ID3D11Device* _d3d11Device = nullptr;
-static bool _nvnxgInited = false;
-static bool _skipCreate = false;
-static bool _skipDispatch = false;
-static bool _skipDestroy = false;
 static float qualityRatios[] = { 1.0f, 1.5f, 1.7f, 2.0f, 3.0f };
 
 static bool CreateDLSSContext(FfxFsr2Context* handle, const FfxFsr2DispatchDescription* pExecParams)
@@ -174,14 +170,12 @@ static FfxErrorCode ffxFsr2ContextCreate_Dx11(FfxFsr2Context* context, FfxFsr2Co
 
     auto& state = State::Instance();
 
-    _skipCreate = true;
 
     FfxErrorCode ccResult = FFX_OK;
     {
         ScopedSkipHeapCapture skipHeapCapture {};
 
         ccResult = o_ffxFsr2ContextCreate_Dx11(context, contextDescription);
-        _skipCreate = false;
 
         if (ccResult != FFX_OK)
         {
@@ -229,7 +223,6 @@ static FfxErrorCode ffxFsr2ContextCreate_Dx11(FfxFsr2Context* context, FfxFsr2Co
         if (nvResult != NVSDK_NGX_Result_Success)
             return FFX_ERROR_BACKEND_API_ERROR;
 
-        _nvnxgInited = true;
     }
 
     NVSDK_NGX_Parameter* params = nullptr;
@@ -259,10 +252,8 @@ static FfxErrorCode ffxFsr2ContextDispatch_Dx11(FfxFsr2Context* context,
     // Skip OptiScaler stuff
     if (!Config::Instance()->UseFsr2Inputs.value_or_default())
     {
-        _skipDispatch = true;
         LOG_DEBUG("UseFsr2Inputs not enabled, skipping");
         auto result = o_ffxFsr2ContextDispatch_Dx11(context, dispatchDescription);
-        _skipDispatch = false;
         return result;
     }
 
@@ -331,9 +322,7 @@ static FfxErrorCode ffxFsr2ContextDestroy_Dx11(FfxFsr2Context* context)
     _nvParams.erase(context);
     _initParams.erase(context);
 
-    _skipDestroy = true;
     auto cdResult = o_ffxFsr2ContextDestroy_Dx11(context);
-    _skipDestroy = false;
 
     LOG_INFO("result: {:X}", (UINT) cdResult);
 

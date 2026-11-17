@@ -16,6 +16,7 @@
 #include <spoofing/Vulkan_Spoofing.h>
 
 #include <vulkan/vulkan.hpp>
+#include <set>
 
 #include <dlssnr/DlssNr_VkExtensions.h>
 #include <dlssnr/DlssNrFeature_Vk.h>

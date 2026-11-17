@@ -161,38 +161,6 @@ class XeSSProxy
     inline static xess_version_t _xessVersion {};
     inline static xess_version_t _xessVersionDx11 {};
 
-    inline static xess_version_t GetDLLVersion(std::wstring dllPath)
-    {
-        xess_version_t xessVersion {};
-        version_t tempVersion {};
-        auto result = Util::GetFileVersion(dllPath, &tempVersion);
-
-        // Don't assume that the structs are identical
-        if (result)
-        {
-            xessVersion.major = tempVersion.major;
-            xessVersion.minor = tempVersion.minor;
-            xessVersion.patch = tempVersion.patch;
-            xessVersion.reserved = tempVersion.reserved;
-        }
-
-        return xessVersion;
-    }
-
-    inline static std::filesystem::path DllPath(HMODULE module)
-    {
-        static std::filesystem::path dll;
-
-        if (dll.empty())
-        {
-            wchar_t dllPath[MAX_PATH];
-            GetModuleFileNameW(module, dllPath, MAX_PATH);
-            dll = std::filesystem::path(dllPath);
-        }
-
-        return dll;
-    }
-
   public:
     static HMODULE Module() { return _module.dll; }
     static HMODULE ModuleDx11() { return _module11.dll; }

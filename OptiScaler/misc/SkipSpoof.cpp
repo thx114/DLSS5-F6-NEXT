@@ -54,12 +54,7 @@ bool SkipSpoofing()
         skip = SkipSpoof::ShouldSkip();
 
     if (skip)
-    {
-        if (dxgiSpoofing)
-            LOG_TRACE("DxgiSpoofing: {}, skipSpoofing: {}, skipping spoofing", dxgiSpoofing, skip);
-        else
-            LOG_TRACE("DxgiSpoofing: {}, skipping spoofing", dxgiSpoofing);
-    }
+        LOG_TRACE("DxgiSpoofing: {}, skipSpoofing: {}, skipping spoofing", dxgiSpoofing, skip);
 
     return skip;
 }
@@ -73,12 +68,7 @@ bool SkipVulkanSpoofing()
         skip = SkipSpoof::ShouldSkip();
 
     if (skip)
-    {
-        if (vulkanSpoofing)
-            LOG_TRACE("VulkanSpoofing: {}, skipSpoofing: {}, skipping spoofing", vulkanSpoofing, skip);
-        else
-            LOG_TRACE("VulkanSpoofing: {}, skipping spoofing", vulkanSpoofing);
-    }
+        LOG_TRACE("VulkanSpoofing: {}, skipSpoofing: {}, skipping spoofing", vulkanSpoofing, skip);
 
     return skip;
 }

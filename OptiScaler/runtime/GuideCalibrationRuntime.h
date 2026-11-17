@@ -17,8 +17,6 @@ struct Status {
 void Start() noexcept;
 void Stop() noexcept;
 void SetStage(GuideCalibration::Stage) noexcept;
-void SetExclusions(const std::vector<GuideCalibration::Rect>&) noexcept;
-void SelectCandidate(unsigned) noexcept;
 // May run on hidden-menu frame callbacks. Never waits for scoring work.
 void Tick() noexcept;
 bool Read(Status&) noexcept;

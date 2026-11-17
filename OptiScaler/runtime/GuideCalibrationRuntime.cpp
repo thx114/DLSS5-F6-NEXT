@@ -15,12 +15,11 @@ using namespace GuideCalibration;
 struct Store {
     std::mutex mutex;
     std::atomic<bool> active{false},busy{false};std::atomic<uint64_t> generation{0};
-    std::atomic<unsigned> stage{0},candidate{0};
+    std::atomic<unsigned> stage{0};
     std::atomic<uint64_t> stageChangedAt{0};
     uint64_t workerGeneration=0;
     Stage previousStage=Stage::Still;
     Session session;std::optional<Frame> previous;
-    std::vector<Rect> exclusions;
     Status status;
 };
 Store& Storage(){static auto* s=new Store;return *s;}
@@ -29,7 +28,7 @@ bool Known(const GuideDiagnostics::Snapshot& s,GuideDiagnostics::Field f){
     const auto& v=s.fields[static_cast<unsigned>(f)];
     return v.valid&&v.origin!=GuideDiagnostics::Origin::Unknown&&std::isfinite(v.value);
 }
-Frame Convert(const GuideCapture::Image& im,const std::optional<Frame>& previous,const std::vector<Rect>& exclusions){
+Frame Convert(const GuideCapture::Image& im,const std::optional<Frame>& previous){
     Frame f;f.width=im.width;f.height=im.height;const auto& stamp=im.stamp;auto& m=f.metadata;
     m.source=stamp.source;m.epoch=stamp.epoch;m.feature=stamp.feature;m.configuration=stamp.configuration;
     m.domain=stamp.owner?stamp.owner:stamp.feature;m.capturedAtMs=stamp.tick;m.observedAtMs=GuideDiagnostics::Now();
@@ -71,7 +70,7 @@ Frame Convert(const GuideCapture::Image& im,const std::optional<Frame>& previous
         f.colour[i]={tone(p.r),tone(p.g),tone(p.b)};f.colourMask[i]=finite&&p.r>=0&&p.g>=0&&p.b>=0?1:0;
     }
     for(size_t i=0;i<im.motion.size();++i)f.motion[i]={im.motion[i].x,im.motion[i].y};
-    f.exclusions=exclusions;return f;
+    return f;
 }
 DWORD WINAPI Work(void* data){
     std::unique_ptr<Job> job(static_cast<Job*>(data));auto& s=Storage();
@@ -89,7 +88,7 @@ DWORD WINAPI Work(void* data){
                 // a strictly later capture rather than attributing it to an axis.
                 if(image.stamp.tick<=s.stageChangedAt.load(std::memory_order_acquire))continue;
                 if(s.previousStage!=stage){s.previous.reset();s.status.images={};s.previousStage=stage;}
-                Frame current=Convert(image,s.previous,s.exclusions);const auto now=GuideDiagnostics::Now();
+                Frame current=Convert(image,s.previous);const auto now=GuideDiagnostics::Now();
                 PairResult pair;
                 const bool sameDomain=s.previous && s.previous->metadata.feature==current.metadata.feature &&
                     s.previous->metadata.configuration==current.metadata.configuration && s.previous->metadata.domain==current.metadata.domain;
@@ -105,7 +104,7 @@ DWORD WINAPI Work(void* data){
                 else if(adjacent){
                     pair=s.session.ObservePair(*s.previous,current,now);
                     if(!s.active.load(std::memory_order_acquire)||s.generation.load(std::memory_order_acquire)!=job->generation)break;
-                    s.status.images=MakeImages(*s.previous,current,Candidate(s.candidate.load(std::memory_order_acquire)%8),now);
+                    s.status.images=MakeImages(*s.previous,current,Candidate(0),now);
                 }else{pair.rejection=s.previous?Rejection::SourceGap:Rejection::NeedPrevious;pair.source=current.metadata.source;s.status.images={};}
                 if(!s.active.load(std::memory_order_acquire)||s.generation.load(std::memory_order_acquire)!=job->generation)break;
                 s.status.pair=std::move(pair);s.status.recommendation=s.session.Result();s.status.stage=stage;
@@ -138,13 +137,6 @@ void SetStage(Stage stage) noexcept {
     if(s.stage.load(std::memory_order_acquire)==value)return;
     s.stageChangedAt.store(GuideDiagnostics::Now(),std::memory_order_release);
     s.stage.store(value,std::memory_order_release);
-}
-void SelectCandidate(unsigned candidate) noexcept {Storage().candidate.store(candidate%8,std::memory_order_release);}
-void SetExclusions(const std::vector<Rect>& exclusions) noexcept {
-    try{auto& s=Storage();std::unique_lock lock(s.mutex,std::try_to_lock);if(!lock.owns_lock())return;
-        s.exclusions.assign(exclusions.begin(),exclusions.begin()+(std::min)(exclusions.size(),size_t(32)));
-        s.generation.fetch_add(1,std::memory_order_acq_rel);
-    }catch(...){}
 }
 void Tick() noexcept {
     auto& s=Storage();if(!s.active.load(std::memory_order_acquire))return;

@@ -559,7 +559,6 @@ static void ObserveState(IDXGISwapChain* chain, UINT syncInterval, UINT flags, b
     const auto now = Util::MillisecondsNow();
     const double delta = _lastFrameTime != 0 ? now - _lastFrameTime : 0.0;
     _lastFrameTime = now;
-    State::Instance().presentFrameTime = delta;
     if (State::Instance().currentFG == nullptr) State::Instance().lastFGFrameTime = delta;
     if (log) LOG_DEBUG("SyncInterval: {}, Flags: {:X}, Frametime: {:0.3f} ms", syncInterval, flags, delta);
     if (chain->GetDesc(&State::Instance().currentSwapchainDesc) != S_OK)

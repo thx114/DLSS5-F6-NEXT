@@ -18,9 +18,6 @@ class FT_Dx12 : public Shader_Dx12
     D3D12_RESOURCE_STATES _bufferState = D3D12_RESOURCE_STATE_COMMON;
     DXGI_FORMAT format;
 
-    uint32_t bufferWidth = 0;
-    uint32_t bufferHeight = 0;
-
     uint32_t InNumThreadsX = 16;
     uint32_t InNumThreadsY = 16;
 

@@ -39,9 +39,6 @@ class Magnifier_Dx12 : public Shader_Dx12, public Magnifier_Common
     uint32_t InNumThreadsX = 16;
     uint32_t InNumThreadsY = 16;
 
-    static void ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
-                                D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState);
-
   public:
     bool Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InResource, ID3D12Resource* OutResource,
                   std::optional<UINT> recordingSlot = std::nullopt);

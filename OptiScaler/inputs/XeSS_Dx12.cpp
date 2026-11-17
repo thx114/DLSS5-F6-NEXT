@@ -7,9 +7,6 @@
 #include "menu/menu_overlay_dx.h"
 
 static UINT64 _handleCounter = 13370000;
-static UINT64 _frameCounter = 0;
-static xess_context_handle_t _currentContext = nullptr;
-static ID3D12Device* _d3d12Device = nullptr;
 
 static bool CreateDLSSContext(xess_context_handle_t handle, ID3D12GraphicsCommandList* commandList,
                               const xess_d3d12_execute_params_t* pExecParams)
@@ -115,7 +112,6 @@ xess_result_t hk_xessD3D12CreateContext(ID3D12Device* pDevice, xess_context_hand
             return XESS_RESULT_ERROR_UNINITIALIZED;
     }
 
-    _d3d12Device = pDevice;
     *phContext = (xess_context_handle_t) ++_handleCounter;
 
     NVSDK_NGX_Parameter* params = nullptr;

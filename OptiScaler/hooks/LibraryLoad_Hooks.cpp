@@ -386,14 +386,6 @@ std::optional<NTSTATUS> LibraryLoadHooks::FreeLibrary(PVOID lpLibrary)
 #endif
         result = TRUE;
     }
-    // FreeLibrary can arrive on any thread. Keep classification and logging outside this lock.
-    if (result.has_value())
-    {
-        auto& state = State::Instance();
-        std::scoped_lock lock(state.modulesToFreeMutex);
-        state.modulesToFree.insert(lpLibrary);
-    }
-
     return result;
 }
 

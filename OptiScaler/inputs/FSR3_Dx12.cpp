@@ -49,10 +49,8 @@ static std::unordered_map<Fsr3::FfxFsr3UpscalerContext*, Fsr3::FfxFsr3UpscalerCo
 static std::unordered_map<Fsr3::FfxFsr3UpscalerContext*, NVSDK_NGX_Parameter*> _nvParams;
 static std::unordered_map<Fsr3::FfxFsr3UpscalerContext*, NVSDK_NGX_Handle*> _contexts;
 static ID3D12Device* _d3d12Device = nullptr;
-static bool _nvnxgInited = false;
 static bool _skipCreate = false;
 static bool _skipDispatch = false;
-static bool _skipDestroy = false;
 static float qualityRatios[] = { 1.0f, 1.5f, 1.7f, 2.0f, 3.0f };
 
 static D3D12_RESOURCE_STATES GetD3D12State(Fsr3::FfxResourceStates state)
@@ -274,7 +272,6 @@ static Fsr3::FfxErrorCode ffxFsr3ContextCreate_Dx12(Fsr3::FfxFsr3UpscalerContext
         if (nvResult != NVSDK_NGX_Result_Success)
             return Fsr3::FFX_ERROR_BACKEND_API_ERROR;
 
-        _nvnxgInited = true;
     }
 
     NVSDK_NGX_Parameter* params = nullptr;
@@ -402,9 +399,7 @@ static Fsr3::FfxErrorCode ffxFsr3ContextDestroy_Dx12(Fsr3::FfxFsr3UpscalerContex
     _nvParams.erase(pContext);
     _initParams.erase(pContext);
 
-    _skipDestroy = true;
     auto cdResult = o_ffxFsr3UpscalerContextDestroy_Dx12(pContext);
-    _skipDestroy = false;
 
     LOG_INFO("result: {:X}", (UINT) cdResult);
 
@@ -479,7 +474,6 @@ ffxFsr3ContextCreate_Pattern_Dx12(Fsr3::FfxFsr3UpscalerContext* pContext,
         if (nvResult != NVSDK_NGX_Result_Success)
             return Fsr3::FFX_ERROR_BACKEND_API_ERROR;
 
-        _nvnxgInited = true;
     }
 
     NVSDK_NGX_Parameter* params = nullptr;

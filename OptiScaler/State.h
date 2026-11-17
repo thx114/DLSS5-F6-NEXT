@@ -7,7 +7,6 @@
 #include <inputs/FG/Streamline_Inputs_Dx12.h>
 #include <inputs/FG/Streamline_Inputs_Sl1_Dx12.h>
 
-#include <set>
 #include <deque>
 #include <mutex>
 #include <atomic>
@@ -170,7 +169,6 @@ class State
     bool artursFgFileAvailable = false;
     bool dlssgDebugView = false;
     bool dlssgInterpolatedOnly = false;
-    uint64_t dlssgLastFrame = 0;
     uint32_t delayMenuRenderBy = 0;
     bool menuOverlayIsVulkan = false;
 
@@ -335,7 +333,6 @@ class State
     std::deque<double> frameTimes;
     std::vector<DetailedGpuTime> detailedGpuTimes;
     double lastFGFrameTime = 0.0;
-    double presentFrameTime = 0.0;
     std::mutex frameTimeMutex;
 
     // Opti checking if everything is setup correctly on game launch
@@ -370,9 +367,6 @@ class State
     ApiUpscalerInput currentInputApiName;
 
     std::atomic_bool isShuttingDown { false };
-    std::set<PVOID> modulesToFree;
-    // Serializes writers only; shutdown readers still require separate quiescence.
-    std::mutex modulesToFreeMutex;
 
     // menu warnings
     bool fgSettingsChanged = false;

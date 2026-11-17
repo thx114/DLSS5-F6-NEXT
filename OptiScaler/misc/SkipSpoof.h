@@ -12,14 +12,6 @@ enum class SkipSpoofType
     Global, // Applies to every thread, not just the current one
 };
 
-// TODO: Unused, do we need it?
-enum class SkipSpoofApi
-{
-    Dxgi,
-    Vulkan,
-    All,
-};
-
 struct SkipSpoofEntry
 {
     uint64_t id;

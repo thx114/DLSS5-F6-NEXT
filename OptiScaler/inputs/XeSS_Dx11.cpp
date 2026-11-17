@@ -7,8 +7,6 @@
 #include "menu/menu_overlay_dx.h"
 
 static UINT64 _handleCounter = 33370000;
-static UINT64 _frameCounter = 0;
-static xess_context_handle_t _currentContext = nullptr;
 static ID3D11Device* _d3d11Device = nullptr;
 
 static bool CreateDLSSContext(xess_context_handle_t handle, ID3D11DeviceContext* commandList,
